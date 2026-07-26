@@ -1,0 +1,9 @@
+Label
+CSGBox3D
+Container
+CanvasLayer
+CollisionShape3D
+CharacterBody3D
+Camera3D
+WorldEnvironment
+WlrCompositor
