@@ -53,10 +53,7 @@ func spawn_test_client() -> void:
 
 func next_spawn_pos() -> Vector3:
 	var camera := $Player/Camera3D
-	if is_in_window and focused_window_id >= 0:
-		return camera.global_position - camera.global_basis.z * (3.0 - quads[focused_window_id].global_position.direction_to(camera.global_position).z)
-	else:
-		return camera.global_position - camera.global_basis.z * 3.0
+	return camera.global_position - camera.global_basis.z * 3.0
 
 func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	var quad := MeshInstance3D.new()
