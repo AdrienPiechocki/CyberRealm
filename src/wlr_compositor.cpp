@@ -14,6 +14,8 @@ extern "C" {
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/render/dmabuf.h>
 #include <libdrm/drm_fourcc.h>
+#include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_viewporter.h>
 }
 
 using namespace godot;
@@ -100,7 +102,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
-    
+    ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
+
     ADD_SIGNAL(MethodInfo("window_mapped",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::STRING, "title"),
@@ -559,6 +562,8 @@ void WlrCompositor::start_headless() {
 
     compositor = wlr_compositor_create(display, 6, renderer);
     xdg_shell = wlr_xdg_shell_create(display, 3);
+    wlr_viewporter_create(display);
+    wlr_subcompositor_create(display);
     seat = wlr_seat_create(display, "seat0");
 
     wlr_data_device_manager_create(display);
@@ -795,4 +800,9 @@ void WlrCompositor::set_window_size(int window_id, int width, int height) {
     // Demande au client Wayland de s'adapter à cette nouvelle taille
     wlr_xdg_toplevel_set_size(ws->toplevel, width, height);
     wlr_xdg_surface_schedule_configure(ws->toplevel->base);
+}
+
+// Dans wlr_compositor.cpp (à déclarer aussi dans le .h et _bind_methods)
+void WlrCompositor::set_x11_display(const String &display_name) {
+    setenv("DISPLAY", display_name.utf8().get_data(), 1);
 }

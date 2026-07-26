@@ -34,7 +34,7 @@ var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au momen
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
 
 const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
-const MIN_SURFACE_SIZE = 100 # px, garde-fou anti-fenêtre-écrasée
+const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 
 func _ready() -> void:
 	compositor.window_mapped.connect(_on_window_mapped)
@@ -44,7 +44,9 @@ func _ready() -> void:
 	compositor.popup_unmapped.connect(_on_popup_unmapped)
 	compositor.popup_texture_updated.connect(_on_popup_texture_updated)
 	compositor.start_headless()
-
+	compositor.launch_app("xwayland-satellite :1")
+	await get_tree().create_timer(0.2).timeout
+	compositor.set_x11_display(":1")
 	# Décale WAYLAND_DISPLAY pour tout ce qu'on lance nous-mêmes ensuite.
 	#print("Socket Wayland: ", compositor.get_wayland_socket_name())
 

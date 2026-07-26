@@ -140,6 +140,9 @@ class WlrCompositor : public Node {
     // Permet de forcer la taille d'une fenêtre depuis Godot (lors d'un redimensionnement à la souris)
     void set_window_size(int window_id, int width, int height);
 
+
+    void set_x11_display(const String &display_name);
+
 protected:
     static void _bind_methods();
 
@@ -168,5 +171,10 @@ public:
     String get_wayland_socket_name() const;
     void launch_app(const String &command); // fork+exec avec WAYLAND_DISPLAY positionné
 };
+
+bool export_surface_dmabuf(
+    wlr_surface *surface,
+    wlr_dmabuf_attributes &attribs
+);
 
 } // namespace godot
