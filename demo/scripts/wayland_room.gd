@@ -18,6 +18,10 @@ var is_in_window := false
 # fenêtre suit ensuite le viseur le long de ce rayon.
 var move_depth := 0.0
 
+var is_moving_2d := false
+var move_2d_plane := Plane()
+var move_2d_offset := Vector3.ZERO
+
 # Redimensionnement: même principe de rayon à profondeur fixe, mais on
 # garde aussi la base locale du quad et ses dimensions de départ pour
 # convertir le déplacement du viseur (unités monde) en pixels de surface.
@@ -213,6 +217,19 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	var shape: BoxShape3D = col.shape
 	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
 
+# La fenêtre glisse le long de son propre plan d'orientation initial.
+func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
+	if active_window_id == -1 or not quads.has(active_window_id):
+		return
+		
+	var quad: MeshInstance3D = quads[active_window_id]
+	var hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
+	
+	if hit != null:
+		var target_pos = hit + move_2d_offset
+		# Déplacement fluide uniquement sur les axes X/Y locaux du plan
+		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
+
 func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("launcher") and not interact_mode_active:
 		spawn_test_client()
@@ -246,7 +263,13 @@ func _physics_process(delta: float) -> void:
 			resizing_edge = ""
 			active_window_id = -1
 		return
-
+	if is_moving_2d:
+		_update_move_2d(ray_origin, ray_dir, delta)
+		if Input.is_action_just_released("left_click"):
+			is_moving_2d = false
+			active_window_id = -1
+		return
+	
 	var to := ray_origin + ray_dir * 1000.0
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
@@ -283,8 +306,6 @@ func _physics_process(delta: float) -> void:
 	compositor.forward_pointer_motion(wid, uv.x * win_size.x, uv.y * win_size.y)
 
 	if Input.is_action_just_pressed("grab") and not interact_mode_active:
-		# "grab" + clic n'importe où sur la fenêtre -> déplacement, comme
-		# dans la plupart des gestionnaires de fenêtres Linux.
 		active_window_id = wid
 		is_moving = true
 		move_depth = cam.global_position.distance_to(quad.global_position)
@@ -307,6 +328,21 @@ func _physics_process(delta: float) -> void:
 			window_start_size = win_size
 			window_start_mesh_size = mesh.size
 			window_start_local_pos = quad.position
+		
+		elif uv.y * win_size.y < BORDER_MARGIN * BORDER_MARGIN and not uv.x * win_size.x > win_size.x - 75 and not uv.x * win_size.x < 75:
+			# Move on a 2D plane (simulation de barre de titre)
+			active_window_id = wid
+			is_moving_2d = true
+			
+			# On crée un plan infini basé sur l'orientation de la fenêtre (axe Z)
+			var normal = quad.global_transform.basis.z.normalized()
+			move_2d_plane = Plane(normal, quad.global_position)
+			
+			# Calcul de l'offset initial pour éviter que la fenêtre "saute" au centre du curseur
+			var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
+			if _hit != null:
+				move_2d_offset = quad.global_position - _hit
+		
 		else:
 			compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
 	if Input.is_action_just_released("left_click"):
