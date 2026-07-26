@@ -9,15 +9,28 @@ var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 var interact_mode_active := false
 
-var resizing_edge = "" # "left", "right", "top", "bottom", etc.
-var is_resizing = false
-var is_moving = false
-var active_window_id = -1
-var mouse_start_pos = Vector2.ZERO
-var window_start_size = Vector2.ZERO
-var window_start_pos3d = Vector3.ZERO
+var resizing_edge := "" # "left", "right", "top", "bottom", "topleft", etc.
+var is_resizing := false
+var is_moving := false
+var active_window_id := -1
+var is_in_window := false
+# Déplacement: distance (caméra -> fenêtre) figée au moment du grab, la
+# fenêtre suit ensuite le viseur le long de ce rayon.
+var move_depth := 0.0
 
-const BORDER_MARGIN = 15 # en pixels sur la texture
+# Redimensionnement: même principe de rayon à profondeur fixe, mais on
+# garde aussi la base locale du quad et ses dimensions de départ pour
+# convertir le déplacement du viseur (unités monde) en pixels de surface.
+var resize_depth := 0.0
+var resize_start_world := Vector3.ZERO
+var resize_right_dir := Vector3.RIGHT
+var resize_up_dir := Vector3.UP
+var window_start_size := Vector2.ZERO # taille surface (px) au moment du grab
+var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
+var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
+
+const BORDER_MARGIN = 10 # en pixels sur la texture, zone de bord = redimensionnement
+const MIN_SURFACE_SIZE = 100 # px, garde-fou anti-fenêtre-écrasée
 
 func _ready() -> void:
 	compositor.window_mapped.connect(_on_window_mapped)
@@ -36,7 +49,10 @@ func spawn_test_client() -> void:
 
 func next_spawn_pos() -> Vector3:
 	var camera := $Player/Camera3D
-	return camera.global_position - camera.global_basis.z * 3.0
+	if is_in_window:
+		return camera.global_position - camera.global_basis.z * (3.0 - quads[focused_window_id].global_position.direction_to(camera.global_position).z)
+	else:
+		return camera.global_position - camera.global_basis.z * 3.0
 
 func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	var quad := MeshInstance3D.new()
@@ -175,23 +191,44 @@ func _physics_process(_delta: float) -> void:
 	if Input.is_action_just_pressed("interact_mode"):
 		interact_mode_active = not interact_mode_active
 		$Player.interact_mode_active = not $Player.interact_mode_active
-		
+
 	var cam: Camera3D = $Player/Camera3D
 	var mouse_pos := get_viewport().get_mouse_position()
-	var from := cam.project_ray_origin(mouse_pos)
-	var to := from + cam.project_ray_normal(mouse_pos) * 1000.0
+	var ray_origin := cam.project_ray_origin(mouse_pos)
+	var ray_dir := cam.project_ray_normal(mouse_pos)
+
+	# Une prise en cours (déplacement/redimensionnement) continue d'être mise
+	# à jour même si le viseur ne pointe plus sur la fenêtre: en
+	# MOUSE_MODE_CAPTURED (souris FPS), get_viewport().get_mouse_position()
+	# reste figée au centre de l'écran - seule l'orientation de la caméra
+	# bouge - donc on pilote le drag via le rayon caméra, pas via une
+	# position écran qui ne varie jamais pendant le drag.
+	if is_moving:
+		_update_move(ray_origin, ray_dir)
+		if Input.is_action_just_released("grab"):
+			is_moving = false
+			active_window_id = -1
+		return
+	if is_resizing:
+		_update_resize(ray_origin, ray_dir)
+		if Input.is_action_just_released("left_click"):
+			is_resizing = false
+			resizing_edge = ""
+			active_window_id = -1
+		return
+
+	var to := ray_origin + ray_dir * 1000.0
 	var space := get_world_3d().direct_space_state
-	var params := PhysicsRayQueryParameters3D.create(from, to)
+	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
 	var hit := space.intersect_ray(params)
 
 	if hit.is_empty() or not hit.collider.has_meta("window_id"):
-		#if hit.is_empty():
-			#print("WaylandGodot debug: raycast à vide - rien touché depuis ", from, " direction ", -cam.global_transform.basis.z)
-		#else:
-			#print("WaylandGodot debug: raycast a touché ", hit.collider.name, " (pas une fenêtre)")
+		is_in_window = false
 		compositor.forward_pointer_leave()
 		return
-
+	else:
+		is_in_window = true
+	
 	var body: StaticBody3D = hit.collider
 	var quad: MeshInstance3D = body.get_parent()
 	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
@@ -205,86 +242,130 @@ func _physics_process(_delta: float) -> void:
 	var wid: int = body.get_meta("window_id")
 	compositor.forward_pointer_motion(wid, uv.x * win_size.x, uv.y * win_size.y)
 
+	if Input.is_action_just_pressed("grab") and not interact_mode_active:
+		# "grab" + clic n'importe où sur la fenêtre -> déplacement, comme
+		# dans la plupart des gestionnaires de fenêtres Linux.
+		active_window_id = wid
+		is_moving = true
+		move_depth = cam.global_position.distance_to(quad.global_position)
+	if Input.is_action_just_released("grab"):
+		active_window_id = wid
+		is_moving = false
+		move_depth = 0.0
 	if Input.is_action_just_pressed("left_click"):
-		#print("WaylandGodot debug: clic forwardé vers fenêtre id=", wid, " uv=", uv)
 		focused_window_id = wid
-		compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
+		var edge := _border_edge(uv, win_size)
+		if edge != "":
+			# Bord de la fenêtre -> redimensionnement.
+			active_window_id = wid
+			resizing_edge = edge
+			is_resizing = true
+			resize_depth = cam.global_position.distance_to(quad.global_position)
+			resize_start_world = ray_origin + ray_dir * resize_depth
+			resize_right_dir = quad.global_transform.basis.x.normalized()
+			resize_up_dir = quad.global_transform.basis.y.normalized()
+			window_start_size = win_size
+			window_start_mesh_size = mesh.size
+			window_start_local_pos = quad.position
+		else:
+			compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
 	if Input.is_action_just_released("left_click"):
 		compositor.forward_pointer_button(wid, 0x110, false)
 
 	if Input.is_action_just_pressed("right_click"):
-		#print("WaylandGodot debug: clic droit forwardé vers fenêtre id=", wid)
 		focused_window_id = wid
 		compositor.forward_pointer_button(wid, 0x111, true)
 	if Input.is_action_just_released("right_click"):
 		compositor.forward_pointer_button(wid, 0x111, false)
 
 	if Input.is_action_just_pressed("scroll_up"):
-		compositor.forward_pointer_axis(wid, 0, -50.0) 
+		compositor.forward_pointer_axis(wid, 0, -50.0)
 	if Input.is_action_just_pressed("scroll_down"):
 		compositor.forward_pointer_axis(wid, 0, 50.0)
+
+# Bord touché (marge en pixels de texture) -> "" si le clic est dans le
+# corps de la fenêtre.
+func _border_edge(uv: Vector2, win_size: Vector2) -> String:
+	var px := uv.x * win_size.x
+	var py := uv.y * win_size.y
+	var edge := ""
+	if py < BORDER_MARGIN:
+		edge += "top"
+	elif py > win_size.y - BORDER_MARGIN:
+		edge += "bottom"
+	if px < BORDER_MARGIN:
+		edge += "left"
+	elif px > win_size.x - BORDER_MARGIN:
+		edge += "right"
+	return edge
+
+# La fenêtre suit le viseur le long du rayon caméra, à profondeur figée
+# (distance capturée au moment du grab) - fonctionne même si la souris ne
+# se déplace jamais à l'écran (mode capturé), puisque seule l'orientation
+# de la caméra entre ici en jeu.
+func _update_move(ray_origin: Vector3, ray_dir: Vector3) -> void:
+	if active_window_id == -1 or not quads.has(active_window_id):
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	var cam: Camera3D = $Player/Camera3D
+	quad.global_position = ray_origin + ray_dir * move_depth
+	quad.global_transform = Transform3D(cam.global_transform.basis, quad.global_position)
+
+func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
+	if active_window_id == -1 or not quads.has(active_window_id):
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	var mesh: QuadMesh = quad.mesh
+
+	# Delta du viseur (unités monde) projeté sur la même profondeur figée
+	# qu'au moment du grab, puis exprimé dans la base locale du quad.
+	var cur_world := ray_origin + ray_dir * resize_depth
+	var world_delta := cur_world - resize_start_world
+	var local_dx := world_delta.dot(resize_right_dir)
+	var local_dy := world_delta.dot(resize_up_dir)
+
+	# Ratio pixels de surface / unité monde, figé au grab (le mesh ne
+	# change pas de taille pendant le drag, seul window_texture_updated
+	# le fera une fois le client redessiné à la nouvelle taille).
+	var px_per_unit_x: float = window_start_size.x / max(window_start_mesh_size.x, 0.001)
+	var px_per_unit_y: float = window_start_size.y / max(window_start_mesh_size.y, 0.001)
+
+	var new_w := window_start_size.x
+	var new_h := window_start_size.y
+	if "right" in resizing_edge:
+		new_w = window_start_size.x + local_dx * px_per_unit_x
+	elif "left" in resizing_edge:
+		new_w = window_start_size.x - local_dx * px_per_unit_x
+	if "top" in resizing_edge:
+		new_h = window_start_size.y + local_dy * px_per_unit_y
+	elif "bottom" in resizing_edge:
+		new_h = window_start_size.y - local_dy * px_per_unit_y
+
+	new_w = max(new_w, MIN_SURFACE_SIZE)
+	new_h = max(new_h, MIN_SURFACE_SIZE)
+
+	compositor.set_window_size(active_window_id, int(new_w), int(new_h))
+
+	# Repositionne tout de suite le bord fixe pour un retour visuel fluide;
+	# le ratio/la taille définitifs du quad arrivent via
+	# window_texture_updated une fois que le client a recommité à la
+	# nouvelle taille.
+	var delta_w_world := (new_w - window_start_size.x) / px_per_unit_x
+	var delta_h_world := (new_h - window_start_size.y) / px_per_unit_y
+	var shift := Vector3.ZERO
+	if "left" in resizing_edge:
+		shift -= resize_right_dir * (delta_w_world / 2.0)
+	elif "right" in resizing_edge:
+		shift += resize_right_dir * (delta_w_world / 2.0)
+	if "top" in resizing_edge:
+		shift += resize_up_dir * (delta_h_world / 2.0)
+	elif "bottom" in resizing_edge:
+		shift -= resize_up_dir * (delta_h_world / 2.0)
+	quad.position = window_start_local_pos + shift
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if focused_window_id == -1 or not event is InputEventKey or not interact_mode_active:
 		return
 	var key_event := event as InputEventKey
-	#print("WaylandGodot debug: touche reçue physical_keycode=", key_event.physical_keycode, " pressed=", key_event.pressed, " -> fenêtre id=", focused_window_id)
 	compositor.forward_keyboard_key(key_event.physical_keycode, key_event.pressed)
 	get_viewport().set_input_as_handled()
-
-func _on_mouse_down_on_window(window_id, local_uv_position, texture_size):
-	active_window_id = window_id
-	
-	# 1. Vérifier si on est sur un bord pour redimensionner
-	var px = local_uv_position.x * texture_size.x
-	var py = local_uv_position.y * texture_size.y
-	
-	var on_left = px < BORDER_MARGIN
-	var on_right = px > texture_size.x - BORDER_MARGIN
-	var on_top = py < BORDER_MARGIN
-	var on_bottom = py > texture_size.y - BORDER_MARGIN
-	
-	if on_left or on_right or on_top or on_bottom:
-		is_resizing = true
-		# Déterminer la combinaison (ex: "bottom-right")
-		resizing_edge = ""
-		if on_top: resizing_edge += "top"
-		elif on_bottom: resizing_edge += "bottom"
-		if on_left: resizing_edge += "left"
-		elif on_right: resizing_edge += "right"
-		
-		mouse_start_pos = get_viewport().get_mouse_position()
-		window_start_size = texture_size
-	else:
-		# Sinon, c'est un déplacement de fenêtre (ou clic normal transmis au pointer)
-		is_moving = true 
-		# ... logique de déplacement 3D de ton quad ...
-
-func _input(event):
-	if event is InputEventMouseMotion:
-		if is_resizing and active_window_id != -1:
-			var mouse_delta = get_viewport().get_mouse_position() - mouse_start_pos
-			var new_w = window_start_size.x
-			var new_h = window_start_size.y
-			
-			# Ajuster la largeur/hauteur selon le bord attrapé
-			if "right" in resizing_edge:
-				new_w += mouse_delta.x
-			if "bottom" in resizing_edge:
-				new_h += mouse_delta.y
-			if "left" in resizing_edge:
-				new_w -= mouse_delta.x
-				# Note: si on redimensionne par la gauche, il faut aussi bouger la position 3D du quad
-			
-			# Appeler la méthode C++ qu'on vient de créer
-			compositor.set_window_size(active_window_id, int(new_w), int(new_h))
-			
-		elif is_moving:
-			# Met à jour la position 3D de ton mesh en fonction du mouvement de la souris
-			pass
-			
-	elif event is InputEventMouseButton:
-		if not event.pressed:
-			is_resizing = false
-			is_moving = false
-			active_window_id = -1
