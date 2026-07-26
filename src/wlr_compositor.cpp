@@ -4,9 +4,12 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
+#include <vector>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
@@ -18,6 +21,7 @@ extern "C" {
 #include <wlr/render/dmabuf.h>
 #include <libdrm/drm_fourcc.h>
 #include <wlr/types/wlr_subcompositor.h>
+#include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 }
 
@@ -217,12 +221,37 @@ bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, i
 bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
     if (!renderer || !allocator) return false;
 
-    wlr_texture *texture = wlr_surface_get_texture(surface);
-    if (!texture) return false;
+    wlr_texture *root_texture = wlr_surface_get_texture(surface);
+    // Ne pas retourner false si root_texture est NULL : Firefox (et
+    // d'autres clients WebRender) peut ne committer aucun buffer sur la
+    // surface racine d'un popup, tout le contenu vivant dans des
+    // sous-surfaces. wlr_surface_for_each_surface ci-dessous iterera
+    // quand meme sur les sous-surfaces, qui auront elles une texture.
 
-    int w = (int)texture->width;
-    int h = (int)texture->height;
+    // Taille LOGIQUE de la surface (surface->current.width/height), pas la
+    // taille brute du buffer (texture->width/height). Sur un client HiDPI
+    // (buffer_scale > 1), le buffer physique est plus grand que la taille
+    // affichee - melanger les deux donne une image mal mise a l'echelle.
+    int w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
+    int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     if (w <= 0 || h <= 0) return false;
+
+    // Parcourt la surface racine ET ses sous-surfaces (wl_subsurface).
+    // Firefox (entre autres) dessine son contenu WebRender dans une
+    // sous-surface enfant distincte de la surface racine (qui ne porte
+    // que le chrome/CSD) - sans ça, seule la barre de titre est capturée
+    // et le reste reste noir/vide.
+    struct SubSurfaceInstance {
+        wlr_surface *surface;
+        int sx, sy;
+    };
+    std::vector<SubSurfaceInstance> instances;
+
+    wlr_surface_for_each_surface(surface,
+        +[](wlr_surface *sub, int sx, int sy, void *data) {
+            auto *out = static_cast<std::vector<SubSurfaceInstance> *>(data);
+            out->push_back({sub, sx, sy});
+        }, &instances);
 
     // Formats dmabuf supportés par le renderer. On préfère ABGR8888
     // (RGBA en mémoire little-endian) pour éviter le swizzle BGRA→RGBA.
@@ -281,7 +310,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         return false;
     }
 
-    // Render pass: surface → buffer offscreen
+    // Render pass: racine + sous-surfaces → buffer offscreen
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, offscreen, nullptr);
     if (!pass) {
         UtilityFunctions::printerr("waylandgodot: dmabuf: begin_buffer_pass a échoué");
@@ -289,13 +318,31 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         return false;
     }
 
-    wlr_render_texture_options opts = {};
-    opts.texture = texture;
-    opts.dst_box.x = 0;
-    opts.dst_box.y = 0;
-    opts.dst_box.width = w;
-    opts.dst_box.height = h;
-    wlr_render_pass_add_texture(pass, &opts);
+    int blitted = 0;
+    for (auto &inst : instances) {
+        wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
+        if (!sub_texture) continue;
+
+        int sub_w = inst.surface->current.width > 0
+            ? inst.surface->current.width : (int)sub_texture->width;
+        int sub_h = inst.surface->current.height > 0
+            ? inst.surface->current.height : (int)sub_texture->height;
+
+        wlr_render_texture_options opts = {};
+        opts.texture = sub_texture;
+        opts.dst_box.x = inst.sx;
+        opts.dst_box.y = inst.sy;
+        opts.dst_box.width = sub_w;
+        opts.dst_box.height = sub_h;
+        wlr_render_pass_add_texture(pass, &opts);
+        blitted++;
+    }
+
+    if (blitted == 0) {
+        UtilityFunctions::printerr("waylandgodot: dmabuf: aucune sous-surface avec texture à blitter");
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
 
     if (!wlr_render_pass_submit(pass)) {
         UtilityFunctions::printerr("waylandgodot: dmabuf: render_pass_submit a échoué");
@@ -791,6 +838,14 @@ void WlrCompositor::start_headless() {
     xdg_shell = wlr_xdg_shell_create(display, 3);
     wlr_viewporter_create(display);
     wlr_subcompositor_create(display);
+
+    // Nécessaire pour les clients qui rendent via GPU/dmabuf (ex: Firefox
+    // + WebRender). Sans ce global, ces clients tentent de committer des
+    // buffers dmabuf que le compositeur ne peut pas interpréter -> la
+    // fenêtre se mappe (xdg-shell OK) mais rien n'est jamais affiché.
+    if (!wlr_linux_dmabuf_v1_create_with_renderer(display, 4, renderer)) {
+        UtilityFunctions::printerr("waylandgodot: échec création global linux-dmabuf-v1");
+    }
     seat = wlr_seat_create(display, "seat0");
 
     wlr_data_device_manager_create(display);
@@ -847,6 +902,43 @@ void WlrCompositor::_process(double delta) {
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
         wlr_surface_send_frame_done(ws.toplevel->base->surface, &now);
+    }
+    for (auto &pair : popups) {
+        PopupState &ps = pair.second;
+        if (ps.popup && ps.popup->base && ps.popup->base->surface) {
+            wlr_surface_send_frame_done(ps.popup->base->surface, &now);
+        }
+    }
+
+    // Recapture la fenêtre active à chaque frame : le commit_listener de la
+    // surface racine ne suffit pas pour les clients (Firefox, etc.) dont le
+    // contenu réel vit dans une sous-surface qui committe indépendamment
+    // (souvent en mode désynchronisé) - sans ça l'image reste figée entre
+    // deux commits de la racine, d'où l'effet de lag.
+    if (active_toplevel_id != -1) {
+        WindowState *active = find_window(active_toplevel_id);
+        if (active && capture_surface(active->toplevel->base->surface,
+                active->texture, active->width, active->height)) {
+            emit_signal("window_texture_updated", active->id, active->texture,
+                active->width, active->height);
+        }
+    }
+
+    // Même raison que pour les toplevels : Firefox (et autres clients
+    // WebRender) rend le contenu des popups dans des sous-surfaces qui
+    // committent indépendamment de la surface racine. Le commit_listener
+    // du popup ne se déclenche pas sur ces commits, donc sans recapture
+    // par frame la texture du popup reste vide (alpha=0 → shader discard
+    // → popup totalement transparent).
+    for (auto &pair : popups) {
+        PopupState &ps = pair.second;
+        if (ps.popup && ps.popup->base && ps.popup->base->surface) {
+            if (capture_surface(ps.popup->base->surface,
+                    ps.texture, ps.width, ps.height)) {
+                emit_signal("popup_texture_updated", ps.id, ps.texture,
+                    ps.width, ps.height);
+            }
+        }
     }
 }
 

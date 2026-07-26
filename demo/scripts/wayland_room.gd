@@ -66,6 +66,7 @@ func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	quad.material_override = mat
 
 	var body := StaticBody3D.new()
@@ -170,6 +171,8 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
+	mat.alpha_scissor_threshold = 0.1
 	quad.material_override = mat
 
 	var body := StaticBody3D.new()
@@ -469,9 +472,21 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 		shift -= resize_up_dir * (delta_h_world / 2.0)
 	quad.position = window_start_local_pos + shift
 
-func _unhandled_key_input(event: InputEvent) -> void:
-	if focused_window_id == -1 or not event is InputEventKey or not interact_mode_active:
+func _input(event: InputEvent) -> void:
+	if focused_window_id == -1 or not interact_mode_active:
 		return
-	var key_event := event as InputEventKey
-	compositor.forward_keyboard_key(key_event.physical_keycode, key_event.location, key_event.pressed)
-	get_viewport().set_input_as_handled()
+	
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		var code = key_event.physical_keycode
+		if code == 0:
+			code = key_event.keycode
+			
+		# Correction spécifique pour les chevrons sur clavier AZERTY / ISO
+		if key_event.unicode == 60 or code == 167: # '<' ou touche bizarre associée
+			code = KEY_LESS
+		elif key_event.unicode == 62: # '>'
+			code = KEY_GREATER # ou KEY_LESS selon le mapping evdev si '>' partage la même touche physique avec Shift
+		
+		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+		get_viewport().set_input_as_handled()
