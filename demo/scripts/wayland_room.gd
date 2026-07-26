@@ -376,7 +376,7 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
-	var mesh: QuadMesh = quad.mesh
+	var _mesh: QuadMesh = quad.mesh
 
 	# Delta du viseur (unités monde) projeté sur la même profondeur figée
 	# qu'au moment du grab, puis exprimé dans la base locale du quad.
