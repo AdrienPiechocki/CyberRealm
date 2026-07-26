@@ -9,6 +9,9 @@
 #include <ctime>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <linux/dma-buf.h>
 
 extern "C" {
 #include <wlr/types/wlr_buffer.h>
@@ -22,11 +25,6 @@ using namespace godot;
 
 // ---------------------------------------------------------------------
 // Table de correspondance Key (Godot, physical_keycode) -> evdev keycode
-// (linux/input-event-codes.h). Couverture: lettres, chiffres, touches de
-// contrôle et de navigation courantes. À COMPLÉTER si des touches
-// manquent (pavé numérique détaillé, touches multimédia, etc.) et à
-// VÉRIFIER contre la version de godot-cpp utilisée: les noms des
-// constantes Key ont pu changer entre versions 4.x.
 // ---------------------------------------------------------------------
 static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {(int)Key::KEY_ESCAPE, 1},
@@ -69,10 +67,7 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
 };
 
 // ---------------------------------------------------------------------
-
-// ---------------------------------------------------------------------
 // Impl minimal pour un wlr_keyboard non rattaché à un backend matériel.
-// led_update en no-op: on ne pilote pas de LEDs physiques.
 // ---------------------------------------------------------------------
 static void waylandgodot_keyboard_led_update(wlr_keyboard *keyboard, uint32_t leds) {
     (void)keyboard;
@@ -156,7 +151,354 @@ PopupState *WlrCompositor::find_popup(int id) {
     return it == popups.end() ? nullptr : &it->second;
 }
 
-// --- Callbacks wlroots (C, appelés depuis wl_event_loop_dispatch) -----
+// =====================================================================
+// check_dmabuf_linear_available — Teste si le renderer + allocateur
+// supportent l'export dmabuf avec modifier linéaire.
+// =====================================================================
+
+bool WlrCompositor::check_dmabuf_linear_available() {
+    if (!renderer || !allocator) return false;
+
+    const wlr_drm_format_set *formats =
+        wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+    if (!formats) return false;
+
+    static const uint32_t check[] = {
+        DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888,
+        DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888,
+    };
+
+    for (uint32_t f : check) {
+        const wlr_drm_format *fmt = wlr_drm_format_set_get(formats, f);
+        if (!fmt) continue;
+
+        for (size_t i = 0; i < fmt->len; i++) {
+            if (fmt->modifiers[i] == DRM_FORMAT_MOD_LINEAR ||
+                fmt->modifiers[i] == DRM_FORMAT_MOD_INVALID) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+// =====================================================================
+// capture_surface — dispatch: dmabuf d'abord, fallback CPU ensuite
+// =====================================================================
+
+bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
+    if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h)) {
+        return true;
+    }
+    return capture_surface_pixels(surface, tex, out_w, out_h);
+}
+
+// =====================================================================
+// capture_surface_dmabuf — Rendu GPU + mmap dmabuf
+// =====================================================================
+// Flux:
+//   1. Récupère la texture wlroots de la surface (déjà sur GPU)
+//   2. Crée un buffer offscreen dmabuf (allocateur GBM, renderer EGL/GLES2)
+//   3. Render pass: dessine la texture dans le buffer (GPU, pas de software)
+//   4. Exporte les attributs dmabuf du buffer (fd, stride, format, modifier)
+//   5. Vérifie que le modifier est linéaire (requis pour mmap)
+//   6. mmap le fd → accès direct à la mémoire du buffer
+//   7. Copie les pixels en respectant le stride, avec swizzle BGRA→RGBA
+//      si nécessaire (pas besoin si format = DRM_FORMAT_ABGR8888)
+//   8. munmap + drop buffer
+//   9. Crée/met à jour l'ImageTexture Godot
+//
+// Avantages vs Pixman + readback CPU:
+//   - Rendu GPU (GLES2) au lieu de software rendering (Pixman)
+//   - Accès mémoire direct (mmap) au lieu de wlr_buffer_begin_data_ptr_access
+//   - memcpy par ligne si format ABGR8888 (pas de swizzle par pixel)
+// =====================================================================
+
+bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
+    if (!renderer || !allocator) return false;
+
+    wlr_texture *texture = wlr_surface_get_texture(surface);
+    if (!texture) return false;
+
+    int w = (int)texture->width;
+    int h = (int)texture->height;
+    if (w <= 0 || h <= 0) return false;
+
+    // Formats dmabuf supportés par le renderer. On préfère ABGR8888
+    // (RGBA en mémoire little-endian) pour éviter le swizzle BGRA→RGBA.
+    const wlr_drm_format_set *formats =
+        wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+    if (!formats) {
+        UtilityFunctions::printerr("waylandgodot: renderer ne supporte pas WLR_BUFFER_CAP_DMABUF");
+        return false;
+    }
+
+    // Cherche un format qui supporte le modifier linéaire (requis pour mmap).
+    // On crée un wlr_drm_format avec uniquement DRM_FORMAT_MOD_LINEAR pour
+    // forcer l'allocateur à créer un buffer linéaire (pas tiled).
+    static const uint32_t preferred[] = {
+        DRM_FORMAT_ABGR8888, // RGBA en mémoire → pas de swizzle
+        DRM_FORMAT_XBGR8888, // RGB en mémoire → pas de swizzle
+        DRM_FORMAT_ARGB8888, // BGRA en mémoire → swizzle
+        DRM_FORMAT_XRGB8888, // BGR en mémoire → swizzle
+    };
+
+    wlr_buffer *offscreen = nullptr;
+    uint32_t chosen_format = 0;
+
+    for (uint32_t f : preferred) {
+        const wlr_drm_format *fmt = wlr_drm_format_set_get(formats, f);
+        if (!fmt) continue;
+
+        // Vérifie si LINEAR est dans les modifiers supportés
+        bool linear_ok = false;
+        for (size_t i = 0; i < fmt->len; i++) {
+            if (fmt->modifiers[i] == DRM_FORMAT_MOD_LINEAR ||
+                fmt->modifiers[i] == DRM_FORMAT_MOD_INVALID) {
+                linear_ok = true;
+                break;
+            }
+        }
+        if (!linear_ok) continue;
+
+        // Crée un format avec uniquement le modifier linéaire
+        uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
+        struct wlr_drm_format linear_fmt;
+        linear_fmt.format = f;
+        linear_fmt.modifiers = &linear_mod;
+        linear_fmt.len = 1;
+
+        offscreen = wlr_allocator_create_buffer(allocator, w, h, &linear_fmt);
+        if (offscreen) {
+            chosen_format = f;
+            break;
+        }
+    }
+
+    if (!offscreen) {
+        UtilityFunctions::printerr("waylandgodot: impossible de créer un buffer dmabuf linéaire ",
+            "(le GPU ne supporte peut-être que des formats tiled)");
+        return false;
+    }
+
+    // Render pass: surface → buffer offscreen
+    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, offscreen, nullptr);
+    if (!pass) {
+        UtilityFunctions::printerr("waylandgodot: dmabuf: begin_buffer_pass a échoué");
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    wlr_render_texture_options opts = {};
+    opts.texture = texture;
+    opts.dst_box.x = 0;
+    opts.dst_box.y = 0;
+    opts.dst_box.width = w;
+    opts.dst_box.height = h;
+    wlr_render_pass_add_texture(pass, &opts);
+
+    if (!wlr_render_pass_submit(pass)) {
+        UtilityFunctions::printerr("waylandgodot: dmabuf: render_pass_submit a échoué");
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    // Export dmabuf
+    wlr_dmabuf_attributes attribs = {};
+    if (!wlr_buffer_get_dmabuf(offscreen, &attribs)) {
+        UtilityFunctions::printerr("waylandgodot: dmabuf: wlr_buffer_get_dmabuf a échoué");
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    // Seulement les formats single-plane
+    if (attribs.n_planes != 1) {
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    // mmap nécessite un format linéaire (tiled = données illisibles directement)
+    if (attribs.modifier != DRM_FORMAT_MOD_INVALID &&
+        attribs.modifier != DRM_FORMAT_MOD_LINEAR) {
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    // mmap le dmabuf. L'offset du plan peut ne pas être aligné sur une
+    // page: on aligne vers le bas pour mmap, puis on ajuste le pointeur.
+    long page_size = sysconf(_SC_PAGE_SIZE);
+    off_t plane_offset = (off_t)attribs.offset[0];
+    off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
+    size_t delta = (size_t)(plane_offset - map_offset);
+    size_t map_size = delta + (size_t)attribs.stride[0] * (size_t)h;
+
+    void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
+                          attribs.fd[0], map_offset);
+    if (map_base == MAP_FAILED) {
+        UtilityFunctions::printerr("waylandgodot: dmabuf: mmap a échoué");
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    const uint8_t *src = static_cast<const uint8_t *>(map_base) + delta;
+
+    // Synchronisation CPU/GPU: sans DMA_BUF_IOCTL_SYNC, on peut lire des
+    // données incohérentes (cache GPU non flushé vers la RAM).
+    struct dma_buf_sync sync = {};
+    sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+    ioctl(attribs.fd[0], DMA_BUF_IOCTL_SYNC, &sync);
+
+    // Copie des pixels avec gestion du stride et swizzle si nécessaire
+    PackedByteArray bytes;
+    bytes.resize((int64_t)w * h * 4);
+    uint8_t *dst = bytes.ptrw();
+
+    uint32_t dmabuf_format = attribs.format;
+    uint32_t stride = attribs.stride[0];
+    bool has_alpha = (dmabuf_format == DRM_FORMAT_ABGR8888 ||
+                      dmabuf_format == DRM_FORMAT_ARGB8888);
+
+    if (dmabuf_format == DRM_FORMAT_ABGR8888 ||
+        dmabuf_format == DRM_FORMAT_XBGR8888) {
+        // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
+        for (int y = 0; y < h; y++) {
+            memcpy(dst + (size_t)y * w * 4,
+                   src + (size_t)y * stride,
+                   (size_t)w * 4);
+        }
+        if (!has_alpha) {
+            // Format X (alpha indéfini) → force opaque
+            for (int i = 0; i < w * h; i++) {
+                dst[i * 4 + 3] = 255;
+            }
+        }
+    } else {
+        // BGRA en mémoire → swizzle B↔R par pixel
+        for (int y = 0; y < h; y++) {
+            const uint8_t *row = src + (size_t)y * stride;
+            for (int x = 0; x < w; x++) {
+                dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
+                dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+                dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
+                dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 255;
+            }
+        }
+    }
+
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    ioctl(attribs.fd[0], DMA_BUF_IOCTL_SYNC, &sync);
+
+    munmap(map_base, map_size);
+    wlr_buffer_drop(offscreen);
+
+    // Crée/met à jour l'ImageTexture
+    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
+
+    Ref<ImageTexture> img_tex = Object::cast_to<ImageTexture>(tex.ptr());
+    if (img_tex.is_null() || out_w != w || out_h != h) {
+        img_tex = ImageTexture::create_from_image(img);
+        tex = img_tex;
+    } else {
+        img_tex->update(img);
+    }
+    out_w = w;
+    out_h = h;
+    return true;
+}
+
+// =====================================================================
+// capture_surface_pixels — Fallback CPU (readback via DATA_PTR)
+// =====================================================================
+
+bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
+    wlr_texture *texture = wlr_surface_get_texture(surface);
+    if (!texture) return false;
+
+    int w = (int)texture->width;
+    int h = (int)texture->height;
+    if (w <= 0 || h <= 0) return false;
+
+    const wlr_drm_format_set *formats =
+        wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
+    const wlr_drm_format *fmt = formats ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888) : nullptr;
+    if (!fmt) {
+        UtilityFunctions::printerr("waylandgodot: DRM_FORMAT_ARGB8888 non supporté en lecture CPU par ce renderer");
+        return false;
+    }
+
+    wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, w, h, fmt);
+    if (!offscreen) {
+        UtilityFunctions::printerr("waylandgodot: échec allocation buffer offscreen");
+        return false;
+    }
+
+    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, offscreen, nullptr);
+    if (!pass) {
+        wlr_buffer_drop(offscreen);
+        UtilityFunctions::printerr("waylandgodot: échec begin_buffer_pass");
+        return false;
+    }
+
+    wlr_render_texture_options opts = {};
+    opts.texture = texture;
+    opts.dst_box.x = 0;
+    opts.dst_box.y = 0;
+    opts.dst_box.width = w;
+    opts.dst_box.height = h;
+    wlr_render_pass_add_texture(pass, &opts);
+
+    if (!wlr_render_pass_submit(pass)) {
+        wlr_buffer_drop(offscreen);
+        UtilityFunctions::printerr("waylandgodot: échec render_pass_submit");
+        return false;
+    }
+
+    void *pixels = nullptr;
+    uint32_t px_format = 0;
+    size_t stride = 0;
+    if (!wlr_buffer_begin_data_ptr_access(offscreen, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+            &pixels, &px_format, &stride)) {
+        UtilityFunctions::printerr("waylandgodot: begin_data_ptr_access a échoué sur le buffer offscreen");
+        wlr_buffer_drop(offscreen);
+        return false;
+    }
+
+    PackedByteArray bytes;
+    bytes.resize((int64_t)w * h * 4);
+    uint8_t *dst = bytes.ptrw();
+    const uint8_t *src = static_cast<const uint8_t *>(pixels);
+
+    // DRM_FORMAT_ARGB8888 = BGRA en mémoire (little-endian) → swizzle RGBA
+    for (int y = 0; y < h; y++) {
+        const uint8_t *row = src + (size_t)y * stride;
+        for (int x = 0; x < w; x++) {
+            dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
+            dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+            dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
+            dst[(y * w + x) * 4 + 3] = row[x * 4 + 3]; // A
+        }
+    }
+
+    wlr_buffer_end_data_ptr_access(offscreen);
+    wlr_buffer_drop(offscreen);
+
+    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
+
+    Ref<ImageTexture> img_tex = Object::cast_to<ImageTexture>(tex.ptr());
+    if (img_tex.is_null() || out_w != w || out_h != h) {
+        img_tex = ImageTexture::create_from_image(img);
+        tex = img_tex;
+    } else {
+        img_tex->update(img);
+    }
+    out_w = w;
+    out_h = h;
+    return true;
+}
+
+// =====================================================================
+// Callbacks wlroots
+// =====================================================================
 
 void WlrCompositor::on_keyboard_key(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, keyboard_key_listener);
@@ -172,8 +514,6 @@ void WlrCompositor::on_keyboard_modifiers(wl_listener *listener, void *data) {
 }
 
 void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
-    // container_of manuel: new_toplevel_listener est un membre direct de
-    // WlrCompositor, donc on retrouve l'instance par offset.
     WlrCompositor *self = wl_container_of(listener, self, new_toplevel_listener);
     auto *toplevel = static_cast<wlr_xdg_toplevel *>(data);
 
@@ -195,9 +535,6 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     ws.commit_listener.notify = WlrCompositor::on_surface_commit;
     wl_signal_add(&toplevel->base->surface->events.commit, &ws.commit_listener);
 
-    // Menus/dropdowns créés par ce toplevel (rôle xdg_popup). Pas de
-    // sous-menus imbriqués dans cette version: on n'écoute pas ce même
-    // signal sur les popups eux-mêmes, seulement sur les toplevels.
     ws.new_popup_listener.notify = WlrCompositor::on_new_popup;
     wl_signal_add(&toplevel->base->events.new_popup, &ws.new_popup_listener);
 
@@ -244,24 +581,19 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, commit_listener);
     WlrCompositor *self = ws->owner;
 
-    // Depuis wlroots 0.18, un configure n'est plus envoyé automatiquement
-    // en réponse au commit initial - c'est au compositeur de le détecter
-    // (wlr_xdg_surface.initial_commit) et de le programmer lui-même, à
-    // chaque commit tant que ce n'est pas fait (pas seulement à la
-    // création du toplevel, sinon ça peut arriver trop tôt).
     if (ws->toplevel->base->initial_commit) {
         wlr_xdg_toplevel_set_size(ws->toplevel, 800, 600);
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
-        return; // rien à capturer sur ce commit, juste la négociation initiale
+        return;
     }
 
-    if (!self->capture_surface_pixels(ws->toplevel->base->surface, ws->texture, ws->width, ws->height)) {
+    if (!self->capture_surface(ws->toplevel->base->surface, ws->texture, ws->width, ws->height)) {
         return;
     }
     self->emit_signal("window_texture_updated", ws->id, ws->texture, ws->width, ws->height);
 }
 
-// --- Popups (menus, dropdowns, tooltips...) -------------------------------
+// --- Popups ------------------------------------------------------------
 
 void WlrCompositor::wire_popup(PopupState &ps, wlr_xdg_popup *popup) {
     ps.popup = popup;
@@ -282,7 +614,6 @@ void WlrCompositor::wire_popup(PopupState &ps, wlr_xdg_popup *popup) {
     ps.reposition_listener.notify = WlrCompositor::on_popup_reposition;
     wl_signal_add(&popup->events.reposition, &ps.reposition_listener);
 
-    // Sous-menus créés depuis CE popup (menu qui ouvre un autre menu au survol).
     ps.new_popup_listener.notify = WlrCompositor::on_new_popup_from_popup;
     wl_signal_add(&popup->base->events.new_popup, &ps.new_popup_listener);
 }
@@ -310,7 +641,7 @@ void WlrCompositor::on_new_popup_from_popup(wl_listener *listener, void *data) {
     int id = self->next_popup_id++;
     PopupState &ps = self->popups[id];
     ps.id = id;
-    ps.parent_window_id = parent_ps->parent_window_id; // propage la fenêtre racine
+    ps.parent_window_id = parent_ps->parent_window_id;
     ps.parent_popup_id = parent_ps->id;
     self->wire_popup(ps, popup);
 
@@ -322,9 +653,6 @@ void WlrCompositor::on_popup_map(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, map_listener);
     WlrCompositor *self = ps->owner;
 
-    // Position relative au coin haut-gauche de la géométrie du parent -
-    // c'est au GDScript de la convertir en offset 3D par rapport au quad
-    // parent, en pixels selon la résolution captée du parent.
     wlr_box geo = ps->popup->current.geometry;
     UtilityFunctions::print("waylandgodot: popup_mapped id=", ps->id,
         " parent=", ps->parent_window_id,
@@ -353,7 +681,6 @@ void WlrCompositor::on_popup_reposition(wl_listener *listener, void *data) {
         wlr_xdg_popup_unconstrain_from_box(ps->popup, &constraint_box);
     }
 
-    // Le client attend une réponse configure après reposition().
     wlr_xdg_surface_schedule_configure(ps->popup->base);
 }
 
@@ -376,8 +703,6 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, commit_listener);
     WlrCompositor *self = ps->owner;
 
-    // Même pattern que pour les toplevels (wlroots 0.18): pas de configure
-    // automatique sur le commit initial, à détecter et programmer nous-mêmes.
     if (ps->popup->base->initial_commit) {
         wlr_box constraint_box = {};
         constraint_box.x = 0;
@@ -389,121 +714,20 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
             constraint_box.width = 800;
             constraint_box.height = 600;
         }
-        // La box doit être dans le repère du toplevel parent (0,0 = coin
-        // haut-gauche de sa surface) - sans ça, le positioner du client
-        // peut demander une géométrie absurde (observé: largeurs de
-        // plusieurs milliers de pixels).
         wlr_xdg_popup_unconstrain_from_box(ps->popup, &constraint_box);
         wlr_xdg_surface_schedule_configure(ps->popup->base);
         return;
     }
 
-    if (!self->capture_surface_pixels(ps->popup->base->surface, ps->texture, ps->width, ps->height)) {
+    if (!self->capture_surface(ps->popup->base->surface, ps->texture, ps->width, ps->height)) {
         return;
     }
     self->emit_signal("popup_texture_updated", ps->id, ps->texture, ps->width, ps->height);
 }
 
-// --- Capture texture (partagée fenêtres/popups) ---------------------------
-
-bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<ImageTexture> &tex, int &out_w, int &out_h) {
-    // On ne touche plus au wlr_client_buffer directement (échouait aussi
-    // bien pour du shm importé côté GPU que pour du dmabuf pur - le wrapper
-    // client_buffer n'expose pas d'accès CPU garanti). À la place: on
-    // récupère la texture déjà importée par le renderer, on la dessine dans
-    // un buffer offscreen qu'on alloue nous-mêmes en garantissant
-    // WLR_BUFFER_CAP_DATA_PTR, puis on lit CE buffer-là. Marche pour shm et
-    // dmabuf de la même façon.
-    wlr_texture *texture = wlr_surface_get_texture(surface);
-    if (!texture) {
-        return false; // pas encore de texture importée pour ce commit
-    }
-
-    int w = (int)texture->width;
-    int h = (int)texture->height;
-    if (w <= 0 || h <= 0) {
-        return false;
-    }
-
-    const wlr_drm_format_set *formats =
-        wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
-    const wlr_drm_format *fmt = formats ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888) : nullptr;
-    if (!fmt) {
-        UtilityFunctions::printerr("waylandgodot: DRM_FORMAT_ARGB8888 non supporté en lecture CPU par ce renderer");
-        return false;
-    }
-
-    wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, w, h, fmt);
-    if (!offscreen) {
-        UtilityFunctions::printerr("waylandgodot: échec allocation buffer offscreen");
-        return false;
-    }
-
-    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, offscreen, nullptr);
-    if (!pass) {
-        wlr_buffer_drop(offscreen);
-        UtilityFunctions::printerr("waylandgodot: échec begin_buffer_pass");
-        return false;
-    }
-
-    wlr_render_texture_options opts = {};
-    opts.texture = texture;
-    opts.dst_box.x = 0;
-    opts.dst_box.y = 0;
-    opts.dst_box.width = w;
-    opts.dst_box.height = h;
-    wlr_render_pass_add_texture(pass, &opts);
-
-    if (!wlr_render_pass_submit(pass)) {
-        wlr_buffer_drop(offscreen);
-        UtilityFunctions::printerr("waylandgodot: échec render_pass_submit");
-        return false;
-    }
-
-    void *pixels = nullptr;
-    uint32_t px_format = 0;
-    size_t stride = 0;
-    if (!wlr_buffer_begin_data_ptr_access(offscreen, WLR_BUFFER_DATA_PTR_ACCESS_READ,
-            &pixels, &px_format, &stride)) {
-        UtilityFunctions::printerr("waylandgodot: begin_data_ptr_access a échoué sur le buffer offscreen (pourtant alloué CPU-lisible)");
-        wlr_buffer_drop(offscreen);
-        return false;
-    }
-
-    PackedByteArray bytes;
-    bytes.resize((int64_t)w * h * 4);
-    uint8_t *dst = bytes.ptrw();
-    const uint8_t *src = static_cast<const uint8_t *>(pixels);
-
-    // On respecte le stride réel (peut inclure du padding de ligne).
-    // DRM_FORMAT_ARGB8888 est BGRA en mémoire (little-endian) -> réordonné
-    // en RGBA pour Godot.
-    for (int y = 0; y < h; y++) {
-        const uint8_t *row = src + (size_t)y * stride;
-        for (int x = 0; x < w; x++) {
-            dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
-            dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
-            dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
-            dst[(y * w + x) * 4 + 3] = row[x * 4 + 3]; // A
-        }
-    }
-
-    wlr_buffer_end_data_ptr_access(offscreen);
-    wlr_buffer_drop(offscreen);
-
-    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
-
-    if (tex.is_null() || out_w != w || out_h != h) {
-        tex = ImageTexture::create_from_image(img);
-    } else {
-        tex->update(img);
-    }
-    out_w = w;
-    out_h = h;
-    return true;
-}
-
-// --- Cycle de vie -------------------------------------------------------
+// =====================================================================
+// Cycle de vie
+// =====================================================================
 
 void WlrCompositor::start_headless() {
     display = wl_display_create();
@@ -515,30 +739,41 @@ void WlrCompositor::start_headless() {
         return;
     }
 
-    // Force le renderer logiciel Pixman: garantit des buffers CPU-mappables
-    // de bout en bout. L'allocateur GBM (choisi par défaut si un GPU est
-    // détecté) ne garantit pas ça, ce qui faisait échouer la lecture du
-    // buffer offscreen malgré un rendu réussi. Le pipeline actuel fait de
-    // toute façon un readback CPU à chaque frame (pas de vrai zero-copy
-    // GPU), donc Pixman ne coûte pas grand-chose de plus ici. À revoir si
-    // le passage à un vrai chemin GPU zero-copy est fait un jour.
-    setenv("WLR_RENDERER", "pixman", 0); // 0 = ne pas écraser si déjà positionné par l'utilisateur
-
+    // On essaie d'abord le renderer EGL/GLES2 (rendu GPU + export dmabuf).
+    // Si le dmabuf linéaire n'est pas disponible (GPU tiled-only, pas de GPU),
+    // on bascule vers Pixman (rendu software + readback CPU).
     renderer = wlr_renderer_autocreate(backend);
-    if (!renderer) {
-        UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate a échoué (pas d'EGL/GPU accessible ?) - essayez WLR_RENDERER=pixman en variable d'environnement");
-        return;
-    }
-    wlr_renderer_init_wl_display(renderer, display);
-    allocator = wlr_allocator_autocreate(backend, renderer);
+    if (renderer) {
+        allocator = wlr_allocator_autocreate(backend, renderer);
+        dmabuf_available = check_dmabuf_linear_available();
 
-    // Beaucoup de clients (Qt/KDE en tête, cf. "There are no outputs")
-    // refusent de committer une surface tant qu'aucun wl_output n'existe.
-    // Résolution plausible plutôt que 1x1: du code client (positionnement
-    // des popups chez Qt en particulier) semble utiliser la géométrie de
-    // cet output pour ses calculs de layout même s'il n'est jamais affiché
-    // - 1x1 produisait des tailles de popup aberrantes (des milliers de
-    // pixels), probablement un calcul qui déraille contre un écran nul.
+        if (!dmabuf_available) {
+            UtilityFunctions::print("waylandgodot: dmabuf linéaire non disponible avec le renderer EGL, ",
+                "bascule vers Pixman pour le readback CPU");
+            wlr_allocator_destroy(allocator);
+            wlr_renderer_destroy(renderer);
+            renderer = nullptr;
+            allocator = nullptr;
+        } else {
+            UtilityFunctions::print("waylandgodot: pipeline dmabuf (GPU + mmap) disponible");
+        }
+    }
+
+    if (!renderer) {
+        setenv("WLR_RENDERER", "pixman", 1);
+        renderer = wlr_renderer_autocreate(backend);
+        if (!renderer) {
+            UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate a échoué ",
+                "(même Pixman n'est pas disponible ?)");
+            return;
+        }
+        allocator = wlr_allocator_autocreate(backend, renderer);
+        dmabuf_available = false;
+        UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU)");
+    }
+
+    wlr_renderer_init_wl_display(renderer, display);
+
     wlr_output *fake_output = wlr_headless_add_output(backend, 1920, 1080);
     if (fake_output) {
         wlr_output_state state;
@@ -547,14 +782,6 @@ void WlrCompositor::start_headless() {
         wlr_output_state_set_custom_mode(&state, 1920, 1080, 0);
         wlr_output_commit_state(fake_output, &state);
         wlr_output_state_finish(&state);
-
-        // Sans ça, l'output existe côté backend mais n'est jamais annoncé
-        // aux clients (aucun wl_registry.global "wl_output" reçu) - Qt en
-        // particulier semble s'en servir pour calculer la géométrie
-        // disponible lors du positionnement des popups, et échoue/abandonne
-        // silencieusement sans cette info (observé: positioners avec des
-        // tailles aberrantes, jamais vu avec un vrai compositeur qui expose
-        // son output correctement).
         wlr_output_create_global(fake_output, display);
     } else {
         UtilityFunctions::printerr("waylandgodot: échec création output factice");
@@ -569,20 +796,9 @@ void WlrCompositor::start_headless() {
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
 
-    // Clavier autonome, non rattaché à un wlr_input_device/backend -
-    // uniquement utilisé pour porter la keymap et satisfaire l'API de
-    // wlr_seat_set_keyboard(). wlr_keyboard_init/wlr_keyboard_impl viennent
-    // de wlr/interfaces/wlr_keyboard.h (API "implémenteur", pas
-    // wlr/types/wlr_keyboard.h) - impl fournit un led_update no-op puisqu'on
-    // ne pilote pas de LEDs physiques.
     wlr_keyboard_init(&virtual_keyboard, &waylandgodot_KEYBOARD_IMPL, "waylandgodot-vkbd");
 
     xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    // Layout "fr" explicite: le layout par défaut ("us", utilisé si on
-    // laissait les champs à nullptr sans variables d'env XKB_DEFAULT_*
-    // positionnées) n'a pas de 3e niveau - AltGr n'y produit rien, même en
-    // envoyant le bon code evdev. À changer ici si vous n'êtes pas en
-    // AZERTY (ou remplacer par les variables XKB_DEFAULT_LAYOUT/VARIANT).
     xkb_rule_names rule_names = {
         .rules = nullptr,
         .model = nullptr,
@@ -598,11 +814,6 @@ void WlrCompositor::start_headless() {
     wlr_seat_set_keyboard(seat, &virtual_keyboard);
     wlr_seat_set_capabilities(seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
 
-    // wlr_keyboard_notify_key() (appelé depuis forward_keyboard_key) met à
-    // jour l'état xkb interne de virtual_keyboard et émet ces deux signaux -
-    // sans ce relais vers le seat, le client ne reçoit jamais wl_keyboard.
-    // modifiers et ignore donc les combinaisons (Ctrl+C etc.), même si les
-    // touches individuelles arrivent bien.
     keyboard_key_listener.notify = WlrCompositor::on_keyboard_key;
     wl_signal_add(&virtual_keyboard.events.key, &keyboard_key_listener);
     keyboard_modifiers_listener.notify = WlrCompositor::on_keyboard_modifiers;
@@ -631,11 +842,6 @@ void WlrCompositor::_process(double delta) {
     wl_event_loop_dispatch(event_loop, 0);
     if (display) wl_display_flush_clients(display);
 
-    // Sans ça, un client qui a demandé un frame callback
-    // (wl_surface.frame(), ex. Qt/KDE) reste bloqué en attente
-    // indéfiniment après sa première frame - il a bien traité les
-    // événements entre-temps (input inclus) mais ne redessine jamais.
-    // On débloque toutes les fenêtres mappées à chaque tick Godot.
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     for (auto &pair : windows) {
@@ -666,9 +872,6 @@ void WlrCompositor::forward_pointer_motion(int window_id, double surface_x, doub
 void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y) {
     PopupState *ps = find_popup(popup_id);
     if (!ps) return;
-    // Un popup (menu, dropdown) n'a besoin que du survol/hover pour ses
-    // items - pas de vol de focus clavier ni d'activation xdg_toplevel,
-    // contrairement à un clic sur une fenêtre.
     notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x, surface_y);
 }
 
@@ -685,11 +888,6 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
     wlr_seat_pointer_notify_frame(seat);
 
     if (pressed) {
-        // Le focus clavier wl_seat ne suffit pas pour la plupart des clients
-        // (Konsole/KDE inclus): xdg_shell a sa propre notion de focus via
-        // l'état ACTIVATED envoyé dans le configure du toplevel. Sans ça,
-        // le client peut router les touches correctement en interne mais ne
-        // pas afficher le curseur clignotant ni se comporter comme "actif".
         if (active_toplevel_id != window_id) {
             if (WindowState *prev = find_window(active_toplevel_id)) {
                 wlr_xdg_toplevel_set_activated(prev->toplevel, false);
@@ -738,17 +936,12 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     if (!seat) return;
 
     uint32_t evdev_code;
-    // location 2 = KEY_LOCATION_RIGHT (Godot InputEventKey.location). Le
-    // Alt droit physique partage le même Key::KEY_ALT que le gauche côté
-    // Godot - sans ce cas spécial, AltGr est toujours envoyé comme
-    // KEY_LEFTALT (56), qui n'active jamais le 3e niveau (ISO_Level3_Shift)
-    // défini sur KEY_RIGHTALT (100) dans la keymap.
     if (godot_physical_keycode == (int)Key::KEY_ALT && key_location == 2) {
         evdev_code = 100; // KEY_RIGHTALT / AltGr
     } else {
         auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
         if (it == GODOT_TO_EVDEV.end()) {
-            return; // touche non mappée - compléter GODOT_TO_EVDEV au besoin
+            return;
         }
         evdev_code = it->second;
     }
@@ -756,12 +949,9 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     wlr_keyboard_key_event event = {};
     event.time_msec = get_time_msec();
     event.keycode = evdev_code;
-    event.update_state = true; // met à jour l'xkb_state (et les modifiers) automatiquement
+    event.update_state = true;
     event.state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
 
-    // Met à jour l'état interne de virtual_keyboard et émet events.key /
-    // events.modifiers, relayés vers le seat par les listeners câblés dans
-    // start_headless(). C'est ce qui manquait pour Ctrl+C et consorts.
     wlr_keyboard_notify_key(&virtual_keyboard, &event);
 }
 
@@ -773,17 +963,12 @@ String WlrCompositor::get_wayland_socket_name() const {
 }
 
 void WlrCompositor::launch_app(const String &command) {
-    // Fork/exec simple: le process enfant hérite de WAYLAND_DISPLAY (positionné
-    // dans start_headless), donc le client s'y connecte automatiquement.
-    // Pas de gestion de zombie process ici (pas de waitpid) - à ajouter si le
-    // nombre de lancements devient significatif (SIGCHLD handler ou reap
-    // périodique).
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
         CharString cmd = command.utf8();
         execl("/bin/sh", "sh", "-c", cmd.get_data(), (char *)nullptr);
-        _exit(127); // exec a échoué
+        _exit(127);
     } else if (pid < 0) {
         UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_app");
     }
@@ -793,16 +978,13 @@ void WlrCompositor::set_window_size(int window_id, int width, int height) {
     WindowState *ws = find_window(window_id);
     if (!ws || !ws->toplevel) return;
 
-    // S'assure d'avoir des dimensions valides
     if (width < 50) width = 50;
     if (height < 50) height = 50;
 
-    // Demande au client Wayland de s'adapter à cette nouvelle taille
     wlr_xdg_toplevel_set_size(ws->toplevel, width, height);
     wlr_xdg_surface_schedule_configure(ws->toplevel->base);
 }
 
-// Dans wlr_compositor.cpp (à déclarer aussi dans le .h et _bind_methods)
 void WlrCompositor::set_x11_display(const String &display_name) {
     setenv("DISPLAY", display_name.utf8().get_data(), 1);
 }
