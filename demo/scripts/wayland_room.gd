@@ -257,7 +257,7 @@ func _physics_process(_delta: float) -> void:
 		compositor.forward_pointer_leave()
 		return
 
-	var body: StaticBody3D = hit.collider
+	var body: Node3D = hit.collider
 
 	if body.has_meta("popup_id"):
 		is_in_window = true
