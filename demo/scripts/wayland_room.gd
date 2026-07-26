@@ -29,7 +29,7 @@ var window_start_size := Vector2.ZERO # taille surface (px) au moment du grab
 var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
 
-const BORDER_MARGIN = 10 # en pixels sur la texture, zone de bord = redimensionnement
+const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
 const MIN_SURFACE_SIZE = 100 # px, garde-fou anti-fenêtre-écrasée
 
 func _ready() -> void:
@@ -49,7 +49,7 @@ func spawn_test_client() -> void:
 
 func next_spawn_pos() -> Vector3:
 	var camera := $Player/Camera3D
-	if is_in_window:
+	if is_in_window and focused_window_id >= 0:
 		return camera.global_position - camera.global_basis.z * (3.0 - quads[focused_window_id].global_position.direction_to(camera.global_position).z)
 	else:
 		return camera.global_position - camera.global_basis.z * 3.0
