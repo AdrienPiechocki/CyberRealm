@@ -251,6 +251,10 @@ func _physics_process(delta: float) -> void:
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
+		if Input.is_action_just_pressed("scroll_up"):
+			move_depth += 0.25
+		if Input.is_action_just_pressed("scroll_down"):
+			move_depth -= 0.25
 		_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab"):
 			is_moving = false
