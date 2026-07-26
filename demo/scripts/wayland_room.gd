@@ -146,8 +146,12 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 	mesh.size = Vector2(max(width * _scale.x, 0.01), max(height * _scale.y, 0.01))
 	quad.mesh = mesh
 	# Mémorisé pour qu'un éventuel sous-sous-menu puisse recalculer son
-	# échelle à partir de CE popup plutôt que de la fenêtre racine.
+	# échelle à partir de CE popup plutôt que de la fenêtre racine, et pour
+	# que _on_popup_texture_updated puisse redimensionner le mesh sur la
+	# même base quand le buffer réel (potentiellement plus grand que la
+	# géométrie logique ci-dessus) arrive.
 	quad.set_meta("surface_size", Vector2(width, height))
+	quad.set_meta("px_scale", _scale)
 
 	# (x, y) = coin haut-gauche du popup relatif au coin haut-gauche de la
 	# géométrie du parent immédiat. Le quad parent est centré sur son
@@ -165,9 +169,16 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	quad.material_override = mat
 
-	# Pas de collision pour l'instant: cliquer un item de menu demanderait
-	# de router les coordonnées à travers la hiérarchie popup -> parent,
-	# pas encore géré. Le popup s'affiche mais n'est pas interactif.
+	var body := StaticBody3D.new()
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(mesh.size.x, mesh.size.y, 0.05)
+	col.shape = shape
+	body.add_child(col)
+	body.set_meta("popup_id", id)
+	body.set_meta("surface_size", Vector2(width, height))
+	quad.add_child(body)
+
 	parent_quad.add_child(quad)
 	popup_quads[id] = quad
 
@@ -177,11 +188,30 @@ func _on_popup_unmapped(id: int) -> void:
 			popup_quads[id].queue_free()
 		popup_quads.erase(id)
 
-func _on_popup_texture_updated(id: int, texture: Texture2D, _width: int, _height: int) -> void:
+func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	if not popup_quads.has(id) or not is_instance_valid(popup_quads[id]):
 		return
 	var quad: MeshInstance3D = popup_quads[id]
 	(quad.material_override as StandardMaterial3D).albedo_texture = texture
+
+	# popup_mapped donne la géométrie logique (xdg_surface.set_window_geometry),
+	# utilisée uniquement pour le placement relatif au parent. Le buffer
+	# réellement capturé ici peut être plus grand (marge d'ombre ajoutée par
+	# le client, GTK/Qt notamment) - sans cette resynchronisation, le hover
+	# convertissait les uv avec l'échelle de la géométrie logique au lieu de
+	# celle du buffer affiché, envoyant des coordonnées fausses au client.
+	var mesh: QuadMesh = quad.mesh
+	var old_size := mesh.size
+	var aspect := float(width) / float(max(height, 1))
+	mesh.size = Vector2(old_size.y * aspect, old_size.y) if old_size.y > 0.0 else Vector2(1, 1)
+
+	var body: StaticBody3D = quad.get_child(0)
+	body.set_meta("surface_size", Vector2(width, height))
+	quad.set_meta("surface_size", Vector2(width, height)) # utilisé par un éventuel sous-menu
+
+	var col: CollisionShape3D = body.get_child(0)
+	var shape: BoxShape3D = col.shape
+	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
 
 func _physics_process(_delta: float) -> void:
 	if Input.is_action_just_pressed("launcher") and not interact_mode_active:
@@ -222,14 +252,24 @@ func _physics_process(_delta: float) -> void:
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
 	var hit := space.intersect_ray(params)
 
-	if hit.is_empty() or not hit.collider.has_meta("window_id"):
+	if hit.is_empty():
+		is_in_window = false
+		compositor.forward_pointer_leave()
+		return
+
+	var body: StaticBody3D = hit.collider
+
+	if body.has_meta("popup_id"):
+		is_in_window = true
+		_handle_popup_pointer(body, hit)
+		return
+
+	if not body.has_meta("window_id"):
 		is_in_window = false
 		compositor.forward_pointer_leave()
 		return
 	else:
 		is_in_window = true
-	
-	var body: StaticBody3D = hit.collider
 	var quad: MeshInstance3D = body.get_parent()
 	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
 	var mesh: QuadMesh = quad.mesh
@@ -282,6 +322,27 @@ func _physics_process(_delta: float) -> void:
 		compositor.forward_pointer_axis(wid, 0, -50.0)
 	if Input.is_action_just_pressed("scroll_down"):
 		compositor.forward_pointer_axis(wid, 0, 50.0)
+
+# Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que
+# pour une fenêtre, mais routé vers forward_pointer_motion_popup/
+# forward_pointer_button_popup puisqu'un popup n'a pas de window_id.
+func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary) -> void:
+	var quad: MeshInstance3D = body.get_parent()
+	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
+	var mesh: QuadMesh = quad.mesh
+
+	var local := quad.to_local(hit.position)
+	var uv := Vector2(
+		(local.x / mesh.size.x) + 0.5,
+		0.5 - (local.y / mesh.size.y)
+	)
+	var pid: int = body.get_meta("popup_id")
+	compositor.forward_pointer_motion_popup(pid, uv.x * win_size.x, uv.y * win_size.y)
+
+	if Input.is_action_just_pressed("left_click"):
+		compositor.forward_pointer_button_popup(pid, 0x110, true)
+	if Input.is_action_just_released("left_click"):
+		compositor.forward_pointer_button_popup(pid, 0x110, false)
 
 # Bord touché (marge en pixels de texture) -> "" si le clic est dans le
 # corps de la fenêtre.
@@ -367,5 +428,5 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if focused_window_id == -1 or not event is InputEventKey or not interact_mode_active:
 		return
 	var key_event := event as InputEventKey
-	compositor.forward_keyboard_key(key_event.physical_keycode, key_event.pressed)
+	compositor.forward_keyboard_key(key_event.physical_keycode, key_event.location, key_event.pressed)
 	get_viewport().set_input_as_handled()

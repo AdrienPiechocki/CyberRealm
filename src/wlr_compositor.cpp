@@ -86,12 +86,16 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("start_headless"), &WlrCompositor::start_headless);
     ClassDB::bind_method(D_METHOD("forward_pointer_motion", "window_id", "surface_x", "surface_y"),
         &WlrCompositor::forward_pointer_motion);
+    ClassDB::bind_method(D_METHOD("forward_pointer_motion_popup", "popup_id", "surface_x", "surface_y"),
+        &WlrCompositor::forward_pointer_motion_popup);
     ClassDB::bind_method(D_METHOD("forward_pointer_button", "window_id", "button", "pressed"),
         &WlrCompositor::forward_pointer_button);
+    ClassDB::bind_method(D_METHOD("forward_pointer_button_popup", "popup_id", "button", "pressed"),
+        &WlrCompositor::forward_pointer_button_popup);
     ClassDB::bind_method(D_METHOD("forward_pointer_axis", "window_id", "delta_x", "delta_y"),
         &WlrCompositor::forward_pointer_axis);
     ClassDB::bind_method(D_METHOD("forward_pointer_leave"), &WlrCompositor::forward_pointer_leave);
-    ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "pressed"),
+    ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "key_location", "pressed"),
         &WlrCompositor::forward_keyboard_key);
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
@@ -142,6 +146,11 @@ uint32_t WlrCompositor::get_time_msec() {
 WindowState *WlrCompositor::find_window(int id) {
     auto it = windows.find(id);
     return it == windows.end() ? nullptr : &it->second;
+}
+
+PopupState *WlrCompositor::find_popup(int id) {
+    auto it = popups.find(id);
+    return it == popups.end() ? nullptr : &it->second;
 }
 
 // --- Callbacks wlroots (C, appelés depuis wl_event_loop_dispatch) -----
@@ -564,7 +573,19 @@ void WlrCompositor::start_headless() {
     wlr_keyboard_init(&virtual_keyboard, &waylandgodot_KEYBOARD_IMPL, "waylandgodot-vkbd");
 
     xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    xkb_keymap *keymap = xkb_keymap_new_from_names(ctx, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    // Layout "fr" explicite: le layout par défaut ("us", utilisé si on
+    // laissait les champs à nullptr sans variables d'env XKB_DEFAULT_*
+    // positionnées) n'a pas de 3e niveau - AltGr n'y produit rien, même en
+    // envoyant le bon code evdev. À changer ici si vous n'êtes pas en
+    // AZERTY (ou remplacer par les variables XKB_DEFAULT_LAYOUT/VARIANT).
+    xkb_rule_names rule_names = {
+        .rules = nullptr,
+        .model = nullptr,
+        .layout = "fr",
+        .variant = nullptr,
+        .options = nullptr,
+    };
+    xkb_keymap *keymap = xkb_keymap_new_from_names(ctx, &rule_names, XKB_KEYMAP_COMPILE_NO_FLAGS);
     wlr_keyboard_set_keymap(&virtual_keyboard, keymap);
     xkb_keymap_unref(keymap);
     xkb_context_unref(ctx);
@@ -620,18 +641,30 @@ void WlrCompositor::_process(double delta) {
 
 // --- Input ---------------------------------------------------------------
 
-void WlrCompositor::forward_pointer_motion(int window_id, double surface_x, double surface_y) {
-    WindowState *ws = find_window(window_id);
-    if (!ws || !seat) return;
-    wlr_surface *surface = ws->toplevel->base->surface;
+void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, double surface_x, double surface_y) {
+    if (!surface || !seat) return;
     uint32_t time = get_time_msec();
 
     if (seat->pointer_state.focused_surface != surface) {
-        UtilityFunctions::print("waylandgodot: pointer_notify_enter id=", window_id);
         wlr_seat_pointer_notify_enter(seat, surface, surface_x, surface_y);
     }
     wlr_seat_pointer_notify_motion(seat, time, surface_x, surface_y);
     wlr_seat_pointer_notify_frame(seat);
+}
+
+void WlrCompositor::forward_pointer_motion(int window_id, double surface_x, double surface_y) {
+    WindowState *ws = find_window(window_id);
+    if (!ws) return;
+    notify_pointer_motion_on_surface(ws->toplevel->base->surface, surface_x, surface_y);
+}
+
+void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y) {
+    PopupState *ps = find_popup(popup_id);
+    if (!ps) return;
+    // Un popup (menu, dropdown) n'a besoin que du survol/hover pour ses
+    // items - pas de vol de focus clavier ni d'activation xdg_toplevel,
+    // contrairement à un clic sur une fenêtre.
+    notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x, surface_y);
 }
 
 void WlrCompositor::forward_pointer_button(int window_id, int button, bool pressed) {
@@ -667,6 +700,15 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
     }
 }
 
+void WlrCompositor::forward_pointer_button_popup(int popup_id, int button, bool pressed) {
+    PopupState *ps = find_popup(popup_id);
+    if (!ps || !seat) return;
+
+    wlr_seat_pointer_notify_button(seat, get_time_msec(), (uint32_t)button,
+        pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(seat);
+}
+
 void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double delta_y) {
     WindowState *ws = find_window(window_id);
     if (!ws || !seat) return;
@@ -687,16 +729,28 @@ void WlrCompositor::forward_pointer_leave() {
     wlr_seat_pointer_notify_clear_focus(seat);
 }
 
-void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, bool pressed) {
+void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed) {
     if (!seat) return;
-    auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
-    if (it == GODOT_TO_EVDEV.end()) {
-        return; // touche non mappée - compléter GODOT_TO_EVDEV au besoin
+
+    uint32_t evdev_code;
+    // location 2 = KEY_LOCATION_RIGHT (Godot InputEventKey.location). Le
+    // Alt droit physique partage le même Key::KEY_ALT que le gauche côté
+    // Godot - sans ce cas spécial, AltGr est toujours envoyé comme
+    // KEY_LEFTALT (56), qui n'active jamais le 3e niveau (ISO_Level3_Shift)
+    // défini sur KEY_RIGHTALT (100) dans la keymap.
+    if (godot_physical_keycode == (int)Key::KEY_ALT && key_location == 2) {
+        evdev_code = 100; // KEY_RIGHTALT / AltGr
+    } else {
+        auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
+        if (it == GODOT_TO_EVDEV.end()) {
+            return; // touche non mappée - compléter GODOT_TO_EVDEV au besoin
+        }
+        evdev_code = it->second;
     }
 
     wlr_keyboard_key_event event = {};
     event.time_msec = get_time_msec();
-    event.keycode = it->second;
+    event.keycode = evdev_code;
     event.update_state = true; // met à jour l'xkb_state (et les modifiers) automatiquement
     event.state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
 

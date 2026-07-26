@@ -131,7 +131,11 @@ class WlrCompositor : public Node {
     bool capture_surface_pixels(wlr_surface *surface, Ref<ImageTexture> &tex, int &out_w, int &out_h);
 
     WindowState *find_window(int id);
+    PopupState *find_popup(int id);
     uint32_t get_time_msec();
+
+    // Enter+motion+frame, commun aux fenêtres et aux popups.
+    void notify_pointer_motion_on_surface(wlr_surface *surface, double surface_x, double surface_y);
     
     // Permet de forcer la taille d'une fenêtre depuis Godot (lors d'un redimensionnement à la souris)
     void set_window_size(int window_id, int width, int height);
@@ -153,10 +157,12 @@ public:
 
     // --- Input, appelé depuis GDScript après un raycast ---
     void forward_pointer_motion(int window_id, double surface_x, double surface_y);
+    void forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y);
     void forward_pointer_button(int window_id, int button, bool pressed);
+    void forward_pointer_button_popup(int popup_id, int button, bool pressed);
     void forward_pointer_axis(int window_id, double delta_x, double delta_y);
     void forward_pointer_leave();
-    void forward_keyboard_key(int godot_physical_keycode, bool pressed);
+    void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
 
     // --- Utilitaires exposés à GDScript ---
     String get_wayland_socket_name() const;
