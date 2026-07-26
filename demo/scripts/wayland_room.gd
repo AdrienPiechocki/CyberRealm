@@ -186,9 +186,9 @@ func _physics_process(_delta: float) -> void:
 
 	if hit.is_empty() or not hit.collider.has_meta("window_id"):
 		#if hit.is_empty():
-			#print("PlasmaCraft debug: raycast à vide - rien touché depuis ", from, " direction ", -cam.global_transform.basis.z)
+			#print("WaylandGodot debug: raycast à vide - rien touché depuis ", from, " direction ", -cam.global_transform.basis.z)
 		#else:
-			#print("PlasmaCraft debug: raycast a touché ", hit.collider.name, " (pas une fenêtre)")
+			#print("WaylandGodot debug: raycast a touché ", hit.collider.name, " (pas une fenêtre)")
 		compositor.forward_pointer_leave()
 		return
 
@@ -206,14 +206,14 @@ func _physics_process(_delta: float) -> void:
 	compositor.forward_pointer_motion(wid, uv.x * win_size.x, uv.y * win_size.y)
 
 	if Input.is_action_just_pressed("left_click"):
-		#print("PlasmaCraft debug: clic forwardé vers fenêtre id=", wid, " uv=", uv)
+		#print("WaylandGodot debug: clic forwardé vers fenêtre id=", wid, " uv=", uv)
 		focused_window_id = wid
 		compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
 	if Input.is_action_just_released("left_click"):
 		compositor.forward_pointer_button(wid, 0x110, false)
 
 	if Input.is_action_just_pressed("right_click"):
-		#print("PlasmaCraft debug: clic droit forwardé vers fenêtre id=", wid)
+		#print("WaylandGodot debug: clic droit forwardé vers fenêtre id=", wid)
 		focused_window_id = wid
 		compositor.forward_pointer_button(wid, 0x111, true)
 	if Input.is_action_just_released("right_click"):
@@ -228,7 +228,7 @@ func _unhandled_key_input(event: InputEvent) -> void:
 	if focused_window_id == -1 or not event is InputEventKey or not interact_mode_active:
 		return
 	var key_event := event as InputEventKey
-	#print("PlasmaCraft debug: touche reçue physical_keycode=", key_event.physical_keycode, " pressed=", key_event.pressed, " -> fenêtre id=", focused_window_id)
+	#print("WaylandGodot debug: touche reçue physical_keycode=", key_event.physical_keycode, " pressed=", key_event.pressed, " -> fenêtre id=", focused_window_id)
 	compositor.forward_keyboard_key(key_event.physical_keycode, key_event.pressed)
 	get_viewport().set_input_as_handled()
 
