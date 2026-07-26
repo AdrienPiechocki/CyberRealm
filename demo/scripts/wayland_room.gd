@@ -213,7 +213,7 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	var shape: BoxShape3D = col.shape
 	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("launcher") and not interact_mode_active:
 		spawn_test_client()
 
@@ -234,7 +234,7 @@ func _physics_process(_delta: float) -> void:
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
-		_update_move(ray_origin, ray_dir)
+		_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab"):
 			is_moving = false
 			active_window_id = -1
@@ -364,13 +364,19 @@ func _border_edge(uv: Vector2, win_size: Vector2) -> String:
 # (distance capturée au moment du grab) - fonctionne même si la souris ne
 # se déplace jamais à l'écran (mode capturé), puisque seule l'orientation
 # de la caméra entre ici en jeu.
-func _update_move(ray_origin: Vector3, ray_dir: Vector3) -> void:
+func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
 	var cam: Camera3D = $Player/Camera3D
-	quad.global_position = ray_origin + ray_dir * move_depth
-	quad.global_transform = Transform3D(cam.global_transform.basis, quad.global_position)
+	var target_pos = ray_origin + ray_dir * move_depth
+	# Déplacement fluide
+	quad.global_position = quad.global_position.lerp(
+		target_pos,
+		10.0 * delta
+	)
+	# Rotation
+	quad.global_basis = cam.global_basis
 
 func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
