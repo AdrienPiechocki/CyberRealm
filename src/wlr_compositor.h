@@ -4,10 +4,13 @@
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
+#include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include <unordered_map>
+
+#include "vulkan_dmauf.h"
 
 extern "C" {
 #include <wayland-server-core.h>
@@ -49,12 +52,30 @@ struct CaptureCache {
     uint32_t format = 0;
     int width = 0;
     int height = 0;
+    // Taille RÉELLE allouée pour offscreen/map_base (>= width/height,
+    // arrondie au palier CAPTURE_SIZE_STEP). Tant que width/height restent
+    // sous cette capacité, on ne touche ni à l'allocateur GPU, ni à
+    // l'export dmabuf, ni à mmap - seul le render pass + la copie CPU se
+    // refont. Sans ça, un resize continu (drag de bordure) déclenche
+    // alloc/export/mmap à chaque frame, ce qui est la cause principale des
+    // chutes de FPS pendant un resize.
+    int alloc_width = 0;
+    int alloc_height = 0;
     PackedByteArray bytes; // tampon CPU réutilisé (évite un malloc/frame)
+
+    // --- Vulkan zero-copy DMA-BUF import ------------------------------
+    // Ces champs sont utilisés lorsque le pipeline GPU Vulkan est actif.
+    // Le RID et la Texture2DRD remplacent le ImageTexture classique : pas
+    // de mmap, pas de memcpy — la texture est directement un VkImage GPU.
+    RID vulkan_rid;
+    Ref<Texture2DRD> rd_texture;
+    VkImage vk_image = VK_NULL_HANDLE;
+    VkDeviceMemory vk_memory = VK_NULL_HANDLE;
 
     // Démappe et libère le buffer courant, remet le cache à zéro. Appelé
     // avant de recréer un buffer à une nouvelle taille, et depuis le
-    // destructeur.
-    void reset();
+    // destructeur.  Si vulkan_rid est valide, elle est libérée via `rd`.
+    void reset(RenderingDevice *rd = nullptr);
     ~CaptureCache();
 };
 
@@ -134,6 +155,10 @@ class WlrCompositor : public Node {
     std::unordered_map<int, PopupState> popups;
     int next_popup_id = 1;
 
+    // Compteur de frames pour throttler la recapture "de sécurité" des
+    // popups dans _process (voir commentaire dans _process).
+    uint64_t frame_counter = 0;
+
     static void on_new_toplevel(wl_listener *listener, void *data);
     static void on_toplevel_map(wl_listener *listener, void *data);
     static void on_toplevel_unmap(wl_listener *listener, void *data);
@@ -156,6 +181,15 @@ class WlrCompositor : public Node {
     // appels (un par fenêtre/popup) pour éviter de recréer le buffer
     // offscreen et son mapping à chaque frame.
     bool capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
+
+    // Chemin Vulkan zero-copy: rendu GPU (EGL) vers buffer offscreen
+    // dmabuf, puis import du fd dans le Vulkan de Godot via
+    // VK_KHR_external_memory_fd → RID → Texture2DRD. Aucun mmap, aucun
+    // memcpy CPU : la texture est directement un VkImage échantillonné
+    // par le shader. Le buffer offscreen est conservé dans `cache` d'une
+    // frame à l'autre ; seuls le render pass GPU et l'attente de
+    // synchronisation se refont à chaque appel.
+    bool capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
     // Chemin dmabuf: rendu GPU (GLES2) vers buffer offscreen dmabuf,
     // puis mmap du fd pour accès direct à la mémoire. Évite le readback
@@ -185,6 +219,10 @@ class WlrCompositor : public Node {
     bool check_dmabuf_linear_available();
 
     bool dmabuf_available = false;
+
+    // --- Vulkan zero-copy DMA-BUF pipeline ----------------------------
+    VulkanDmaBufImport vulkan_import;
+    bool gpu_pipeline_active = false;
 
 protected:
     static void _bind_methods();

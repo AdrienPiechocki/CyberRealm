@@ -128,11 +128,13 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 	var quad: MeshInstance3D = quads[id]
 	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
 
-	# Garde le ratio d'aspect réel de la fenêtre.
+	# Garde le ratio d'aspect réel de la fenêtre. Utilise la hauteur
+	# courante du mesh (pas un hardcoded 3.0) pour éviter un saut de
+	# taille après un resize où la hauteur a été interpolée.
 	var aspect := float(width) / float(max(height, 1))
-	var h := 3.0 # hauteur du quad dans le monde 3D (mètres) - ajustez selon l'échelle de votre scène
 	var mesh: QuadMesh = quad.mesh
-	mesh.size = Vector2(h * aspect, h)
+	var current_h: float = mesh.size.y if mesh.size.y > 0.0 else 3.0
+	mesh.size = Vector2(current_h * aspect, current_h)
 
 	var body: StaticBody3D = quad.get_child(0)
 	body.set_meta("surface_size", Vector2(width, height))
@@ -512,7 +514,7 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
-	var _mesh: QuadMesh = quad.mesh
+	var mesh: QuadMesh = quad.mesh
 
 	# Delta du viseur (unités monde) projeté sur la même profondeur figée
 	# qu'au moment du grab, puis exprimé dans la base locale du quad.
@@ -543,21 +545,34 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 
 	compositor.set_window_size(active_window_id, int(new_w), int(new_h))
 
-	# Repositionne tout de suite le bord fixe pour un retour visuel fluide;
-	# le ratio/la taille définitifs du quad arrivent via
-	# window_texture_updated une fois que le client a recommité à la
-	# nouvelle taille.
-	var delta_w_world := (new_w - window_start_size.x) / px_per_unit_x
-	var delta_h_world := (new_h - window_start_size.y) / px_per_unit_y
+	# Met à jour la taille du mesh ET la position en même temps pour que
+	# le bord fixe reste immobile pendant le drag. Sans cette mise à jour,
+	# seul le position changeait → le bord "fixe" dérivait car le mesh
+	# gardait l'ancienne taille (causant le tearing visible pendant le
+	# resize).
+	var new_mesh_w: float = window_start_mesh_size.x * (new_w / max(window_start_size.x, 1.0))
+	var new_mesh_h: float = window_start_mesh_size.y * (new_h / max(window_start_size.y, 1.0))
+	mesh.size = Vector2(new_mesh_w, new_mesh_h)
+
+	# La CollisionShape3D doit suivre la même taille que le mesh.
+	var body: StaticBody3D = quad.get_child(0)
+	var col: CollisionShape3D = body.get_child(0)
+	var shape: BoxShape3D = col.shape
+	shape.size = Vector3(new_mesh_w, new_mesh_h, shape.size.z)
+
+	# Repositionne le bord fixe: le shift compense exactement la moitié
+	# du delta taille, de sorte que le bord opposé ne bouge pas.
+	var delta_w_world: float = (new_mesh_w - window_start_mesh_size.x) / 2.0
+	var delta_h_world: float = (new_mesh_h - window_start_mesh_size.y) / 2.0
 	var shift := Vector3.ZERO
 	if "left" in resizing_edge:
-		shift -= resize_right_dir * (delta_w_world / 2.0)
+		shift -= resize_right_dir * delta_w_world
 	elif "right" in resizing_edge:
-		shift += resize_right_dir * (delta_w_world / 2.0)
+		shift += resize_right_dir * delta_w_world
 	if "top" in resizing_edge:
-		shift += resize_up_dir * (delta_h_world / 2.0)
+		shift += resize_up_dir * delta_h_world
 	elif "bottom" in resizing_edge:
-		shift -= resize_up_dir * (delta_h_world / 2.0)
+		shift -= resize_up_dir * delta_h_world
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:

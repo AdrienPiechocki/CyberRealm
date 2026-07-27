@@ -2,6 +2,7 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -137,6 +138,19 @@ void WlrCompositor::_bind_methods() {
 WlrCompositor::WlrCompositor() {}
 
 WlrCompositor::~WlrCompositor() {
+    // Libérer les ressources Vulkan tant que RenderingDevice est encore
+    // valide (avant que les maps windows/popups ne détruisent les
+    // CaptureCache via leurs destructeurs).
+    RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+    for (auto &pair : windows) {
+        pair.second.capture_cache.reset(rd);
+    }
+    for (auto &pair : popups) {
+        pair.second.capture_cache.reset(rd);
+    }
+    vulkan_import.flush_pending();
+    vulkan_import.cleanup();
+
     if (display) {
         wl_display_destroy_clients(display);
         wl_display_destroy(display);
@@ -194,7 +208,17 @@ bool WlrCompositor::check_dmabuf_linear_available() {
 // CaptureCache — libération du buffer/mapping mis en cache
 // =====================================================================
 
-void CaptureCache::reset() {
+void CaptureCache::reset(RenderingDevice *rd) {
+    // Libérer les ressources Vulkan AVANT le wlr_buffer : le RID
+    // wrappe un VkImageView qui référence le VkImage, lequel est backing
+    // par le même fd DMA-BUF que le wlr_buffer.  Tant que le RID existe,
+    // Godot peut encore interroger le VkImage.
+    if (vulkan_rid.is_valid() && rd) {
+        rd->free_rid(vulkan_rid);
+        vulkan_rid = RID();
+    }
+    rd_texture.unref();
+
     if (map_base && map_base != MAP_FAILED) {
         munmap(map_base, map_size);
     }
@@ -210,6 +234,18 @@ void CaptureCache::reset() {
     }
     width = 0;
     height = 0;
+    alloc_width = 0;
+    alloc_height = 0;
+}
+
+// Arrondit une dimension au palier supérieur pour l'allocation du buffer
+// offscreen. Évite de réallouer le buffer GPU/dmabuf à chaque frame
+// pendant un resize continu (drag de bordure) - tant que la nouvelle
+// taille tient dans le palier déjà alloué, on réutilise le buffer existant
+// et on ne rend/copie que la sous-région w x h réellement utile.
+static inline int round_up_capture_size(int v) {
+    static constexpr int CAPTURE_SIZE_STEP = 64;
+    return (v + CAPTURE_SIZE_STEP - 1) / CAPTURE_SIZE_STEP * CAPTURE_SIZE_STEP;
 }
 
 CaptureCache::~CaptureCache() {
@@ -221,9 +257,16 @@ CaptureCache::~CaptureCache() {
 // =====================================================================
 
 bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
+    // Essayer d'abord le chemin Vulkan zero-copy (GPU→GPU, pas de CPU readback).
+    if (gpu_pipeline_active && dmabuf_available &&
+        capture_surface_vulkan(surface, tex, out_w, out_h, cache)) {
+        return true;
+    }
+    // Fallback : dmabuf + mmap CPU readback.
     if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h, cache)) {
         return true;
     }
+    // Dernier recours : Pixman (rendu logiciel, buffer en RAM).
     return capture_surface_pixels(surface, tex, out_w, out_h, cache);
 }
 
@@ -272,8 +315,17 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     // wlr_allocator_create_buffer / wlr_buffer_get_dmabuf / mmap - ce sont
     // ces appels (alloc GPU, export dmabuf, syscall mmap) qui coûtaient le
     // plus cher à refaire à chaque frame.
-    if (!cache.offscreen || cache.width != w || cache.height != h) {
-        cache.reset();
+    // Réallocation seulement si aucun buffer n'existe encore, ou si la
+    // taille demandée dépasse la capacité déjà allouée (cache.alloc_*).
+    // Un simple changement de w/h qui tient toujours dans le buffer courant
+    // (cas typique d'un drag de resize, où la taille varie en continu)
+    // réutilise le buffer tel quel - seuls le render pass et la copie CPU,
+    // limités à w x h, se refont.
+    if (!cache.offscreen || w > cache.alloc_width || h > cache.alloc_height) {
+        cache.reset(RenderingServer::get_singleton()->get_rendering_device());
+
+        int alloc_w = round_up_capture_size(w);
+        int alloc_h = round_up_capture_size(h);
 
         // Formats dmabuf supportés par le renderer. On préfère ABGR8888
         // (RGBA en mémoire little-endian) pour éviter le swizzle BGRA→RGBA.
@@ -313,12 +365,12 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
             if (!linear_ok) continue;
 
             uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
-            struct wlr_drm_format linear_fmt;
+            struct wlr_drm_format linear_fmt = {};
             linear_fmt.format = f;
             linear_fmt.modifiers = &linear_mod;
             linear_fmt.len = 1;
 
-            offscreen = wlr_allocator_create_buffer(allocator, w, h, &linear_fmt);
+            offscreen = wlr_allocator_create_buffer(allocator, alloc_w, alloc_h, &linear_fmt);
             if (offscreen) {
                 chosen_format = f;
                 break;
@@ -359,7 +411,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         off_t plane_offset = (off_t)attribs.offset[0];
         off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
         size_t map_delta = (size_t)(plane_offset - map_offset);
-        size_t map_size = map_delta + (size_t)attribs.stride[0] * (size_t)h;
+        size_t map_size = map_delta + (size_t)attribs.stride[0] * (size_t)alloc_h;
 
         void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
                               attribs.fd[0], map_offset);
@@ -376,8 +428,15 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         cache.dma_fd = attribs.fd[0];
         cache.stride = attribs.stride[0];
         cache.format = attribs.format;
-        cache.width = w;
-        cache.height = h;
+        cache.alloc_width = alloc_w;
+        cache.alloc_height = alloc_h;
+    }
+    // La taille logique (w, h) et le tampon CPU tightly-packed se
+    // mettent à jour à chaque appel, même quand le buffer GPU/dmabuf est
+    // réutilisé tel quel (resize qui reste sous la capacité allouée).
+    cache.width = w;
+    cache.height = h;
+    if (cache.bytes.size() != (int64_t)w * h * 4) {
         cache.bytes.resize((int64_t)w * h * 4);
     }
 
@@ -432,16 +491,22 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         return false;
     }
 
+    timespec t_render_start, t_render_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_render_start);
     if (!wlr_render_pass_submit(pass)) {
         UtilityFunctions::printerr("waylandgodot: dmabuf: render_pass_submit a échoué");
         return false;
     }
+    clock_gettime(CLOCK_MONOTONIC, &t_render_end);
 
     // Synchronisation CPU/GPU: sans DMA_BUF_IOCTL_SYNC, on peut lire des
     // données incohérentes (cache GPU non flushé vers la RAM).
+    timespec t_sync1_start, t_sync1_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_sync1_start);
     struct dma_buf_sync sync = {};
     sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
     ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    clock_gettime(CLOCK_MONOTONIC, &t_sync1_end);
 
     // Copie des pixels avec gestion du stride et swizzle si nécessaire,
     // dans le tampon CPU réutilisé (cache.bytes, pas de realloc/frame).
@@ -456,6 +521,8 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         geo = xdg_surface->current.geometry;
     }
 
+    timespec t_copy_start, t_copy_end, t_opacity_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
     if (cache.format == DRM_FORMAT_ABGR8888 ||
         cache.format == DRM_FORMAT_XBGR8888) {
         // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
@@ -464,6 +531,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
                 cache.data + (size_t)y * cache.stride,
                 (size_t)w * 4);
         }
+        clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
         // Appliquer l'opacité uniquement dans la zone de contenu
         apply_content_opacity(dst, w, h, geo);
     } else {
@@ -477,14 +545,21 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
                 dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 0; // Alpha (transparence par défaut)
             }
         }
+        clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
         // Appliquer l'opacité uniquement dans la zone de contenu
         apply_content_opacity(dst, w, h, geo);
     }
+    clock_gettime(CLOCK_MONOTONIC, &t_opacity_end);
 
+    timespec t_sync2_start, t_sync2_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_sync2_start);
     sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
     ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    clock_gettime(CLOCK_MONOTONIC, &t_sync2_end);
 
     // Crée/met à jour l'ImageTexture
+    timespec t_tex_start, t_tex_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_tex_start);
     Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, cache.bytes);
 
     Ref<ImageTexture> img_tex = Object::cast_to<ImageTexture>(tex.ptr());
@@ -494,6 +569,220 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     } else {
         img_tex->update(img);
     }
+    clock_gettime(CLOCK_MONOTONIC, &t_tex_end);
+
+    auto ms = [](const timespec &a, const timespec &b) {
+        return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+    };
+    double d_render = ms(t_render_start, t_render_end);
+    double d_sync1 = ms(t_sync1_start, t_sync1_end);
+    double d_memcpy = ms(t_copy_start, t_copy_end);
+    double d_opacity = ms(t_copy_end, t_opacity_end);
+    double d_sync2 = ms(t_sync2_start, t_sync2_end);
+    double d_tex = ms(t_tex_start, t_tex_end);
+    double d_total = d_render + d_sync1 + d_memcpy + d_opacity + d_sync2 + d_tex;
+    if (d_total > 2.0) { // ne log que les captures qui coûtent réellement
+        UtilityFunctions::print("waylandgodot: capture ", w, "x", h,
+            " render=", d_render, "ms sync_start=", d_sync1,
+            "ms memcpy=", d_memcpy, "ms opacity=", d_opacity,
+            "ms sync_end=", d_sync2,
+            "ms tex_upload=", d_tex, "ms TOTAL=", d_total, "ms");
+    }
+    out_w = w;
+    out_h = h;
+    return true;
+}
+
+// =====================================================================
+// capture_surface_vulkan — Zero-copy GPU→GPU via Vulkan DMA-BUF import
+// =====================================================================
+// Flux:
+//   1. Récupère la texture wlroots de la surface (déjà sur GPU)
+//   2. Crée un buffer offscreen dmabuf (allocateur GBM, renderer EGL/GLES2)
+//   3. Render pass: dessine la surface + sous-surfaces dans le buffer
+//   4. Exporte les attributs dmabuf du buffer (fd, stride, format)
+//   5. Importe le fd dans le Vulkan de Godot via VK_KHR_external_memory_fd
+//      → VkImage + VkDeviceMemory
+//   6. Enveloppe le VkImage dans un RID via texture_create_from_extension,
+//      puis dans une Texture2DRD (sous-classe de Texture2D)
+//
+// Le buffer offscreen est conservé dans `cache` d'une frame à l'autre.
+// Tant que la taille ne change pas, le même VkImage est réutilisé : le
+// render pass GPU écrit dans le DMA-BUF, et le VkImage reflète ces
+// changements automatiquement (même mémoire physique).
+// =====================================================================
+
+bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
+    if (!renderer || !allocator || !gpu_pipeline_active) return false;
+
+    wlr_texture *root_texture = wlr_surface_get_texture(surface);
+
+    int w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
+    int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
+    if (w <= 0 || h <= 0) return false;
+
+    // ---- (Re)création du buffer offscreen + import Vulkan -------------
+    // Réallouer quand la taille diffère (pas seulement quand elle
+    // augmente). Si on réutilise un buffer plus grand pour un contenu
+    // plus petit, le VkImage couvre la zone hors contenu → Godot
+    // échantillonne des pixels obsolètes → tearing lors du scale-down.
+    if (!cache.offscreen || w != cache.alloc_width || h != cache.alloc_height) {
+        // On crée les NOUVELLES ressources AVANT de libérer les anciennes
+        // pour éviter un frame sans texture (causerait tearing/lacune visuelle).
+
+        int alloc_w = w;
+        int alloc_h = h;
+
+        // Chercher un format dmabuf linéaire.
+        const wlr_drm_format_set *formats =
+            wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+        if (!formats) return false;
+
+        static const uint32_t preferred[] = {
+            DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888,
+            DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888,
+        };
+
+        wlr_buffer *offscreen = nullptr;
+        uint32_t chosen_format = 0;
+
+        for (uint32_t f : preferred) {
+            const wlr_drm_format *fmt = wlr_drm_format_set_get(formats, f);
+            if (!fmt) continue;
+
+            bool linear_ok = false;
+            for (size_t i = 0; i < fmt->len; i++) {
+                if (fmt->modifiers[i] == DRM_FORMAT_MOD_LINEAR ||
+                    fmt->modifiers[i] == DRM_FORMAT_MOD_INVALID) {
+                    linear_ok = true;
+                    break;
+                }
+            }
+            if (!linear_ok) continue;
+
+            uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
+            struct wlr_drm_format linear_fmt = {};
+            linear_fmt.format = f;
+            linear_fmt.modifiers = &linear_mod;
+            linear_fmt.len = 1;
+
+            wlr_buffer *buf = wlr_allocator_create_buffer(allocator, alloc_w, alloc_h, &linear_fmt);
+            if (buf) {
+                offscreen = buf;
+                chosen_format = f;
+                break;
+            }
+        }
+
+        if (!offscreen) return false;
+
+        // Export dmabuf
+        wlr_dmabuf_attributes attribs = {};
+        if (!wlr_buffer_get_dmabuf(offscreen, &attribs) || attribs.n_planes != 1) {
+            wlr_buffer_drop(offscreen);
+            offscreen = nullptr;
+            return false;
+        }
+
+        // Import dans le Vulkan de Godot
+        VulkanDmaBufTexture vt = vulkan_import.import_dma_buf(
+            attribs.fd[0], alloc_w, alloc_h, chosen_format);
+
+        if (vt.vk_image == VK_NULL_HANDLE) {
+            wlr_buffer_drop(offscreen);
+            offscreen = nullptr;
+            return false;
+        }
+
+        // NOUVELLES ressources prêtes — maintenant on peut libérer les
+        // anciennes sans laisser un frame sans texture.
+        VulkanDmaBufTexture old_vt = {cache.vulkan_rid, cache.rd_texture,
+                                       cache.vk_image, cache.vk_memory};
+        wlr_buffer *old_offscreen = cache.offscreen;
+
+        cache.offscreen = offscreen;
+        cache.alloc_width = alloc_w;
+        cache.alloc_height = alloc_h;
+        cache.vulkan_rid = vt.rid;
+        cache.rd_texture = vt.texture;
+        cache.vk_image = vt.vk_image;
+        cache.vk_memory = vt.vk_memory;
+        cache.format = chosen_format;
+        cache.dma_fd = attribs.fd[0];
+
+        // Libérer les anciennes ressources (détruit VkImage, VkDeviceMemory,
+        // RID, et wlr_buffer). vkDeviceWaitIdle est appelé dedans pour
+        // sérialiser avec le rendering thread de Godot.
+        if (old_vt.vk_image != VK_NULL_HANDLE) {
+            vulkan_import.release_texture(old_vt);
+        }
+        if (old_offscreen) {
+            wlr_buffer_drop(old_offscreen);
+        }
+        // NOTE: on ne PAS appeler cache.reset() ici car vulkan_rid et
+        // offscreen pointent maintenant vers les nouvelles ressources.
+        // Les anciennes ont été libérées ci-dessus.
+    }
+
+    cache.width = w;
+    cache.height = h;
+
+    // ---- Render pass: racine + sous-surfaces → buffer offscreen --------
+    struct SubSurfaceInstance {
+        wlr_surface *surface;
+        int sx, sy;
+    };
+    std::vector<SubSurfaceInstance> instances;
+
+    wlr_surface_for_each_surface(surface,
+        +[](wlr_surface *sub, int sx, int sy, void *data) {
+            auto *out = static_cast<std::vector<SubSurfaceInstance> *>(data);
+            out->push_back({sub, sx, sy});
+        }, &instances);
+
+    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
+    if (!pass) return false;
+
+    int blitted = 0;
+    for (auto &inst : instances) {
+        wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
+        if (!sub_texture) continue;
+
+        int sub_w = inst.surface->current.width > 0
+            ? inst.surface->current.width : (int)sub_texture->width;
+        int sub_h = inst.surface->current.height > 0
+            ? inst.surface->current.height : (int)sub_texture->height;
+
+        wlr_render_texture_options opts = {};
+        opts.texture = sub_texture;
+        opts.dst_box.x = inst.sx;
+        opts.dst_box.y = inst.sy;
+        opts.dst_box.width = sub_w;
+        opts.dst_box.height = sub_h;
+        wlr_render_pass_add_texture(pass, &opts);
+        blitted++;
+    }
+
+    if (blitted == 0) {
+        wlr_render_pass_submit(pass);
+        return false;
+    }
+
+    if (!wlr_render_pass_submit(pass)) return false;
+
+    // Attendre que le render pass EGL/GLES2 soit terminé sur le GPU
+    // avant que Godot n'échantillonne le VkImage (backed par le même
+    // DMA-BUF). Sans cette synchronisation, le render pass peut encore
+    // écrire dans le buffer au moment où Godot le lit → tearing.
+    if (cache.dma_fd >= 0) {
+        struct dma_buf_sync sync = {};
+        sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    }
+
+    tex = cache.rd_texture;
     out_w = w;
     out_h = h;
     return true;
@@ -511,11 +800,15 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     int h = (int)texture->height;
     if (w <= 0 || h <= 0) return false;
 
-    // Recrée le buffer offscreen seulement si la taille a changé (ou
-    // premier appel), comme pour le chemin dmabuf - évite un
-    // wlr_allocator_create_buffer par frame.
-    if (!cache.offscreen || cache.width != w || cache.height != h) {
-        cache.reset();
+    // Recrée le buffer offscreen seulement si la capacité déjà allouée est
+    // dépassée (voir round_up_capture_size / commentaire dans le chemin
+    // dmabuf) - un resize continu qui reste sous cette capacité réutilise
+    // le buffer existant, seul le render pass à w x h se refait.
+    if (!cache.offscreen || w > cache.alloc_width || h > cache.alloc_height) {
+        cache.reset(RenderingServer::get_singleton()->get_rendering_device());
+
+        int alloc_w = round_up_capture_size(w);
+        int alloc_h = round_up_capture_size(h);
 
         const wlr_drm_format_set *formats =
             wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
@@ -525,15 +818,19 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
             return false;
         }
 
-        wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, w, h, fmt);
+        wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, alloc_w, alloc_h, fmt);
         if (!offscreen) {
             UtilityFunctions::printerr("waylandgodot: échec allocation buffer offscreen");
             return false;
         }
 
         cache.offscreen = offscreen;
-        cache.width = w;
-        cache.height = h;
+        cache.alloc_width = alloc_w;
+        cache.alloc_height = alloc_h;
+    }
+    cache.width = w;
+    cache.height = h;
+    if (cache.bytes.size() != (int64_t)w * h * 4) {
         cache.bytes.resize((int64_t)w * h * 4);
     }
 
@@ -551,10 +848,13 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     opts.dst_box.height = h;
     wlr_render_pass_add_texture(pass, &opts);
 
+    timespec t_render_start, t_render_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_render_start);
     if (!wlr_render_pass_submit(pass)) {
         UtilityFunctions::printerr("waylandgodot: échec render_pass_submit");
         return false;
     }
+    clock_gettime(CLOCK_MONOTONIC, &t_render_end);
 
     // begin/end_data_ptr_access encadre juste l'accès mémoire (pas de
     // syscall coûteux pour un buffer Pixman, déjà en RAM) - se refait donc
@@ -578,6 +878,8 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         geo = xdg_surface->current.geometry;
     }
 
+    timespec t_copy_start, t_copy_end, t_opacity_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
     // DRM_FORMAT_ARGB8888 = BGRA en mémoire (little-endian) → swizzle RGBA
     for (int y = 0; y < h; y++) {
         const uint8_t *row = src + (size_t)y * stride;
@@ -588,12 +890,16 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
             dst[(y * w + x) * 4 + 3] = 0; // Alpha initialisé à 0 (transparent)
         }
     }
+    clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
 
     // Appliquer l'opacité uniquement dans la zone de contenu
     apply_content_opacity(dst, w, h, geo);
+    clock_gettime(CLOCK_MONOTONIC, &t_opacity_end);
 
     wlr_buffer_end_data_ptr_access(cache.offscreen);
 
+    timespec t_tex_start, t_tex_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_tex_start);
     Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, cache.bytes);
 
     Ref<ImageTexture> img_tex = Object::cast_to<ImageTexture>(tex.ptr());
@@ -602,6 +908,22 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         tex = img_tex;
     } else {
         img_tex->update(img);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t_tex_end);
+
+    auto ms = [](const timespec &a, const timespec &b) {
+        return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+    };
+    double d_render = ms(t_render_start, t_render_end);
+    double d_memcpy = ms(t_copy_start, t_copy_end);
+    double d_opacity = ms(t_copy_end, t_opacity_end);
+    double d_tex = ms(t_tex_start, t_tex_end);
+    double d_total = d_render + d_memcpy + d_opacity + d_tex;
+    if (d_total > 2.0) {
+        UtilityFunctions::print("waylandgodot: [CPU_READBACK] capture ", w, "x", h,
+            " render=", d_render, "ms memcpy=", d_memcpy,
+            "ms opacity=", d_opacity, "ms tex_upload=", d_tex,
+            "ms TOTAL=", d_total, "ms");
     }
     out_w = w;
     out_h = h;
@@ -851,27 +1173,11 @@ void WlrCompositor::start_headless() {
         return;
     }
 
-    // On essaie d'abord le renderer EGL/GLES2 (rendu GPU + export dmabuf).
-    // Si le dmabuf linéaire n'est pas disponible (GPU tiled-only, pas de GPU),
-    // on bascule vers Pixman (rendu software + readback CPU).
-    renderer = wlr_renderer_autocreate(backend);
-    if (renderer) {
-        allocator = wlr_allocator_autocreate(backend, renderer);
-        dmabuf_available = check_dmabuf_linear_available();
-
-        if (!dmabuf_available) {
-            UtilityFunctions::print("waylandgodot: dmabuf linéaire non disponible avec le renderer EGL, ",
-                "bascule vers Pixman pour le readback CPU");
-            wlr_allocator_destroy(allocator);
-            wlr_renderer_destroy(renderer);
-            renderer = nullptr;
-            allocator = nullptr;
-        } else {
-            UtilityFunctions::print("waylandgodot: pipeline dmabuf (GPU + mmap) disponible");
-        }
-    }
-
-    if (!renderer) {
+    // Désormais, le pipeline Vulkan zero-copy importe les DMA-BUF
+    // directement comme VkImage — pas de readback CPU. Le renderer GPU
+    // (GLES2/GBM) est donc préféré car il active DMA-BUF, nécessaire pour
+    // l'import Vulkan. Pixman n'est que le fallback si le GPU indisponible.
+    if (getenv("WAYLANDGODOT_FORCE_PIXMAN")) {
         setenv("WLR_RENDERER", "pixman", 1);
         renderer = wlr_renderer_autocreate(backend);
         if (!renderer) {
@@ -881,10 +1187,62 @@ void WlrCompositor::start_headless() {
         }
         allocator = wlr_allocator_autocreate(backend, renderer);
         dmabuf_available = false;
-        UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU)");
+        UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU, forcé)");
+    }
+
+    // Try GPU renderer first — enables DMA-BUF + Vulkan zero-copy.
+    if (!renderer) {
+        renderer = wlr_renderer_autocreate(backend);
+        if (renderer) {
+            allocator = wlr_allocator_autocreate(backend, renderer);
+            if (check_dmabuf_linear_available()) {
+                dmabuf_available = true;
+                UtilityFunctions::print("waylandgodot: renderer GPU (GLES2/GBM), ",
+                    "dmabuf linéaire disponible");
+            } else {
+                UtilityFunctions::print("waylandgodot: renderer GPU créé mais ",
+                    "dmabuf linéaire indisponible");
+            }
+        }
+    }
+
+    // Fallback: Pixman (rendu logiciel, pas de DMA-BUF)
+    if (!renderer || (!dmabuf_available && !getenv("WAYLANDGODOT_FORCE_PIXMAN"))) {
+        if (renderer) {
+            wlr_allocator_destroy(allocator);
+            wlr_renderer_destroy(renderer);
+            renderer = nullptr;
+            allocator = nullptr;
+        }
+        setenv("WLR_RENDERER", "pixman", 1);
+        renderer = wlr_renderer_autocreate(backend);
+        if (!renderer) {
+            UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate a échoué ",
+                "(même Pixman n'est pas disponible ?)");
+            return;
+        }
+        allocator = wlr_allocator_autocreate(backend, renderer);
+        dmabuf_available = false;
+        UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU, fallback)");
     }
 
     wlr_renderer_init_wl_display(renderer, display);
+
+    // --- Initialiser le pipeline Vulkan zero-copy si possible ---------
+    //     Si VK_KHR_external_memory_fd est supporté par le pilote GPU,
+    //     on pourra importer les DMA-BUF directement comme VkImage dans
+    //     le RenderingDevice de Godot, sans passer par le mmap + copie CPU.
+    if (dmabuf_available) {
+        RenderingDevice *vrd = RenderingServer::get_singleton()->get_rendering_device();
+        if (vulkan_import.initialize(vrd)) {
+            gpu_pipeline_active = true;
+            UtilityFunctions::print("waylandgodot: pipeline Vulkan zero-copy actif "
+                "(DMA-BUF → VkImage → Texture2DRD)");
+        } else {
+            UtilityFunctions::print("waylandgodot: Vulkan DMA-BUF import indisponible, "
+                "utilisation du fallback mmap CPU");
+        }
+    }
 
     wlr_output *fake_output = wlr_headless_add_output(backend, 1920, 1080);
     if (fake_output) {
@@ -959,6 +1317,13 @@ void WlrCompositor::start_headless() {
 
 void WlrCompositor::_process(double delta) {
     if (!event_loop) return;
+
+    // Flush deferred Vulkan releases from last frame BEFORE dispatching
+    // new events (which may trigger new captures).
+    if (gpu_pipeline_active) {
+        vulkan_import.flush_pending();
+    }
+
     wl_event_loop_dispatch(event_loop, 0);
     if (display) wl_display_flush_clients(display);
 
@@ -989,18 +1354,28 @@ void WlrCompositor::_process(double delta) {
         }
     }
 
-    // Recapture des popups à chaque frame : Firefox rend le contenu des
-    // popups dans des sous-surfaces qui committent indépendamment de la
-    // surface racine. Le commit_listener du popup ne se déclenche pas sur
-    // ces commits, donc sans recapture par frame la texture reste vide
-    // (alpha=0 -> shader discard -> popup totalement transparent).
-    for (auto &pair : popups) {
-        PopupState &ps = pair.second;
-        if (ps.popup && ps.popup->base && ps.popup->base->surface) {
-            if (capture_surface(ps.popup->base->surface,
-                    ps.texture, ps.width, ps.height, ps.capture_cache)) {
-                emit_signal("popup_texture_updated", ps.id, ps.texture,
-                    ps.width, ps.height);
+    // Recapture des popups à chaque frame (throttlé à 1 frame sur 2) :
+    // Firefox rend le contenu des popups dans des sous-surfaces qui
+    // committent indépendamment de la surface racine. Le commit_listener
+    // du popup ne se déclenche pas sur ces commits, donc sans recapture
+    // périodique la texture reste vide (alpha=0 -> shader discard -> popup
+    // totalement transparent). Le contenu d'un popup (menu, dropdown,
+    // tooltip) n'a pas besoin de suivre à 60Hz : recapturer à ~30Hz divise
+    // par deux le coût (render pass + sync GPU + copie CPU + reupload
+    // texture) de chaque popup ouvert, sans lag perceptible. Un popup
+    // reste par ailleurs recapturé immédiatement sur son propre commit via
+    // on_popup_commit, cette boucle n'est qu'un filet de sécurité pour les
+    // sous-surfaces désynchronisées.
+    frame_counter++;
+    if ((frame_counter & 1) == 0) {
+        for (auto &pair : popups) {
+            PopupState &ps = pair.second;
+            if (ps.popup && ps.popup->base && ps.popup->base->surface) {
+                if (capture_surface(ps.popup->base->surface,
+                        ps.texture, ps.width, ps.height, ps.capture_cache)) {
+                    emit_signal("popup_texture_updated", ps.id, ps.texture,
+                        ps.width, ps.height);
+                }
             }
         }
     }
