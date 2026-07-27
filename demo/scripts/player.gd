@@ -33,7 +33,7 @@ func _physics_process(delta):
 		$UI/Label.text = "Keyboard Capture : ON"
 
 func _input(event):
-	if event.is_action_pressed("ui_cancel"):
+	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
 		if $LauncherLayer/LauncherMenu.visible:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE

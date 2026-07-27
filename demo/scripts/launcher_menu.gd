@@ -11,17 +11,30 @@ const CATEGORY_ORDER := [
 	"Network", "Office", "Settings", "System", "Utility"
 ]
 
+const TERMINAL_WRAPPERS := ["konsole", "alacritty", "kitty", "xterm"]
+
 var all_apps: Array[Dictionary] = []
 var category_headers: Dictionary = {} # category_label -> Label node
 var category_buttons: Dictionary = {} # category_label -> Array[Button]
 var category_expanded: Dictionary = {} # category_label -> bool
+var terminal_emulator: String = ""
 
 func _ready() -> void:
 	visible = false
+	_detect_terminal()
 	_load_desktop_files()
 	search_input.text_changed.connect(_on_search_changed)
 	_build_ui()
 	_apply_styling()
+
+func _detect_terminal() -> void:
+	for term in TERMINAL_WRAPPERS:
+		var output: Array = []
+		OS.execute("which", [term], output, true)
+		if output.size() > 0 and output[0].strip_edges() != "":
+			terminal_emulator = term
+			return
+	terminal_emulator = "xterm"
 
 func _apply_styling() -> void:
 	var bg := StyleBoxFlat.new()
@@ -85,9 +98,11 @@ func _parse_desktop_file(path: String) -> Dictionary:
 	if f == null:
 		return {}
 	var in_entry := false
+	@warning_ignore("shadowed_variable_base_class")
 	var name := ""
 	var exec_cmd := ""
 	var no_display := false
+	var is_terminal := false
 	var categories: PackedStringArray = PackedStringArray()
 	while not f.eof_reached():
 		var line := f.get_line().strip_edges()
@@ -106,6 +121,8 @@ func _parse_desktop_file(path: String) -> Dictionary:
 			no_display = true
 		elif line.begins_with("Hidden=true"):
 			no_display = true
+		elif line.begins_with("Terminal=true"):
+			is_terminal = true
 		elif line.begins_with("Categories="):
 			for cat in line.substr(11).split(";", false):
 				var c := cat.strip_edges()
@@ -116,6 +133,13 @@ func _parse_desktop_file(path: String) -> Dictionary:
 		return {}
 	for suffix in ["%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k"]:
 		exec_cmd = exec_cmd.replace(suffix, "").strip_edges()
+	if is_terminal and terminal_emulator != "":
+		@warning_ignore("shadowed_global_identifier")
+		var wrap := terminal_emulator
+		if terminal_emulator == "kitty":
+			wrap += " --single-instance"
+		wrap += " -e"
+		exec_cmd = wrap + " " + exec_cmd
 	return {"name": name, "exec": exec_cmd, "categories": categories}
 
 func _get_primary_category(entry: Dictionary) -> String:
@@ -214,6 +238,7 @@ func _build_ui() -> void:
 
 			var cmd = entry["exec"]
 			btn.pressed.connect(func(): _on_app_clicked(cmd))
+			btn.visible = false
 			app_list.add_child(btn)
 			category_buttons[cat].append(btn)
 
@@ -235,18 +260,16 @@ func _on_search_changed(query: String) -> void:
 	var q := query.to_lower()
 	for cat in category_headers:
 		var header_visible := false
+		var expanded = category_expanded.get(cat, false)
 		for btn in category_buttons[cat]:
-			var match = q == "" or btn.text.strip_edges().to_lower().contains(q)
-			btn.visible = match and category_expanded.get(cat, true)
-			if match:
+			var is_match = q == "" or btn.text.strip_edges().to_lower().contains(q)
+			btn.visible = is_match and (expanded or q != "")
+			if is_match:
 				header_visible = true
 		category_headers[cat].visible = header_visible
 		if not header_visible:
 			for btn in category_buttons[cat]:
 				btn.visible = false
-		elif q != "":
-			for btn in category_buttons[cat]:
-				btn.visible = true
 
 func toggle_menu() -> void:
 	if visible:
