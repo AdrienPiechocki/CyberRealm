@@ -5,6 +5,7 @@
 #include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 
 #include <unordered_map>
 
@@ -166,6 +167,15 @@ public:
 
     String get_wayland_socket_name() const;
     void launch_app(const String &command);
+
+    // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
+    // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
+    Dictionary get_window_geometry(int window_id);
+
+    // Renvoie true si le popup a une région d'input non vide (menus,
+    // dropdowns). Les tooltips ont une région d'input vide et ne doivent
+    // pas intercepter les clics.
+    bool popup_accepts_input(int popup_id);
 };
 
 } // namespace godot

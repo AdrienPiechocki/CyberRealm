@@ -36,6 +36,26 @@ var window_start_local_pos := Vector3.ZERO # position locale du quad au moment d
 const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
 const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 
+const WAYLAND_SHADER_CODE = """
+shader_type spatial;
+render_mode unshaded, blend_mix, cull_disabled;
+
+uniform sampler2D window_texture : filter_linear_mipmap;
+
+void fragment() {
+    vec4 tex = texture(window_texture, UV);
+    if (tex.a > 0.01) {
+        // Restaure la couleur d'origine en dé-multipliant l'alpha
+        vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
+        ALBEDO = pow(unmultiplied, vec3(2.2));
+        // Force l'opacité à être pleine (1.0) pour tout ce qui n'est pas totalement transparent
+        ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
+    } else {
+        discard;
+    }
+}
+"""
+
 func _ready() -> void:
 	compositor.window_mapped.connect(_on_window_mapped)
 	compositor.window_unmapped.connect(_on_window_unmapped)
@@ -63,10 +83,11 @@ func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	mesh.size = Vector2(1.6, 1.0) # ratio ajusté au premier texture_updated
 	quad.mesh = mesh
 
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var shader := Shader.new()
+	shader.code = WAYLAND_SHADER_CODE
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.render_priority = 0
 	quad.material_override = mat
 
 	var body := StaticBody3D.new()
@@ -103,7 +124,7 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 	if not quads.has(id) or not is_instance_valid(quads[id]):
 		return
 	var quad: MeshInstance3D = quads[id]
-	(quad.material_override as StandardMaterial3D).albedo_texture = texture
+	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
 
 	# Garde le ratio d'aspect réel de la fenêtre.
 	var aspect := float(width) / float(max(height, 1))
@@ -113,6 +134,13 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 
 	var body: StaticBody3D = quad.get_child(0)
 	body.set_meta("surface_size", Vector2(width, height))
+
+	# Récupère la géométrie de contenu (sans les ombres CSD) pour que la
+	# détection des bords de redimensionnement se fasse sur le bord visible
+	# du contenu, pas sur le bord de la zone d'ombre transparente.
+	var geo := compositor.get_window_geometry(id)
+	body.set_meta("content_offset", Vector2(geo["x"], geo["y"]))
+	body.set_meta("content_size", Vector2(geo["width"], geo["height"]))
 
 	# La CollisionShape3D doit suivre la même taille que le mesh, sinon le
 	# raycast teste une zone qui ne correspond plus à ce qui est affiché.
@@ -169,21 +197,28 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 		0.02 # léger décalage devant le parent pour éviter le z-fighting
 	)
 
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_SCISSOR
-	mat.alpha_scissor_threshold = 0.1
+	var shader := Shader.new()
+	shader.code = WAYLAND_SHADER_CODE
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.render_priority = 1 # Force l'affichage au-dessus des fenêtres
 	quad.material_override = mat
 
-	var body := StaticBody3D.new()
-	var col := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(mesh.size.x, mesh.size.y, 0.05)
-	col.shape = shape
-	body.add_child(col)
-	body.set_meta("popup_id", id)
-	body.set_meta("surface_size", Vector2(width, height))
-	quad.add_child(body)
+	# Les tooltips ont une région d'input vide: on les affiche mais on ne
+	# crée pas de collision body, pour que le raycast passe au travers et
+	# atteigne la fenêtre/le popup en dessous.
+	if compositor.popup_accepts_input(id):
+		var body := StaticBody3D.new()
+		var col := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(mesh.size.x, mesh.size.y, 0.05)
+		col.shape = shape
+		body.add_child(col)
+		body.set_meta("popup_id", id)
+		body.set_meta("surface_size", Vector2(width, height))
+		quad.add_child(body)
+	else:
+		quad.set_meta("tooltip", true)
 
 	parent_quad.add_child(quad)
 	popup_quads[id] = quad
@@ -198,7 +233,7 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	if not popup_quads.has(id) or not is_instance_valid(popup_quads[id]):
 		return
 	var quad: MeshInstance3D = popup_quads[id]
-	(quad.material_override as StandardMaterial3D).albedo_texture = texture
+	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
 
 	# popup_mapped donne la géométrie logique (xdg_surface.set_window_geometry),
 	# utilisée uniquement pour le placement relatif au parent. Le buffer
@@ -211,13 +246,15 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	var aspect := float(width) / float(max(height, 1))
 	mesh.size = Vector2(old_size.y * aspect, old_size.y) if old_size.y > 0.0 else Vector2(1, 1)
 
-	var body: StaticBody3D = quad.get_child(0)
-	body.set_meta("surface_size", Vector2(width, height))
 	quad.set_meta("surface_size", Vector2(width, height)) # utilisé par un éventuel sous-menu
 
-	var col: CollisionShape3D = body.get_child(0)
-	var shape: BoxShape3D = col.shape
-	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
+	# Les tooltips n'ont pas de collision body (pas d'input region).
+	if quad.get_child_count() > 0:
+		var body: StaticBody3D = quad.get_child(0)
+		body.set_meta("surface_size", Vector2(width, height))
+		var col: CollisionShape3D = body.get_child(0)
+		var shape: BoxShape3D = col.shape
+		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
 
 # La fenêtre glisse le long de son propre plan d'orientation initial.
 func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
@@ -321,7 +358,7 @@ func _physics_process(delta: float) -> void:
 		move_depth = 0.0
 	if Input.is_action_just_pressed("left_click"):
 		focused_window_id = wid
-		var edge := _border_edge(uv, win_size)
+		var edge := _border_edge(uv, win_size, body)
 		if edge != "":
 			# Bord de la fenêtre -> redimensionnement.
 			active_window_id = wid
@@ -388,17 +425,28 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary) -> void:
 
 # Bord touché (marge en pixels de texture) -> "" si le clic est dans le
 # corps de la fenêtre.
-func _border_edge(uv: Vector2, win_size: Vector2) -> String:
-	var px := uv.x * win_size.x
-	var py := uv.y * win_size.y
+func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
+	# Récupère la géométrie de contenu (sans ombres CSD). Si le client n'a
+	# pas défini de géométrie (par ex. application SSD), on retombe sur la
+	# taille complète de la surface.
+	var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	var content_size: Vector2 = body.get_meta("content_size", win_size)
+	if content_size.x <= 0 or content_size.y <= 0:
+		content_offset = Vector2.ZERO
+		content_size = win_size
+	# Convertit les coordonnées UV de la surface vers le repère contenu:
+	# on soustrait l'offset de l'ombre pour que BORDER_MARGIN soit relatif
+	# au bord visible du contenu, pas au bord de l'ombre transparente.
+	var px := uv.x * win_size.x - content_offset.x
+	var py := uv.y * win_size.y - content_offset.y
 	var edge := ""
 	if py < BORDER_MARGIN:
 		edge += "top"
-	elif py > win_size.y - BORDER_MARGIN:
+	elif py > content_size.y - BORDER_MARGIN:
 		edge += "bottom"
 	if px < BORDER_MARGIN:
 		edge += "left"
-	elif px > win_size.x - BORDER_MARGIN:
+	elif px > content_size.x - BORDER_MARGIN:
 		edge += "right"
 	return edge
 

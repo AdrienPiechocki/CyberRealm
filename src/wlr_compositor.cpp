@@ -102,6 +102,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
+    ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
+    ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
     ADD_SIGNAL(MethodInfo("window_mapped",
         PropertyInfo(Variant::INT, "id"),
@@ -222,16 +224,15 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     if (!renderer || !allocator) return false;
 
     wlr_texture *root_texture = wlr_surface_get_texture(surface);
-    // Ne pas retourner false si root_texture est NULL : Firefox (et
-    // d'autres clients WebRender) peut ne committer aucun buffer sur la
-    // surface racine d'un popup, tout le contenu vivant dans des
-    // sous-surfaces. wlr_surface_for_each_surface ci-dessous iterera
-    // quand meme sur les sous-surfaces, qui auront elles une texture.
+    // Ne pas retourner false si root_texture est NULL : Firefox peut ne
+    // committer aucun buffer sur la surface racine d'un popup, tout le
+    // contenu vivant dans des sous-surfaces. wlr_surface_for_each_surface
+    // ci-dessous itérera quand même sur les sous-surfaces.
 
     // Taille LOGIQUE de la surface (surface->current.width/height), pas la
     // taille brute du buffer (texture->width/height). Sur un client HiDPI
     // (buffer_scale > 1), le buffer physique est plus grand que la taille
-    // affichee - melanger les deux donne une image mal mise a l'echelle.
+    // affichée - mélanger les deux donne une image mal mise à l'échelle.
     int w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
     int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     if (w <= 0 || h <= 0) return false;
@@ -924,12 +925,11 @@ void WlrCompositor::_process(double delta) {
         }
     }
 
-    // Même raison que pour les toplevels : Firefox (et autres clients
-    // WebRender) rend le contenu des popups dans des sous-surfaces qui
-    // committent indépendamment de la surface racine. Le commit_listener
-    // du popup ne se déclenche pas sur ces commits, donc sans recapture
-    // par frame la texture du popup reste vide (alpha=0 → shader discard
-    // → popup totalement transparent).
+    // Recapture des popups à chaque frame : Firefox rend le contenu des
+    // popups dans des sous-surfaces qui committent indépendamment de la
+    // surface racine. Le commit_listener du popup ne se déclenche pas sur
+    // ces commits, donc sans recapture par frame la texture reste vide
+    // (alpha=0 -> shader discard -> popup totalement transparent).
     for (auto &pair : popups) {
         PopupState &ps = pair.second;
         if (ps.popup && ps.popup->base && ps.popup->base->surface) {
@@ -1079,4 +1079,35 @@ void WlrCompositor::set_window_size(int window_id, int width, int height) {
 
 void WlrCompositor::set_x11_display(const String &display_name) {
     setenv("DISPLAY", display_name.utf8().get_data(), 1);
+}
+
+Dictionary WlrCompositor::get_window_geometry(int window_id) {
+    Dictionary result;
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel || !ws->toplevel->base) {
+        result["x"] = 0;
+        result["y"] = 0;
+        result["width"] = 0;
+        result["height"] = 0;
+        return result;
+    }
+    // current.geometry = zone de contenu définie par le client via
+    // set_window_geometry. Pour les clients CSD (Firefox, GTK, Qt), c'est
+    // la zone réelle du contenu sans les ombres/décorations transparentes.
+    // x,y = décalage du contenu dans la surface (marge d'ombre).
+    // width,height = taille du contenu (sans ombres).
+    wlr_box geo = ws->toplevel->base->current.geometry;
+    result["x"] = geo.x;
+    result["y"] = geo.y;
+    result["width"] = geo.width;
+    result["height"] = geo.height;
+    return result;
+}
+
+bool WlrCompositor::popup_accepts_input(int popup_id) {
+    PopupState *ps = find_popup(popup_id);
+    if (!ps || !ps->popup || !ps->popup->base || !ps->popup->base->surface) return false;
+    // Les tooltips ont une région d'input vide (wl_surface_set_input_region
+    // avec une region empty). Les menus/dropdowns ont une région non vide.
+    return !pixman_region32_empty(&ps->popup->base->surface->current.input);
 }
