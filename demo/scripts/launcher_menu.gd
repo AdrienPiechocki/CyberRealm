@@ -98,7 +98,6 @@ func _parse_desktop_file(path: String) -> Dictionary:
 	if f == null:
 		return {}
 	var in_entry := false
-	@warning_ignore("shadowed_variable_base_class")
 	var name := ""
 	var exec_cmd := ""
 	var no_display := false
@@ -134,7 +133,6 @@ func _parse_desktop_file(path: String) -> Dictionary:
 	for suffix in ["%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k"]:
 		exec_cmd = exec_cmd.replace(suffix, "").strip_edges()
 	if is_terminal and terminal_emulator != "":
-		@warning_ignore("shadowed_global_identifier")
 		var wrap := terminal_emulator
 		if terminal_emulator == "kitty":
 			wrap += " --single-instance"

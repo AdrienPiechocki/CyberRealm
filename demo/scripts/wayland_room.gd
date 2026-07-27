@@ -44,6 +44,7 @@ const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 var focus_mode := false
 var focus_window_id := -1
 var focus_texture_rect: TextureRect
+var focus_close_button: Button
 var focus_surface_size := Vector2.ZERO
 var focus_content_offset := Vector2.ZERO
 var focus_content_size := Vector2.ZERO
@@ -100,6 +101,21 @@ func _ready() -> void:
 	focus_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	$Player/UI.add_child(focus_texture_rect)
 
+	# Bouton X pour quitter le mode focus
+	focus_close_button = Button.new()
+	focus_close_button.text = "✕"
+	focus_close_button.custom_minimum_size = Vector2(40, 40)
+	focus_close_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	focus_close_button.offset_left = -50
+	focus_close_button.offset_top = 10
+	focus_close_button.offset_right = -10
+	focus_close_button.offset_bottom = 50
+	focus_close_button.z_index = 20
+	focus_close_button.visible = false
+	focus_close_button.pressed.connect(_exit_focus_mode)
+	focus_close_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	$Player/UI.add_child(focus_close_button)
+
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
 
@@ -131,6 +147,7 @@ func _enter_focus_mode(id: int) -> void:
 	# Cacher le quad 3D, afficher le overlay 2D
 	quad.visible = false
 	focus_texture_rect.visible = true
+	focus_close_button.visible = true
 
 	# Libérer la souris pour interagir avec la fenêtre, centrée sur l'écran
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -150,6 +167,7 @@ func _exit_focus_mode() -> void:
 	# Cacher le overlay, libérer la texture
 	focus_texture_rect.visible = false
 	focus_texture_rect.texture = null
+	focus_close_button.visible = false
 	focus_mode = false
 	focus_window_id = -1
 	focus_mouse_captured = false
@@ -166,27 +184,40 @@ func _handle_focus_input() -> void:
 	if focus_mouse_captured:
 		# Maintenir le pointer focus sur la surface (nécessaire pour que
 		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
-		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
-		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		var surf_x := focus_mouse_uv.x * focus_surface_size.x
+		var surf_y := focus_mouse_uv.y * focus_surface_size.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 	else:
 		# Souris visible: position absolue, curseur custom suit la souris
-		var viewport_size := get_viewport().get_visible_rect().size
 		var mouse_pos := get_viewport().get_mouse_position()
-		var tex_size := focus_surface_size
-		if tex_size.x <= 0 or tex_size.y <= 0:
-			tex_size = viewport_size
-		var scale := minf(viewport_size.x / tex_size.x, viewport_size.y / tex_size.y)
-		var displayed_size := tex_size * scale
-		var offset := (viewport_size - displayed_size) / 2.0
-		var local_pos := mouse_pos - offset
-		focus_mouse_uv = Vector2(
-			clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
-			clampf(local_pos.y / displayed_size.y, 0.0, 1.0)
-		)
-		# Déplacer le curseur custom à la position souris
-		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
-		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+
+		# Utiliser la zone réelle affichée par le TextureRect pour le mapping
+		# (plus précis que de recalculer avec focus_surface_size)
+		var tex := focus_texture_rect.texture
+		if tex:
+			var tex_size := tex.get_size()
+			# Rect2 global du TextureRect après layout Godot
+			var tex_rect := focus_texture_rect.get_global_rect()
+			# Taille affichée respectant l'aspect ratio
+			var aspect := tex_size.x / tex_size.y
+			var rect_aspect := tex_rect.size.x / tex_rect.size.y
+			var displayed_size: Vector2
+			if aspect > rect_aspect:
+				displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
+			else:
+				displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
+			var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
+
+			var local_pos := mouse_pos - offset
+			focus_mouse_uv = Vector2(
+				clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
+				clampf(local_pos.y / displayed_size.y, 0.0, 1.0)
+			)
+		else:
+			focus_mouse_uv = Vector2(0.5, 0.5)
+
+		var surf_x := focus_mouse_uv.x * focus_surface_size.x
+		var surf_y := focus_mouse_uv.y * focus_surface_size.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 
 	if Input.is_action_just_pressed("left_click"):
