@@ -271,7 +271,7 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 		# Déplacement fluide uniquement sur les axes X/Y locaux du plan
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
-func _physics_process(delta: float) -> void:
+func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("launcher") and not interact_mode_active:
 		spawn_test_client()
 
