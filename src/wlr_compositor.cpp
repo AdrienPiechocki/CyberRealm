@@ -69,6 +69,7 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {(int)Key::KEY_INSERT, 110}, {(int)Key::KEY_DELETE, 111},
     {(int)Key::KEY_META, 125},
     {(int)Key::KEY_MENU, 139},
+    {(int)Key::KEY_LESS, 86},
 };
 
 // ---------------------------------------------------------------------
