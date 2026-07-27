@@ -34,6 +34,8 @@ var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au momen
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
 
 const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
+const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARGIN
+						  # pour rester cliquable via raycast) = redimensionnement diagonal
 const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 
 const WAYLAND_SHADER_CODE = """
@@ -359,6 +361,20 @@ func _physics_process(delta: float) -> void:
 	if Input.is_action_just_pressed("left_click"):
 		focused_window_id = wid
 		var edge := _border_edge(uv, win_size, body)
+		# Même repère "contenu" (sans ombre CSD) que _border_edge, pour que
+		# la zone de barre de titre corresponde à la vraie barre visible et
+		# pas à l'ombre transparente au-dessus (cas Firefox/GTK qui définit
+		# une window geometry excluant l'ombre, contrairement à Konsole).
+		var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+		var content_size: Vector2 = body.get_meta("content_size", win_size)
+		if content_size.x <= 0 or content_size.y <= 0:
+			content_offset = Vector2.ZERO
+			content_size = win_size
+		var titlebar_px := uv.x * win_size.x - content_offset.x
+		var titlebar_py := uv.y * win_size.y - content_offset.y
+		var in_titlebar := titlebar_py >= 0 and titlebar_py < BORDER_MARGIN * BORDER_MARGIN \
+			and titlebar_px > 75 and titlebar_px < content_size.x - 75
+
 		if edge != "":
 			# Bord de la fenêtre -> redimensionnement.
 			active_window_id = wid
@@ -371,8 +387,8 @@ func _physics_process(delta: float) -> void:
 			window_start_size = win_size
 			window_start_mesh_size = mesh.size
 			window_start_local_pos = quad.position
-		
-		elif uv.y * win_size.y < BORDER_MARGIN * BORDER_MARGIN and not uv.x * win_size.x > win_size.x - 75 and not uv.x * win_size.x < 75:
+
+		elif in_titlebar:
 			# Move on a 2D plane (simulation de barre de titre)
 			active_window_id = wid
 			is_moving_2d = true
@@ -439,6 +455,30 @@ func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
 	# au bord visible du contenu, pas au bord de l'ombre transparente.
 	var px := uv.x * win_size.x - content_offset.x
 	var py := uv.y * win_size.y - content_offset.y
+
+	# Coins du bas: zone carrée large (CORNER_MARGIN), facile à viser via
+	# raycast - aucun risque de conflit, pas de boutons de fenêtre en bas.
+	var near_bottom_wide := py > content_size.y - CORNER_MARGIN
+	var near_left_wide := px < CORNER_MARGIN
+	var near_right_wide := px > content_size.x - CORNER_MARGIN
+	if near_bottom_wide and near_left_wide:
+		return "bottomleft"
+	if near_bottom_wide and near_right_wide:
+		return "bottomright"
+
+	# Coins du haut: zone fine (BORDER_MARGIN), volontairement petite pour ne
+	# pas voler les clics destinés aux boutons fermer/réduire/agrandir, qui
+	# vivent dans cette même région (voir zone reservée 75px plus bas dans
+	# le handler de clic).
+	var near_top := py < BORDER_MARGIN
+	var near_left := px < BORDER_MARGIN
+	var near_right := px > content_size.x - BORDER_MARGIN
+	if near_top and near_left:
+		return "topleft"
+	if near_top and near_right:
+		return "topright"
+
+	# Bords simples: bande fine (BORDER_MARGIN), hors des zones de coin.
 	var edge := ""
 	if py < BORDER_MARGIN:
 		edge += "top"
