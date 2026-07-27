@@ -23,6 +23,7 @@ extern "C" {
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_xdg_shell.h>
 }
 
 using namespace godot;
@@ -189,14 +190,40 @@ bool WlrCompositor::check_dmabuf_linear_available() {
 }
 
 // =====================================================================
+// CaptureCache — libération du buffer/mapping mis en cache
+// =====================================================================
+
+void CaptureCache::reset() {
+    if (map_base && map_base != MAP_FAILED) {
+        munmap(map_base, map_size);
+    }
+    map_base = nullptr;
+    map_size = 0;
+    data = nullptr;
+    dma_fd = -1;
+    stride = 0;
+    format = 0;
+    if (offscreen) {
+        wlr_buffer_drop(offscreen);
+        offscreen = nullptr;
+    }
+    width = 0;
+    height = 0;
+}
+
+CaptureCache::~CaptureCache() {
+    reset();
+}
+
+// =====================================================================
 // capture_surface — dispatch: dmabuf d'abord, fallback CPU ensuite
 // =====================================================================
 
-bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
-    if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h)) {
+bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
+    if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h, cache)) {
         return true;
     }
-    return capture_surface_pixels(surface, tex, out_w, out_h);
+    return capture_surface_pixels(surface, tex, out_w, out_h, cache);
 }
 
 // =====================================================================
@@ -220,7 +247,7 @@ bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, i
 //   - memcpy par ligne si format ABGR8888 (pas de swizzle par pixel)
 // =====================================================================
 
-bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
+bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
     if (!renderer || !allocator) return false;
 
     wlr_texture *root_texture = wlr_surface_get_texture(surface);
@@ -237,85 +264,145 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     if (w <= 0 || h <= 0) return false;
 
-    // Parcourt la surface racine ET ses sous-surfaces (wl_subsurface).
-    // Firefox (entre autres) dessine son contenu WebRender dans une
-    // sous-surface enfant distincte de la surface racine (qui ne porte
-    // que le chrome/CSD) - sans ça, seule la barre de titre est capturée
-    // et le reste reste noir/vide.
+    // ---- (Re)création du buffer offscreen + de son mapping -------------
+    // Seulement si c'est le premier appel ou si la taille a changé. Le
+    // reste du temps on réutilise cache.offscreen (déjà rendu-cible GPU
+    // valide) et cache.data (déjà mmap) sans repasser par
+    // wlr_allocator_create_buffer / wlr_buffer_get_dmabuf / mmap - ce sont
+    // ces appels (alloc GPU, export dmabuf, syscall mmap) qui coûtaient le
+    // plus cher à refaire à chaque frame.
+    if (!cache.offscreen || cache.width != w || cache.height != h) {
+        cache.reset();
+
+        // Formats dmabuf supportés par le renderer. On préfère ABGR8888
+        // (RGBA en mémoire little-endian) pour éviter le swizzle BGRA→RGBA.
+        const wlr_drm_format_set *formats =
+            wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+        if (!formats) {
+            UtilityFunctions::printerr("waylandgodot: renderer ne supporte pas WLR_BUFFER_CAP_DMABUF");
+            return false;
+        }
+
+        // Cherche un format qui supporte le modifier linéaire (requis pour
+        // mmap). On crée un wlr_drm_format avec uniquement
+        // DRM_FORMAT_MOD_LINEAR pour forcer l'allocateur à créer un buffer
+        // linéaire (pas tiled).
+        static const uint32_t preferred[] = {
+            DRM_FORMAT_ABGR8888, // RGBA en mémoire → pas de swizzle
+            DRM_FORMAT_XBGR8888, // RGB en mémoire → pas de swizzle
+            DRM_FORMAT_ARGB8888, // BGRA en mémoire → swizzle
+            DRM_FORMAT_XRGB8888, // BGR en mémoire → swizzle
+        };
+
+        wlr_buffer *offscreen = nullptr;
+        uint32_t chosen_format = 0;
+
+        for (uint32_t f : preferred) {
+            const wlr_drm_format *fmt = wlr_drm_format_set_get(formats, f);
+            if (!fmt) continue;
+
+            bool linear_ok = false;
+            for (size_t i = 0; i < fmt->len; i++) {
+                if (fmt->modifiers[i] == DRM_FORMAT_MOD_LINEAR ||
+                    fmt->modifiers[i] == DRM_FORMAT_MOD_INVALID) {
+                    linear_ok = true;
+                    break;
+                }
+            }
+            if (!linear_ok) continue;
+
+            uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
+            struct wlr_drm_format linear_fmt;
+            linear_fmt.format = f;
+            linear_fmt.modifiers = &linear_mod;
+            linear_fmt.len = 1;
+
+            offscreen = wlr_allocator_create_buffer(allocator, w, h, &linear_fmt);
+            if (offscreen) {
+                chosen_format = f;
+                break;
+            }
+        }
+
+        if (!offscreen) {
+            UtilityFunctions::printerr("waylandgodot: impossible de créer un buffer dmabuf linéaire ",
+                "(le GPU ne supporte peut-être que des formats tiled)");
+            return false;
+        }
+
+        // Export dmabuf
+        wlr_dmabuf_attributes attribs = {};
+        if (!wlr_buffer_get_dmabuf(offscreen, &attribs)) {
+            UtilityFunctions::printerr("waylandgodot: dmabuf: wlr_buffer_get_dmabuf a échoué");
+            wlr_buffer_drop(offscreen);
+            return false;
+        }
+
+        // Seulement les formats single-plane
+        if (attribs.n_planes != 1) {
+            wlr_buffer_drop(offscreen);
+            return false;
+        }
+
+        // mmap nécessite un format linéaire (tiled = données illisibles directement)
+        if (attribs.modifier != DRM_FORMAT_MOD_INVALID &&
+            attribs.modifier != DRM_FORMAT_MOD_LINEAR) {
+            wlr_buffer_drop(offscreen);
+            return false;
+        }
+
+        // mmap le dmabuf, une seule fois, gardé ouvert dans le cache.
+        // L'offset du plan peut ne pas être aligné sur une page: on aligne
+        // vers le bas pour mmap, puis on ajuste le pointeur.
+        long page_size = sysconf(_SC_PAGE_SIZE);
+        off_t plane_offset = (off_t)attribs.offset[0];
+        off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
+        size_t map_delta = (size_t)(plane_offset - map_offset);
+        size_t map_size = map_delta + (size_t)attribs.stride[0] * (size_t)h;
+
+        void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
+                              attribs.fd[0], map_offset);
+        if (map_base == MAP_FAILED) {
+            UtilityFunctions::printerr("waylandgodot: dmabuf: mmap a échoué");
+            wlr_buffer_drop(offscreen);
+            return false;
+        }
+
+        cache.offscreen = offscreen;
+        cache.map_base = map_base;
+        cache.map_size = map_size;
+        cache.data = static_cast<uint8_t *>(map_base) + map_delta;
+        cache.dma_fd = attribs.fd[0];
+        cache.stride = attribs.stride[0];
+        cache.format = attribs.format;
+        cache.width = w;
+        cache.height = h;
+        cache.bytes.resize((int64_t)w * h * 4);
+    }
+
+    // ---- Render pass: racine + sous-surfaces → buffer offscreen --------
+    // C'est la seule partie qui doit obligatoirement se refaire à chaque
+    // frame: le buffer est réutilisé mais son contenu change.
     struct SubSurfaceInstance {
         wlr_surface *surface;
         int sx, sy;
     };
     std::vector<SubSurfaceInstance> instances;
 
+    // Parcourt la surface racine ET ses sous-surfaces (wl_subsurface).
+    // Firefox (entre autres) dessine son contenu WebRender dans une
+    // sous-surface enfant distincte de la surface racine (qui ne porte
+    // que le chrome/CSD) - sans ça, seule la barre de titre est capturée
+    // et le reste reste noir/vide.
     wlr_surface_for_each_surface(surface,
         +[](wlr_surface *sub, int sx, int sy, void *data) {
             auto *out = static_cast<std::vector<SubSurfaceInstance> *>(data);
             out->push_back({sub, sx, sy});
         }, &instances);
 
-    // Formats dmabuf supportés par le renderer. On préfère ABGR8888
-    // (RGBA en mémoire little-endian) pour éviter le swizzle BGRA→RGBA.
-    const wlr_drm_format_set *formats =
-        wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
-    if (!formats) {
-        UtilityFunctions::printerr("waylandgodot: renderer ne supporte pas WLR_BUFFER_CAP_DMABUF");
-        return false;
-    }
-
-    // Cherche un format qui supporte le modifier linéaire (requis pour mmap).
-    // On crée un wlr_drm_format avec uniquement DRM_FORMAT_MOD_LINEAR pour
-    // forcer l'allocateur à créer un buffer linéaire (pas tiled).
-    static const uint32_t preferred[] = {
-        DRM_FORMAT_ABGR8888, // RGBA en mémoire → pas de swizzle
-        DRM_FORMAT_XBGR8888, // RGB en mémoire → pas de swizzle
-        DRM_FORMAT_ARGB8888, // BGRA en mémoire → swizzle
-        DRM_FORMAT_XRGB8888, // BGR en mémoire → swizzle
-    };
-
-    wlr_buffer *offscreen = nullptr;
-    uint32_t chosen_format = 0;
-
-    for (uint32_t f : preferred) {
-        const wlr_drm_format *fmt = wlr_drm_format_set_get(formats, f);
-        if (!fmt) continue;
-
-        // Vérifie si LINEAR est dans les modifiers supportés
-        bool linear_ok = false;
-        for (size_t i = 0; i < fmt->len; i++) {
-            if (fmt->modifiers[i] == DRM_FORMAT_MOD_LINEAR ||
-                fmt->modifiers[i] == DRM_FORMAT_MOD_INVALID) {
-                linear_ok = true;
-                break;
-            }
-        }
-        if (!linear_ok) continue;
-
-        // Crée un format avec uniquement le modifier linéaire
-        uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
-        struct wlr_drm_format linear_fmt;
-        linear_fmt.format = f;
-        linear_fmt.modifiers = &linear_mod;
-        linear_fmt.len = 1;
-
-        offscreen = wlr_allocator_create_buffer(allocator, w, h, &linear_fmt);
-        if (offscreen) {
-            chosen_format = f;
-            break;
-        }
-    }
-
-    if (!offscreen) {
-        UtilityFunctions::printerr("waylandgodot: impossible de créer un buffer dmabuf linéaire ",
-            "(le GPU ne supporte peut-être que des formats tiled)");
-        return false;
-    }
-
-    // Render pass: racine + sous-surfaces → buffer offscreen
-    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, offscreen, nullptr);
+    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) {
         UtilityFunctions::printerr("waylandgodot: dmabuf: begin_buffer_pass a échoué");
-        wlr_buffer_drop(offscreen);
         return false;
     }
 
@@ -341,106 +428,63 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
 
     if (blitted == 0) {
         UtilityFunctions::printerr("waylandgodot: dmabuf: aucune sous-surface avec texture à blitter");
-        wlr_buffer_drop(offscreen);
         return false;
     }
 
     if (!wlr_render_pass_submit(pass)) {
         UtilityFunctions::printerr("waylandgodot: dmabuf: render_pass_submit a échoué");
-        wlr_buffer_drop(offscreen);
         return false;
     }
-
-    // Export dmabuf
-    wlr_dmabuf_attributes attribs = {};
-    if (!wlr_buffer_get_dmabuf(offscreen, &attribs)) {
-        UtilityFunctions::printerr("waylandgodot: dmabuf: wlr_buffer_get_dmabuf a échoué");
-        wlr_buffer_drop(offscreen);
-        return false;
-    }
-
-    // Seulement les formats single-plane
-    if (attribs.n_planes != 1) {
-        wlr_buffer_drop(offscreen);
-        return false;
-    }
-
-    // mmap nécessite un format linéaire (tiled = données illisibles directement)
-    if (attribs.modifier != DRM_FORMAT_MOD_INVALID &&
-        attribs.modifier != DRM_FORMAT_MOD_LINEAR) {
-        wlr_buffer_drop(offscreen);
-        return false;
-    }
-
-    // mmap le dmabuf. L'offset du plan peut ne pas être aligné sur une
-    // page: on aligne vers le bas pour mmap, puis on ajuste le pointeur.
-    long page_size = sysconf(_SC_PAGE_SIZE);
-    off_t plane_offset = (off_t)attribs.offset[0];
-    off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
-    size_t delta = (size_t)(plane_offset - map_offset);
-    size_t map_size = delta + (size_t)attribs.stride[0] * (size_t)h;
-
-    void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
-                          attribs.fd[0], map_offset);
-    if (map_base == MAP_FAILED) {
-        UtilityFunctions::printerr("waylandgodot: dmabuf: mmap a échoué");
-        wlr_buffer_drop(offscreen);
-        return false;
-    }
-
-    const uint8_t *src = static_cast<const uint8_t *>(map_base) + delta;
 
     // Synchronisation CPU/GPU: sans DMA_BUF_IOCTL_SYNC, on peut lire des
     // données incohérentes (cache GPU non flushé vers la RAM).
     struct dma_buf_sync sync = {};
     sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-    ioctl(attribs.fd[0], DMA_BUF_IOCTL_SYNC, &sync);
+    ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
 
-    // Copie des pixels avec gestion du stride et swizzle si nécessaire
-    PackedByteArray bytes;
-    bytes.resize((int64_t)w * h * 4);
-    uint8_t *dst = bytes.ptrw();
+    // Copie des pixels avec gestion du stride et swizzle si nécessaire,
+    // dans le tampon CPU réutilisé (cache.bytes, pas de realloc/frame).
+    uint8_t *dst = cache.bytes.ptrw();
+    bool has_alpha = (cache.format == DRM_FORMAT_ABGR8888 ||
+                    cache.format == DRM_FORMAT_ARGB8888);
 
-    uint32_t dmabuf_format = attribs.format;
-    uint32_t stride = attribs.stride[0];
-    bool has_alpha = (dmabuf_format == DRM_FORMAT_ABGR8888 ||
-                      dmabuf_format == DRM_FORMAT_ARGB8888);
+    // Récupérer la géométrie de la surface (zone de contenu réel)
+    wlr_box geo = {0};
+    wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface);
+    if (xdg_surface) {
+        geo = xdg_surface->current.geometry;
+    }
 
-    if (dmabuf_format == DRM_FORMAT_ABGR8888 ||
-        dmabuf_format == DRM_FORMAT_XBGR8888) {
+    if (cache.format == DRM_FORMAT_ABGR8888 ||
+        cache.format == DRM_FORMAT_XBGR8888) {
         // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
         for (int y = 0; y < h; y++) {
             memcpy(dst + (size_t)y * w * 4,
-                   src + (size_t)y * stride,
-                   (size_t)w * 4);
+                cache.data + (size_t)y * cache.stride,
+                (size_t)w * 4);
         }
-        if (!has_alpha) {
-            // Format X (alpha indéfini) → force opaque
-            for (int i = 0; i < w * h; i++) {
-                dst[i * 4 + 3] = 255;
-            }
-        }
+        // Appliquer l'opacité uniquement dans la zone de contenu
+        apply_content_opacity(dst, w, h, geo);
     } else {
         // BGRA en mémoire → swizzle B↔R par pixel
         for (int y = 0; y < h; y++) {
-            const uint8_t *row = src + (size_t)y * stride;
+            const uint8_t *row = cache.data + (size_t)y * cache.stride;
             for (int x = 0; x < w; x++) {
                 dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
                 dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
                 dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
-                dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 255;
+                dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 0; // Alpha (transparence par défaut)
             }
         }
+        // Appliquer l'opacité uniquement dans la zone de contenu
+        apply_content_opacity(dst, w, h, geo);
     }
 
     sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-    ioctl(attribs.fd[0], DMA_BUF_IOCTL_SYNC, &sync);
-
-    munmap(map_base, map_size);
-    wlr_buffer_drop(offscreen);
+    ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
 
     // Crée/met à jour l'ImageTexture
-    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
+    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, cache.bytes);
 
     Ref<ImageTexture> img_tex = Object::cast_to<ImageTexture>(tex.ptr());
     if (img_tex.is_null() || out_w != w || out_h != h) {
@@ -458,7 +502,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
 // capture_surface_pixels — Fallback CPU (readback via DATA_PTR)
 // =====================================================================
 
-bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h) {
+bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
     wlr_texture *texture = wlr_surface_get_texture(surface);
     if (!texture) return false;
 
@@ -466,23 +510,34 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     int h = (int)texture->height;
     if (w <= 0 || h <= 0) return false;
 
-    const wlr_drm_format_set *formats =
-        wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
-    const wlr_drm_format *fmt = formats ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888) : nullptr;
-    if (!fmt) {
-        UtilityFunctions::printerr("waylandgodot: DRM_FORMAT_ARGB8888 non supporté en lecture CPU par ce renderer");
-        return false;
+    // Recrée le buffer offscreen seulement si la taille a changé (ou
+    // premier appel), comme pour le chemin dmabuf - évite un
+    // wlr_allocator_create_buffer par frame.
+    if (!cache.offscreen || cache.width != w || cache.height != h) {
+        cache.reset();
+
+        const wlr_drm_format_set *formats =
+            wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
+        const wlr_drm_format *fmt = formats ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888) : nullptr;
+        if (!fmt) {
+            UtilityFunctions::printerr("waylandgodot: DRM_FORMAT_ARGB8888 non supporté en lecture CPU par ce renderer");
+            return false;
+        }
+
+        wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, w, h, fmt);
+        if (!offscreen) {
+            UtilityFunctions::printerr("waylandgodot: échec allocation buffer offscreen");
+            return false;
+        }
+
+        cache.offscreen = offscreen;
+        cache.width = w;
+        cache.height = h;
+        cache.bytes.resize((int64_t)w * h * 4);
     }
 
-    wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, w, h, fmt);
-    if (!offscreen) {
-        UtilityFunctions::printerr("waylandgodot: échec allocation buffer offscreen");
-        return false;
-    }
-
-    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, offscreen, nullptr);
+    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) {
-        wlr_buffer_drop(offscreen);
         UtilityFunctions::printerr("waylandgodot: échec begin_buffer_pass");
         return false;
     }
@@ -496,25 +551,31 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     wlr_render_pass_add_texture(pass, &opts);
 
     if (!wlr_render_pass_submit(pass)) {
-        wlr_buffer_drop(offscreen);
         UtilityFunctions::printerr("waylandgodot: échec render_pass_submit");
         return false;
     }
 
+    // begin/end_data_ptr_access encadre juste l'accès mémoire (pas de
+    // syscall coûteux pour un buffer Pixman, déjà en RAM) - se refait donc
+    // chaque frame sans souci, contrairement à l'alloc/mmap dmabuf.
     void *pixels = nullptr;
     uint32_t px_format = 0;
     size_t stride = 0;
-    if (!wlr_buffer_begin_data_ptr_access(offscreen, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+    if (!wlr_buffer_begin_data_ptr_access(cache.offscreen, WLR_BUFFER_DATA_PTR_ACCESS_READ,
             &pixels, &px_format, &stride)) {
         UtilityFunctions::printerr("waylandgodot: begin_data_ptr_access a échoué sur le buffer offscreen");
-        wlr_buffer_drop(offscreen);
         return false;
     }
 
-    PackedByteArray bytes;
-    bytes.resize((int64_t)w * h * 4);
-    uint8_t *dst = bytes.ptrw();
+    uint8_t *dst = cache.bytes.ptrw();
     const uint8_t *src = static_cast<const uint8_t *>(pixels);
+
+    // Récupérer la géométrie de la surface (zone de contenu réel)
+    wlr_box geo = {0};
+    wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface);
+    if (xdg_surface) {
+        geo = xdg_surface->current.geometry;
+    }
 
     // DRM_FORMAT_ARGB8888 = BGRA en mémoire (little-endian) → swizzle RGBA
     for (int y = 0; y < h; y++) {
@@ -523,14 +584,16 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
             dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
             dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
             dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
-            dst[(y * w + x) * 4 + 3] = row[x * 4 + 3]; // A
+            dst[(y * w + x) * 4 + 3] = 0; // Alpha initialisé à 0 (transparent)
         }
     }
 
-    wlr_buffer_end_data_ptr_access(offscreen);
-    wlr_buffer_drop(offscreen);
+    // Appliquer l'opacité uniquement dans la zone de contenu
+    apply_content_opacity(dst, w, h, geo);
 
-    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, bytes);
+    wlr_buffer_end_data_ptr_access(cache.offscreen);
+
+    Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, cache.bytes);
 
     Ref<ImageTexture> img_tex = Object::cast_to<ImageTexture>(tex.ptr());
     if (img_tex.is_null() || out_w != w || out_h != h) {
@@ -630,12 +693,12 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
     WlrCompositor *self = ws->owner;
 
     if (ws->toplevel->base->initial_commit) {
-        wlr_xdg_toplevel_set_size(ws->toplevel, 800, 600);
+        wlr_xdg_toplevel_set_size(ws->toplevel, 1600, 900);
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
         return;
     }
 
-    if (!self->capture_surface(ws->toplevel->base->surface, ws->texture, ws->width, ws->height)) {
+    if (!self->capture_surface(ws->toplevel->base->surface, ws->texture, ws->width, ws->height, ws->capture_cache)) {
         return;
     }
     self->emit_signal("window_texture_updated", ws->id, ws->texture, ws->width, ws->height);
@@ -767,7 +830,7 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
         return;
     }
 
-    if (!self->capture_surface(ps->popup->base->surface, ps->texture, ps->width, ps->height)) {
+    if (!self->capture_surface(ps->popup->base->surface, ps->texture, ps->width, ps->height, ps->capture_cache)) {
         return;
     }
     self->emit_signal("popup_texture_updated", ps->id, ps->texture, ps->width, ps->height);
@@ -919,7 +982,7 @@ void WlrCompositor::_process(double delta) {
     if (active_toplevel_id != -1) {
         WindowState *active = find_window(active_toplevel_id);
         if (active && capture_surface(active->toplevel->base->surface,
-                active->texture, active->width, active->height)) {
+                active->texture, active->width, active->height, active->capture_cache)) {
             emit_signal("window_texture_updated", active->id, active->texture,
                 active->width, active->height);
         }
@@ -934,7 +997,7 @@ void WlrCompositor::_process(double delta) {
         PopupState &ps = pair.second;
         if (ps.popup && ps.popup->base && ps.popup->base->surface) {
             if (capture_surface(ps.popup->base->surface,
-                    ps.texture, ps.width, ps.height)) {
+                    ps.texture, ps.width, ps.height, ps.capture_cache)) {
                 emit_signal("popup_texture_updated", ps.id, ps.texture,
                     ps.width, ps.height);
             }
@@ -1110,4 +1173,21 @@ bool WlrCompositor::popup_accepts_input(int popup_id) {
     // Les tooltips ont une région d'input vide (wl_surface_set_input_region
     // avec une region empty). Les menus/dropdowns ont une région non vide.
     return !pixman_region32_empty(&ps->popup->base->surface->current.input);
+}
+
+// =====================================================================
+// Fonction helper pour appliquer l'opacité uniquement dans la zone de contenu.
+// =====================================================================
+void WlrCompositor::apply_content_opacity(uint8_t *dst, int w, int h, const wlr_box &geo) {
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            bool in_content = (x >= geo.x && x < geo.x + geo.width &&
+                              y >= geo.y && y < geo.y + geo.height);
+            if (in_content) {
+                dst[(y * w + x) * 4 + 3] = 255; // Force opaque dans la zone de contenu
+            } else {
+                dst[(y * w + x) * 4 + 3] = 0; // Transparent en dehors
+            }
+        }
+    }
 }

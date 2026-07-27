@@ -1,12 +1,16 @@
 [gd_scene format=3 uid="uid://dl5med4hn5t14"]
 
 [ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player.gd" id="1_3vyb7"]
+[ext_resource type="Script" uid="uid://dr4qk3clpe7x8" path="res://scripts/fps.gd" id="2_g2els"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
 [sub_resource type="LabelSettings" id="LabelSettings_3vyb7"]
 
 [sub_resource type="LabelSettings" id="LabelSettings_jm82k"]
+font_size = 24
+
+[sub_resource type="LabelSettings" id="LabelSettings_qhqgy"]
 font_size = 24
 
 [node name="Player" type="CharacterBody3D" unique_id=1446411886]
@@ -45,3 +49,13 @@ text = "Keyboard Capture : OFF"
 label_settings = SubResource("LabelSettings_jm82k")
 horizontal_alignment = 1
 vertical_alignment = 1
+
+[node name="FPS" type="Label" parent="UI" unique_id=105167649]
+anchors_preset = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -40.0
+offset_bottom = 34.0
+grow_horizontal = 0
+label_settings = SubResource("LabelSettings_qhqgy")
+script = ExtResource("2_g2els")

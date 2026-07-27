@@ -27,9 +27,36 @@ extern "C" {
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
+#include <wlr/types/wlr_buffer.h>
 }
 
 namespace godot {
+
+// Cache de capture par fenêtre/popup, réutilisé entre les frames pour
+// éviter de recréer le buffer dmabuf, de le ré-exporter et de le re-mmaper
+// à chaque frame - c'est là que se concentre le gros du coût du pipeline
+// de capture CPU readback. Tant que la taille de la surface ne change pas,
+// le buffer et son mapping mémoire persistent; seuls le render pass GPU
+// (contenu qui change) et la copie CPU vers `bytes` se refont à chaque
+// frame.
+struct CaptureCache {
+    wlr_buffer *offscreen = nullptr;
+    void *map_base = nullptr;
+    size_t map_size = 0;
+    uint8_t *data = nullptr; // pointeur mappé, offset delta déjà appliqué
+    int dma_fd = -1;
+    uint32_t stride = 0;
+    uint32_t format = 0;
+    int width = 0;
+    int height = 0;
+    PackedByteArray bytes; // tampon CPU réutilisé (évite un malloc/frame)
+
+    // Démappe et libère le buffer courant, remet le cache à zéro. Appelé
+    // avant de recréer un buffer à une nouvelle taille, et depuis le
+    // destructeur.
+    void reset();
+    ~CaptureCache();
+};
 
 // Un toplevel XDG mappé = une "fenêtre" côté Godot.
 struct WindowState {
@@ -47,6 +74,10 @@ struct WindowState {
     Ref<Texture2D> texture;
     int width = 0;
     int height = 0;
+
+    // Buffer/mapping/tampon CPU réutilisés d'une frame à l'autre pour la
+    // capture (voir CaptureCache).
+    CaptureCache capture_cache;
 
     class WlrCompositor *owner = nullptr;
 };
@@ -67,6 +98,10 @@ struct PopupState {
     Ref<Texture2D> texture;
     int width = 0;
     int height = 0;
+
+    // Buffer/mapping/tampon CPU réutilisés d'une frame à l'autre pour la
+    // capture (voir CaptureCache).
+    CaptureCache capture_cache;
 
     class WlrCompositor *owner = nullptr;
 };
@@ -117,18 +152,23 @@ class WlrCompositor : public Node {
 
     // Tente le chemin dmabuf (GPU render + mmap), puis retombe sur le
     // readback CPU (WLR_BUFFER_CAP_DATA_PTR). Retourne false si aucun
-    // chemin n'a pu capturer la surface.
-    bool capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h);
+    // chemin n'a pu capturer la surface. `cache` persiste entre les
+    // appels (un par fenêtre/popup) pour éviter de recréer le buffer
+    // offscreen et son mapping à chaque frame.
+    bool capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
     // Chemin dmabuf: rendu GPU (GLES2) vers buffer offscreen dmabuf,
     // puis mmap du fd pour accès direct à la mémoire. Évite le readback
     // GL par pixel et le swizzle si le format est ABGR8888 (RGBA mémoire).
-    bool capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h);
+    // Le buffer et son mapping sont conservés dans `cache` d'une frame à
+    // l'autre; seuls le render pass et la copie CPU se refont à chaque appel.
+    bool capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
     // Fallback CPU: rendu offscreen + wlr_buffer_begin_data_ptr_access.
     // Nécessite un allocator qui supporte WLR_BUFFER_CAP_DATA_PTR
-    // (Pixman ou GBM avec option shm).
-    bool capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h);
+    // (Pixman ou GBM avec option shm). Réutilise aussi `cache.offscreen`
+    // et `cache.bytes` d'une frame à l'autre.
+    bool capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
     WindowState *find_window(int id);
     PopupState *find_popup(int id);
@@ -176,6 +216,7 @@ public:
     // dropdowns). Les tooltips ont une région d'input vide et ne doivent
     // pas intercepter les clics.
     bool popup_accepts_input(int popup_id);
+    void apply_content_opacity(uint8_t *dst, int w, int h, const wlr_box &geo);
 };
 
 } // namespace godot
