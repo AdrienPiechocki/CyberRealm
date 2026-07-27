@@ -693,7 +693,7 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
     WlrCompositor *self = ws->owner;
 
     if (ws->toplevel->base->initial_commit) {
-        wlr_xdg_toplevel_set_size(ws->toplevel, 1600, 900);
+        wlr_xdg_toplevel_set_size(ws->toplevel, 1280, 720);
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
         return;
     }
