@@ -14,6 +14,11 @@ func _physics_process(delta):
 	if position.y <= -50:
 		position = Vector3.ZERO
 	velocity.y += -gravity * delta
+	if $LauncherLayer/LauncherMenu.visible:
+		velocity.x = 0
+		velocity.z = 0
+		move_and_slide()
+		return
 	var input = Input.get_vector("left", "right", "forward", "back")
 	var movement_dir = transform.basis * Vector3(input.x, 0, input.y)
 	velocity.x = movement_dir.x * speed
@@ -29,8 +34,12 @@ func _physics_process(delta):
 
 func _input(event):
 	if event.is_action_pressed("ui_cancel"):
+		if $LauncherLayer/LauncherMenu.visible:
+			return
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+		if $LauncherLayer/LauncherMenu.visible:
+			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * mouse_sensitivity)

@@ -2,6 +2,7 @@
 
 [ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player.gd" id="1_3vyb7"]
 [ext_resource type="Script" uid="uid://dr4qk3clpe7x8" path="res://scripts/fps.gd" id="2_g2els"]
+[ext_resource type="Script" uid="uid://dkb4gu57rbebb" path="res://scripts/launcher_menu.gd" id="3_launcher"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -59,3 +60,41 @@ offset_bottom = 34.0
 grow_horizontal = 0
 label_settings = SubResource("LabelSettings_qhqgy")
 script = ExtResource("2_g2els")
+
+[node name="LauncherLayer" type="CanvasLayer" parent="." unique_id=1968881354]
+
+[node name="LauncherMenu" type="PanelContainer" parent="LauncherLayer" unique_id=1041741569]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -250.0
+offset_top = -200.0
+offset_right = 250.0
+offset_bottom = 200.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("3_launcher")
+
+[node name="VBoxContainer" type="VBoxContainer" parent="LauncherLayer/LauncherMenu" unique_id=365386299]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="SearchBar" type="LineEdit" parent="LauncherLayer/LauncherMenu/VBoxContainer" unique_id=1033565985]
+layout_mode = 2
+placeholder_text = "Rechercher une application..."
+clear_button_enabled = true
+
+[node name="HSep" type="HSeparator" parent="LauncherLayer/LauncherMenu/VBoxContainer" unique_id=396179012]
+layout_mode = 2
+
+[node name="AppList" type="ScrollContainer" parent="LauncherLayer/LauncherMenu/VBoxContainer" unique_id=1636769477]
+layout_mode = 2
+size_flags_vertical = 3
+horizontal_scroll_mode = 0
+
+[node name="AppListContent" type="VBoxContainer" parent="LauncherLayer/LauncherMenu/VBoxContainer/AppList" unique_id=1770628819]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_constants/separation = 2

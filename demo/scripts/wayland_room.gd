@@ -4,6 +4,7 @@ extends Node3D
 ## À brancher sur une scène avec un Camera3D enfant nommé "Camera3D".
 
 @onready var compositor: WlrCompositor = $WlrCompositor
+@onready var launcher_menu = $Player/LauncherLayer/LauncherMenu
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
@@ -78,8 +79,7 @@ func _ready() -> void:
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
-	# Décale WAYLAND_DISPLAY pour tout ce qu'on lance nous-mêmes ensuite.
-	#print("Socket Wayland: ", compositor.get_wayland_socket_name())
+	launcher_menu.app_launch.connect(func(cmd): compositor.launch_app(cmd))
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -302,8 +302,11 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
 func _process(delta: float) -> void:
-	if Input.is_action_just_pressed("launcher") and not interact_mode_active:
-		spawn_test_client()
+	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible:
+		launcher_menu.toggle_menu()
+
+	if launcher_menu.visible:
+		return
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
 	if Input.is_action_just_pressed("interact_mode"):
@@ -482,10 +485,10 @@ func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
 	# Récupère la géométrie de contenu (sans ombres CSD). Si le client n'a
 	# pas défini de géométrie (par ex. application SSD), on retombe sur la
 	# taille complète de la surface.
-	var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	var _content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
 	var content_size: Vector2 = body.get_meta("content_size", win_size)
 	if content_size.x <= 0 or content_size.y <= 0:
-		content_offset = Vector2.ZERO
+		_content_offset = Vector2.ZERO
 		content_size = win_size
 	# Convertit les coordonnées UV en pixels de contenu. La texture est
 	# découpée à la window_geometry, donc UV * win_size donne directement
