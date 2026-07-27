@@ -126,7 +126,20 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 	if not quads.has(id) or not is_instance_valid(quads[id]):
 		return
 	var quad: MeshInstance3D = quads[id]
+	# Toujours mettre à jour la texture du shader : le pipeline Vulkan peut
+	# avoir créé un nouveau VkImage/Texture2DRD si la taille a changé, et
+	# l'ancien a été libéré. Ne pas mettre à jour laissait le shader
+	# échantillonner un VkImage libéré → tearing/corruption GPU.
 	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
+
+	# Pendant un redimensionnement actif, _update_resize contrôle la taille
+	# du mesh, la position du quad et la CollisionShape3D. Ne pas écraser
+	# ces valeurs ici : la texture capturée est probablement encore à
+	# l'ancienne taille (le client n'a pas encore committé le buffer à la
+	# nouvelle taille), donc recalculer le mesh sur sa base causerait un
+	# flickering entre l'aspect cible et l'aspect stale à chaque frame.
+	if is_resizing and active_window_id == id:
+		return
 
 	# Garde le ratio d'aspect réel de la fenêtre. Utilise la hauteur
 	# courante du mesh (pas un hardcoded 3.0) pour éviter un saut de

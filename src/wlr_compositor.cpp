@@ -236,6 +236,7 @@ void CaptureCache::reset(RenderingDevice *rd) {
     height = 0;
     alloc_width = 0;
     alloc_height = 0;
+    backend = Backend::NONE;
 }
 
 // Arrondit une dimension au palier supérieur pour l'allocation du buffer
@@ -315,13 +316,11 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     // wlr_allocator_create_buffer / wlr_buffer_get_dmabuf / mmap - ce sont
     // ces appels (alloc GPU, export dmabuf, syscall mmap) qui coûtaient le
     // plus cher à refaire à chaque frame.
-    // Réallocation seulement si aucun buffer n'existe encore, ou si la
-    // taille demandée dépasse la capacité déjà allouée (cache.alloc_*).
-    // Un simple changement de w/h qui tient toujours dans le buffer courant
-    // (cas typique d'un drag de resize, où la taille varie en continu)
-    // réutilise le buffer tel quel - seuls le render pass et la copie CPU,
-    // limités à w x h, se refont.
-    if (!cache.offscreen || w > cache.alloc_width || h > cache.alloc_height) {
+    // Réallocation si aucun buffer n'existe, si le backend propriétaire
+    // ne correspond pas (changement de pipeline entre dmabuf/pixels/vulkan),
+    // ou si la taille dépasse la capacité allouée.
+    if (!cache.offscreen || cache.backend != CaptureCache::Backend::DMABUF ||
+        w > cache.alloc_width || h > cache.alloc_height) {
         cache.reset(RenderingServer::get_singleton()->get_rendering_device());
 
         int alloc_w = round_up_capture_size(w);
@@ -430,6 +429,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         cache.format = attribs.format;
         cache.alloc_width = alloc_w;
         cache.alloc_height = alloc_h;
+        cache.backend = CaptureCache::Backend::DMABUF;
     }
     // La taille logique (w, h) et le tampon CPU tightly-packed se
     // mettent à jour à chaque appel, même quand le buffer GPU/dmabuf est
@@ -622,11 +622,9 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     if (w <= 0 || h <= 0) return false;
 
     // ---- (Re)création du buffer offscreen + import Vulkan -------------
-    // Réallouer quand la taille diffère (pas seulement quand elle
-    // augmente). Si on réutilise un buffer plus grand pour un contenu
-    // plus petit, le VkImage couvre la zone hors contenu → Godot
-    // échantillonne des pixels obsolètes → tearing lors du scale-down.
-    if (!cache.offscreen || w != cache.alloc_width || h != cache.alloc_height) {
+    // Réallouer si le backend ne correspond pas, ou si la taille a changé.
+    if (!cache.offscreen || cache.backend != CaptureCache::Backend::VULKAN ||
+        w != cache.alloc_width || h != cache.alloc_height) {
         // On crée les NOUVELLES ressources AVANT de libérer les anciennes
         // pour éviter un frame sans texture (causerait tearing/lacune visuelle).
 
@@ -709,6 +707,7 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
         cache.vk_memory = vt.vk_memory;
         cache.format = chosen_format;
         cache.dma_fd = attribs.fd[0];
+        cache.backend = CaptureCache::Backend::VULKAN;
 
         // Libérer les anciennes ressources (détruit VkImage, VkDeviceMemory,
         // RID, et wlr_buffer). vkDeviceWaitIdle est appelé dedans pour
@@ -800,11 +799,10 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     int h = (int)texture->height;
     if (w <= 0 || h <= 0) return false;
 
-    // Recrée le buffer offscreen seulement si la capacité déjà allouée est
-    // dépassée (voir round_up_capture_size / commentaire dans le chemin
-    // dmabuf) - un resize continu qui reste sous cette capacité réutilise
-    // le buffer existant, seul le render pass à w x h se refait.
-    if (!cache.offscreen || w > cache.alloc_width || h > cache.alloc_height) {
+    // Recrée le buffer offscreen si le backend ne correspond pas ou si la
+    // capacité est dépassée.
+    if (!cache.offscreen || cache.backend != CaptureCache::Backend::PIXELS ||
+        w > cache.alloc_width || h > cache.alloc_height) {
         cache.reset(RenderingServer::get_singleton()->get_rendering_device());
 
         int alloc_w = round_up_capture_size(w);
@@ -827,6 +825,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         cache.offscreen = offscreen;
         cache.alloc_width = alloc_w;
         cache.alloc_height = alloc_h;
+        cache.backend = CaptureCache::Backend::PIXELS;
     }
     cache.width = w;
     cache.height = h;

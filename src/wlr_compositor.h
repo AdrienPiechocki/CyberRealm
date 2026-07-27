@@ -43,6 +43,9 @@ namespace godot {
 // (contenu qui change) et la copie CPU vers `bytes` se refont à chaque
 // frame.
 struct CaptureCache {
+    enum class Backend { NONE, VULKAN, DMABUF, PIXELS };
+    Backend backend = Backend::NONE;
+
     wlr_buffer *offscreen = nullptr;
     void *map_base = nullptr;
     size_t map_size = 0;
