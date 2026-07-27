@@ -29,9 +29,10 @@ var resize_depth := 0.0
 var resize_start_world := Vector3.ZERO
 var resize_right_dir := Vector3.RIGHT
 var resize_up_dir := Vector3.UP
-var window_start_size := Vector2.ZERO # taille surface (px) au moment du grab
+var window_start_size := Vector2.ZERO # taille geometry (px) au moment du grab
 var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
+var window_start_content_offset := Vector2.ZERO # offset geometry dans la surface au moment du grab
 
 const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
 const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARGIN
@@ -377,7 +378,14 @@ func _process(delta: float) -> void:
 		0.5 - (local.y / mesh.size.y)
 	)
 	var wid: int = body.get_meta("window_id")
-	compositor.forward_pointer_motion(wid, uv.x * win_size.x, uv.y * win_size.y)
+	# La texture est découpée à la window_geometry, donc UV * surface_size
+	# donne des coordonnées dans le repère geometry. Le client Wayland
+	# attend des coordonnées dans le repère surface (incluant les ombres),
+	# d'où l'ajout de content_offset.
+	var content_offset_fwd: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	compositor.forward_pointer_motion(wid,
+		uv.x * win_size.x + content_offset_fwd.x,
+		uv.y * win_size.y + content_offset_fwd.y)
 
 	if Input.is_action_just_pressed("grab") and not interact_mode_active:
 		active_window_id = wid
@@ -390,17 +398,16 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("left_click"):
 		focused_window_id = wid
 		var edge := _border_edge(uv, win_size, body)
-		# Même repère "contenu" (sans ombre CSD) que _border_edge, pour que
-		# la zone de barre de titre corresponde à la vraie barre visible et
-		# pas à l'ombre transparente au-dessus (cas Firefox/GTK qui définit
-		# une window geometry excluant l'ombre, contrairement à Konsole).
+		# UV * win_size donne directement les coordonnées dans le repère
+		# contenu (la texture est découpée à la geometry), donc la zone
+		# de barre de titre est relative au bord visible du contenu.
 		var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
 		var content_size: Vector2 = body.get_meta("content_size", win_size)
 		if content_size.x <= 0 or content_size.y <= 0:
 			content_offset = Vector2.ZERO
 			content_size = win_size
-		var titlebar_px := uv.x * win_size.x - content_offset.x
-		var titlebar_py := uv.y * win_size.y - content_offset.y
+		var titlebar_px := uv.x * win_size.x
+		var titlebar_py := uv.y * win_size.y
 		var in_titlebar := titlebar_py >= 0 and titlebar_py < BORDER_MARGIN * BORDER_MARGIN \
 			and titlebar_px > 75 and titlebar_px < content_size.x - 75
 
@@ -414,6 +421,7 @@ func _process(delta: float) -> void:
 			resize_right_dir = quad.global_transform.basis.x.normalized()
 			resize_up_dir = quad.global_transform.basis.y.normalized()
 			window_start_size = win_size
+			window_start_content_offset = content_offset
 			window_start_mesh_size = mesh.size
 			window_start_local_pos = quad.position
 
@@ -479,11 +487,12 @@ func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
 	if content_size.x <= 0 or content_size.y <= 0:
 		content_offset = Vector2.ZERO
 		content_size = win_size
-	# Convertit les coordonnées UV de la surface vers le repère contenu:
-	# on soustrait l'offset de l'ombre pour que BORDER_MARGIN soit relatif
-	# au bord visible du contenu, pas au bord de l'ombre transparente.
-	var px := uv.x * win_size.x - content_offset.x
-	var py := uv.y * win_size.y - content_offset.y
+	# Convertit les coordonnées UV en pixels de contenu. La texture est
+	# découpée à la window_geometry, donc UV * win_size donne directement
+	# les coordonnées dans le repère contenu (pas besoin de soustraire
+	# content_offset). BORDER_MARGIN est relatif au bord visible du contenu.
+	var px := uv.x * win_size.x
+	var py := uv.y * win_size.y
 
 	# Coins du bas: zone carrée large (CORNER_MARGIN), facile à viser via
 	# raycast - aucun risque de conflit, pas de boutons de fenêtre en bas.
@@ -570,7 +579,12 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	new_w = max(new_w, MIN_SURFACE_SIZE)
 	new_h = max(new_h, MIN_SURFACE_SIZE)
 
-	compositor.set_window_size(active_window_id, int(new_w), int(new_h))
+	# set_window_size envoie les dimensions de la SURFACE (buffer) au client
+	# Wayland, pas la geometry. Les ombres CSD sont typiquement symétriques,
+	# donc surface = geometry + 2 * content_offset.
+	var surface_w := int(new_w) + int(window_start_content_offset.x) * 2
+	var surface_h := int(new_h) + int(window_start_content_offset.y) * 2
+	compositor.set_window_size(active_window_id, surface_w, surface_h)
 
 	# Met à jour la taille du mesh ET la position en même temps pour que
 	# le bord fixe reste immobile pendant le drag. Sans cette mise à jour,

@@ -348,6 +348,23 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     if (w <= 0 || h <= 0) return false;
 
+    // Recadre sur la géométrie xdg déclarée par le client
+    // (xdg_surface.set_window_geometry). Les clients CSD (Firefox, GTK...)
+    // réservent une marge invisible autour de la fenêtre pour l'ombre
+    // portée et la zone de resize à la souris ; cette marge fait partie de
+    // la surface mais n'est jamais censée être affichée - sans ce recadrage
+    // elle apparaît comme un bandeau noir autour du contenu.
+    int geo_x = 0, geo_y = 0;
+    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface)) {
+        wlr_box geo = xdg_surface->current.geometry;
+        if (geo.width > 0 && geo.height > 0) {
+            geo_x = geo.x;
+            geo_y = geo.y;
+            w = geo.width;
+            h = geo.height;
+        }
+    }
+
     // ---- (Re)création du buffer offscreen + de son mapping -------------
     // Seulement si c'est le premier appel ou si la taille a changé. Le
     // reste du temps on réutilise cache.offscreen (déjà rendu-cible GPU
@@ -515,10 +532,15 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         int sub_h = inst.surface->current.height > 0
             ? inst.surface->current.height : (int)sub_texture->height;
 
+        // Décale dst_box de (-geo_x, -geo_y) pour ne rasteriser que la
+        // zone de contenu (window_geometry). Les pixels d'ombre CSD en
+        // dehors de cette zone tombent en dehors du buffer et sont
+        // clipés par le render pass — pas besoin de apply_content_opacity
+        // ni de transparent overlay.
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
-        opts.dst_box.x = inst.sx;
-        opts.dst_box.y = inst.sy;
+        opts.dst_box.x = inst.sx - geo_x;
+        opts.dst_box.y = inst.sy - geo_y;
         opts.dst_box.width = sub_w;
         opts.dst_box.height = sub_h;
         wlr_render_pass_add_texture(pass, &opts);
@@ -558,14 +580,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     bool has_alpha = (cache.format == DRM_FORMAT_ABGR8888 ||
                     cache.format == DRM_FORMAT_ARGB8888);
 
-    // Récupérer la géométrie de la surface (zone de contenu réel)
-    wlr_box geo = {0};
-    wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface);
-    if (xdg_surface) {
-        geo = xdg_surface->current.geometry;
-    }
-
-    timespec t_copy_start, t_copy_end, t_opacity_end;
+    timespec t_copy_start, t_copy_end;
     clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
     if (cache.format == DRM_FORMAT_ABGR8888 ||
         cache.format == DRM_FORMAT_XBGR8888) {
@@ -575,9 +590,6 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
                 cache.data + (size_t)y * cache.stride,
                 (size_t)w * 4);
         }
-        clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
-        // Appliquer l'opacité uniquement dans la zone de contenu
-        apply_content_opacity(dst, w, h, geo);
     } else {
         // BGRA en mémoire → swizzle B↔R par pixel
         for (int y = 0; y < h; y++) {
@@ -589,11 +601,8 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
                 dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 0; // Alpha (transparence par défaut)
             }
         }
-        clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
-        // Appliquer l'opacité uniquement dans la zone de contenu
-        apply_content_opacity(dst, w, h, geo);
     }
-    clock_gettime(CLOCK_MONOTONIC, &t_opacity_end);
+    clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
 
     timespec t_sync2_start, t_sync2_end;
     clock_gettime(CLOCK_MONOTONIC, &t_sync2_start);
@@ -621,14 +630,13 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     double d_render = ms(t_render_start, t_render_end);
     double d_sync1 = ms(t_sync1_start, t_sync1_end);
     double d_memcpy = ms(t_copy_start, t_copy_end);
-    double d_opacity = ms(t_copy_end, t_opacity_end);
     double d_sync2 = ms(t_sync2_start, t_sync2_end);
     double d_tex = ms(t_tex_start, t_tex_end);
-    double d_total = d_render + d_sync1 + d_memcpy + d_opacity + d_sync2 + d_tex;
+    double d_total = d_render + d_sync1 + d_memcpy + d_sync2 + d_tex;
     if (d_total > 2.0) { // ne log que les captures qui coûtent réellement
         UtilityFunctions::print("waylandgodot: capture ", w, "x", h,
             " render=", d_render, "ms sync_start=", d_sync1,
-            "ms memcpy=", d_memcpy, "ms opacity=", d_opacity,
+            "ms memcpy=", d_memcpy,
             "ms sync_end=", d_sync2,
             "ms tex_upload=", d_tex, "ms TOTAL=", d_total, "ms");
     }
@@ -664,6 +672,18 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     int w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
     int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     if (w <= 0 || h <= 0) return false;
+
+    // Recadre sur la géométrie xdg (même logique que le path dmabuf).
+    int geo_x = 0, geo_y = 0;
+    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface)) {
+        wlr_box geo = xdg_surface->current.geometry;
+        if (geo.width > 0 && geo.height > 0) {
+            geo_x = geo.x;
+            geo_y = geo.y;
+            w = geo.width;
+            h = geo.height;
+        }
+    }
 
     // ---- (Re)création du buffer offscreen + import Vulkan -------------
     // Réallouer si le backend ne correspond pas, ou si la taille dépasse
@@ -790,21 +810,6 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) return false;
 
-    // Si le buffer alloué est plus grand que la surface (allocation
-    // arrondie au palier supérieur, ou surface réduite sans réallocation),
-    // effacer le buffer entier en transparent AVANT de dessiner le contenu.
-    // Sans ça, le VkImage contient du contenu stale d'une frame précédente
-    // dans la zone (w..alloc_w, h..alloc_h) qui serait visible car le
-    // shader échantillonne la texture via UV [0,1] sur toute la taille
-    // du VkImage.
-    if (w < cache.alloc_width || h < cache.alloc_height) {
-        wlr_render_rect_options clear_opts = {};
-        clear_opts.box = {0, 0, cache.alloc_width, cache.alloc_height};
-        clear_opts.color = {0.0f, 0.0f, 0.0f, 0.0f};
-        clear_opts.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
-        wlr_render_pass_add_rect(pass, &clear_opts);
-    }
-
     int blitted = 0;
     for (auto &inst : instances) {
         wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
@@ -817,10 +822,11 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
-        opts.dst_box.x = inst.sx;
-        opts.dst_box.y = inst.sy;
+        opts.dst_box.x = inst.sx - geo_x;
+        opts.dst_box.y = inst.sy - geo_y;
         opts.dst_box.width = sub_w;
         opts.dst_box.height = sub_h;
+
         wlr_render_pass_add_texture(pass, &opts);
         blitted++;
     }
@@ -857,6 +863,18 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     int w = (int)texture->width;
     int h = (int)texture->height;
     if (w <= 0 || h <= 0) return false;
+
+    // Recadre sur la géométrie xdg (même logique que les paths dmabuf/vulkan).
+    int geo_x = 0, geo_y = 0;
+    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface)) {
+        wlr_box geo = xdg_surface->current.geometry;
+        if (geo.width > 0 && geo.height > 0) {
+            geo_x = geo.x;
+            geo_y = geo.y;
+            w = geo.width;
+            h = geo.height;
+        }
+    }
 
     // Recrée le buffer offscreen si le backend ne correspond pas ou si la
     // capacité est dépassée.
@@ -900,10 +918,10 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
 
     wlr_render_texture_options opts = {};
     opts.texture = texture;
-    opts.dst_box.x = 0;
-    opts.dst_box.y = 0;
-    opts.dst_box.width = w;
-    opts.dst_box.height = h;
+    opts.dst_box.x = -geo_x;
+    opts.dst_box.y = -geo_y;
+    opts.dst_box.width = texture->width;
+    opts.dst_box.height = texture->height;
     wlr_render_pass_add_texture(pass, &opts);
 
     timespec t_render_start, t_render_end;
@@ -929,16 +947,9 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     uint8_t *dst = cache.bytes.ptrw();
     const uint8_t *src = static_cast<const uint8_t *>(pixels);
 
-    // Récupérer la géométrie de la surface (zone de contenu réel)
-    wlr_box geo = {0};
-    wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface);
-    if (xdg_surface) {
-        geo = xdg_surface->current.geometry;
-    }
-
-    timespec t_copy_start, t_copy_end, t_opacity_end;
-    clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
     // DRM_FORMAT_ARGB8888 = BGRA en mémoire (little-endian) → swizzle RGBA
+    timespec t_copy_start, t_copy_end;
+    clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
     for (int y = 0; y < h; y++) {
         const uint8_t *row = src + (size_t)y * stride;
         for (int x = 0; x < w; x++) {
@@ -949,10 +960,6 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         }
     }
     clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
-
-    // Appliquer l'opacité uniquement dans la zone de contenu
-    apply_content_opacity(dst, w, h, geo);
-    clock_gettime(CLOCK_MONOTONIC, &t_opacity_end);
 
     wlr_buffer_end_data_ptr_access(cache.offscreen);
 
@@ -974,13 +981,12 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     };
     double d_render = ms(t_render_start, t_render_end);
     double d_memcpy = ms(t_copy_start, t_copy_end);
-    double d_opacity = ms(t_copy_end, t_opacity_end);
     double d_tex = ms(t_tex_start, t_tex_end);
-    double d_total = d_render + d_memcpy + d_opacity + d_tex;
+    double d_total = d_render + d_memcpy + d_tex;
     if (d_total > 2.0) {
         UtilityFunctions::print("waylandgodot: [CPU_READBACK] capture ", w, "x", h,
             " render=", d_render, "ms memcpy=", d_memcpy,
-            "ms opacity=", d_opacity, "ms tex_upload=", d_tex,
+            "ms tex_upload=", d_tex,
             "ms TOTAL=", d_total, "ms");
     }
     out_w = w;
@@ -1305,7 +1311,7 @@ void WlrCompositor::start_headless() {
     wlr_output *fake_output = wlr_headless_add_output(backend, 1280, 720);
     if (fake_output) {
         wlr_output_state state;
-        wlr_output_state_init(&state);*
+        wlr_output_state_init(&state);
         wlr_output_state_set_enabled(&state, true);
         wlr_output_state_set_custom_mode(&state, 1920, 1080, 0);
         wlr_output_commit_state(fake_output, &state);
