@@ -6,8 +6,15 @@ signal app_launch(command: String)
 @onready var scroll: ScrollContainer = $VBoxContainer/AppList
 @onready var app_list: VBoxContainer = $VBoxContainer/AppList/AppListContent
 
+const CATEGORY_ORDER := [
+	"AudioVideo", "Development", "Education", "Game", "Graphics",
+	"Network", "Office", "Settings", "System", "Utility"
+]
+
 var all_apps: Array[Dictionary] = []
-var app_buttons: Array[Button] = []
+var category_headers: Dictionary = {} # category_label -> Label node
+var category_buttons: Dictionary = {} # category_label -> Array[Button]
+var category_expanded: Dictionary = {} # category_label -> bool
 
 func _ready() -> void:
 	visible = false
@@ -81,6 +88,7 @@ func _parse_desktop_file(path: String) -> Dictionary:
 	var name := ""
 	var exec_cmd := ""
 	var no_display := false
+	var categories: PackedStringArray = PackedStringArray()
 	while not f.eof_reached():
 		var line := f.get_line().strip_edges()
 		if line == "[Desktop Entry]":
@@ -98,51 +106,126 @@ func _parse_desktop_file(path: String) -> Dictionary:
 			no_display = true
 		elif line.begins_with("Hidden=true"):
 			no_display = true
+		elif line.begins_with("Categories="):
+			for cat in line.substr(11).split(";", false):
+				var c := cat.strip_edges()
+				if c != "":
+					categories.append(c)
 	f.close()
 	if name == "" or exec_cmd == "" or no_display:
 		return {}
-	# Nettoyer les variables d'exécution (%f, %F, %u, %U, etc.)
 	for suffix in ["%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k"]:
 		exec_cmd = exec_cmd.replace(suffix, "").strip_edges()
-	return {"name": name, "exec": exec_cmd}
+	return {"name": name, "exec": exec_cmd, "categories": categories}
+
+func _get_primary_category(entry: Dictionary) -> String:
+	var cats: PackedStringArray = entry.get("categories", PackedStringArray())
+	for cat in cats:
+		if cat in CATEGORY_ORDER:
+			return cat
+	if cats.size() > 0:
+		return cats[0]
+	return "Other"
 
 func _build_ui() -> void:
+	var grouped: Dictionary = {} # category_label -> Array[Dictionary]
 	for entry in all_apps:
-		var btn := Button.new()
-		btn.text = entry["name"]
-		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		btn.custom_minimum_size.y = 32
+		var cat := _get_primary_category(entry)
+		if not grouped.has(cat):
+			grouped[cat] = []
+		grouped[cat].append(entry)
 
-		var btn_style := StyleBoxFlat.new()
-		btn_style.bg_color = Color(0.15, 0.15, 0.2, 0.0)
-		btn_style.border_width_top = 0
-		btn_style.border_width_bottom = 0
-		btn_style.border_width_left = 0
-		btn_style.border_width_right = 0
-		btn_style.corner_radius_top_left = 4
-		btn_style.corner_radius_top_right = 4
-		btn_style.corner_radius_bottom_left = 4
-		btn_style.corner_radius_bottom_right = 4
-		btn_style.content_margin_left = 10
-		btn_style.content_margin_right = 10
-		btn_style.content_margin_top = 4
-		btn_style.content_margin_bottom = 4
-		btn.add_theme_stylebox_override("normal", btn_style)
+	var sorted_cats: Array = grouped.keys()
+	sorted_cats.sort_custom(func(a, b):
+		var ai := CATEGORY_ORDER.find(a)
+		var bi := CATEGORY_ORDER.find(b)
+		if ai == -1: ai = CATEGORY_ORDER.size()
+		if bi == -1: bi = CATEGORY_ORDER.size()
+		return ai < bi
+	)
 
-		var hover_style := btn_style.duplicate()
-		hover_style.bg_color = Color(0.25, 0.25, 0.35, 0.8)
-		btn.add_theme_stylebox_override("hover", hover_style)
+	for cat in sorted_cats:
+		var apps_in_cat: Array = grouped[cat]
+		category_expanded[cat] = false
+		category_buttons[cat] = []
 
-		var pressed_style := btn_style.duplicate()
-		pressed_style.bg_color = Color(0.2, 0.3, 0.5, 0.9)
-		btn.add_theme_stylebox_override("pressed", pressed_style)
+		var header := Label.new()
+		header.text = "▶  " + cat + "  (" + str(apps_in_cat.size()) + ")"
+		header.custom_minimum_size.y = 28
+		header.add_theme_font_size_override("font_size", 14)
 
-		btn.add_theme_font_size_override("font_size", 16)
+		var header_style := StyleBoxFlat.new()
+		header_style.bg_color = Color(0.15, 0.15, 0.22, 0.9)
+		header_style.content_margin_left = 8
+		header_style.content_margin_right = 8
+		header_style.content_margin_top = 4
+		header_style.content_margin_bottom = 4
+		header.add_theme_stylebox_override("normal", header_style)
+		header.add_theme_stylebox_override("hover", header_style)
+		header.mouse_filter = Control.MOUSE_FILTER_STOP
 
-		var cmd = entry["exec"]
-		btn.pressed.connect(func(): _on_app_clicked(cmd))
-		app_list.add_child(btn)
-		app_buttons.append(btn)
+		var cat_label = cat
+		header.gui_input.connect(func(event: InputEvent):
+			if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+				_toggle_category(cat_label)
+		)
+		header.mouse_entered.connect(func():
+			header.add_theme_stylebox_override("normal", header_style.duplicate())
+			(header.get_theme_stylebox("normal") as StyleBoxFlat).bg_color = Color(0.22, 0.22, 0.3, 0.9)
+		)
+		header.mouse_exited.connect(func():
+			header.add_theme_stylebox_override("normal", header_style)
+		)
+
+		app_list.add_child(header)
+		category_headers[cat] = header
+
+		for entry in apps_in_cat:
+			var btn := Button.new()
+			btn.text = "    " + entry["name"]
+			btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+			btn.custom_minimum_size.y = 30
+
+			var btn_style := StyleBoxFlat.new()
+			btn_style.bg_color = Color(0.0, 0.0, 0.0, 0.0)
+			btn_style.border_width_top = 0
+			btn_style.border_width_bottom = 0
+			btn_style.border_width_left = 0
+			btn_style.border_width_right = 0
+			btn_style.corner_radius_top_left = 3
+			btn_style.corner_radius_top_right = 3
+			btn_style.corner_radius_bottom_left = 3
+			btn_style.corner_radius_bottom_right = 3
+			btn_style.content_margin_left = 12
+			btn_style.content_margin_right = 10
+			btn_style.content_margin_top = 2
+			btn_style.content_margin_bottom = 2
+			btn.add_theme_stylebox_override("normal", btn_style)
+
+			var hover_style := btn_style.duplicate()
+			hover_style.bg_color = Color(0.25, 0.25, 0.35, 0.8)
+			btn.add_theme_stylebox_override("hover", hover_style)
+
+			var pressed_style := btn_style.duplicate()
+			pressed_style.bg_color = Color(0.2, 0.3, 0.5, 0.9)
+			btn.add_theme_stylebox_override("pressed", pressed_style)
+
+			btn.add_theme_font_size_override("font_size", 15)
+
+			var cmd = entry["exec"]
+			btn.pressed.connect(func(): _on_app_clicked(cmd))
+			app_list.add_child(btn)
+			category_buttons[cat].append(btn)
+
+func _toggle_category(cat: String) -> void:
+	category_expanded[cat] = not category_expanded[cat]
+	var expanded: bool = category_expanded[cat]
+	var header: Label = category_headers[cat]
+	var prefix := "▼  " if expanded else "▶  "
+	var count = category_buttons[cat].size()
+	header.text = prefix + cat + "  (" + str(count) + ")"
+	for btn in category_buttons[cat]:
+		btn.visible = expanded
 
 func _on_app_clicked(command: String) -> void:
 	app_launch.emit(command)
@@ -150,9 +233,20 @@ func _on_app_clicked(command: String) -> void:
 
 func _on_search_changed(query: String) -> void:
 	var q := query.to_lower()
-	for i in range(app_buttons.size()):
-		var show = q == "" or all_apps[i]["name"].to_lower().contains(q)
-		app_buttons[i].visible = show
+	for cat in category_headers:
+		var header_visible := false
+		for btn in category_buttons[cat]:
+			var match = q == "" or btn.text.strip_edges().to_lower().contains(q)
+			btn.visible = match and category_expanded.get(cat, true)
+			if match:
+				header_visible = true
+		category_headers[cat].visible = header_visible
+		if not header_visible:
+			for btn in category_buttons[cat]:
+				btn.visible = false
+		elif q != "":
+			for btn in category_buttons[cat]:
+				btn.visible = true
 
 func toggle_menu() -> void:
 	if visible:
