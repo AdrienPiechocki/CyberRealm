@@ -85,7 +85,7 @@ func spawn_test_client() -> void:
 
 func next_spawn_pos() -> Vector3:
 	var camera := $Player/Camera3D
-	return camera.global_position - camera.global_basis.z * 3.0
+	return camera.global_position - camera.global_basis.z
 
 func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	var quad := MeshInstance3D.new()
