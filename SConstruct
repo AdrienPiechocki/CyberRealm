@@ -42,6 +42,24 @@ sources += [xdg_shell_source]
 # (wlr_compositor.h dépend indirectement de xdg-shell-protocol.h).
 env.Depends(sources, xdg_shell_header)
 
+# Protocoles instables: pointer-constraints-v1 + relative-pointer-v1
+pointer_constraints_xml = "/usr/share/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml"
+pointer_constraints_header = env.Command(
+    "protocols/pointer-constraints-unstable-v1-protocol.h",
+    pointer_constraints_xml,
+    "wayland-scanner server-header $SOURCE $TARGET",
+)
+
+relative_pointer_xml = "/usr/share/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml"
+relative_pointer_header = env.Command(
+    "protocols/relative-pointer-unstable-v1-protocol.h",
+    relative_pointer_xml,
+    "wayland-scanner server-header $SOURCE $TARGET",
+)
+
+env.Depends(sources, pointer_constraints_header)
+env.Depends(sources, relative_pointer_header)
+
 if env["platform"] == "macos":
     library = env.SharedLibrary(
         "demo/bin/libwaylandgodot.{}.{}.framework/libwaylandgodot.{}.{}".format(

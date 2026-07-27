@@ -31,6 +31,8 @@ extern "C" {
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/types/wlr_pointer_constraints_v1.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 }
 
 namespace godot {
@@ -141,10 +143,13 @@ class WlrCompositor : public Node {
     wlr_compositor *compositor = nullptr;
     wlr_xdg_shell *xdg_shell = nullptr;
     wlr_seat *seat = nullptr;
+    wlr_pointer_constraints_v1 *pointer_constraints = nullptr;
+    wlr_relative_pointer_manager_v1 *relative_pointer_manager = nullptr;
 
     wlr_keyboard virtual_keyboard{};
 
     wl_listener new_toplevel_listener{};
+    wl_listener new_constraint_listener{};
     wl_listener keyboard_key_listener{};
     wl_listener keyboard_modifiers_listener{};
 
@@ -163,6 +168,7 @@ class WlrCompositor : public Node {
     uint64_t frame_counter = 0;
 
     static void on_new_toplevel(wl_listener *listener, void *data);
+    static void on_new_constraint(wl_listener *listener, void *data);
     static void on_toplevel_map(wl_listener *listener, void *data);
     static void on_toplevel_unmap(wl_listener *listener, void *data);
     static void on_toplevel_destroy(wl_listener *listener, void *data);
@@ -208,6 +214,7 @@ class WlrCompositor : public Node {
     bool capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
     WindowState *find_window(int id);
+    int find_window_id_by_surface(wlr_surface *surface);
     PopupState *find_popup(int id);
     uint32_t get_time_msec();
 
@@ -244,6 +251,7 @@ public:
     void forward_pointer_button_popup(int popup_id, int button, bool pressed);
     void forward_pointer_axis(int window_id, double delta_x, double delta_y);
     void forward_pointer_leave();
+    void forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel);
     void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
 
     String get_wayland_socket_name() const;

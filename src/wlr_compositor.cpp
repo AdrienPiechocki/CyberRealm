@@ -102,6 +102,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("forward_pointer_leave"), &WlrCompositor::forward_pointer_leave);
     ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "key_location", "pressed"),
         &WlrCompositor::forward_keyboard_key);
+    ClassDB::bind_method(D_METHOD("forward_pointer_relative_motion", "window_id", "dx", "dy", "dx_unaccel", "dy_unaccel"),
+        &WlrCompositor::forward_pointer_relative_motion);
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
@@ -134,6 +136,10 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::OBJECT, "texture"),
         PropertyInfo(Variant::INT, "width"),
         PropertyInfo(Variant::INT, "height")));
+
+    ADD_SIGNAL(MethodInfo("pointer_lock_changed",
+        PropertyInfo(Variant::INT, "window_id"),
+        PropertyInfo(Variant::BOOL, "locked")));
 }
 
 WlrCompositor::WlrCompositor() {}
@@ -167,6 +173,15 @@ uint32_t WlrCompositor::get_time_msec() {
 WindowState *WlrCompositor::find_window(int id) {
     auto it = windows.find(id);
     return it == windows.end() ? nullptr : &it->second;
+}
+
+int WlrCompositor::find_window_id_by_surface(wlr_surface *surface) {
+    for (auto &pair : windows) {
+        if (pair.second.toplevel && pair.second.toplevel->base->surface == surface) {
+            return pair.first;
+        }
+    }
+    return -1;
 }
 
 PopupState *WlrCompositor::find_popup(int id) {
@@ -1338,6 +1353,15 @@ void WlrCompositor::start_headless() {
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
 
+    // Pointer constraints (zwp_pointer_constraints_v1) + relative pointer
+    // (zwp_relative_pointer_v1) — nécessaires pour les jeux FPS qui
+    // demandent un pointer lock via zwp_pointer_constraints_v1::lock_pointer.
+    pointer_constraints = wlr_pointer_constraints_v1_create(display);
+    relative_pointer_manager = wlr_relative_pointer_manager_v1_create(display);
+
+    new_constraint_listener.notify = WlrCompositor::on_new_constraint;
+    wl_signal_add(&pointer_constraints->events.new_constraint, &new_constraint_listener);
+
     wlr_keyboard_init(&virtual_keyboard, &waylandgodot_KEYBOARD_IMPL, "waylandgodot-vkbd");
 
     xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -1548,6 +1572,40 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     event.state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
 
     wlr_keyboard_notify_key(&virtual_keyboard, &event);
+}
+
+void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, new_constraint_listener);
+    wlr_pointer_constraint_v1 *constraint = (wlr_pointer_constraint_v1 *)data;
+
+    int window_id = self->find_window_id_by_surface(constraint->surface);
+    UtilityFunctions::print("waylandgodot: new_constraint window_id=", window_id,
+        " type=", constraint->type == WLR_POINTER_CONSTRAINT_V1_LOCKED ? "LOCKED" : "CONFINED");
+    if (window_id == -1) return;
+
+    wlr_pointer_constraint_v1_send_activated(constraint);
+    self->emit_signal("pointer_lock_changed", window_id, true);
+
+    // Écouter la destruction du constraint (client déverrouille ou surface détruite)
+    struct ConstraintDestroyData {
+        WlrCompositor *self;
+        int window_id;
+        wl_listener listener;
+    };
+    auto *cdata = new ConstraintDestroyData{self, window_id, {}};
+    cdata->listener.notify = [](wl_listener *l, void *) {
+        ConstraintDestroyData *cd = wl_container_of(l, cd, listener);
+        cd->self->emit_signal("pointer_lock_changed", cd->window_id, false);
+        delete cd;
+    };
+    wl_signal_add(&constraint->events.destroy, &cdata->listener);
+}
+
+void WlrCompositor::forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel) {
+    if (!relative_pointer_manager || !seat) return;
+    uint64_t time_usec = get_time_msec() * 1000;
+    wlr_relative_pointer_manager_v1_send_relative_motion(
+        relative_pointer_manager, seat, time_usec, dx, dy, dx_unaccel, dy_unaccel);
 }
 
 // --- Utilitaires -----------------------------------------------------------

@@ -6,6 +6,7 @@ var jump_speed = 3
 var mouse_sensitivity = 0.002
 
 var interact_mode_active := false
+var focus_mode_active := false
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -14,7 +15,7 @@ func _physics_process(delta):
 	if position.y <= -50:
 		position = Vector3.ZERO
 	velocity.y += -gravity * delta
-	if $LauncherLayer/LauncherMenu.visible:
+	if $LauncherLayer/LauncherMenu.visible or focus_mode_active:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -33,6 +34,8 @@ func _physics_process(delta):
 		$UI/Label.text = "Keyboard Capture : ON"
 
 func _input(event):
+	if focus_mode_active:
+		return
 	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
 		if $LauncherLayer/LauncherMenu.visible:
 			return

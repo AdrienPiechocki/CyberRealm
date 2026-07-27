@@ -40,6 +40,16 @@ const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARG
 						  # pour rester cliquable via raycast) = redimensionnement diagonal
 const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 
+# Mode focus: affiche une fenêtre en 2D fullscreen avec input clavier+souris
+var focus_mode := false
+var focus_window_id := -1
+var focus_texture_rect: TextureRect
+var focus_surface_size := Vector2.ZERO
+var focus_content_offset := Vector2.ZERO
+var focus_content_size := Vector2.ZERO
+var focus_mouse_captured := false
+var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
+
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
@@ -75,11 +85,20 @@ func _ready() -> void:
 	compositor.popup_mapped.connect(_on_popup_mapped)
 	compositor.popup_unmapped.connect(_on_popup_unmapped)
 	compositor.popup_texture_updated.connect(_on_popup_texture_updated)
+	compositor.pointer_lock_changed.connect(_on_pointer_lock_changed)
 	compositor.start_headless()
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
 	launcher_menu.app_launch.connect(func(cmd): compositor.launch_app(cmd))
+
+	# TextureRect plein écran pour le mode focus
+	focus_texture_rect = TextureRect.new()
+	focus_texture_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	focus_texture_rect.mouse_filter = Control.MOUSE_FILTER_PASS
+	focus_texture_rect.visible = false
+	focus_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	$Player/UI.add_child(focus_texture_rect)
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -87,6 +106,115 @@ func spawn_test_client() -> void:
 func next_spawn_pos() -> Vector3:
 	var camera := $Player/Camera3D
 	return camera.global_position - camera.global_basis.z
+
+func _enter_focus_mode(id: int) -> void:
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+	focus_mode = true
+	focus_window_id = id
+	focused_window_id = id
+	focus_mouse_captured = false
+	focus_mouse_uv = Vector2(0.5, 0.5)
+
+	# Récupérer la texture courante depuis le shader
+	var quad: MeshInstance3D = quads[id]
+	var mat: ShaderMaterial = quad.material_override as ShaderMaterial
+	var tex: Texture2D = mat.get_shader_parameter("window_texture")
+	focus_texture_rect.texture = tex
+
+	# Récupérer les métadonnées de taille
+	var body: StaticBody3D = quad.get_child(0)
+	focus_surface_size = body.get_meta("surface_size", Vector2(1, 1))
+	focus_content_offset = body.get_meta("content_offset", Vector2.ZERO)
+	focus_content_size = body.get_meta("content_size", focus_surface_size)
+
+	# Cacher le quad 3D, afficher le overlay 2D
+	quad.visible = false
+	focus_texture_rect.visible = true
+
+	# Libérer la souris pour interagir avec la fenêtre, centrée sur l'écran
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+
+	# Bloquer le player
+	$Player.focus_mode_active = true
+
+func _exit_focus_mode() -> void:
+	if not focus_mode:
+		return
+
+	# Réafficher le quad 3D
+	if quads.has(focus_window_id) and is_instance_valid(quads[focus_window_id]):
+		quads[focus_window_id].visible = true
+
+	# Cacher le overlay, libérer la texture
+	focus_texture_rect.visible = false
+	focus_texture_rect.texture = null
+	focus_mode = false
+	focus_window_id = -1
+	focus_mouse_captured = false
+
+	# Restaurer la souris capturée
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+	# Débloquer le player
+	$Player.focus_mode_active = false
+
+func _handle_focus_input() -> void:
+
+	# Souris capturée: maintenir le pointer focus + forward relatif via _input
+	if focus_mouse_captured:
+		# Maintenir le pointer focus sur la surface (nécessaire pour que
+		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
+		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
+	else:
+		# Souris visible: position absolue, curseur custom suit la souris
+		var viewport_size := get_viewport().get_visible_rect().size
+		var mouse_pos := get_viewport().get_mouse_position()
+		var tex_size := focus_surface_size
+		if tex_size.x <= 0 or tex_size.y <= 0:
+			tex_size = viewport_size
+		var scale := minf(viewport_size.x / tex_size.x, viewport_size.y / tex_size.y)
+		var displayed_size := tex_size * scale
+		var offset := (viewport_size - displayed_size) / 2.0
+		var local_pos := mouse_pos - offset
+		focus_mouse_uv = Vector2(
+			clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
+			clampf(local_pos.y / displayed_size.y, 0.0, 1.0)
+		)
+		# Déplacer le curseur custom à la position souris
+		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
+
+	if Input.is_action_just_pressed("left_click"):
+		compositor.forward_pointer_button(focus_window_id, 0x110, true)
+	if Input.is_action_just_released("left_click"):
+		compositor.forward_pointer_button(focus_window_id, 0x110, false)
+
+	if Input.is_action_just_pressed("right_click"):
+		compositor.forward_pointer_button(focus_window_id, 0x111, true)
+	if Input.is_action_just_released("right_click"):
+		compositor.forward_pointer_button(focus_window_id, 0x111, false)
+
+	if Input.is_action_just_pressed("scroll_up"):
+		compositor.forward_pointer_axis(focus_window_id, 0, -50.0)
+	if Input.is_action_just_pressed("scroll_down"):
+		compositor.forward_pointer_axis(focus_window_id, 0, 50.0)
+
+func _on_pointer_lock_changed(window_id: int, locked: bool) -> void:
+	# Un jeu a demandé le pointer lock (zwp_pointer_constraints_v1::lock_pointer)
+	if not focus_mode or window_id != focus_window_id:
+		return
+	if locked:
+		focus_mouse_captured = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		focus_mouse_captured = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 
 func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	var quad := MeshInstance3D.new()
@@ -123,6 +251,8 @@ func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	#print("Fenêtre mappée: ", title, " (", app_id, ") id=", id)
 
 func _on_window_unmapped(id: int) -> void:
+	if focus_mode and focus_window_id == id:
+		_exit_focus_mode()
 	if focused_window_id == id:
 		focused_window_id = -1
 	if quads.has(id):
@@ -132,6 +262,15 @@ func _on_window_unmapped(id: int) -> void:
 		quads.erase(id)
 
 func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	# Mettre à jour le overlay 2D en mode focus
+	if focus_mode and id == focus_window_id:
+		focus_texture_rect.texture = texture
+		focus_surface_size = Vector2(width, height)
+		var geo := compositor.get_window_geometry(id)
+		focus_content_offset = Vector2(geo["x"], geo["y"])
+		focus_content_size = Vector2(geo["width"], geo["height"])
+		return
+
 	if not quads.has(id) or not is_instance_valid(quads[id]):
 		return
 	var quad: MeshInstance3D = quads[id]
@@ -302,11 +441,35 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
 func _process(delta: float) -> void:
-	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible:
+	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
 		launcher_menu.toggle_menu()
 
 	if launcher_menu.visible:
 		return
+
+	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
+	if focus_mode:
+		#if Input.is_action_just_pressed("focus_window"):
+			#_exit_focus_mode()
+			#return
+		_handle_focus_input()
+		return
+
+	# F en visant une fenêtre → entrer en mode focus
+	if Input.is_action_just_pressed("focus_window") and not interact_mode_active:
+		var cam := $Player/Camera3D
+		var mouse_pos := get_viewport().get_mouse_position()
+		var ray_origin = cam.project_ray_origin(mouse_pos)
+		var ray_dir = cam.project_ray_normal(mouse_pos)
+		var to = ray_origin + ray_dir * 1000.0
+		var space := get_world_3d().direct_space_state
+		var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+		var hit := space.intersect_ray(params)
+		if not hit.is_empty():
+			var body: Node3D = hit.collider
+			if body.has_meta("window_id"):
+				_enter_focus_mode(body.get_meta("window_id"))
+				return
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
 	if Input.is_action_just_pressed("interact_mode"):
@@ -620,6 +783,37 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:
+	# En mode focus, forward le clavier et tracker la souris capturée
+	if focus_mode and focus_window_id != -1:
+		if event is InputEventKey:
+			var key_event := event as InputEventKey
+			var code = key_event.physical_keycode
+			if code == 0:
+				code = key_event.keycode
+			if key_event.unicode == 60 or code == 167:
+				code = KEY_LESS
+			elif key_event.unicode == 62:
+				code = KEY_GREATER
+			compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+			get_viewport().set_input_as_handled()
+		elif focus_mouse_captured and event is InputEventMouseMotion:
+			# Tracker la position UV + forward le mouvement relatif au client
+			var viewport_size := get_viewport().get_visible_rect().size
+			var tex_size := focus_surface_size
+			if tex_size.x <= 0 or tex_size.y <= 0:
+				tex_size = viewport_size
+			var scale := minf(viewport_size.x / tex_size.x, viewport_size.y / tex_size.y)
+			var displayed_size := tex_size * scale
+			focus_mouse_uv.x += event.relative.x / displayed_size.x
+			focus_mouse_uv.y += event.relative.y / displayed_size.y
+			focus_mouse_uv.x = clampf(focus_mouse_uv.x, 0.0, 1.0)
+			focus_mouse_uv.y = clampf(focus_mouse_uv.y, 0.0, 1.0)
+			compositor.forward_pointer_relative_motion(
+				focus_window_id,
+				event.relative.x, event.relative.y,
+				event.relative.x, event.relative.y)
+		return
+
 	if focused_window_id == -1 or not interact_mode_active:
 		return
 	
