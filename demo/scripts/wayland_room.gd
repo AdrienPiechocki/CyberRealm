@@ -43,14 +43,22 @@ shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
 
 uniform sampler2D window_texture : filter_linear_mipmap;
+uniform vec2 content_size = vec2(0.0, 0.0);
 
 void fragment() {
-    vec4 tex = texture(window_texture, UV);
+    // Quand le buffer d'allocation (VkImage / texture) est plus grand que
+    // le contenu réel (allocation arrondie au palier supérieur, ou surface
+    // réduite sans réallocation), le UV doit être remappé pour n'échantil-
+    // lonner que la zone de contenu. Sans ça, UV [0,1] couvre la totalité
+    // de la texture (y compris la zone transparente/stale), déformant
+    // l'image.
+    vec2 ts = vec2(textureSize(window_texture, 0));
+    vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
+        ? UV * content_size / ts : UV;
+    vec4 tex = texture(window_texture, mapped_uv);
     if (tex.a > 0.01) {
-        // Restaure la couleur d'origine en dé-multipliant l'alpha
         vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
         ALBEDO = pow(unmultiplied, vec3(2.2));
-        // Force l'opacité à être pleine (1.0) pour tout ce qui n'est pas totalement transparent
         ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
     } else {
         discard;
@@ -131,6 +139,22 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 	# l'ancien a été libéré. Ne pas mettre à jour laissait le shader
 	# échantillonner un VkImage libéré → tearing/corruption GPU.
 	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
+	# content_size = taille réelle du contenu (w × h). Le shader s'en
+	# sert pour remapper UV quand le buffer d'allocation est plus grand
+	# (round_up_capture_size) — sans ça, le contenu serait comprimé
+	# dans le coin supérieur-gauche du mesh.
+	(quad.material_override as ShaderMaterial).set_shader_parameter("content_size", Vector2(width, height))
+
+	# Toujours synchroniser les métadonnées (surface_size, content_offset,
+	# content_size) même pendant un resize : le calcul UV pour le forwarding
+	# des événements pointeur utilise surface_size, et les détections de
+	# bord utilisent content_size/content_offset. Sans ça, les UV sont
+	# wrong dès que le client commite la nouvelle taille.
+	var body: StaticBody3D = quad.get_child(0)
+	body.set_meta("surface_size", Vector2(width, height))
+	var geo := compositor.get_window_geometry(id)
+	body.set_meta("content_offset", Vector2(geo["x"], geo["y"]))
+	body.set_meta("content_size", Vector2(geo["width"], geo["height"]))
 
 	# Pendant un redimensionnement actif, _update_resize contrôle la taille
 	# du mesh, la position du quad et la CollisionShape3D. Ne pas écraser
@@ -148,16 +172,6 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 	var mesh: QuadMesh = quad.mesh
 	var current_h: float = mesh.size.y if mesh.size.y > 0.0 else 3.0
 	mesh.size = Vector2(current_h * aspect, current_h)
-
-	var body: StaticBody3D = quad.get_child(0)
-	body.set_meta("surface_size", Vector2(width, height))
-
-	# Récupère la géométrie de contenu (sans les ombres CSD) pour que la
-	# détection des bords de redimensionnement se fasse sur le bord visible
-	# du contenu, pas sur le bord de la zone d'ombre transparente.
-	var geo := compositor.get_window_geometry(id)
-	body.set_meta("content_offset", Vector2(geo["x"], geo["y"]))
-	body.set_meta("content_size", Vector2(geo["width"], geo["height"]))
 
 	# La CollisionShape3D doit suivre la même taille que le mesh, sinon le
 	# raycast teste une zone qui ne correspond plus à ce qui est affiché.

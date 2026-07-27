@@ -15,6 +15,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <poll.h>
 #include <linux/dma-buf.h>
 
 extern "C" {
@@ -272,6 +273,44 @@ bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, i
 }
 
 // =====================================================================
+// wait_for_dmabuf_gpu_writes — Attend que les écritures GPU (EGL/GLES2)
+// sur un DMA-BUF soient terminées.
+// =====================================================================
+// Utilise DMA_BUF_IOCTL_EXPORT_SYNC_FILE (Linux 5.20+) qui exporte un
+// sync_file représentant l'achèvement de toutes les opérations d'écriture
+// GPU sur le DMA-BUF. On poll() dessus pour bloquer jusqu'à ce que le
+// render pass wlroots ait terminé d'écrire. C'est la seule façon fiable
+// de synchroniser deux API GPU différentes (EGL wlroots ↔ Vulkan Godot)
+// sur tous les pilotes (Mesa, NVIDIA, etc.).
+//
+// Fallback: DMA_BUF_IOCTL_SYNC (sync CPU uniquement, n'attend PAS le
+// GPU sur les pilotes sans sync implicite → tearing possible).
+// =====================================================================
+static void wait_for_dmabuf_gpu_writes(int dma_fd) {
+    if (dma_fd < 0) return;
+
+    // Tenter EXPORT_SYNC_FILE d'abord (sync GPU fiable cross-API).
+    struct dma_buf_export_sync_file export_args = {};
+    export_args.flags = DMA_BUF_SYNC_WRITE;
+    if (ioctl(dma_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &export_args) == 0) {
+        struct pollfd pfd;
+        pfd.fd = export_args.fd;
+        pfd.events = POLLIN;
+        poll(&pfd, 1, -1); // bloque jusqu'à l'achèvement GPU
+        close(export_args.fd);
+        return;
+    }
+
+    // Fallback noyau < 5.20 : DMA_BUF_IOCTL_SYNC (cache CPU seulement,
+    // pas de garantie d'attente GPU sur certains pilotes).
+    struct dma_buf_sync sync = {};
+    sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+    ioctl(dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    ioctl(dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+}
+
+// =====================================================================
 // capture_surface_dmabuf — Rendu GPU + mmap dmabuf
 // =====================================================================
 // Flux:
@@ -499,8 +538,13 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     }
     clock_gettime(CLOCK_MONOTONIC, &t_render_end);
 
-    // Synchronisation CPU/GPU: sans DMA_BUF_IOCTL_SYNC, on peut lire des
-    // données incohérentes (cache GPU non flushé vers la RAM).
+    // Attendre que le render pass EGL/GLES2 soit terminé sur le GPU
+    // AVANT de lire les pixels en mmap. Sans cette synchronisation,
+    // le memcpy peut lire des données partiellement écrites par le GPU.
+    wait_for_dmabuf_gpu_writes(cache.dma_fd);
+
+    // Synchronisation CPU/GPU: DMA_BUF_IOCTL_SYNC invalide le cache
+    // CPU pour que mmap lise les données fraîches du GPU.
     timespec t_sync1_start, t_sync1_end;
     clock_gettime(CLOCK_MONOTONIC, &t_sync1_start);
     struct dma_buf_sync sync = {};
@@ -622,14 +666,18 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     if (w <= 0 || h <= 0) return false;
 
     // ---- (Re)création du buffer offscreen + import Vulkan -------------
-    // Réallouer si le backend ne correspond pas, ou si la taille a changé.
+    // Réallouer si le backend ne correspond pas, ou si la taille dépasse
+    // la capacité allouée. Le round_up_capture_size évite de réallouer à
+    // chaque frame pendant un resize continu : tant que la nouvelle taille
+    // tient dans le palier déjà alloué, on réutilise le buffer existant
+    // (la régión stale est effacée avant le rendu).
     if (!cache.offscreen || cache.backend != CaptureCache::Backend::VULKAN ||
-        w != cache.alloc_width || h != cache.alloc_height) {
+        w > cache.alloc_width || h > cache.alloc_height) {
         // On crée les NOUVELLES ressources AVANT de libérer les anciennes
         // pour éviter un frame sans texture (causerait tearing/lacune visuelle).
 
-        int alloc_w = w;
-        int alloc_h = h;
+        int alloc_w = round_up_capture_size(w);
+        int alloc_h = round_up_capture_size(h);
 
         // Chercher un format dmabuf linéaire.
         const wlr_drm_format_set *formats =
@@ -742,6 +790,21 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) return false;
 
+    // Si le buffer alloué est plus grand que la surface (allocation
+    // arrondie au palier supérieur, ou surface réduite sans réallocation),
+    // effacer le buffer entier en transparent AVANT de dessiner le contenu.
+    // Sans ça, le VkImage contient du contenu stale d'une frame précédente
+    // dans la zone (w..alloc_w, h..alloc_h) qui serait visible car le
+    // shader échantillonne la texture via UV [0,1] sur toute la taille
+    // du VkImage.
+    if (w < cache.alloc_width || h < cache.alloc_height) {
+        wlr_render_rect_options clear_opts = {};
+        clear_opts.box = {0, 0, cache.alloc_width, cache.alloc_height};
+        clear_opts.color = {0.0f, 0.0f, 0.0f, 0.0f};
+        clear_opts.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
+        wlr_render_pass_add_rect(pass, &clear_opts);
+    }
+
     int blitted = 0;
     for (auto &inst : instances) {
         wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
@@ -771,15 +834,11 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 
     // Attendre que le render pass EGL/GLES2 soit terminé sur le GPU
     // avant que Godot n'échantillonne le VkImage (backed par le même
-    // DMA-BUF). Sans cette synchronisation, le render pass peut encore
-    // écrire dans le buffer au moment où Godot le lit → tearing.
-    if (cache.dma_fd >= 0) {
-        struct dma_buf_sync sync = {};
-        sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
-        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
-    }
+    // DMA-BUF). DMA_BUF_IOCTL_EXPORT_SYNC_FILE exporte un sync_file
+    // représentant les écritures GPU en cours, puis poll() bloque
+    // jusqu'à leur achèvement. C'est la seule synchronisation fiable
+    // entre deux API GPU (EGL wlroots ↔ Vulkan Godot).
+    wait_for_dmabuf_gpu_writes(cache.dma_fd);
 
     tex = cache.rd_texture;
     out_w = w;
@@ -1243,10 +1302,10 @@ void WlrCompositor::start_headless() {
         }
     }
 
-    wlr_output *fake_output = wlr_headless_add_output(backend, 1920, 1080);
+    wlr_output *fake_output = wlr_headless_add_output(backend, 1280, 720);
     if (fake_output) {
         wlr_output_state state;
-        wlr_output_state_init(&state);
+        wlr_output_state_init(&state);*
         wlr_output_state_set_enabled(&state, true);
         wlr_output_state_set_custom_mode(&state, 1920, 1080, 0);
         wlr_output_commit_state(fake_output, &state);
