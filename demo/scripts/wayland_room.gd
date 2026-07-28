@@ -54,7 +54,7 @@ var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
 # PiP pinning: clones 2D des fenêtres épinglées dans le coin supérieur-gauche
 var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
 
-const PIN_SIZE := Vector2(320, 180)
+const PIN_SIZE := Vector2(640, 360)
 const PIN_MARGIN := 8
 
 const WAYLAND_SHADER_CODE = """

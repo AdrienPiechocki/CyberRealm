@@ -707,7 +707,8 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     // tient dans le palier déjà alloué, on réutilise le buffer existant
     // (la régión stale est effacée avant le rendu).
     if (!cache.offscreen || cache.backend != CaptureCache::Backend::VULKAN ||
-        w > cache.alloc_width || h > cache.alloc_height) {
+        w > cache.alloc_width || h > cache.alloc_height ||
+        (cache.alloc_width > 0 && (w < cache.width || h < cache.height))) {
         // On crée les NOUVELLES ressources AVANT de libérer les anciennes
         // pour éviter un frame sans texture (causerait tearing/lacune visuelle).
 
