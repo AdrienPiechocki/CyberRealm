@@ -94,6 +94,11 @@ struct WindowState {
     wl_listener destroy_listener{};
     wl_listener commit_listener{};
     wl_listener new_popup_listener{};
+    wl_listener request_fullscreen_listener{};
+    wl_listener request_maximize_listener{};
+    wl_listener request_minimize_listener{};
+    wl_listener request_move_listener{};
+    wl_listener request_resize_listener{};
 
     // Ref<Texture2D> au lieu de Ref<ImageTexture>: permet d'utiliser
     // différents types de texture selon le chemin de capture.
@@ -179,6 +184,11 @@ class WlrCompositor : public Node {
     static void on_toplevel_unmap(wl_listener *listener, void *data);
     static void on_toplevel_destroy(wl_listener *listener, void *data);
     static void on_surface_commit(wl_listener *listener, void *data);
+    static void on_request_fullscreen(wl_listener *listener, void *data);
+    static void on_request_maximize(wl_listener *listener, void *data);
+    static void on_request_minimize(wl_listener *listener, void *data);
+    static void on_request_move(wl_listener *listener, void *data);
+    static void on_request_resize(wl_listener *listener, void *data);
 
     static void on_new_popup(wl_listener *listener, void *data);
     static void on_new_popup_from_popup(wl_listener *listener, void *data);

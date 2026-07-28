@@ -3,6 +3,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/viewport.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -140,6 +141,10 @@ void WlrCompositor::_bind_methods() {
     ADD_SIGNAL(MethodInfo("pointer_lock_changed",
         PropertyInfo(Variant::INT, "window_id"),
         PropertyInfo(Variant::BOOL, "locked")));
+
+    ADD_SIGNAL(MethodInfo("window_fullscreen_changed",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::BOOL, "fullscreen")));
 
     ADD_SIGNAL(MethodInfo("drag_icon_updated",
         PropertyInfo(Variant::OBJECT, "texture"),
@@ -1059,6 +1064,21 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     ws.new_popup_listener.notify = WlrCompositor::on_new_popup;
     wl_signal_add(&toplevel->base->events.new_popup, &ws.new_popup_listener);
 
+    ws.request_fullscreen_listener.notify = WlrCompositor::on_request_fullscreen;
+    wl_signal_add(&toplevel->events.request_fullscreen, &ws.request_fullscreen_listener);
+
+    ws.request_maximize_listener.notify = WlrCompositor::on_request_maximize;
+    wl_signal_add(&toplevel->events.request_maximize, &ws.request_maximize_listener);
+
+    ws.request_minimize_listener.notify = WlrCompositor::on_request_minimize;
+    wl_signal_add(&toplevel->events.request_minimize, &ws.request_minimize_listener);
+
+    ws.request_move_listener.notify = WlrCompositor::on_request_move;
+    wl_signal_add(&toplevel->events.request_move, &ws.request_move_listener);
+
+    ws.request_resize_listener.notify = WlrCompositor::on_request_resize;
+    wl_signal_add(&toplevel->events.request_resize, &ws.request_resize_listener);
+
     UtilityFunctions::print("waylandgodot: new_toplevel reçu, id=", id,
         " app_id=", toplevel->app_id ? toplevel->app_id : "(pas encore fixé)");
 
@@ -1094,6 +1114,11 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
     wl_list_remove(&ws->destroy_listener.link);
     wl_list_remove(&ws->commit_listener.link);
     wl_list_remove(&ws->new_popup_listener.link);
+    wl_list_remove(&ws->request_fullscreen_listener.link);
+    wl_list_remove(&ws->request_maximize_listener.link);
+    wl_list_remove(&ws->request_minimize_listener.link);
+    wl_list_remove(&ws->request_move_listener.link);
+    wl_list_remove(&ws->request_resize_listener.link);
 
     self->windows.erase(id);
 }
@@ -1112,6 +1137,67 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
         return;
     }
     self->emit_signal("window_texture_updated", ws->id, ws->texture, ws->width, ws->height);
+}
+
+// --- XDG toplevel requests ------------------------------------------------
+// Le protocole xdg-shell exige que le compositeur réponde à chaque
+// demande (fullscreen, maximize, etc.) par un configure, même s'il
+// ignore la demande. Ne pas le faire est une violation de protocole.
+
+void WlrCompositor::on_request_fullscreen(wl_listener *listener, void *data) {
+    WindowState *ws = wl_container_of(listener, ws, request_fullscreen_listener);
+    wlr_xdg_toplevel *toplevel = ws->toplevel;
+    bool fullscreen = toplevel->requested.fullscreen;
+
+    // Récupère la taille du viewport Godot pour dimensionner le plein écran.
+    int fw = 1920, fh = 1080;
+    if (Viewport *vp = ws->owner->get_viewport()) {
+        Rect2 vr = vp->get_visible_rect();
+        fw = (int)vr.size.x;
+        fh = (int)vr.size.y;
+    }
+
+    wlr_xdg_toplevel_set_fullscreen(toplevel, fullscreen);
+    if (fullscreen) {
+        wlr_xdg_toplevel_set_size(toplevel, fw, fh);
+    }
+    wlr_xdg_surface_schedule_configure(toplevel->base);
+    ws->owner->emit_signal("window_fullscreen_changed", ws->id, fullscreen);
+}
+
+void WlrCompositor::on_request_maximize(wl_listener *listener, void *data) {
+    WindowState *ws = wl_container_of(listener, ws, request_maximize_listener);
+    wlr_xdg_toplevel *toplevel = ws->toplevel;
+
+    int mw = 1920, mh = 1080;
+    if (Viewport *vp = ws->owner->get_viewport()) {
+        Rect2 vr = vp->get_visible_rect();
+        mw = (int)vr.size.x;
+        mh = (int)vr.size.y;
+    }
+
+    wlr_xdg_toplevel_set_maximized(toplevel, toplevel->requested.maximized);
+    if (toplevel->requested.maximized) {
+        wlr_xdg_toplevel_set_size(toplevel, mw, mh);
+    }
+    wlr_xdg_surface_schedule_configure(toplevel->base);
+}
+
+void WlrCompositor::on_request_minimize(wl_listener *listener, void *data) {
+    WindowState *ws = wl_container_of(listener, ws, request_minimize_listener);
+    // On ignore la minimisation (pas de concept de "taskbar" dans ce compositeur 3D)
+    // mais on doit quand même répondre par un configure.
+    wlr_xdg_surface_schedule_configure(ws->toplevel->base);
+}
+
+void WlrCompositor::on_request_move(wl_listener *listener, void *data) {
+    // Le déplacement est déjà géré via le middle-click drag dans le script GDScript.
+    // On ignore la demande mais on doit respecter le protocole.
+}
+
+void WlrCompositor::on_request_resize(wl_listener *listener, void *data) {
+    // Le redimensionnement est déjà géré via les bords de fenêtre dans le script GDScript.
+    // On ignore la demande mais on doit respecter le protocole.
 }
 
 // --- Popups ------------------------------------------------------------
