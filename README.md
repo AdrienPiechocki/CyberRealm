@@ -125,7 +125,6 @@ Godot 4.2+ pour tester `wayland_room.gd`.
 - Affichage plein écran via `TextureRect` avec `STRETCH_KEEP_ASPECT_CENTERED`
 - **Mapping pixel-perfect** : calcul d'aspect ratio basé sur `get_global_rect()` du TextureRect
 - **Bouton X** en haut à droite pour quitter le mode focus
-- **Curseur custom** "+" qui suit la souris (visible au-dessus du TextureRect via z_index)
 - **Souris capturée** automatiquement quand le client demande le pointer lock (jeux FPS)
   - Tracking UV par accumulation de `event.relative` en mode capturé
   - Forward de `forward_pointer_relative_motion` au client Wayland
