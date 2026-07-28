@@ -51,6 +51,12 @@ var focus_content_size := Vector2.ZERO
 var focus_mouse_captured := false
 var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
 
+# PiP pinning: clones 2D des fenêtres épinglées dans le coin supérieur-gauche
+var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
+
+const PIN_SIZE := Vector2(320, 180)
+const PIN_MARGIN := 8
+
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
@@ -178,6 +184,55 @@ func _exit_focus_mode() -> void:
 	# Débloquer le player
 	$Player.focus_mode_active = false
 
+func _pin_window(id: int) -> void:
+	if pinned_windows.has(id):
+		return
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+
+	var quad: MeshInstance3D = quads[id]
+	var mat: ShaderMaterial = quad.material_override as ShaderMaterial
+	var tex: Texture2D = mat.get_shader_parameter("window_texture")
+
+	var pip := TextureRect.new()
+	pip.texture = tex
+	pip.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	pip.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	pip.size = PIN_SIZE
+	pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	# Bordure
+	var border := PanelContainer.new()
+	border.size = PIN_SIZE + Vector2(4, 4)
+	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.05, 0.05, 0.08, 0.9)
+	bg.border_color = Color(0.4, 0.6, 1.0, 0.8)
+	bg.border_width_top = 2
+	bg.border_width_bottom = 2
+	bg.border_width_left = 2
+	bg.border_width_right = 2
+	bg.corner_radius_top_left = 4
+	bg.corner_radius_top_right = 4
+	bg.corner_radius_bottom_left = 4
+	bg.corner_radius_bottom_right = 4
+	border.add_theme_stylebox_override("panel", bg)
+	border.add_child(pip)
+
+	var idx := pinned_windows.size()
+	border.position = Vector2(PIN_MARGIN, PIN_MARGIN + idx * (PIN_SIZE.y + PIN_MARGIN + 4))
+	pip.set_meta("window_id", id)
+	$Player/UI.add_child(border)
+	pinned_windows[id] = border
+
+func _unpin_window(id: int) -> void:
+	if not pinned_windows.has(id):
+		return
+	var pip: Control = pinned_windows[id]
+	if is_instance_valid(pip):
+		pip.queue_free()
+	pinned_windows.erase(id)
+
 func _handle_focus_input() -> void:
 
 	# Souris capturée: maintenir le pointer focus + forward relatif via _input
@@ -286,6 +341,7 @@ func _on_window_unmapped(id: int) -> void:
 		_exit_focus_mode()
 	if focused_window_id == id:
 		focused_window_id = -1
+	_unpin_window(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -293,6 +349,11 @@ func _on_window_unmapped(id: int) -> void:
 		quads.erase(id)
 
 func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	# Mettre à jour le clone PiP si la fenêtre est épinglée
+	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):
+		var pip_tex: TextureRect = pinned_windows[id].get_child(0)
+		pip_tex.texture = texture
+
 	# Mettre à jour le overlay 2D en mode focus
 	if focus_mode and id == focus_window_id:
 		focus_texture_rect.texture = texture
@@ -500,6 +561,26 @@ func _process(delta: float) -> void:
 			var body: Node3D = hit.collider
 			if body.has_meta("window_id"):
 				_enter_focus_mode(body.get_meta("window_id"))
+				return
+
+	# P en visant une fenêtre → pin/unpin PiP
+	if Input.is_action_just_pressed("pin_window") and not interact_mode_active:
+		var cam := $Player/Camera3D
+		var mouse_pos := get_viewport().get_mouse_position()
+		var ray_origin = cam.project_ray_origin(mouse_pos)
+		var ray_dir = cam.project_ray_normal(mouse_pos)
+		var to = ray_origin + ray_dir * 1000.0
+		var space := get_world_3d().direct_space_state
+		var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+		var hit := space.intersect_ray(params)
+		if not hit.is_empty():
+			var body: Node3D = hit.collider
+			if body.has_meta("window_id"):
+				var wid: int = body.get_meta("window_id")
+				if pinned_windows.has(wid):
+					_unpin_window(wid)
+				else:
+					_pin_window(wid)
 				return
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
