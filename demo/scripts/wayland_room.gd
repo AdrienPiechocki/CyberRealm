@@ -239,8 +239,8 @@ func _handle_focus_input() -> void:
 	if focus_mouse_captured:
 		# Maintenir le pointer focus sur la surface (nécessaire pour que
 		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
-		var surf_x := focus_mouse_uv.x * focus_surface_size.x
-		var surf_y := focus_mouse_uv.y * focus_surface_size.y
+		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 	else:
 		# Souris visible: position absolue, curseur custom suit la souris
@@ -271,8 +271,8 @@ func _handle_focus_input() -> void:
 		else:
 			focus_mouse_uv = Vector2(0.5, 0.5)
 
-		var surf_x := focus_mouse_uv.x * focus_surface_size.x
-		var surf_y := focus_mouse_uv.y * focus_surface_size.y
+		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 
 	if Input.is_action_just_pressed("left_click"):
@@ -357,7 +357,12 @@ func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -
 	# Mettre à jour le overlay 2D en mode focus
 	if focus_mode and id == focus_window_id:
 		focus_texture_rect.texture = texture
-		focus_surface_size = Vector2(width, height)
+		# Utiliser la taille réelle de la texture (pas width/height qui
+		# sont la taille du contenu). Dans le path Vulkan, le VkImage est
+		# alloué plus grand que le contenu (round_up_capture_size) — le
+		# UV est calculé depuis tex.get_size(), donc la conversion
+		# UV → surface doit utiliser la même base.
+		focus_surface_size = texture.get_size()
 		var geo := compositor.get_window_geometry(id)
 		focus_content_offset = Vector2(geo["x"], geo["y"])
 		focus_content_size = Vector2(geo["width"], geo["height"])
