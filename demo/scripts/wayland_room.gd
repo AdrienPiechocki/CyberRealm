@@ -50,6 +50,11 @@ var focus_content_offset := Vector2.ZERO
 var focus_content_size := Vector2.ZERO
 var focus_mouse_captured := false
 var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
+var focus_popup_rects: Dictionary = {} # popup_id (int) -> TextureRect overlay en mode focus
+
+# Info parent de chaque popup (pour créer les overlays focus quand on entre
+# en mode focus alors que des popups existent déjà).
+var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
 
 # PiP pinning: clones 2D des fenêtres épinglées dans le coin supérieur-gauche
 var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
@@ -159,6 +164,14 @@ func _enter_focus_mode(id: int) -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 
+	# Créer les overlays pour les popups déjà ouverts de cette fenêtre
+	for popup_id in popup_parent_info:
+		var info = popup_parent_info[popup_id]
+		if info.parent_window_id == focus_window_id or \
+			(info.parent_popup_id != -1 and focus_popup_rects.has(info.parent_popup_id)):
+			_create_focus_popup_overlay(popup_id, info.parent_window_id, info.parent_popup_id,
+				info.x, info.y, info.width, info.height)
+
 	# Bloquer le player
 	$Player.focus_mode_active = true
 
@@ -178,11 +191,80 @@ func _exit_focus_mode() -> void:
 	focus_window_id = -1
 	focus_mouse_captured = false
 
+	# Nettoyer les overlays popup du mode focus
+	for popup_id in focus_popup_rects:
+		if is_instance_valid(focus_popup_rects[popup_id]):
+			focus_popup_rects[popup_id].queue_free()
+	focus_popup_rects.clear()
+
 	# Restaurer la souris capturée
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 	# Débloquer le player
 	$Player.focus_mode_active = false
+
+func _compute_focus_displayed_info() -> Dictionary:
+	"""Calcule l'offset, la taille et le scale de la zone affichée du TextureRect focus."""
+	var tex := focus_texture_rect.texture
+	if not tex:
+		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
+	var tex_size := tex.get_size()
+	var tex_rect := focus_texture_rect.get_global_rect()
+	var aspect = tex_size.x / max(tex_size.y, 1.0)
+	var rect_aspect = tex_rect.size.x / max(tex_rect.size.y, 1.0)
+	var displayed_size: Vector2
+	if aspect > rect_aspect:
+		displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
+	else:
+		displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
+	var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
+	var scale := Vector2(displayed_size.x / max(tex_size.x, 1), displayed_size.y / max(tex_size.y, 1))
+	return {"offset": offset, "size": displayed_size, "scale": scale}
+
+func _create_focus_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, pw: int, ph: int) -> void:
+	"""Crée un TextureRect overlay pour un popup en mode focus."""
+	var popup_scale: Vector2
+	var popup_offset: Vector2
+
+	# Sous-menu: calculer la zone affichée du parent (STRETCH_KEEP_ASPECT_CENTERED
+	# centre la texture, donc la zone utile ≠ parent_rect.size).
+	if parent_popup_id != -1 and focus_popup_rects.has(parent_popup_id):
+		var parent_rect: TextureRect = focus_popup_rects[parent_popup_id]
+		var parent_tex := parent_rect.texture
+		if not parent_tex:
+			return
+		var pts := parent_tex.get_size()
+		var p_aspect = pts.x / max(pts.y, 1.0)
+		var pr_aspect = parent_rect.size.x / max(parent_rect.size.y, 1.0)
+		var p_displayed: Vector2
+		if p_aspect > pr_aspect:
+			p_displayed = Vector2(parent_rect.size.x, parent_rect.size.x / p_aspect)
+		else:
+			p_displayed = Vector2(parent_rect.size.y * p_aspect, parent_rect.size.y)
+		popup_scale = Vector2(p_displayed.x / max(pts.x, 1), p_displayed.y / max(pts.y, 1))
+		popup_offset = parent_rect.position + (parent_rect.size - p_displayed) / 2.0
+	elif focus_mode and parent_window_id == focus_window_id:
+		var info := _compute_focus_displayed_info()
+		popup_scale = info.scale
+		popup_offset = info.offset
+	else:
+		return
+
+	var popup_tex_rect := TextureRect.new()
+	popup_tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	popup_tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	popup_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	popup_tex_rect.size = Vector2(pw, ph) * popup_scale
+	popup_tex_rect.position = popup_offset + Vector2(x, y) * popup_scale
+	$Player/UI.add_child(popup_tex_rect)
+	focus_popup_rects[popup_id] = popup_tex_rect
+
+	# Appliquer la texture disponible dès maintenant
+	if popup_quads.has(popup_id) and is_instance_valid(popup_quads[popup_id]):
+		var quad: MeshInstance3D = popup_quads[popup_id]
+		var mat: ShaderMaterial = quad.material_override as ShaderMaterial
+		if mat:
+			popup_tex_rect.texture = mat.get_shader_parameter("window_texture")
 
 func _pin_window(id: int) -> void:
 	if pinned_windows.has(id):
@@ -491,11 +573,30 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 	parent_quad.add_child(quad)
 	popup_quads[id] = quad
 
+	# Stocker les infos parent pour le mode focus
+	popup_parent_info[id] = {
+		"parent_window_id": parent_window_id,
+		"parent_popup_id": parent_popup_id,
+		"x": x, "y": y, "width": width, "height": height
+	}
+
+	# Créer l'overlay focus si on est en mode focus et que ce popup
+	# appartient à la fenêtre focalisée
+	if focus_mode:
+		_create_focus_popup_overlay(id, parent_window_id, parent_popup_id, x, y, width, height)
+
 func _on_popup_unmapped(id: int) -> void:
 	if popup_quads.has(id):
 		if is_instance_valid(popup_quads[id]):
 			popup_quads[id].queue_free()
 		popup_quads.erase(id)
+	popup_parent_info.erase(id)
+
+	# Nettoyer l'overlay focus
+	if focus_popup_rects.has(id):
+		if is_instance_valid(focus_popup_rects[id]):
+			focus_popup_rects[id].queue_free()
+		focus_popup_rects.erase(id)
 
 func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	if not popup_quads.has(id) or not is_instance_valid(popup_quads[id]):
@@ -523,6 +624,36 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 		var col: CollisionShape3D = body.get_child(0)
 		var shape: BoxShape3D = col.shape
 		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
+
+	# Mettre à jour l'overlay focus si le popup est affiché en mode focus
+	if focus_popup_rects.has(id) and is_instance_valid(focus_popup_rects[id]):
+		var popup_tex_rect: TextureRect = focus_popup_rects[id]
+		popup_tex_rect.texture = texture
+		# Recalculer la taille avec le scale du parent
+		if popup_parent_info.has(id):
+			var info = popup_parent_info[id]
+			var popup_scale := Vector2.ONE
+			var popup_offset := Vector2.ZERO
+			if info.parent_popup_id != -1 and focus_popup_rects.has(info.parent_popup_id):
+				var parent_rect: TextureRect = focus_popup_rects[info.parent_popup_id]
+				var parent_tex := parent_rect.texture
+				if parent_tex:
+					var pts := parent_tex.get_size()
+					var p_aspect = pts.x / max(pts.y, 1.0)
+					var pr_aspect = parent_rect.size.x / max(parent_rect.size.y, 1.0)
+					var p_displayed: Vector2
+					if p_aspect > pr_aspect:
+						p_displayed = Vector2(parent_rect.size.x, parent_rect.size.x / p_aspect)
+					else:
+						p_displayed = Vector2(parent_rect.size.y * p_aspect, parent_rect.size.y)
+					popup_scale = Vector2(p_displayed.x / max(pts.x, 1), p_displayed.y / max(pts.y, 1))
+					popup_offset = parent_rect.position + (parent_rect.size - p_displayed) / 2.0
+			elif focus_mode and focus_window_id == info.parent_window_id:
+				var fi := _compute_focus_displayed_info()
+				popup_scale = fi.scale
+				popup_offset = fi.offset
+			popup_tex_rect.size = Vector2(info.width, info.height) * popup_scale
+			popup_tex_rect.position = popup_offset + Vector2(info.x, info.y) * popup_scale
 
 # La fenêtre glisse le long de son propre plan d'orientation initial.
 func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
