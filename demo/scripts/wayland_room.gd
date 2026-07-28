@@ -72,9 +72,9 @@ const PIN_MARGIN := 8
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
 
-# Toast notification for favorites quick-launch
-var toast_label: Label
-var toast_tween: Tween
+# Toast notifications — pile d'alertes
+var toasts: Array[Dictionary] = []
+var toast_spacing := 44
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
@@ -122,6 +122,7 @@ func _ready() -> void:
 	compositor.pointer_lock_changed.connect(_on_pointer_lock_changed)
 	compositor.drag_icon_updated.connect(_on_drag_icon_updated)
 	compositor.drag_icon_removed.connect(_on_drag_icon_removed)
+	compositor.notification_received.connect(_on_notification_received)
 	compositor.start_headless()
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
@@ -134,6 +135,7 @@ func _ready() -> void:
 	window_menu.action_focus.connect(_on_window_menu_focus)
 	window_menu.action_toggle_hide.connect(_on_window_menu_toggle_hide)
 	window_menu.action_find.connect(_on_window_menu_find)
+	window_menu.action_pin.connect(_on_window_menu_pin)
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 
@@ -181,29 +183,7 @@ func _ready() -> void:
 	drag_icon_rect.z_index = 100
 	$Player/UI.add_child(drag_icon_rect)
 
-	# Toast notification pour les favoris
-	toast_label = Label.new()
-	toast_label.visible = false
-	toast_label.z_index = 50
-	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	toast_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	toast_label.add_theme_font_size_override("font_size", 16)
-	toast_label.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
-	var toast_bg := StyleBoxFlat.new()
-	toast_bg.bg_color = Color(0.1, 0.1, 0.14, 0.9)
-	toast_bg.corner_radius_top_left = 6
-	toast_bg.corner_radius_top_right = 6
-	toast_bg.corner_radius_bottom_left = 6
-	toast_bg.corner_radius_bottom_right = 6
-	toast_bg.content_margin_left = 16
-	toast_bg.content_margin_right = 16
-	toast_bg.content_margin_top = 6
-	toast_bg.content_margin_bottom = 6
-	toast_label.add_theme_stylebox_override("normal", toast_bg)
-	toast_label.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	toast_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-	toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	$Player/UI.add_child(toast_label)
+	# Toast notifications — rien à initialiser, créé à la volée
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -1257,6 +1237,13 @@ func _update_xray(delta: float) -> void:
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
 
+func _on_window_menu_pin(wid: int) -> void:
+	if pinned_windows.has(wid):
+		_unpin_window(wid)
+	else:
+		_pin_window(wid)
+	window_menu.hide_menu()
+
 func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -1269,19 +1256,72 @@ func _on_pause_menu_visibility_changed() -> void:
 		if focus_mode:
 			_exit_focus_mode()
 
+func _on_notification_received(app_name: String, summary: String, body: String, app_icon: String, urgency: int) -> void:
+	var text := ""
+	if summary != "":
+		text = summary
+		if body != "":
+			text += ": " + body
+	elif body != "":
+		text = body
+	else:
+		text = "Notification"
+	if app_icon != "":
+		text = "[ " + app_name + " ] " + text
+	if urgency == 2:
+		text = "⚠ " + text
+	_show_toast(text)
+
 func _show_toast(text: String) -> void:
-	if toast_tween and toast_tween.is_valid():
-		toast_tween.kill()
-	toast_label.text = text
-	toast_label.visible = true
-	toast_label.modulate.a = 1.0
-	toast_label.reset_size()
-	var vp_size := get_viewport().get_visible_rect().size
-	toast_label.position = Vector2(
-		(vp_size.x - toast_label.size.x) / 2.0,
-		vp_size.y - 80
-	)
-	toast_tween = create_tween()
-	toast_tween.tween_interval(1.2)
-	toast_tween.tween_property(toast_label, "modulate:a", 0.0, 0.4)
-	toast_tween.tween_callback(func(): toast_label.visible = false)
+	var label := Label.new()
+	label.text = text
+	label.z_index = 50
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.add_theme_font_size_override("font_size", 16)
+	label.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.1, 0.1, 0.14, 0.9)
+	bg.corner_radius_top_left = 6
+	bg.corner_radius_top_right = 6
+	bg.corner_radius_bottom_left = 6
+	bg.corner_radius_bottom_right = 6
+	bg.content_margin_left = 16
+	bg.content_margin_right = 16
+	bg.content_margin_top = 6
+	bg.content_margin_bottom = 6
+	label.add_theme_stylebox_override("normal", bg)
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	$Player/UI.add_child(label)
+
+	var vp := get_viewport().get_visible_rect().size
+	label.reset_size()
+	var y_base := vp.y - 80
+
+	# Pousser les toasts existants vers le haut (uniquement le tween position)
+	var entry := {label = label, pos_tween = null, life_tween = null}
+	for t in toasts:
+		if is_instance_valid(t.label):
+			var off = t.label.position.y - toast_spacing
+			if t.pos_tween and t.pos_tween.is_valid():
+				t.pos_tween.kill()
+			t.pos_tween = create_tween().set_trans(Tween.TRANS_CUBIC)
+			t.pos_tween.tween_property(t.label, "position:y", off, 0.25)
+	toasts.append(entry)
+
+	label.position = Vector2((vp.x - label.size.x) / 2.0, y_base)
+	label.modulate.a = 1.0
+
+	# Cycle de vie (jamais tué) : attendre → fondre → supprimer
+	entry.life_tween = create_tween().set_trans(Tween.TRANS_CUBIC)
+	entry.life_tween.tween_interval(2.0)
+	entry.life_tween.tween_property(label, "modulate:a", 0.0, 0.5)
+	entry.life_tween.tween_callback(_remove_toast.bind(label))
+
+func _remove_toast(label: Label) -> void:
+	if not is_instance_valid(label): return
+	label.queue_free()
+	for i in toasts.size():
+		if toasts[i].label == label:
+			toasts.remove_at(i)
+			break

@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <vector>
 #include <unistd.h>
+#include <fcntl.h>
+#include <signal.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
@@ -162,6 +164,13 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::INT, "width"),
         PropertyInfo(Variant::INT, "height")));
     ADD_SIGNAL(MethodInfo("drag_icon_removed"));
+
+    ADD_SIGNAL(MethodInfo("notification_received",
+        PropertyInfo(Variant::STRING, "app_name"),
+        PropertyInfo(Variant::STRING, "summary"),
+        PropertyInfo(Variant::STRING, "body"),
+        PropertyInfo(Variant::STRING, "app_icon"),
+        PropertyInfo(Variant::INT, "urgency")));
 }
 
 WlrCompositor::WlrCompositor() {
@@ -202,6 +211,8 @@ WlrCompositor::~WlrCompositor() {
         waitpid(pid, &status, WNOHANG);
     }
     child_pids.clear();
+
+    shutdown_dbus_notif_listener();
 }
 
 uint32_t WlrCompositor::get_time_msec() {
@@ -1527,6 +1538,8 @@ void WlrCompositor::start_headless() {
     setenv("WAYLAND_DISPLAY", socket, 1);
     setenv("XDG_CURRENT_DESKTOP", portal_backend.utf8().get_data(), 1);
 
+    init_dbus_notif_listener();
+
     if (!polkit_agent_path.is_empty()) {
         launch_polkit_agent();
     }
@@ -1550,6 +1563,8 @@ void WlrCompositor::_process(double delta) {
 
     wl_event_loop_dispatch(event_loop, 0);
     if (display) wl_display_flush_clients(display);
+
+    poll_dbus();
 
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1971,4 +1986,187 @@ void WlrCompositor::apply_content_opacity(uint8_t *dst, int w, int h, const wlr_
             }
         }
     }
+}
+
+// =====================================================================
+// Écouteur D-Bus — utilise dbus-monitor en sous-processus pour
+// intercepter Notify sans conflit avec le daemon existant (Plasma).
+// =====================================================================
+
+void WlrCompositor::init_dbus_notif_listener() {
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        UtilityFunctions::printerr("waylandgodot: pipe échoué");
+        return;
+    }
+    fcntl(pipefd[0], F_SETFD, FD_CLOEXEC);
+    fcntl(pipefd[1], F_SETFD, FD_CLOEXEC);
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        UtilityFunctions::printerr("waylandgodot: fork échoué");
+        close(pipefd[0]); close(pipefd[1]);
+        return;
+    }
+
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        execlp("dbus-monitor", "dbus-monitor", "--session",
+               "interface='org.freedesktop.Notifications'", (char *)NULL);
+        _exit(127);
+    }
+
+    close(pipefd[1]);
+    notif_mon_fd = pipefd[0];
+    notif_mon_pid = pid;
+
+    int fl = fcntl(notif_mon_fd, F_GETFL, 0);
+    fcntl(notif_mon_fd, F_SETFL, fl | O_NONBLOCK);
+
+    // Reset parser state
+    notif_buf.clear();
+    notif_parse_state = 0;
+    notif_arg_idx = 0;
+
+    UtilityFunctions::print("waylandgodot: notif dbus-monitor (pid ", pid, ")");
+}
+
+void WlrCompositor::shutdown_dbus_notif_listener() {
+    if (notif_mon_pid > 0) {
+        kill(notif_mon_pid, SIGTERM);
+        waitpid(notif_mon_pid, nullptr, WNOHANG);
+        notif_mon_pid = -1;
+    }
+    if (notif_mon_fd >= 0) {
+        close(notif_mon_fd);
+        notif_mon_fd = -1;
+    }
+    notif_buf.clear();
+    notif_parse_state = 0;
+    notif_depth = 0;
+}
+
+void WlrCompositor::poll_dbus() {
+    if (notif_mon_fd < 0) return;
+
+    char raw[4097];
+    ssize_t n = read(notif_mon_fd, raw, 4096);
+    if (n > 0) {
+        notif_buf.append(raw, n);
+        size_t pos;
+        while ((pos = notif_buf.find('\n')) != std::string::npos) {
+            std::string line = notif_buf.substr(0, pos);
+            notif_buf.erase(0, pos + 1);
+            feed_notif_line(line);
+        }
+    } else if (n == 0) {
+        UtilityFunctions::print("waylandgodot: dbus-monitor terminé");
+        close(notif_mon_fd);
+        notif_mon_fd = -1;
+        notif_mon_pid = -1;
+    }
+    // Flush la notification en attente si le message est complet
+    if (notif_pending && !notif_emitted)
+        emit_pending_notif();
+}
+
+void WlrCompositor::feed_notif_line(const std::string &line) {
+    bool is_header = !line.empty() && line[0] != ' ' && line[0] != '\t' && line[0] != '\r';
+
+    if (is_header) {
+        if (notif_pending)
+            emit_pending_notif();
+        notif_parse_state = 0;
+        notif_arg_idx = 0;
+        notif_depth = 0;
+
+        if (line.find("member=Notify") != std::string::npos) {
+            notif_parse_state = 1;
+            notif_emitted = 0;
+            notif_pending = 0;
+            notif_app_name.clear();
+            notif_summary.clear();
+            notif_body.clear();
+            notif_icon.clear();
+            notif_urgency = 1;
+            notif_urgency_pending = 0;
+        }
+        return;
+    }
+
+    if (notif_parse_state == 0) return;
+
+    // Urgence : string "urgency" → variant → byte N (même à l'intérieur des dicts)
+    if (notif_parse_state >= 2) {
+        if (line.find("string \"urgency\"") != std::string::npos)
+            notif_urgency_pending = 1;
+        if (notif_urgency_pending == 1 && line.find("variant") != std::string::npos)
+            notif_urgency_pending = 2;
+        if (notif_urgency_pending == 2) {
+            size_t bp = line.find("byte ");
+            if (bp != std::string::npos) {
+                notif_urgency = std::atoi(line.c_str() + bp + 5);
+                notif_urgency_pending = 0;
+            }
+        }
+        // variant             byte N sur la même ligne
+        size_t vp = line.find("variant");
+        if (vp != std::string::npos) {
+            size_t bp = line.find("byte ", vp + 7);
+            if (bp != std::string::npos)
+                notif_urgency = std::atoi(line.c_str() + bp + 5);
+        }
+    }
+
+    for (char c : line) {
+        if (c == '[' || c == '(') notif_depth++;
+        if (c == ']' || c == ')') notif_depth--;
+    }
+    if (notif_depth < 0) notif_depth = 0;
+
+    if (notif_parse_state == 1)
+        notif_parse_state = 2;
+
+    if (notif_depth > 0) return;
+
+    size_t s;
+
+    if ((s = line.find("string \"")) != std::string::npos) {
+        size_t start = line.find('"', s + 7);
+        size_t end = start != std::string::npos ? line.find('"', start + 1) : std::string::npos;
+        if (start != std::string::npos && end != std::string::npos) {
+            std::string val = line.substr(start + 1, end - start - 1);
+            if (notif_arg_idx == 0) notif_app_name = val;
+            else if (notif_arg_idx == 2) notif_icon = val;
+            else if (notif_arg_idx == 3) notif_summary = val;
+            else if (notif_arg_idx == 4) {
+                notif_body = val;
+                notif_pending = 1;
+                notif_arg_idx = 0;
+            }
+        }
+        if (notif_parse_state != 0)
+            notif_arg_idx++;
+        return;
+    }
+
+    if (line.find("uint32 ") == 3 || line.find("int32 ") == 3 ||
+        line.find("boolean ") == 3 || line.find("byte ") == 3) {
+        notif_arg_idx++;
+        return;
+    }
+}
+
+void WlrCompositor::emit_pending_notif() {
+    if (notif_app_name.empty() && notif_summary.empty()) return;
+    emit_signal("notification_received",
+        String(notif_app_name.c_str()),
+        String(notif_summary.c_str()),
+        String(notif_body.c_str()),
+        String(notif_icon.c_str()),
+        notif_urgency);
+    notif_emitted = 1;
+    notif_pending = 0;
 }

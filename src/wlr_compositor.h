@@ -10,6 +10,8 @@
 
 #include <unordered_map>
 
+#include <string>
+
 #include "vulkan_dmauf.h"
 
 extern "C" {
@@ -257,6 +259,27 @@ class WlrCompositor : public Node {
     String polkit_agent_path = "";
     pid_t polkit_agent_pid = -1;
     void launch_polkit_agent();
+
+    // --- Notification monitor (dbus-monitor subprocess) -----------------
+    int notif_mon_fd = -1;
+    pid_t notif_mon_pid = -1;
+    std::string notif_buf;
+    int notif_parse_state = 0; // 0=idle 1=header_seen 2=in_args
+    int notif_arg_idx = 0;
+    int notif_depth = 0;
+    std::string notif_app_name;
+    std::string notif_summary;
+    std::string notif_body;
+    std::string notif_icon;
+    int notif_urgency = 1;
+    int notif_urgency_pending = 0;
+    int notif_emitted = 0;
+    int notif_pending = 0;
+    void init_dbus_notif_listener();
+    void shutdown_dbus_notif_listener();
+    void poll_dbus();
+    void feed_notif_line(const std::string &line);
+    void emit_pending_notif();
 
     // --- Child processes ------------------------------------------------
     std::vector<pid_t> child_pids;
