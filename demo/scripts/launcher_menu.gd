@@ -19,6 +19,10 @@ var category_buttons: Dictionary = {} # category_label -> Array[Button]
 var category_expanded: Dictionary = {} # category_label -> bool
 var terminal_emulator: String = ""
 
+var navigable_items: Array[Control] = []
+var selected_idx: int = -1
+var selected_style: StyleBoxFlat
+
 func _ready() -> void:
 	visible = false
 	_detect_terminal()
@@ -26,6 +30,17 @@ func _ready() -> void:
 	search_input.text_changed.connect(_on_search_changed)
 	_build_ui()
 	_apply_styling()
+
+	selected_style = StyleBoxFlat.new()
+	selected_style.bg_color = Color(0.2, 0.3, 0.5, 0.9)
+	selected_style.corner_radius_top_left = 3
+	selected_style.corner_radius_top_right = 3
+	selected_style.corner_radius_bottom_left = 3
+	selected_style.corner_radius_bottom_right = 3
+	selected_style.content_margin_left = 12
+	selected_style.content_margin_right = 10
+	selected_style.content_margin_top = 2
+	selected_style.content_margin_bottom = 2
 
 func _detect_terminal() -> void:
 	for term in TERMINAL_WRAPPERS:
@@ -185,6 +200,7 @@ func _build_ui() -> void:
 		header.add_theme_stylebox_override("normal", header_style)
 		header.add_theme_stylebox_override("hover", header_style)
 		header.mouse_filter = Control.MOUSE_FILTER_STOP
+		header.set_meta("normal_style", header_style)
 
 		var cat_label = cat
 		header.gui_input.connect(func(event: InputEvent):
@@ -192,10 +208,14 @@ func _build_ui() -> void:
 				_toggle_category(cat_label)
 		)
 		header.mouse_entered.connect(func():
+			if navigable_items.find(header) == selected_idx:
+				return
 			header.add_theme_stylebox_override("normal", header_style.duplicate())
 			(header.get_theme_stylebox("normal") as StyleBoxFlat).bg_color = Color(0.22, 0.22, 0.3, 0.9)
 		)
 		header.mouse_exited.connect(func():
+			if navigable_items.find(header) == selected_idx:
+				return
 			header.add_theme_stylebox_override("normal", header_style)
 		)
 
@@ -223,6 +243,7 @@ func _build_ui() -> void:
 			btn_style.content_margin_top = 2
 			btn_style.content_margin_bottom = 2
 			btn.add_theme_stylebox_override("normal", btn_style)
+			btn.set_meta("normal_style", btn_style)
 
 			var hover_style := btn_style.duplicate()
 			hover_style.bg_color = Color(0.25, 0.25, 0.35, 0.8)
@@ -240,6 +261,29 @@ func _build_ui() -> void:
 			app_list.add_child(btn)
 			category_buttons[cat].append(btn)
 
+func _rebuild_navigable_list() -> void:
+	navigable_items.clear()
+	for child in app_list.get_children():
+		if child.visible:
+			navigable_items.append(child)
+
+func _select_item(idx: int) -> void:
+	if selected_idx >= 0 and selected_idx < navigable_items.size():
+		var old: Control = navigable_items[selected_idx]
+		var normal = old.get_meta("normal_style")
+		old.add_theme_stylebox_override("normal", normal)
+		if old is Label:
+			old.add_theme_stylebox_override("hover", normal)
+
+	selected_idx = idx
+
+	if selected_idx >= 0 and selected_idx < navigable_items.size():
+		var new: Control = navigable_items[selected_idx]
+		new.add_theme_stylebox_override("normal", selected_style)
+		if new is Label:
+			new.add_theme_stylebox_override("hover", selected_style)
+		scroll.ensure_control_visible(new)
+
 func _toggle_category(cat: String) -> void:
 	category_expanded[cat] = not category_expanded[cat]
 	var expanded: bool = category_expanded[cat]
@@ -249,6 +293,7 @@ func _toggle_category(cat: String) -> void:
 	header.text = prefix + cat + "  (" + str(count) + ")"
 	for btn in category_buttons[cat]:
 		btn.visible = expanded
+	_rebuild_navigable_list()
 
 func _on_app_clicked(command: String) -> void:
 	app_launch.emit(command)
@@ -268,6 +313,9 @@ func _on_search_changed(query: String) -> void:
 		if not header_visible:
 			for btn in category_buttons[cat]:
 				btn.visible = false
+	_rebuild_navigable_list()
+	if q != "":
+		_select_item(-1)
 
 func toggle_menu() -> void:
 	if visible:
@@ -279,18 +327,68 @@ func show_menu() -> void:
 	visible = true
 	search_input.text = ""
 	_on_search_changed("")
+	_select_item(-1)
 	search_input.grab_focus()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func hide_menu() -> void:
 	visible = false
+	_select_item(-1)
 	search_input.text = ""
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
-	if event is InputEventKey and event.pressed:
-		if event.keycode == KEY_ESCAPE:
-			hide_menu()
-			get_viewport().set_input_as_handled()
+	if not (event is InputEventKey and event.pressed):
+		return
+	if event.keycode == KEY_ESCAPE:
+		hide_menu()
+		get_viewport().set_input_as_handled()
+		return
+
+	_rebuild_navigable_list()
+
+	if event.keycode == KEY_DOWN:
+		if selected_idx < 0:
+			if navigable_items.size() > 0:
+				_select_item(0)
+		elif selected_idx < navigable_items.size() - 1:
+			_select_item(selected_idx + 1)
+		get_viewport().set_input_as_handled()
+
+	elif event.keycode == KEY_UP:
+		if selected_idx > 0:
+			_select_item(selected_idx - 1)
+		elif selected_idx == 0:
+			_select_item(-1)
+			search_input.grab_focus()
+		get_viewport().set_input_as_handled()
+
+	elif event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
+		if selected_idx >= 0 and selected_idx < navigable_items.size():
+			var item := navigable_items[selected_idx]
+			if item is Label:
+				var cat := ""
+				for k in category_headers:
+					if category_headers[k] == item:
+						cat = k
+						break
+				if cat != "":
+					_toggle_category(cat)
+					_rebuild_navigable_list()
+					if selected_idx >= navigable_items.size():
+						_select_item(maxi(navigable_items.size() - 1, 0))
+					elif selected_idx >= 0:
+						_select_item(selected_idx)
+			elif item is Button:
+				item.pressed.emit()
+		get_viewport().set_input_as_handled()
+
+	elif event.unicode > 0 and event.unicode != 32 and not event.ctrl_pressed and not event.meta_pressed:
+		_select_item(-1)
+		search_input.grab_focus()
+		search_input.text += String.chr(event.unicode)
+		search_input.caret_position = search_input.text.length()
+		_on_search_changed(search_input.text)
+		get_viewport().set_input_as_handled()
