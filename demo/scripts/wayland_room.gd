@@ -66,6 +66,10 @@ const PIN_MARGIN := 8
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
 
+# Toast notification for favorites quick-launch
+var toast_label: Label
+var toast_tween: Tween
+
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
@@ -140,6 +144,30 @@ func _ready() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.z_index = 100
 	$Player/UI.add_child(drag_icon_rect)
+
+	# Toast notification pour les favoris
+	toast_label = Label.new()
+	toast_label.visible = false
+	toast_label.z_index = 50
+	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	toast_label.add_theme_font_size_override("font_size", 16)
+	toast_label.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
+	var toast_bg := StyleBoxFlat.new()
+	toast_bg.bg_color = Color(0.1, 0.1, 0.14, 0.9)
+	toast_bg.corner_radius_top_left = 6
+	toast_bg.corner_radius_top_right = 6
+	toast_bg.corner_radius_bottom_left = 6
+	toast_bg.corner_radius_bottom_right = 6
+	toast_bg.content_margin_left = 16
+	toast_bg.content_margin_right = 16
+	toast_bg.content_margin_top = 6
+	toast_bg.content_margin_bottom = 6
+	toast_label.add_theme_stylebox_override("normal", toast_bg)
+	toast_label.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	toast_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	$Player/UI.add_child(toast_label)
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -1054,6 +1082,19 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:
+	# Quick-launch favoris F1-F12 (hors launcher, hors focus, hors interact)
+	if not launcher_menu.visible and not focus_mode and not interact_mode_active:
+		if event is InputEventKey and event.pressed and not event.echo:
+			if event.keycode >= KEY_F1 and event.keycode <= KEY_F12:
+				var slot = event.keycode - KEY_F1 + 1
+				if slot >= 1 and slot <= 12:
+					var fav = launcher_menu.get_favorite(slot)
+					if fav.size() > 0:
+						compositor.launch_app(fav["exec"])
+						_show_toast("F" + str(slot) + "  →  " + fav["name"])
+						get_viewport().set_input_as_handled()
+						return
+
 	# En mode focus, forward le clavier et tracker la souris capturée
 	if focus_mode and focus_window_id != -1:
 		if event is InputEventKey:
@@ -1112,3 +1153,20 @@ func _on_drag_icon_updated(texture: Texture2D, width: int, height: int) -> void:
 func _on_drag_icon_removed() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.texture = null
+
+func _show_toast(text: String) -> void:
+	if toast_tween and toast_tween.is_valid():
+		toast_tween.kill()
+	toast_label.text = text
+	toast_label.visible = true
+	toast_label.modulate.a = 1.0
+	toast_label.reset_size()
+	var vp_size := get_viewport().get_visible_rect().size
+	toast_label.position = Vector2(
+		(vp_size.x - toast_label.size.x) / 2.0,
+		vp_size.y - 80
+	)
+	toast_tween = create_tween()
+	toast_tween.tween_interval(1.2)
+	toast_tween.tween_property(toast_label, "modulate:a", 0.0, 0.4)
+	toast_tween.tween_callback(func(): toast_label.visible = false)

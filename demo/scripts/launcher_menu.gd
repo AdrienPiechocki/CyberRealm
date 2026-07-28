@@ -23,6 +23,10 @@ var navigable_items: Array[Control] = []
 var selected_idx: int = -1
 var selected_style: StyleBoxFlat
 
+var favorites: Dictionary = {} # slot (1-12) -> {"name": String, "exec": String}
+var favorites_bar: HBoxContainer
+var favorites_bar_labels: Dictionary = {} # slot -> Label
+
 func _ready() -> void:
 	visible = false
 	_detect_terminal()
@@ -41,6 +45,10 @@ func _ready() -> void:
 	selected_style.content_margin_right = 10
 	selected_style.content_margin_top = 2
 	selected_style.content_margin_bottom = 2
+
+	_load_favorites()
+	_update_favorite_indicators()
+	_build_favorites_bar()
 
 func _detect_terminal() -> void:
 	for term in TERMINAL_WRAPPERS:
@@ -255,8 +263,15 @@ func _build_ui() -> void:
 
 			btn.add_theme_font_size_override("font_size", 15)
 
+			btn.set_meta("app_name", entry["name"])
+			btn.set_meta("app_exec", entry["exec"])
 			var cmd = entry["exec"]
 			btn.pressed.connect(func(): _on_app_clicked(cmd))
+			btn.gui_input.connect(func(event: InputEvent):
+				if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
+					_show_fav_popup(btn, event.global_position)
+					get_viewport().set_input_as_handled()
+			)
 			btn.visible = false
 			app_list.add_child(btn)
 			category_buttons[cat].append(btn)
@@ -283,6 +298,143 @@ func _select_item(idx: int) -> void:
 		if new is Label:
 			new.add_theme_stylebox_override("hover", selected_style)
 		scroll.ensure_control_visible(new)
+
+func _load_favorites() -> void:
+	var f := FileAccess.open("user://favorites.json", FileAccess.READ)
+	if f == null:
+		return
+	var text := f.get_as_text()
+	f.close()
+	var parsed = JSON.parse_string(text)
+	if parsed is Dictionary:
+		for key in parsed:
+			var slot := int(key)
+			if slot >= 1 and slot <= 12 and parsed[key] is Dictionary:
+				favorites[slot] = parsed[key]
+
+func _save_favorites() -> void:
+	var f := FileAccess.open("user://favorites.json", FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify(favorites))
+	f.close()
+
+func get_favorite(slot: int) -> Dictionary:
+	return favorites.get(slot, {})
+
+func _toggle_favorite(slot: int) -> void:
+	if selected_idx < 0 or selected_idx >= navigable_items.size():
+		return
+	var item := navigable_items[selected_idx]
+	if not item is Button:
+		return
+	var app_name: String = item.get_meta("app_name", "")
+	var app_exec: String = item.get_meta("app_exec", "")
+	if app_name == "" or app_exec == "":
+		return
+
+	if favorites.has(slot) and favorites[slot]["exec"] == app_exec:
+		favorites.erase(slot)
+	else:
+		favorites[slot] = {"name": app_name, "exec": app_exec}
+	_save_favorites()
+	_update_favorite_indicators()
+	_update_favorites_bar()
+
+func _show_fav_popup(btn: Button, pos: Vector2) -> void:
+	var popup := PopupMenu.new()
+	var app_name: String = btn.get_meta("app_name", "")
+	var app_exec: String = btn.get_meta("app_exec", "")
+	for slot in range(1, 13):
+		var label := "F" + str(slot)
+		if favorites.has(slot):
+			if favorites[slot]["exec"] == app_exec:
+				label += "  ✓  " + favorites[slot]["name"] + "  (retirer)"
+			else:
+				label += "  →  " + favorites[slot]["name"]
+		else:
+			label += "  (vide)"
+		popup.add_item(label, slot)
+	popup.id_pressed.connect(func(id: int):
+		var slot := id
+		if favorites.has(slot) and favorites[slot]["exec"] == app_exec:
+			favorites.erase(slot)
+		else:
+			favorites[slot] = {"name": app_name, "exec": app_exec}
+		_save_favorites()
+		_update_favorite_indicators()
+		_update_favorites_bar()
+		popup.queue_free()
+	)
+	popup.popup_hide.connect(func(): popup.queue_free())
+	popup.position = Vector2i(pos)
+	popup.min_size = Vector2i(280, 0)
+	add_child(popup)
+	popup.popup()
+
+func _update_favorite_indicators() -> void:
+	for cat in category_buttons:
+		for btn in category_buttons[cat]:
+			var app_exec: String = btn.get_meta("app_exec", "")
+			var slot_label := ""
+			for slot in favorites:
+				if favorites[slot]["exec"] == app_exec:
+					slot_label = "  ★ F" + str(slot)
+					break
+			btn.text = "    " + btn.get_meta("app_name", "") + slot_label
+
+func _build_favorites_bar() -> void:
+	favorites_bar = HBoxContainer.new()
+	favorites_bar.alignment = BoxContainer.ALIGNMENT_CENTER
+	favorites_bar.add_theme_constant_override("separation", 6)
+
+	var bar_bg := StyleBoxFlat.new()
+	bar_bg.bg_color = Color(0.06, 0.06, 0.08, 0.85)
+	bar_bg.border_color = Color(0.25, 0.25, 0.3)
+	bar_bg.border_width_top = 1
+	bar_bg.border_width_bottom = 0
+	bar_bg.border_width_left = 0
+	bar_bg.border_width_right = 0
+	bar_bg.content_margin_left = 10
+	bar_bg.content_margin_right = 10
+	bar_bg.content_margin_top = 4
+	bar_bg.content_margin_bottom = 4
+	favorites_bar.add_theme_stylebox_override("panel", bar_bg)
+
+	favorites_bar.anchors_preset = Control.PRESET_BOTTOM_WIDE
+	favorites_bar.offset_top = -30
+	favorites_bar.offset_bottom = 0
+	favorites_bar.offset_left = 0
+	favorites_bar.offset_right = 0
+	favorites_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	get_parent().add_child.call_deferred(favorites_bar)
+	_update_favorites_bar()
+
+func _update_favorites_bar() -> void:
+	for child in favorites_bar.get_children():
+		child.queue_free()
+	favorites_bar_labels.clear()
+
+	var has_any := false
+	for slot in range(1, 13):
+		if favorites.has(slot):
+			has_any = true
+			var fav: Dictionary = favorites[slot]
+			var lbl := Label.new()
+			lbl.text = "F" + str(slot) + " " + fav["name"]
+			lbl.add_theme_font_size_override("font_size", 12)
+			lbl.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85, 0.9))
+			lbl.tooltip_text = fav["exec"]
+			favorites_bar.add_child(lbl)
+			favorites_bar_labels[slot] = lbl
+
+	if not has_any:
+		var hint := Label.new()
+		hint.text = "F1-F12 dans le launcher pour assigner des favoris"
+		hint.add_theme_font_size_override("font_size", 11)
+		hint.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.6))
+		favorites_bar.add_child(hint)
 
 func _toggle_category(cat: String) -> void:
 	category_expanded[cat] = not category_expanded[cat]
@@ -365,7 +517,7 @@ func _input(event: InputEvent) -> void:
 			search_input.grab_focus()
 		get_viewport().set_input_as_handled()
 
-	elif event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
+	elif event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER or event.keycode == KEY_RIGHT:
 		if selected_idx >= 0 and selected_idx < navigable_items.size():
 			var item := navigable_items[selected_idx]
 			if item is Label:
@@ -389,6 +541,12 @@ func _input(event: InputEvent) -> void:
 		_select_item(-1)
 		search_input.grab_focus()
 		search_input.text += String.chr(event.unicode)
-		search_input.caret_position = search_input.text.length()
+		search_input.caret_column = search_input.text.length()
 		_on_search_changed(search_input.text)
+		get_viewport().set_input_as_handled()
+
+	elif event.keycode >= KEY_F1 and event.keycode <= KEY_F12:
+		var slot = event.keycode - KEY_F1 + 1
+		if slot >= 1 and slot <= 12:
+			_toggle_favorite(slot)
 		get_viewport().set_input_as_handled()
