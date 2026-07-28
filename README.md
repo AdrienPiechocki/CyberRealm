@@ -1,184 +1,284 @@
-# Wayland-Godot — GDExtension compositeur Wayland
+# Wayland-Godot — Wayland Compositor as a Godot GDExtension
 
-Un compositeur Wayland complet implémenté comme GDExtension Godot 4, utilisant
-wlroots 0.18 en backend. Les fenêtres Wayland sont rendues en 3D dans une scène
-Godot avec gestion complète du clavier, de la souris, des popups, et d'un mode
-focus plein écran.
+A full-featured Wayland compositor implemented as a Godot 4 GDExtension plugin. Uses **wlroots 0.18** as the compositor backend and renders Wayland windows as textured 3D quads inside a Godot scene. No physical display required — runs headless with `wlr_headless_backend`.
+
+---
 
 ## Build
 
 ```bash
-# Dépendances (Arch Linux)
+# Dependencies (Arch Linux)
 sudo pacman -S wlroots0.18 wayland wayland-protocols pixman libdrm \
-               libinput xkbcommon scons pkgconf
+               libinput xkbcommon scons pkgconf vulkan-icd-loader
 
-# godot-cpp en submodule
+# Godot-cpp submodule
 git submodule update --init --recursive
 
-scons platform=linux target=template_debug
+scons target=template_debug
 ```
 
-La bibliothèque compilée atterrit dans `demo/bin/`. Ouvrez `demo/` comme projet
-Godot 4.2+ pour tester `wayland_room.gd`.
+The built shared library lands in `demo/bin/`. Open `demo/` as a Godot 4.2+ project and run `wayland_room.gd`.
 
 ---
 
-## Protocoles Wayland supportés
+## Features
 
-| Protocole | Description |
-|---|---|
-| `wl_compositor` (v6) | Gestion des surfaces |
-| `wl_seat` | Abstraction périphériques d'entrée (pointeur + clavier) |
-| `wl_data_device_manager` | Presse-papiers / drag-and-drop |
-| `wl_primary_selection_v1` | Sélection primaire (clic-milieu) |
-| `wl_subcompositor` | Sous-surfaces (requis pour Firefox WebRender) |
-| `wl_viewporter` | Viewport/cropping de surfaces |
-| `linux_dmabuf_v1` (v4) | Partage de buffers DMA-BUF (clients GPU) |
-| `xdg_shell` (v3) | Fenêtres toplevel + popups (dont popups imbriquées) |
-| `zwp_pointer_constraints_v1` | Verrouillage/confinement du pointeur (jeux FPS) |
-| `zwp_relative_pointer_v1` | Événements de mouvement relatif (jeux FPS) |
+### Compositor Core (C++, wlroots 0.18)
 
----
+- **Headless backend** — `wlr_headless_backend_create()`, no physical display or GPU output needed
+- **Fake output** — 1280x720 output committed at up to 120 FPS
+- **Wayland protocols supported:**
 
-## Pipeline de rendu (3 niveaux, auto-négocié)
-
-### 1. Vulkan Zero-Copy (préféré)
-- wlroots rend via EGL/GLES2 vers un buffer offscreen DMA-BUF
-- Le fd DMA-BUF est importé dans le Vulkan de Godot via `VK_KHR_external_memory_fd`
-- Crée un `VkImage` (tiling LINEAR) + `VkDeviceMemory` liés au DMA-BUF importé
-- Wrappé en RID Godot via `texture_create_from_extension`, puis en `Texture2DRD`
-- **Aucun mmap, aucun memcpy** — la texture est directement un VkImage échantillonné par le shader
-- Synchronisation GPU cross-API via `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` (Linux 5.20+) avec fallback `DMA_BUF_IOCTL_SYNC`
-- Destruction différée des ressources (une frame en retard)
-
-### 2. DMA-BUF + mmap (fallback)
-- Rendu GPU vers buffer offscreen DMA-BUF (GLES2/GBM allocator)
-- Vérification du modifier linéaire pour mmap
-- Export des attributs DMA-BUF, mmap du fd pour accès CPU direct
-- Copie pixel par pixel avec swizzle BGRA→RGBA si nécessaire
-- Préfère ABGR8888 (RGBA en mémoire) pour éviter le swizzle
-
-### 3. Pixman CPU (dernier recours)
-- Rendu logiciel via Pixman
-- `wlr_buffer_begin_data_ptr_access` pour accès direct aux pixels
-- Swizzle BGRA→RGBA sur chaque pixel
-
-### Optimisations
-- **CaptureCache** — Buffer offscreen, mmap et tampon CPU réutilisés entre frames
-- **Allocation arrondie** — Dimensions arrondies par pas de 64px pour éviter les reallocations pendant le resize
-- **Timing détaillé** — Logs de performance par étape quand le total dépasse 2ms
-
----
-
-## Gestion des fenêtres
-
-### Fenêtres toplevel
-- Spawn face à la caméra à la position du joueur
-- Taille par défaut 1280×720
-- Cycle de vie complet : map/unmap/destroy avec signaux
-- Tracking de la fenêtre active (recapture à chaque frame)
-- Géométrie de contenu honorée (`xdg_surface.set_window_geometry`) — les ombres CSD sont exclues
-- Traverse les sous-surfaces (`wlr_surface_for_each_surface`)
-
-### Popups
-- Hiérarchie parent→enfant (dont popups de popup pour sous-menus)
-- Placement relatif au parent avec contrainte de bounds
-- Détection de région d'input (menus = oui, tooltips = non)
-- Recapture toutes les 2 frames (~30Hz) pour les sous-surfaces désynchronisées
-
-### Shader de rendu
-- Unshaded, blend_mix, cull_disabled
-- Remapping UV pour allocation arrondie
-- Dépréfixage alpha (`rgb / alpha`)
-- Correction gamma linéaire→sRGB (`pow(rgb, 2.2)`)
-- Seuil d'alpha avec discard
-
----
-
-## Input
-
-### Clavier
-- Clavier virtuel software (`wlr_keyboard` avec XKB layout `fr`)
-- Table de traduction complète Godot→evdev (75+ touches)
-- Correction AZERTY pour `<` et `>`
-- Focus clavier sur clic + activation de la fenêtre
-
-### Pointeur
-- Mouvement absolu avec auto-enter/motion/frame
-- Boutons souris (gauche, droite) et axis (scroll vertical + horizontal)
-- Mouvement relatif via `zwp_relative_pointer_v1`
-- Verrouillage du pointeur via `zwp_pointer_constraints_v1` (LOCKED et CONFINED)
-- Signal `pointer_lock_changed(window_id, locked)` émis à l'activation/destruction
-
-### Interaction 3D (scene Godot)
-- Raycast physique de la caméra vers les quads 3D
-- Calcul UV à partir de la position du hit
-- Déplacement de fenêtre (middle-click drag + titlebar drag)
-- Redimensionnement par les bords/corners (détection de zone, 8 directions)
-- Ajustement de profondeur au scroll pendant le déplacement
-
----
-
-## Mode Focus
-
-- Touche **F** pour entrer/sortir du mode focus sur une fenêtre visée
-- Affichage plein écran via `TextureRect` avec `STRETCH_KEEP_ASPECT_CENTERED`
-- **Mapping pixel-perfect** : calcul d'aspect ratio basé sur `get_global_rect()` du TextureRect
-- **Bouton X** en haut à droite pour quitter le mode focus
-- **Souris capturée** automatiquement quand le client demande le pointer lock (jeux FPS)
-  - Tracking UV par accumulation de `event.relative` en mode capturé
-  - Forward de `forward_pointer_relative_motion` au client Wayland
-  - Maintien du pointer focus pour livraison des events relatifs
-- **Input forward** en mode focus :
-  - Mouvement souris (absolu ou relatif selon l'état de capture)
-  - Clic gauche/droit, scroll haut/bas
-  - Tous les événements clavier (dont corrections AZERTY)
-- Sortie auto si la fenêtre est unmapée
-
----
-
-## Launcher Menu
-
-- Parsing des fichiers `.desktop` depuis :
-  - `/usr/share/applications`
-  - `/usr/local/share/applications`
-  - `~/.local/share/applications`
-  - Tous les répertoires de `$XDG_DATA_DIRS`
-- **Déduplication** par ligne `Exec`
-- **10 catégories** triées par ordre canonique (AudioVideo, Development, Education, Game, Graphics, Network, Office, Settings, System, Utility + Other)
-- **En-têtes de catégories collapsibles** avec compteur
-- **Recherche en temps réel** filtrant sur toutes les catégories
-- **Détection automatique d'émulateur de terminal** (konsole, alacritty, kitty, xterm) — les apps `Terminal=true` sont wrappées avec `-e`
-- Nettoyage des codes de champ `.desktop` (%f, %F, %u, %U, etc.)
-- Thème dark avec effets hover/press
-
----
-
-## Application Launcher
-
-- `launch_app(command)` — fork + setsid + execl("/bin/sh", "-c", command)
-- Lancement automatique de `xwayland-satellite :1` au démarrage
-- Variable `WAYLAND_DISPLAY` définie automatiquement
-
----
-
-## Player (contrôleur FPS)
-
-- `CharacterBody3D` avec gravité, WASD, saut
-- Souris capturée avec sensibilité (0.002) et clamp vertical (±80°)
-- Toggle souris : Escape affiche, clic recapture
-- Respawn si chute sous y=-50
-
----
-
-## Signaux GDExtension
-
-| Signal | Paramètres | Description |
+| Protocol | Version | Purpose |
 |---|---|---|
-| `window_mapped` | id, title, app_id | Nouvelle fenêtre toplevel |
-| `window_unmapped` | id | Fenêtre toplevel fermée |
-| `window_texture_updated` | id, texture, width, height | Contenu de la fenêtre re-rendu |
-| `popup_mapped` | id, parent_window_id, parent_popup_id, x, y, width, height | Popup apparue |
-| `popup_unmapped` | id | Popup fermée |
-| `popup_texture_updated` | id, texture, width, height | Contenu du popup re-rendu |
-| `pointer_lock_changed` | window_id, locked | Verrouillage du pointeur activé/désactivé |
+| `wl_compositor` | 6 | Surface management |
+| `wl_seat` | — | Pointer + keyboard capabilities |
+| `xdg_shell` | 3 | Toplevel windows, popups, nested popups |
+| `wl_subcompositor` | — | Sub-surfaces (required by Firefox WebRender) |
+| `wl_viewporter` | — | Surface viewport / cropping |
+| `linux_dmabuf_v1` | 4 | DMA-BUF buffer sharing for GPU clients |
+| `wl_data_device_manager` | — | Clipboard, drag-and-drop |
+| `wl_primary_selection_v1` | — | Middle-click primary selection |
+| `zwp_pointer_constraints_v1` | — | Pointer lock (LOCKED + CONFINED) |
+| `zwp_relative_pointer_v1` | — | Relative pointer motion events |
+
+### Three-Tier Rendering Pipeline
+
+Auto-negotiated per-surface, in priority order:
+
+#### 1. Vulkan Zero-Copy (GPU → GPU, preferred)
+- wlroots renders via EGL/GLES2 to a DMA-BUF offscreen buffer
+- DMA-BUF fd imported into Godot's Vulkan device via `VK_KHR_external_memory_fd`
+- `VkImage` (LINEAR tiling) + `VkDeviceMemory` bound to the imported buffer
+- Wrapped as a Godot `RID` via `texture_create_from_extension`, then `Texture2DRD`
+- **No mmap, no memcpy** — the shader samples the GPU buffer directly
+- Cross-API GPU sync via `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` (Linux 5.20+) with `DMA_BUF_IOCTL_SYNC` fallback
+- Deferred resource destruction (one frame delayed) to avoid GPU stalls
+
+#### 2. DMA-BUF + mmap (fallback)
+- GPU-rendered DMA-BUF, checked for linear modifier
+- mmap the fd for direct CPU read
+- Per-pixel copy with BGRA→RGBA swizzle when needed
+- `CaptureCache` reuses buffers across frames
+
+#### 3. Pixman CPU (last resort)
+- Software rendering via Pixman, direct pixel access through `wlr_buffer_begin_data_ptr_access`
+- Per-pixel BGRA→RGBA swizzle
+- Can be forced with `WAYLANDGODOT_FORCE_PIXMAN=1`
+
+#### Rendering Optimizations
+- **Rounded allocation** — capture dimensions rounded up to next 64px step to avoid reallocation during resize
+- **Per-frame recapture** — all mapped windows re-captured each frame (Firefox needs this without focus)
+- **Performance logging** — per-stage timing logged when total exceeds 2ms
+
+### Window Management
+
+- **Toplevel windows** spawn as 3D quads facing the player
+- **Popups** — nested sub-menus, tooltips, context menus with correct positioning
+- **Drag-and-drop** — full `wl_data_device_manager` protocol with drag icon capture
+- **Window moving** — middle-click drag (3D depth), titlebar drag (2D on plane)
+- **Window resizing** — 8 edge/corner zones (20px corners, 5px edges), 500px minimum
+- **Depth adjustment** — scroll while grabbing moves window closer/farther
+- **`close_window(id)`** — sends `xdg_toplevel.send_close()`
+- **`set_window_size(id, w, h)`** — configures a new size
+
+### Keyboard Input
+
+- Virtual software keyboard (`wlr_keyboard`, XKB layout `fr`)
+- 75+ key Godot→evdev translation table
+- AZERTY fixes (`<` and `>` keys)
+- AltGr support (key location 2 → `KEY_RIGHTALT`)
+- Keyboard focus on click, `release_all_keys()` on mode exit
+- **Interact mode** (middle-click toggle) — all keyboard forwarded to focused window
+
+### Pointer Input
+
+- Absolute motion with auto-enter/motion/frame
+- Mouse buttons (left, right) and axis (vertical + horizontal scroll)
+- Relative pointer via `zwp_relative_pointer_v1`
+- Pointer lock via `zwp_pointer_constraints_v1` (LOCKED + CONFINED)
+- Physics raycast from camera to 3D quads for hit-testing
+
+### Focus Mode
+
+- **F** key to enter/exit fullscreen focus on a targeted window
+- Fullscreen `TextureRect` with `STRETCH_KEEP_ASPECT_CENTERED`
+- Pixel-perfect pointer mapping
+- Pointer lock auto-captures mouse when client requests it (FPS games)
+- Keyboard and mouse input forwarded to the focused window
+- Popup overlays rendered as sub-TextureRects in focus mode
+- Auto-exit if the window is unmapped
+- **✕** close button in top-right corner
+
+### Window Pinning (Picture-in-Picture)
+
+- **P** key to pin/unpin a window
+- Stacked thumbnails (640x360) with blue border in the top-left corner
+- Live updates from `window_texture_updated` signal
+
+### X-Ray / Find Mode
+
+- Window menu **FIND** action toggles a red pulsing overlay on a window
+- `no_depth_test = true`, `render_priority = 10`, ~1Hz alpha pulse
+
+### Desktop Notifications
+
+- Subprocess `dbus-monitor --session interface='org.freedesktop.Notifications'` with pipe IPC
+- Parses notification fields: app_name, summary, body, icon, urgency
+- Emitted as `notification_received(app_name, summary, body, app_icon, urgency)` signal
+- Urgency levels: 0=low, 1=normal, 2=critical
+- Displayed as stacking toasts in the 3D UI overlay
+
+### Application Launcher
+
+- **R** key opens the launcher menu
+- Parses `.desktop` files from standard XDG directories
+- Deduplication by `Exec` line
+- 10 canonical categories with collapsible headers and app counts
+- Real-time search across all categories
+- Favorites system (F1–F12 quick-launch slots)
+- Right-click to assign, persistent in `user://favorites.json`
+- Auto-detection of terminal emulator (konsole, alacritty, kitty, xterm) for `Terminal=true` apps
+
+### Window Menu
+
+- **B** key opens the window navigation menu
+- Tab bar with all open windows, click to select
+- Live preview of selected window's texture
+- Action buttons: **GRAB**, **FOCUS**, **HIDE/SHOW**, **PIN**, **FIND**, **QUIT**
+
+### Settings Menu (Pause Menu)
+
+- **Escape** opens the pause menu with multi-page settings:
+  - **Resolution** — 6 presets (1280x720 to 3840x2160), fullscreen toggle
+  - **Terminal** — custom terminal command
+  - **Portal Backend** — `XDG_CURRENT_DESKTOP` value
+  - **Polkit Agent** — path to authentication agent
+  - **Keybinds** — rebind any of 11 actions (forward, back, left, right, jump, interact_mode, launcher, window_menu, grab, focus_window, pin_window)
+  - FPS counter toggle, capture label toggle
+- Persisted to `user://settings.json`
+
+### XWayland Support
+
+- `xwayland-satellite :1` launched automatically on startup
+- `DISPLAY=:1` environment variable set for X11 clients
+
+### Child Process Management
+
+- All forked processes tracked in a `child_pids` vector
+- `killpg(SIGTERM)` on shutdown, zombies reaped with `WNOHANG`
+
+---
+
+## GDExtension Signals
+
+| Signal | Parameters | Description |
+|---|---|---|
+| `window_mapped` | id, title, app_id | New toplevel window |
+| `window_unmapped` | id | Toplevel window closed |
+| `window_texture_updated` | id, texture, width, height | Content re-rendered |
+| `popup_mapped` | id, parent_window_id, parent_popup_id, x, y, w, h | Popup appeared |
+| `popup_unmapped` | id | Popup closed |
+| `popup_texture_updated` | id, texture, width, height | Popup re-rendered |
+| `pointer_lock_changed` | window_id, locked | Pointer lock toggled |
+| `window_fullscreen_changed` | id, fullscreen | Fullscreen state changed |
+| `drag_icon_updated` | texture, width, height | Drag icon appeared |
+| `drag_icon_removed` | — | Drag icon removed |
+| `notification_received` | app_name, summary, body, app_icon, urgency | Desktop notification |
+
+---
+
+## Input Map (Default Bindings)
+
+| Action | Key | Description |
+|---|---|---|
+| `forward` | Z | Move forward (AZERTY) |
+| `back` | S | Move backward |
+| `left` | Q | Strafe left (AZERTY) |
+| `right` | D | Strafe right |
+| `jump` | Space | Jump |
+| `interact_mode` | Middle-click | Toggle keyboard capture to window |
+| `launcher` | R | Open app launcher |
+| `window_menu` | B | Open window menu |
+| `grab` | G | Grab window |
+| `focus_window` | F | Enter/exit focus mode |
+| `pin_window` | P | Pin/unpin window |
+| `left_click` | Mouse 1 | Click Wayland window |
+| `right_click` | Mouse 2 | Right-click Wayland window |
+| `scroll_up` | Wheel up | Scroll up |
+| `scroll_down` | Wheel down | Scroll down |
+| `ui_cancel` | Escape | Pause menu / exit menus |
+
+---
+
+## Scene Structure
+
+```
+wayland_room.tscn
+├── WaylandRoom (Node3D)
+│   ├── WorldEnvironment
+│   ├── CSGBox3D (floor)
+│   └── Player (CharacterBody3D)
+│       ├── Camera3D
+│       ├── CollisionShape3D
+│       └── UI (CanvasLayer)
+│           ├── Cursor (TextureRect)
+│           ├── Keyboard Capture Label
+│           ├── FPS (Label)
+│           ├── LauncherLayer → LauncherMenu
+│           ├── WindowMenuLayer → WindowMenu
+│           └── PauseMenuLayer → PauseMenu
+└── WlrCompositor (Node)
+```
+
+---
+
+## Wayland Window Shader
+
+```glsl
+shader_type spatial;
+render_mode unshaded, blend_mix, cull_disabled;
+
+// UV remapping for rounded allocation
+vec2 uv = UV * content_size / texture_size;
+
+// Alpha un-premultiply
+vec4 tex = texture(texture_albedo, uv);
+if (tex.a > 0.0) tex.rgb /= tex.a;
+
+// Gamma correction (linear → sRGB)
+tex.rgb = pow(tex.rgb, vec3(1.0 / 2.2));
+
+// Alpha discard
+if (tex.a < 0.01) discard;
+```
+
+---
+
+## Project Structure
+
+```
+demo/
+├── bin/                        # Built .so files
+├── scripts/
+│   ├── wayland_room.gd         # Main game script (~1310 lines)
+│   ├── launcher_menu.gd        # App launcher UI
+│   ├── window_menu.gd          # Window navigation menu
+│   ├── pause_menu.gd           # Settings / pause menu
+│   ├── player.gd               # FPS controller
+│   ├── fps.gd                  # FPS counter
+│   └── toast.gd                # Notification toast UI
+├── scenes/
+│   ├── wayland_room.tscn
+│   ├── player.tscn
+│   └── ...
+├── project.godot
+└── waylandgodot.gdextension
+
+src/
+├── wlr_compositor.h
+├── wlr_compositor.cpp          # Main compositor (~2200 lines)
+├── register_types.cpp
+├── protocol/                   # Generated Wayland protocol code
+└── SConstruct
+```
