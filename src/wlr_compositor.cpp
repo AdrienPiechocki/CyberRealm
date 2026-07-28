@@ -117,6 +117,12 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("release_all_keys"), &WlrCompositor::release_all_keys);
 
+    ClassDB::bind_method(D_METHOD("set_portal_backend", "backend"), &WlrCompositor::set_portal_backend);
+    ClassDB::bind_method(D_METHOD("get_portal_backend"), &WlrCompositor::get_portal_backend);
+
+    ClassDB::bind_method(D_METHOD("set_polkit_agent", "path"), &WlrCompositor::set_polkit_agent);
+    ClassDB::bind_method(D_METHOD("get_polkit_agent"), &WlrCompositor::get_polkit_agent);
+
     ADD_SIGNAL(MethodInfo("window_mapped",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::STRING, "title"),
@@ -158,7 +164,12 @@ void WlrCompositor::_bind_methods() {
     ADD_SIGNAL(MethodInfo("drag_icon_removed"));
 }
 
-WlrCompositor::WlrCompositor() {}
+WlrCompositor::WlrCompositor() {
+    const char *env = getenv("XDG_CURRENT_DESKTOP");
+    if (env) {
+        portal_backend = String(env);
+    }
+}
 
 WlrCompositor::~WlrCompositor() {
     // Libérer les ressources Vulkan tant que RenderingDevice est encore
@@ -1514,6 +1525,11 @@ void WlrCompositor::start_headless() {
         return;
     }
     setenv("WAYLAND_DISPLAY", socket, 1);
+    setenv("XDG_CURRENT_DESKTOP", portal_backend.utf8().get_data(), 1);
+
+    if (!polkit_agent_path.is_empty()) {
+        launch_polkit_agent();
+    }
 
     if (!wlr_backend_start(backend)) {
         UtilityFunctions::printerr("waylandgodot: échec démarrage backend");
@@ -1821,6 +1837,43 @@ void WlrCompositor::forward_pointer_relative_motion(int window_id, double dx, do
 String WlrCompositor::get_wayland_socket_name() const {
     const char *s = getenv("WAYLAND_DISPLAY");
     return s ? String(s) : String("");
+}
+
+void WlrCompositor::set_portal_backend(const String &backend) {
+    portal_backend = backend;
+    setenv("XDG_CURRENT_DESKTOP", backend.utf8().get_data(), 1);
+}
+
+String WlrCompositor::get_portal_backend() const {
+    return portal_backend;
+}
+
+void WlrCompositor::set_polkit_agent(const String &path) {
+    polkit_agent_path = path;
+    if (!polkit_agent_path.is_empty()) {
+        launch_polkit_agent();
+    }
+}
+
+String WlrCompositor::get_polkit_agent() const {
+    return polkit_agent_path;
+}
+
+void WlrCompositor::launch_polkit_agent() {
+    if (polkit_agent_path.is_empty() || polkit_agent_pid > 0) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        setsid();
+        CharString cmd = polkit_agent_path.utf8();
+        execl("/bin/sh", "sh", "-c", cmd.get_data(), (char *)nullptr);
+        _exit(127);
+    } else if (pid > 0) {
+        polkit_agent_pid = pid;
+        child_pids.push_back(pid);
+        UtilityFunctions::print("waylandgodot: lancé agent polkit (pid ", pid, ")");
+    } else {
+        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour polkit_agent");
+    }
 }
 
 void WlrCompositor::launch_app(const String &command) {

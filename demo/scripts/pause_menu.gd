@@ -3,12 +3,18 @@ extends PanelContainer
 signal fps_toggled(visible: bool)
 signal capture_label_toggled(visible: bool)
 signal terminal_changed(terminal: String)
+signal portal_backend_changed(backend: String)
+signal polkit_agent_changed(path: String)
 
-enum Page { MAIN, RESOLUTION, TERMINAL, KEYBINDS }
+enum Page { MAIN, RESOLUTION, TERMINAL, PORTAL, POLKIT, KEYBINDS }
 
 var current_page := Page.MAIN
 var container: VBoxContainer
 var selected_terminal := ""
+var selected_portal_backend := "KDE"
+var selected_polkit_agent := ""
+var _show_fps := true
+var _show_capture_label := true
 var _binding_action := ""
 
 const RESOLUTIONS := [
@@ -20,19 +26,128 @@ const RESOLUTIONS := [
 	Vector2i(3840, 2160),
 ]
 
+const SETTINGS_PATH := "user://settings.json"
+
 var _default_keybinds: Dictionary = {}
 
 func _ready() -> void:
 	process_mode = PROCESS_MODE_ALWAYS
 	visible = false
-	_detect_terminal()
 	_save_default_keybinds()
+	_load_settings()
+	if selected_terminal == "":
+		_detect_terminal()
 	container = VBoxContainer.new()
 	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	container.add_theme_constant_override("separation", 6)
 	add_child(container)
 	_apply_styling()
+	call_deferred("_apply_initial_state")
+
+func _apply_initial_state() -> void:
+	fps_toggled.emit(_show_fps)
+	capture_label_toggled.emit(_show_capture_label)
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_save_settings()
+
+func _save_settings() -> void:
+	var data := {
+		terminal = selected_terminal,
+		portal_backend = selected_portal_backend,
+		polkit_agent = selected_polkit_agent,
+		show_fps = _show_fps,
+		show_capture_label = _show_capture_label,
+		window_size = [DisplayServer.window_get_size().x, DisplayServer.window_get_size().y],
+		fullscreen = DisplayServer.window_get_mode() in [DisplayServer.WINDOW_MODE_FULLSCREEN, DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN],
+		keybinds = _serialize_keybinds(),
+	}
+	var f := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(data, "\t"))
+		f.close()
+
+func _load_settings() -> void:
+	var f := FileAccess.open(SETTINGS_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var text := f.get_as_text()
+	f.close()
+	var parsed = JSON.parse_string(text)
+	if not parsed is Dictionary:
+		return
+	if parsed.has("terminal") and parsed.terminal != "":
+		selected_terminal = parsed.terminal
+	if parsed.has("portal_backend") and parsed.portal_backend != "":
+		selected_portal_backend = parsed.portal_backend
+	if parsed.has("polkit_agent"):
+		selected_polkit_agent = parsed.polkit_agent
+	if parsed.has("show_fps"):
+		_show_fps = parsed.show_fps
+	if parsed.has("show_capture_label"):
+		_show_capture_label = parsed.show_capture_label
+	if parsed.has("keybinds") and parsed.keybinds is Dictionary:
+		_deserialize_keybinds(parsed.keybinds)
+
+func _serialize_keybinds() -> Dictionary:
+	var result := {}
+	var actions := ["forward", "back", "left", "right", "jump",
+		"interact_mode", "launcher", "window_menu",
+		"grab", "focus_window", "pin_window"]
+	for action in actions:
+		var events := InputMap.action_get_events(action)
+		if events.is_empty():
+			continue
+		var serialized: Array = []
+		for e in events:
+			if e is InputEventKey:
+				serialized.append({
+					type = "key",
+					keycode = e.keycode,
+					physical_keycode = e.physical_keycode,
+					location = e.location,
+					ctrl_pressed = e.ctrl_pressed,
+					shift_pressed = e.shift_pressed,
+					alt_pressed = e.alt_pressed,
+					meta_pressed = e.meta_pressed,
+				})
+			elif e is InputEventMouseButton:
+				serialized.append({
+					type = "mouse",
+					button_index = e.button_index,
+				})
+		if not serialized.is_empty():
+			result[action] = serialized
+	return result
+
+func _deserialize_keybinds(data: Dictionary) -> void:
+	var actions := ["forward", "back", "left", "right", "jump",
+		"interact_mode", "launcher", "window_menu",
+		"grab", "focus_window", "pin_window"]
+	for action in actions:
+		if not data.has(action):
+			continue
+		var serialized: Array = data[action]
+		InputMap.action_erase_events(action)
+		for entry in serialized:
+			if entry is Dictionary:
+				var event: InputEvent
+				if entry.get("type") == "key":
+					event = InputEventKey.new()
+					event.keycode = entry.get("keycode", 0)
+					event.physical_keycode = entry.get("physical_keycode", 0)
+					event.location = entry.get("location", 0)
+					event.ctrl_pressed = entry.get("ctrl_pressed", false)
+					event.shift_pressed = entry.get("shift_pressed", false)
+					event.alt_pressed = entry.get("alt_pressed", false)
+					event.meta_pressed = entry.get("meta_pressed", false)
+				elif entry.get("type") == "mouse":
+					event = InputEventMouseButton.new()
+					event.button_index = entry.get("button_index", 0)
+				if event:
+					InputMap.action_add_event(action, event)
 
 func _save_default_keybinds() -> void:
 	var actions := [	"forward", "back", "left", "right", "jump",
@@ -187,6 +302,7 @@ func show_menu() -> void:
 func hide_menu() -> void:
 	visible = false
 	_binding_action = ""
+	_save_settings()
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	get_tree().paused = false
 
@@ -204,6 +320,7 @@ func _show_main() -> void:
 	var fs_cb := _make_cb("Fullscreen", is_fs)
 	fs_cb.get_meta("checkbox").toggled.connect(func(v: bool):
 		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if v else DisplayServer.WINDOW_MODE_WINDOWED)
+		_save_settings()
 	)
 	container.add_child(fs_cb)
 
@@ -211,19 +328,31 @@ func _show_main() -> void:
 	term_btn.pressed.connect(_show_terminal)
 	container.add_child(term_btn)
 
+	var portal_btn := _make_btn("Portal Backend")
+	portal_btn.pressed.connect(_show_portal)
+	container.add_child(portal_btn)
+
+	var polkit_btn := _make_btn("Polkit Agent")
+	polkit_btn.pressed.connect(_show_polkit)
+	container.add_child(polkit_btn)
+
 	var kb_btn := _make_btn("Change Keybinds")
 	kb_btn.pressed.connect(_show_keybinds)
 	container.add_child(kb_btn)
 
-	var fps_cb := _make_cb("Show FPS", true)
+	var fps_cb := _make_cb("Show FPS", _show_fps)
 	fps_cb.get_meta("checkbox").toggled.connect(func(v: bool):
+		_show_fps = v
 		fps_toggled.emit(v)
+		_save_settings()
 	)
 	container.add_child(fps_cb)
 
-	var cap_cb := _make_cb("Show \"Keyboard Capture\"", true)
+	var cap_cb := _make_cb("Show \"Keyboard Capture\"", _show_capture_label)
 	cap_cb.get_meta("checkbox").toggled.connect(func(v: bool):
+		_show_capture_label = v
 		capture_label_toggled.emit(v)
+		_save_settings()
 	)
 	container.add_child(cap_cb)
 
@@ -253,6 +382,7 @@ func _show_resolution() -> void:
 				screen_rect.position.x + (screen_rect.size.x - r.x) / 2,
 				screen_rect.position.y + (screen_rect.size.y - r.y) / 2
 			))
+			_save_settings()
 		)
 		container.add_child(btn)
 
@@ -303,6 +433,110 @@ func _show_terminal() -> void:
 		if cmd != "":
 			selected_terminal = cmd
 			terminal_changed.emit(cmd)
+		_save_settings()
+		_show_main()
+	)
+	container.add_child(save_btn)
+
+	container.add_child(_make_spacer())
+
+func _show_polkit() -> void:
+	current_page = Page.POLKIT
+	_clear()
+
+	container.add_child(_make_back_btn())
+	container.add_child(_make_title("Polkit Agent"))
+
+	var hint := Label.new()
+	hint.text = "Path to the polkit authentication agent\ne.g. /usr/lib/polkit-kde-authentication-agent-1\nLeave empty to use the system agent"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65, 0.8))
+	hint.custom_minimum_size = Vector2(0, 60)
+	container.add_child(hint)
+
+	var line_edit := LineEdit.new()
+	line_edit.text = selected_polkit_agent
+	line_edit.placeholder_text = "/usr/lib/polkit-kde-authentication-agent-1"
+	line_edit.custom_minimum_size = Vector2(0, 42)
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.add_theme_font_size_override("font_size", 16)
+
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.12, 0.14, 0.2, 0.9)
+	bg.border_color = Color(0.3, 0.4, 0.6, 0.5)
+	bg.border_width_top = 1; bg.border_width_bottom = 1
+	bg.border_width_left = 1; bg.border_width_right = 1
+	bg.corner_radius_top_left = 5; bg.corner_radius_top_right = 5
+	bg.corner_radius_bottom_left = 5; bg.corner_radius_bottom_right = 5
+	bg.content_margin_left = 14; bg.content_margin_right = 14
+	bg.content_margin_top = 8; bg.content_margin_bottom = 8
+	line_edit.add_theme_stylebox_override("normal", bg)
+
+	var focus_bg := bg.duplicate()
+	focus_bg.border_color = Color(0.4, 0.6, 1.0, 0.7)
+	line_edit.add_theme_stylebox_override("focus", focus_bg)
+
+	container.add_child(line_edit)
+
+	var save_btn := _make_btn("Apply")
+	save_btn.pressed.connect(func():
+		var cmd := line_edit.text.strip_edges()
+		selected_polkit_agent = cmd
+		polkit_agent_changed.emit(cmd)
+		_save_settings()
+		_show_main()
+	)
+	container.add_child(save_btn)
+
+	container.add_child(_make_spacer())
+
+func _show_portal() -> void:
+	current_page = Page.PORTAL
+	_clear()
+
+	container.add_child(_make_back_btn())
+	container.add_child(_make_title("Portal Backend"))
+
+	var hint := Label.new()
+	hint.text = "XDG_CURRENT_DESKTOP value for xdg-desktop-portal\ne.g. KDE, GNOME, wlr, sway"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65, 0.8))
+	hint.custom_minimum_size = Vector2(0, 50)
+	container.add_child(hint)
+
+	var line_edit := LineEdit.new()
+	line_edit.text = selected_portal_backend
+	line_edit.placeholder_text = "KDE"
+	line_edit.custom_minimum_size = Vector2(0, 42)
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.add_theme_font_size_override("font_size", 16)
+
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.12, 0.14, 0.2, 0.9)
+	bg.border_color = Color(0.3, 0.4, 0.6, 0.5)
+	bg.border_width_top = 1; bg.border_width_bottom = 1
+	bg.border_width_left = 1; bg.border_width_right = 1
+	bg.corner_radius_top_left = 5; bg.corner_radius_top_right = 5
+	bg.corner_radius_bottom_left = 5; bg.corner_radius_bottom_right = 5
+	bg.content_margin_left = 14; bg.content_margin_right = 14
+	bg.content_margin_top = 8; bg.content_margin_bottom = 8
+	line_edit.add_theme_stylebox_override("normal", bg)
+
+	var focus_bg := bg.duplicate()
+	focus_bg.border_color = Color(0.4, 0.6, 1.0, 0.7)
+	line_edit.add_theme_stylebox_override("focus", focus_bg)
+
+	container.add_child(line_edit)
+
+	var save_btn := _make_btn("Apply")
+	save_btn.pressed.connect(func():
+		var cmd := line_edit.text.strip_edges()
+		if cmd != "":
+			selected_portal_backend = cmd
+			portal_backend_changed.emit(cmd)
+		_save_settings()
 		_show_main()
 	)
 	container.add_child(save_btn)
@@ -427,6 +661,7 @@ func _reset_keybinds() -> void:
 		for event in _default_keybinds[action]:
 			InputMap.action_add_event(action, event)
 	_binding_action = ""
+	_save_settings()
 	_show_keybinds()
 
 func _input(event: InputEvent) -> void:
@@ -443,6 +678,7 @@ func _input(event: InputEvent) -> void:
 			InputMap.action_erase_events(_binding_action)
 			InputMap.action_add_event(_binding_action, event)
 			_binding_action = ""
+			_save_settings()
 			_show_keybinds()
 			get_viewport().set_input_as_handled()
 			return
@@ -450,6 +686,7 @@ func _input(event: InputEvent) -> void:
 			InputMap.action_erase_events(_binding_action)
 			InputMap.action_add_event(_binding_action, event)
 			_binding_action = ""
+			_save_settings()
 			_show_keybinds()
 			get_viewport().set_input_as_handled()
 			return

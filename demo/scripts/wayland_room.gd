@@ -84,23 +84,23 @@ uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
 
 void fragment() {
-    // Quand le buffer d'allocation (VkImage / texture) est plus grand que
-    // le contenu réel (allocation arrondie au palier supérieur, ou surface
-    // réduite sans réallocation), le UV doit être remappé pour n'échantil-
+	// Quand le buffer d'allocation (VkImage / texture) est plus grand que
+	// le contenu réel (allocation arrondie au palier supérieur, ou surface
+	// réduite sans réallocation), le UV doit être remappé pour n'échantil-
     // lonner que la zone de contenu. Sans ça, UV [0,1] couvre la totalité
     // de la texture (y compris la zone transparente/stale), déformant
-    // l'image.
-    vec2 ts = vec2(textureSize(window_texture, 0));
-    vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
-        ? UV * content_size / ts : UV;
-    vec4 tex = texture(window_texture, mapped_uv);
-    if (tex.a > 0.01) {
-        vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
-        ALBEDO = pow(unmultiplied, vec3(2.2));
-        ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
-    } else {
-        discard;
-    }
+	// l'image.
+	vec2 ts = vec2(textureSize(window_texture, 0));
+	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
+		? UV * content_size / ts : UV;
+	vec4 tex = texture(window_texture, mapped_uv);
+	if (tex.a > 0.01) {
+		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
+		ALBEDO = pow(unmultiplied, vec3(2.2));
+		ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
+	} else {
+		discard;
+	}
 }
 """
 
@@ -140,7 +140,15 @@ func _ready() -> void:
 	pause_menu.fps_toggled.connect(func(v): $Player/UI/FPS.visible = v)
 	pause_menu.capture_label_toggled.connect(func(v): $Player/UI/Label.visible = v)
 	pause_menu.terminal_changed.connect(func(t): launcher_menu.terminal_emulator = t)
+	pause_menu.portal_backend_changed.connect(func(b): compositor.set_portal_backend(b))
+	pause_menu.polkit_agent_changed.connect(func(p): compositor.set_polkit_agent(p))
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
+
+	# Appliquer les réglages persistés
+	compositor.set_portal_backend(pause_menu.selected_portal_backend)
+	compositor.set_polkit_agent(pause_menu.selected_polkit_agent)
+	if pause_menu.selected_terminal != "":
+		launcher_menu.terminal_emulator = pause_menu.selected_terminal
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()

@@ -250,6 +250,14 @@ class WlrCompositor : public Node {
     VulkanDmaBufImport vulkan_import;
     bool gpu_pipeline_active = false;
 
+    // --- Portal backend (XDG_CURRENT_DESKTOP) ---------------------------
+    String portal_backend = "KDE";
+
+    // --- Polkit agent ---------------------------------------------------
+    String polkit_agent_path = "";
+    pid_t polkit_agent_pid = -1;
+    void launch_polkit_agent();
+
     // --- Child processes ------------------------------------------------
     std::vector<pid_t> child_pids;
 
@@ -283,6 +291,11 @@ public:
 
     String get_wayland_socket_name() const;
     void launch_app(const String &command);
+    void set_portal_backend(const String &backend);
+    String get_portal_backend() const;
+
+    void set_polkit_agent(const String &path);
+    String get_polkit_agent() const;
 
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
