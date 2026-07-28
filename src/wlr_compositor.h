@@ -294,6 +294,13 @@ public:
     bool popup_accepts_input(int popup_id);
     void apply_content_opacity(uint8_t *dst, int w, int h, const wlr_box &geo);
     bool is_drag_active() const;
+
+    // Renvoie un Array de Dictionaries décrivant toutes les fenêtres ouvertes.
+    // Chaque entrée contient: { "id": int, "title": String, "app_id": String }.
+    Array get_window_list();
+
+    // Envoie une requête de fermeture (xdg_toplevel.close) à la fenêtre.
+    void close_window(int window_id);
 };
 
 } // namespace godot

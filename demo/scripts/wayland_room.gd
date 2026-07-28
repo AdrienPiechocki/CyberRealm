@@ -5,8 +5,10 @@ extends Node3D
 
 @onready var compositor: WlrCompositor = $WlrCompositor
 @onready var launcher_menu = $Player/LauncherLayer/LauncherMenu
+@onready var window_menu = $Player/WindowMenuLayer/WindowMenu
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
+var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 var interact_mode_active := false
 
@@ -113,6 +115,14 @@ func _ready() -> void:
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
 	launcher_menu.app_launch.connect(func(cmd): compositor.launch_app(cmd))
+
+	# Setup du menu de navigation entre fenêtres
+	window_menu.setup(compositor, _get_window_texture)
+	window_menu.action_grab.connect(_on_window_menu_grab)
+	window_menu.action_focus.connect(_on_window_menu_focus)
+	window_menu.action_toggle_hide.connect(_on_window_menu_toggle_hide)
+	window_menu.action_quit.connect(_on_window_menu_quit)
+	window_menu.menu_closed.connect(_on_window_menu_closed)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -468,6 +478,7 @@ func _on_window_unmapped(id: int) -> void:
 	if focused_window_id == id:
 		focused_window_id = -1
 	_unpin_window(id)
+	window_textures.erase(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -475,6 +486,12 @@ func _on_window_unmapped(id: int) -> void:
 		quads.erase(id)
 
 func _on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	# Tracker la texture pour le menu de navigation
+	window_textures[id] = texture
+	# Rafraîchir la preview du menu si ouvert
+	if window_menu.visible:
+		window_menu.refresh_preview()
+
 	# Mettre à jour le clone PiP si la fenêtre est épinglée
 	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):
 		var pip_tex: TextureRect = pinned_windows[id].get_child(0)
@@ -718,10 +735,13 @@ func _process(delta: float) -> void:
 		var mouse_pos := get_viewport().get_mouse_position()
 		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
 
-	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
+	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible and not focus_mode and not window_menu.visible:
 		launcher_menu.toggle_menu()
 
-	if launcher_menu.visible:
+	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
+		window_menu.toggle_menu()
+
+	if launcher_menu.visible or window_menu.visible:
 		return
 
 	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
@@ -1083,7 +1103,7 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 
 func _input(event: InputEvent) -> void:
 	# Quick-launch favoris F1-F12 (hors launcher, hors focus, hors interact)
-	if not launcher_menu.visible and not focus_mode and not interact_mode_active:
+	if not launcher_menu.visible and not window_menu.visible and not focus_mode and not interact_mode_active:
 		if event is InputEventKey and event.pressed and not event.echo:
 			if event.keycode >= KEY_F1 and event.keycode <= KEY_F12:
 				var slot = event.keycode - KEY_F1 + 1
@@ -1153,6 +1173,43 @@ func _on_drag_icon_updated(texture: Texture2D, width: int, height: int) -> void:
 func _on_drag_icon_removed() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.texture = null
+
+# ── Window menu helpers ──────────────────────────────────────────────
+
+func _get_window_texture(wid: int) -> Texture2D:
+	return window_textures.get(wid, null)
+
+func _on_window_menu_grab(wid: int) -> void:
+	# Fermer le menu, sélectionner la fenêtre et initier le grab
+	window_menu.hide_menu()
+	if not quads.has(wid) or not is_instance_valid(quads[wid]):
+		return
+	var quad: MeshInstance3D = quads[wid]
+	var cam := $Player/Camera3D
+	active_window_id = wid
+	is_moving = true
+	move_depth = cam.global_position.distance_to(quad.global_position)
+
+func _on_window_menu_focus(wid: int) -> void:
+	window_menu.hide_menu()
+	_enter_focus_mode(wid)
+
+func _on_window_menu_toggle_hide(wid: int) -> void:
+	if not quads.has(wid) or not is_instance_valid(quads[wid]):
+		return
+	var quad: MeshInstance3D = quads[wid]
+	quad.visible = not quad.visible
+	var body: StaticBody3D = quad.get_child(0)
+	if body is StaticBody3D:
+		body.get_child(0).disabled = not quad.visible
+	if window_menu.visible:
+		window_menu.refresh_preview()
+
+func _on_window_menu_quit(wid: int) -> void:
+	compositor.close_window(wid)
+
+func _on_window_menu_closed() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _show_toast(text: String) -> void:
 	if toast_tween and toast_tween.is_valid():

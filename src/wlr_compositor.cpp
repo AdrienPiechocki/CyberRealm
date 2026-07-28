@@ -112,6 +112,9 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
+    ClassDB::bind_method(D_METHOD("get_window_list"), &WlrCompositor::get_window_list);
+    ClassDB::bind_method(D_METHOD("close_window", "window_id"), &WlrCompositor::close_window);
+
     ClassDB::bind_method(D_METHOD("release_all_keys"), &WlrCompositor::release_all_keys);
 
     ADD_SIGNAL(MethodInfo("window_mapped",
@@ -1878,6 +1881,26 @@ bool WlrCompositor::popup_accepts_input(int popup_id) {
     // Les tooltips ont une région d'input vide (wl_surface_set_input_region
     // avec une region empty). Les menus/dropdowns ont une région non vide.
     return !pixman_region32_empty(&ps->popup->base->surface->current.input);
+}
+
+Array WlrCompositor::get_window_list() {
+    Array result;
+    for (auto &pair : windows) {
+        WindowState &ws = pair.second;
+        if (!ws.toplevel || !ws.toplevel->base) continue;
+        Dictionary entry;
+        entry["id"] = ws.id;
+        entry["title"] = ws.toplevel->title ? String(ws.toplevel->title) : String("");
+        entry["app_id"] = ws.toplevel->app_id ? String(ws.toplevel->app_id) : String("");
+        result.append(entry);
+    }
+    return result;
+}
+
+void WlrCompositor::close_window(int window_id) {
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel) return;
+    wlr_xdg_toplevel_send_close(ws->toplevel);
 }
 
 // =====================================================================
