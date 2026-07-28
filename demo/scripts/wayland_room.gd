@@ -62,6 +62,10 @@ var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
 const PIN_SIZE := Vector2(640, 360)
 const PIN_MARGIN := 8
 
+# Drag-and-drop icon overlay
+var drag_icon_rect: TextureRect
+var drag_icon_size := Vector2.ZERO
+
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
@@ -98,6 +102,8 @@ func _ready() -> void:
 	compositor.popup_unmapped.connect(_on_popup_unmapped)
 	compositor.popup_texture_updated.connect(_on_popup_texture_updated)
 	compositor.pointer_lock_changed.connect(_on_pointer_lock_changed)
+	compositor.drag_icon_updated.connect(_on_drag_icon_updated)
+	compositor.drag_icon_removed.connect(_on_drag_icon_removed)
 	compositor.start_headless()
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
@@ -126,6 +132,14 @@ func _ready() -> void:
 	focus_close_button.pressed.connect(_exit_focus_mode)
 	focus_close_button.mouse_filter = Control.MOUSE_FILTER_STOP
 	$Player/UI.add_child(focus_close_button)
+
+	# TextureRect pour l'icône de drag-and-drop
+	drag_icon_rect = TextureRect.new()
+	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
+	drag_icon_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	drag_icon_rect.visible = false
+	drag_icon_rect.z_index = 100
+	$Player/UI.add_child(drag_icon_rect)
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -669,6 +683,11 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
 func _process(delta: float) -> void:
+	# Suivi de l'icône de drag-and-drop
+	if drag_icon_rect and drag_icon_rect.visible:
+		var mouse_pos := get_viewport().get_mouse_position()
+		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
+
 	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
 		launcher_menu.toggle_menu()
 
@@ -1079,3 +1098,13 @@ func _input(event: InputEvent) -> void:
 		
 		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
 		get_viewport().set_input_as_handled()
+
+func _on_drag_icon_updated(texture: Texture2D, width: int, height: int) -> void:
+	drag_icon_rect.texture = texture
+	drag_icon_size = Vector2(width, height)
+	drag_icon_rect.visible = true
+	drag_icon_rect.pivot_offset = drag_icon_size / 2.0
+
+func _on_drag_icon_removed() -> void:
+	drag_icon_rect.visible = false
+	drag_icon_rect.texture = null

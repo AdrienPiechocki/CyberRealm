@@ -150,6 +150,9 @@ class WlrCompositor : public Node {
 
     wl_listener new_toplevel_listener{};
     wl_listener new_constraint_listener{};
+    wl_listener request_start_drag_listener{};
+    wl_listener start_drag_listener{};
+    wl_listener drag_destroy_listener{};
     wl_listener keyboard_key_listener{};
     wl_listener keyboard_modifiers_listener{};
 
@@ -169,6 +172,9 @@ class WlrCompositor : public Node {
 
     static void on_new_toplevel(wl_listener *listener, void *data);
     static void on_new_constraint(wl_listener *listener, void *data);
+    static void on_request_start_drag(wl_listener *listener, void *data);
+    static void on_start_drag(wl_listener *listener, void *data);
+    static void on_drag_destroy(wl_listener *listener, void *data);
     static void on_toplevel_map(wl_listener *listener, void *data);
     static void on_toplevel_unmap(wl_listener *listener, void *data);
     static void on_toplevel_destroy(wl_listener *listener, void *data);
@@ -234,6 +240,13 @@ class WlrCompositor : public Node {
     VulkanDmaBufImport vulkan_import;
     bool gpu_pipeline_active = false;
 
+    // --- Drag-and-drop icon -------------------------------------------
+    wlr_drag *active_drag = nullptr;
+    CaptureCache drag_icon_cache;
+    Ref<Texture2D> drag_icon_texture;
+    int drag_icon_width = 0;
+    int drag_icon_height = 0;
+
 protected:
     static void _bind_methods();
 
@@ -266,6 +279,7 @@ public:
     // pas intercepter les clics.
     bool popup_accepts_input(int popup_id);
     void apply_content_opacity(uint8_t *dst, int w, int h, const wlr_box &geo);
+    bool is_drag_active() const;
 };
 
 } // namespace godot

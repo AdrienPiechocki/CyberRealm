@@ -140,6 +140,12 @@ void WlrCompositor::_bind_methods() {
     ADD_SIGNAL(MethodInfo("pointer_lock_changed",
         PropertyInfo(Variant::INT, "window_id"),
         PropertyInfo(Variant::BOOL, "locked")));
+
+    ADD_SIGNAL(MethodInfo("drag_icon_updated",
+        PropertyInfo(Variant::OBJECT, "texture"),
+        PropertyInfo(Variant::INT, "width"),
+        PropertyInfo(Variant::INT, "height")));
+    ADD_SIGNAL(MethodInfo("drag_icon_removed"));
 }
 
 WlrCompositor::WlrCompositor() {}
@@ -155,6 +161,7 @@ WlrCompositor::~WlrCompositor() {
     for (auto &pair : popups) {
         pair.second.capture_cache.reset(rd);
     }
+    drag_icon_cache.reset(rd);
     vulkan_import.flush_pending();
     vulkan_import.cleanup();
 
@@ -1351,6 +1358,15 @@ void WlrCompositor::start_headless() {
     }
     seat = wlr_seat_create(display, "seat0");
 
+    // Drag-and-drop: écouter les demandes de drag des clients (Dolphin, etc.)
+    // et les accepter pour que le protocole wl_data_device fonctionne.
+    request_start_drag_listener.notify = WlrCompositor::on_request_start_drag;
+    wl_signal_add(&seat->events.request_start_drag, &request_start_drag_listener);
+
+    // Drag-and-drop icon: suivre le drag actif pour afficher l'icône.
+    start_drag_listener.notify = WlrCompositor::on_start_drag;
+    wl_signal_add(&seat->events.start_drag, &start_drag_listener);
+
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
 
@@ -1467,6 +1483,23 @@ void WlrCompositor::_process(double delta) {
                 }
             }
         }
+    }
+
+    // Recapture du drag icon si un drag est actif.
+    if (active_drag && active_drag->icon && active_drag->icon->surface) {
+        if (capture_surface(active_drag->icon->surface,
+                drag_icon_texture, drag_icon_width, drag_icon_height,
+                drag_icon_cache)) {
+            emit_signal("drag_icon_updated", drag_icon_texture,
+                drag_icon_width, drag_icon_height);
+        }
+    } else if (drag_icon_texture.is_valid()) {
+        drag_icon_texture = Ref<Texture2D>();
+        drag_icon_width = 0;
+        drag_icon_height = 0;
+        RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+        drag_icon_cache.reset(rd);
+        emit_signal("drag_icon_removed");
     }
 }
 
@@ -1600,6 +1633,54 @@ void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
         delete cd;
     };
     wl_signal_add(&constraint->events.destroy, &cdata->listener);
+}
+
+void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, request_start_drag_listener);
+    if (!self->seat) return;
+    wlr_seat_request_start_drag_event *event = (wlr_seat_request_start_drag_event *)data;
+
+    if (wlr_seat_validate_pointer_grab_serial(self->seat, event->origin, event->serial)) {
+        wlr_seat_start_pointer_drag(self->seat, event->drag, event->serial);
+        return;
+    }
+
+    struct wlr_touch_point *point;
+    if (wlr_seat_validate_touch_grab_serial(self->seat, event->origin, event->serial, &point)) {
+        wlr_seat_start_touch_drag(self->seat, event->drag, event->serial, point);
+        return;
+    }
+
+    UtilityFunctions::print("waylandgodot: ignoring drag request, serial ", event->serial, " not valid");
+}
+
+void WlrCompositor::on_start_drag(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, start_drag_listener);
+    wlr_drag *drag = (wlr_drag *)data;
+
+    self->active_drag = drag;
+
+    if (drag->icon && drag->icon->surface) {
+        self->drag_icon_cache.reset();
+    }
+
+    self->drag_destroy_listener.notify = WlrCompositor::on_drag_destroy;
+    wl_signal_add(&drag->events.destroy, &self->drag_destroy_listener);
+}
+
+void WlrCompositor::on_drag_destroy(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, drag_destroy_listener);
+    self->active_drag = nullptr;
+    self->drag_icon_texture = Ref<Texture2D>();
+    self->drag_icon_width = 0;
+    self->drag_icon_height = 0;
+    RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+    self->drag_icon_cache.reset(rd);
+    self->emit_signal("drag_icon_removed");
+}
+
+bool WlrCompositor::is_drag_active() const {
+    return active_drag != nullptr;
 }
 
 void WlrCompositor::forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel) {
