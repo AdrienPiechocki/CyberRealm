@@ -193,6 +193,8 @@ func _exit_focus_mode() -> void:
 	if not focus_mode:
 		return
 
+	compositor.release_all_keys()
+
 	# Réafficher le quad 3D
 	if quads.has(focus_window_id) and is_instance_valid(quads[focus_window_id]):
 		quads[focus_window_id].visible = true
@@ -740,6 +742,8 @@ func _process(delta: float) -> void:
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
 	if Input.is_action_just_pressed("interact_mode"):
+		if interact_mode_active:
+			compositor.release_all_keys()
 		interact_mode_active = not interact_mode_active
 		$Player.interact_mode_active = not $Player.interact_mode_active
 

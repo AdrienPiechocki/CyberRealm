@@ -250,6 +250,9 @@ class WlrCompositor : public Node {
     VulkanDmaBufImport vulkan_import;
     bool gpu_pipeline_active = false;
 
+    // --- Child processes ------------------------------------------------
+    std::vector<pid_t> child_pids;
+
     // --- Drag-and-drop icon -------------------------------------------
     wlr_drag *active_drag = nullptr;
     CaptureCache drag_icon_cache;
@@ -276,6 +279,7 @@ public:
     void forward_pointer_leave();
     void forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel);
     void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
+    void release_all_keys();
 
     String get_wayland_socket_name() const;
     void launch_app(const String &command);

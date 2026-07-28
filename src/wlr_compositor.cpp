@@ -112,6 +112,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
+    ClassDB::bind_method(D_METHOD("release_all_keys"), &WlrCompositor::release_all_keys);
+
     ADD_SIGNAL(MethodInfo("window_mapped",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::STRING, "title"),
@@ -174,6 +176,18 @@ WlrCompositor::~WlrCompositor() {
         wl_display_destroy_clients(display);
         wl_display_destroy(display);
     }
+
+    // Tuer tous les processus enfants lancés par launch_app()
+    // killpg car setsid() crée un nouveau process group par shell
+    for (pid_t pid : child_pids) {
+        killpg(pid, SIGTERM);
+    }
+    // Récolter les zombies sans bloquer
+    for (pid_t pid : child_pids) {
+        int status;
+        waitpid(pid, &status, WNOHANG);
+    }
+    child_pids.clear();
 }
 
 uint32_t WlrCompositor::get_time_msec() {
@@ -1531,17 +1545,20 @@ void WlrCompositor::_process(double delta) {
         }
     }
 
-    // Recapture la fenêtre active à chaque frame : le commit_listener de la
-    // surface racine ne suffit pas pour les clients (Firefox, etc.) dont le
-    // contenu réel vit dans une sous-surface qui committe indépendamment
-    // (souvent en mode désynchronisé) - sans ça l'image reste figée entre
-    // deux commits de la racine, d'où l'effet de lag.
-    if (active_toplevel_id != -1) {
-        WindowState *active = find_window(active_toplevel_id);
-        if (active && capture_surface(active->toplevel->base->surface,
-                active->texture, active->width, active->height, active->capture_cache)) {
-            emit_signal("window_texture_updated", active->id, active->texture,
-                active->width, active->height);
+    // Recapture TOUTES les fenêtres mappées à chaque frame. Dans un
+    // compositeur 3D toutes les fenêtres sont visibles simultanément —
+    // seules recapturer l'active laisserait les autres figées sur leur
+    // dernier commit. Le commit_listener ne suffit pas : certains clients
+    // (Firefox) throttilent leur rendu sans focus clavier, et le contenu
+    // réel vit dans des sous-surfaces qui commitent indépendamment.
+    for (auto &pair : windows) {
+        WindowState &ws = pair.second;
+        if (ws.toplevel && ws.toplevel->base && ws.toplevel->base->surface) {
+            if (capture_surface(ws.toplevel->base->surface,
+                    ws.texture, ws.width, ws.height, ws.capture_cache)) {
+                emit_signal("window_texture_updated", ws.id, ws.texture,
+                    ws.width, ws.height);
+            }
         }
     }
 
@@ -1627,10 +1644,11 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
     wlr_seat_pointer_notify_frame(seat);
 
     if (pressed) {
+        // Dans un compositeur 3D, toutes les fenêtres sont visibles
+        // simultanément. Ne pas désactiver la fenêtre précédente :
+        // wlr_xdg_toplevel_set_activated(false) fait throttler le rendu
+        // côté client (Firefox gèle la vidéo, GTK arrête les animations).
         if (active_toplevel_id != window_id) {
-            if (WindowState *prev = find_window(active_toplevel_id)) {
-                wlr_xdg_toplevel_set_activated(prev->toplevel, false);
-            }
             wlr_xdg_toplevel_set_activated(ws->toplevel, true);
             active_toplevel_id = window_id;
         }
@@ -1692,6 +1710,25 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     event.state = pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED;
 
     wlr_keyboard_notify_key(&virtual_keyboard, &event);
+}
+
+void WlrCompositor::release_all_keys() {
+    if (!seat || virtual_keyboard.num_keycodes == 0) return;
+    uint32_t time = get_time_msec();
+    // Copie car wlr_keyboard_notify_key modifie le tableau
+    uint32_t saved[WLR_KEYBOARD_KEYS_CAP];
+    int n = virtual_keyboard.num_keycodes;
+    if (n > WLR_KEYBOARD_KEYS_CAP) n = WLR_KEYBOARD_KEYS_CAP;
+    memcpy(saved, virtual_keyboard.keycodes, n * sizeof(uint32_t));
+
+    for (int i = 0; i < n; i++) {
+        wlr_keyboard_key_event ev = {};
+        ev.time_msec = time;
+        ev.keycode = saved[i];
+        ev.update_state = true;
+        ev.state = WL_KEYBOARD_KEY_STATE_RELEASED;
+        wlr_keyboard_notify_key(&virtual_keyboard, &ev);
+    }
 }
 
 void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
@@ -1790,7 +1827,9 @@ void WlrCompositor::launch_app(const String &command) {
         CharString cmd = command.utf8();
         execl("/bin/sh", "sh", "-c", cmd.get_data(), (char *)nullptr);
         _exit(127);
-    } else if (pid < 0) {
+    } else if (pid > 0) {
+        child_pids.push_back(pid);
+    } else {
         UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_app");
     }
 }
