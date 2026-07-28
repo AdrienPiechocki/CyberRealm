@@ -6,6 +6,7 @@ extends PanelContainer
 signal action_grab(window_id: int)
 signal action_focus(window_id: int)
 signal action_toggle_hide(window_id: int)
+signal action_find(window_id: int)
 signal action_quit(window_id: int)
 signal menu_closed()
 
@@ -62,6 +63,7 @@ func _build_action_buttons() -> void:
 		{"label": "GRAB", "signal": "action_grab"},
 		{"label": "FOCUS", "signal": "action_focus"},
 		{"label": "HIDE/SHOW", "signal": "action_toggle_hide"},
+		{"label": "FIND", "signal": "action_find"},
 		{"label": "QUIT", "signal": "action_quit"},
 	]
 	for def in action_defs:
@@ -114,6 +116,8 @@ func _on_action(sig_name: String) -> void:
 			action_focus.emit(selected_window_id)
 		"action_toggle_hide":
 			action_toggle_hide.emit(selected_window_id)
+		"action_find":
+			action_find.emit(selected_window_id)
 		"action_quit":
 			action_quit.emit(selected_window_id)
 			# Rafraîchir après un court délai pour laisser le temps au client de fermer

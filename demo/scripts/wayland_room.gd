@@ -9,6 +9,9 @@ extends Node3D
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
+var xray_windows: Dictionary = {} # window_id (int) -> bool
+var xray_time: float = 0.0
+var xray_overlay: StandardMaterial3D # material pour l'effet X-RAY (no_depth_test)
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 var interact_mode_active := false
 
@@ -101,6 +104,14 @@ void fragment() {
 """
 
 func _ready() -> void:
+	# Matériau X-RAY: transparent, passe devant tout (no_depth_test)
+	xray_overlay = StandardMaterial3D.new()
+	xray_overlay.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	xray_overlay.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	xray_overlay.albedo_color = Color(1.0, 0.15, 0.15, 0.6)
+	xray_overlay.no_depth_test = true
+	xray_overlay.render_priority = 10
+
 	compositor.window_mapped.connect(_on_window_mapped)
 	compositor.window_unmapped.connect(_on_window_unmapped)
 	compositor.window_texture_updated.connect(_on_texture_updated)
@@ -121,6 +132,7 @@ func _ready() -> void:
 	window_menu.action_grab.connect(_on_window_menu_grab)
 	window_menu.action_focus.connect(_on_window_menu_focus)
 	window_menu.action_toggle_hide.connect(_on_window_menu_toggle_hide)
+	window_menu.action_find.connect(_on_window_menu_find)
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 
@@ -479,6 +491,7 @@ func _on_window_unmapped(id: int) -> void:
 		focused_window_id = -1
 	_unpin_window(id)
 	window_textures.erase(id)
+	xray_windows.erase(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -730,6 +743,8 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
 func _process(delta: float) -> void:
+	_update_xray(delta)
+
 	# Suivi de l'icône de drag-and-drop
 	if drag_icon_rect and drag_icon_rect.visible:
 		var mouse_pos := get_viewport().get_mouse_position()
@@ -1204,6 +1219,23 @@ func _on_window_menu_toggle_hide(wid: int) -> void:
 		body.get_child(0).disabled = not quad.visible
 	if window_menu.visible:
 		window_menu.refresh_preview()
+
+func _on_window_menu_find(wid: int) -> void:
+	window_menu.hide_menu()
+	xray_windows[wid] = not xray_windows.get(wid, false)
+	var active: bool = xray_windows.get(wid, false)
+	if quads.has(wid) and is_instance_valid(quads[wid]):
+		if not active:
+			quads[wid].material_overlay = null
+		else:
+			quads[wid].material_overlay = xray_overlay
+
+func _update_xray(delta: float) -> void:
+	if xray_windows.is_empty():
+		return
+	xray_time += delta
+	var pulse := (sin(xray_time * 6.0) * 0.5 + 0.5) # 0..1, ~1 Hz
+	xray_overlay.albedo_color.a = 0.3 + pulse * 0.5
 
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
