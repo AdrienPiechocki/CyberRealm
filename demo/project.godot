@@ -10,7 +10,7 @@ config_version=5
 
 [application]
 
-config/name="demo"
+config/name="CyberRealm"
 run/main_scene="uid://drgt1wfckhxn1"
 config/features=PackedStringArray("4.7", "Forward Plus")
 run/max_fps=120
@@ -20,7 +20,7 @@ config/icon="res://assets/icon.svg"
 
 window/size/viewport_width=1920
 window/size/viewport_height=1080
-window/size/mode=2
+window/size/mode=3
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 

@@ -15,7 +15,7 @@ func _physics_process(delta):
 	if position.y <= -50:
 		position = Vector3.ZERO
 	velocity.y += -gravity * delta
-	if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or focus_mode_active:
+	if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -36,9 +36,12 @@ func _physics_process(delta):
 func _input(event):
 	if focus_mode_active:
 		return
+	if $PauseMenuLayer/PauseMenu.visible:
+		return
 	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
 		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible:
 			return
+		$PauseMenuLayer/PauseMenu.show_menu()
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
 		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible:

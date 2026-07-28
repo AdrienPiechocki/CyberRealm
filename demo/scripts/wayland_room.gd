@@ -6,6 +6,7 @@ extends Node3D
 @onready var compositor: WlrCompositor = $WlrCompositor
 @onready var launcher_menu = $Player/LauncherLayer/LauncherMenu
 @onready var window_menu = $Player/WindowMenuLayer/WindowMenu
+@onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -135,6 +136,11 @@ func _ready() -> void:
 	window_menu.action_find.connect(_on_window_menu_find)
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
+
+	pause_menu.fps_toggled.connect(func(v): $Player/UI/FPS.visible = v)
+	pause_menu.capture_label_toggled.connect(func(v): $Player/UI/Label.visible = v)
+	pause_menu.terminal_changed.connect(func(t): launcher_menu.terminal_emulator = t)
+	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -1117,6 +1123,9 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:
+	if pause_menu.visible:
+		return
+
 	# Quick-launch favoris F1-F12 (hors launcher, hors focus, hors interact)
 	if not launcher_menu.visible and not window_menu.visible and not focus_mode and not interact_mode_active:
 		if event is InputEventKey and event.pressed and not event.echo:
@@ -1242,6 +1251,15 @@ func _on_window_menu_quit(wid: int) -> void:
 
 func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _on_pause_menu_visibility_changed() -> void:
+	if pause_menu.visible:
+		if interact_mode_active:
+			compositor.release_all_keys()
+			interact_mode_active = false
+			$Player.interact_mode_active = false
+		if focus_mode:
+			_exit_focus_mode()
 
 func _show_toast(text: String) -> void:
 	if toast_tween and toast_tween.is_valid():

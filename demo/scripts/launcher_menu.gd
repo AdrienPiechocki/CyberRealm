@@ -155,13 +155,7 @@ func _parse_desktop_file(path: String) -> Dictionary:
 		return {}
 	for suffix in ["%f", "%F", "%u", "%U", "%d", "%D", "%n", "%N", "%i", "%c", "%k"]:
 		exec_cmd = exec_cmd.replace(suffix, "").strip_edges()
-	if is_terminal and terminal_emulator != "":
-		var wrap := terminal_emulator
-		if terminal_emulator == "kitty":
-			wrap += " --single-instance"
-		wrap += " -e"
-		exec_cmd = wrap + " " + exec_cmd
-	return {"name": name, "exec": exec_cmd, "categories": categories}
+	return {"name": name, "exec": exec_cmd, "is_terminal": is_terminal, "categories": categories}
 
 func _get_primary_category(entry: Dictionary) -> String:
 	var cats: PackedStringArray = entry.get("categories", PackedStringArray())
@@ -265,8 +259,10 @@ func _build_ui() -> void:
 
 			btn.set_meta("app_name", entry["name"])
 			btn.set_meta("app_exec", entry["exec"])
+			btn.set_meta("app_terminal", entry.get("is_terminal", false))
 			var cmd = entry["exec"]
-			btn.pressed.connect(func(): _on_app_clicked(cmd))
+			var term = entry.get("is_terminal", false)
+			btn.pressed.connect(func(): _on_app_clicked(cmd, term))
 			btn.gui_input.connect(func(event: InputEvent):
 				if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_RIGHT:
 					_show_fav_popup(btn, event.global_position)
@@ -320,7 +316,13 @@ func _save_favorites() -> void:
 	f.close()
 
 func get_favorite(slot: int) -> Dictionary:
-	return favorites.get(slot, {})
+	var fav = favorites.get(slot, {})
+	if fav.is_empty():
+		return {}
+	var result = fav.duplicate()
+	if result.get("is_terminal", false):
+		result["exec"] = _wrap_terminal(result["exec"])
+	return result
 
 func _toggle_favorite(slot: int) -> void:
 	if selected_idx < 0 or selected_idx >= navigable_items.size():
@@ -330,13 +332,14 @@ func _toggle_favorite(slot: int) -> void:
 		return
 	var app_name: String = item.get_meta("app_name", "")
 	var app_exec: String = item.get_meta("app_exec", "")
+	var app_terminal: bool = item.get_meta("app_terminal", false)
 	if app_name == "" or app_exec == "":
 		return
 
 	if favorites.has(slot) and favorites[slot]["exec"] == app_exec:
 		favorites.erase(slot)
 	else:
-		favorites[slot] = {"name": app_name, "exec": app_exec}
+		favorites[slot] = {"name": app_name, "exec": app_exec, "is_terminal": app_terminal}
 	_save_favorites()
 	_update_favorite_indicators()
 	_update_favorites_bar()
@@ -345,6 +348,7 @@ func _show_fav_popup(btn: Button, pos: Vector2) -> void:
 	var popup := PopupMenu.new()
 	var app_name: String = btn.get_meta("app_name", "")
 	var app_exec: String = btn.get_meta("app_exec", "")
+	var app_terminal: bool = btn.get_meta("app_terminal", false)
 	for slot in range(1, 13):
 		var label := "F" + str(slot)
 		if favorites.has(slot):
@@ -360,7 +364,7 @@ func _show_fav_popup(btn: Button, pos: Vector2) -> void:
 		if favorites.has(slot) and favorites[slot]["exec"] == app_exec:
 			favorites.erase(slot)
 		else:
-			favorites[slot] = {"name": app_name, "exec": app_exec}
+			favorites[slot] = {"name": app_name, "exec": app_exec, "is_terminal": app_terminal}
 		_save_favorites()
 		_update_favorite_indicators()
 		_update_favorites_bar()
@@ -447,7 +451,18 @@ func _toggle_category(cat: String) -> void:
 		btn.visible = expanded
 	_rebuild_navigable_list()
 
-func _on_app_clicked(command: String) -> void:
+func _wrap_terminal(exec: String) -> String:
+	if terminal_emulator == "":
+		return exec
+	var wrap := terminal_emulator
+	if terminal_emulator == "kitty":
+		wrap += " --single-instance"
+	wrap += " -e"
+	return wrap + " " + exec
+
+func _on_app_clicked(command: String, is_terminal: bool) -> void:
+	if is_terminal:
+		command = _wrap_terminal(command)
 	app_launch.emit(command)
 	hide_menu()
 
