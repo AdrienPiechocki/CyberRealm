@@ -1495,6 +1495,16 @@ void WlrCompositor::start_headless() {
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
 
+    // Presse-papier fonctionnel entre fenêtres : sans ces deux listeners,
+    // les globals ci-dessus sont bien annoncés aux clients mais aucune
+    // source n'est jamais acceptée par le seat -> copier dans une fenêtre
+    // et coller dans une autre ne fait rien.
+    request_set_selection_listener.notify = WlrCompositor::on_request_set_selection;
+    wl_signal_add(&seat->events.request_set_selection, &request_set_selection_listener);
+
+    request_set_primary_selection_listener.notify = WlrCompositor::on_request_set_primary_selection;
+    wl_signal_add(&seat->events.request_set_primary_selection, &request_set_primary_selection_listener);
+
     // Pointer constraints (zwp_pointer_constraints_v1) + relative pointer
     // (zwp_relative_pointer_v1) — nécessaires pour les jeux FPS qui
     // demandent un pointer lock via zwp_pointer_constraints_v1::lock_pointer.
@@ -1834,6 +1844,20 @@ void WlrCompositor::on_drag_destroy(wl_listener *listener, void *data) {
     RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
     self->drag_icon_cache.reset(rd);
     self->emit_signal("drag_icon_removed");
+}
+
+void WlrCompositor::on_request_set_selection(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, request_set_selection_listener);
+    if (!self->seat) return;
+    wlr_seat_request_set_selection_event *event = (wlr_seat_request_set_selection_event *)data;
+    wlr_seat_set_selection(self->seat, event->source, event->serial);
+}
+
+void WlrCompositor::on_request_set_primary_selection(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, request_set_primary_selection_listener);
+    if (!self->seat) return;
+    wlr_seat_request_set_primary_selection_event *event = (wlr_seat_request_set_primary_selection_event *)data;
+    wlr_seat_set_primary_selection(self->seat, event->source, event->serial);
 }
 
 bool WlrCompositor::is_drag_active() const {

@@ -31,6 +31,7 @@ extern "C" {
 #include <wlr/types/wlr_input_device.h>
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_data_device.h>
+#include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
@@ -160,6 +161,8 @@ class WlrCompositor : public Node {
     wl_listener request_start_drag_listener{};
     wl_listener start_drag_listener{};
     wl_listener drag_destroy_listener{};
+    wl_listener request_set_selection_listener{};
+    wl_listener request_set_primary_selection_listener{};
     wl_listener keyboard_key_listener{};
     wl_listener keyboard_modifiers_listener{};
 
@@ -182,6 +185,14 @@ class WlrCompositor : public Node {
     static void on_request_start_drag(wl_listener *listener, void *data);
     static void on_start_drag(wl_listener *listener, void *data);
     static void on_drag_destroy(wl_listener *listener, void *data);
+
+    // Presse-papier (wl_data_device) + sélection primaire (Ctrl+V vs
+    // clic molette). Un client demande à devenir la source du
+    // presse-papier via ces requêtes ; il faut valider le serial et
+    // accepter explicitement, sinon aucune donnée n'est jamais partagée
+    // entre les fenêtres/clients.
+    static void on_request_set_selection(wl_listener *listener, void *data);
+    static void on_request_set_primary_selection(wl_listener *listener, void *data);
     static void on_toplevel_map(wl_listener *listener, void *data);
     static void on_toplevel_unmap(wl_listener *listener, void *data);
     static void on_toplevel_destroy(wl_listener *listener, void *data);
