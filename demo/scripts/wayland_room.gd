@@ -145,7 +145,8 @@ func _ready() -> void:
 	pause_menu.portal_backend_changed.connect(func(b): compositor.set_portal_backend(b))
 	pause_menu.polkit_agent_changed.connect(func(p): compositor.set_polkit_agent(p))
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
-
+	pause_menu.quit_requested.connect(_on_quit_requested)
+	
 	# Appliquer les réglages persistés
 	compositor.set_portal_backend(pause_menu.selected_portal_backend)
 	compositor.set_polkit_agent(pause_menu.selected_polkit_agent)
@@ -1325,3 +1326,11 @@ func _remove_toast(label: Label) -> void:
 		if toasts[i].label == label:
 			toasts.remove_at(i)
 			break
+
+func _on_quit_requested() -> void:
+	for wid in quads.keys():
+		compositor.close_window(wid)
+
+	await get_tree().create_timer(0.2).timeout
+
+	get_tree().quit()

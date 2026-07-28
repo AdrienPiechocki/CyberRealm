@@ -5,6 +5,7 @@ signal capture_label_toggled(visible: bool)
 signal terminal_changed(terminal: String)
 signal portal_backend_changed(backend: String)
 signal polkit_agent_changed(path: String)
+signal quit_requested
 
 enum Page { MAIN, RESOLUTION, TERMINAL, PORTAL, POLKIT, KEYBINDS }
 
@@ -360,7 +361,7 @@ func _show_main() -> void:
 
 	var quit_btn := _make_btn("Quit", Color(0.25, 0.1, 0.1, 0.9))
 	quit_btn.pressed.connect(func():
-		get_tree().quit()
+		quit_requested.emit()
 	)
 	container.add_child(quit_btn)
 
