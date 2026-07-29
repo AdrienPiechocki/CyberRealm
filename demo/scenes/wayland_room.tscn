@@ -21,7 +21,7 @@ script = ExtResource("1_6b3vc")
 collision_layer = 2
 collision_mask = 2
 
-[node name="WlrCompositor" type="WlrCompositor" parent="." unique_id=2140048091]
+[node name="WlrCompositor" type="WlrCompositor" parent="." unique_id=1979323656]
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=642075149]
 environment = SubResource("Environment_jm82k")
