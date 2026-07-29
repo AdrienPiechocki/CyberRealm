@@ -7,6 +7,7 @@ extends Node3D
 @onready var launcher_menu = $Player/LauncherLayer/LauncherMenu
 @onready var window_menu = $Player/WindowMenuLayer/WindowMenu
 @onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
+@onready var volume_mixer = $Player/VolumeMixerLayer/VolumeMixer
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -128,6 +129,10 @@ func _ready() -> void:
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
 	launcher_menu.app_launch.connect(func(cmd): compositor.launch_app(cmd))
+
+	# Setup volume mixer
+	volume_mixer.setup(compositor)
+	volume_mixer.menu_closed.connect(_on_volume_mixer_closed)
 
 	# Setup du menu de navigation entre fenêtres
 	window_menu.setup(compositor, _get_window_texture)
@@ -751,7 +756,10 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
 		window_menu.toggle_menu()
 
-	if launcher_menu.visible or window_menu.visible:
+	if Input.is_action_just_pressed("volume_mixer") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
+		volume_mixer.toggle_menu()
+
+	if launcher_menu.visible or window_menu.visible or volume_mixer.visible:
 		return
 
 	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
@@ -1112,11 +1120,11 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:
-	if pause_menu.visible:
+	if pause_menu.visible or volume_mixer.visible:
 		return
 
 	# Quick-launch favoris F1-F12 (hors launcher, hors focus, hors interact)
-	if not launcher_menu.visible and not window_menu.visible and not focus_mode and not interact_mode_active:
+	if not launcher_menu.visible and not window_menu.visible and not volume_mixer.visible and not focus_mode and not interact_mode_active:
 		if event is InputEventKey and event.pressed and not event.echo:
 			if event.keycode >= KEY_F1 and event.keycode <= KEY_F12:
 				var slot = event.keycode - KEY_F1 + 1
@@ -1246,6 +1254,9 @@ func _on_window_menu_pin(wid: int) -> void:
 	window_menu.hide_menu()
 
 func _on_window_menu_closed() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _on_volume_mixer_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_pause_menu_visibility_changed() -> void:
