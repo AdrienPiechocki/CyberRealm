@@ -8,8 +8,8 @@ A full-featured Wayland compositor implemented as a Godot 4 GDExtension plugin. 
 
 ```bash
 # Dependencies (Arch Linux)
-sudo pacman -S wlroots0.18 wayland wayland-protocols pixman libdrm \
-               libinput xkbcommon scons pkgconf vulkan-icd-loader
+sudo pacman -S wlroots0.18 wayland wayland-protocols pixman libdrm xwayland-satellite \
+               libinput xkbcommon scons pkgconf vulkan-headers vulkan-icd-loader
 
 # Godot-cpp submodule
 git submodule update --init --recursive
@@ -209,76 +209,4 @@ Auto-negotiated per-surface, in priority order:
 | `scroll_down` | Wheel down | Scroll down |
 | `ui_cancel` | Escape | Pause menu / exit menus |
 
----
 
-## Scene Structure
-
-```
-wayland_room.tscn
-├── WaylandRoom (Node3D)
-│   ├── WorldEnvironment
-│   ├── CSGBox3D (floor)
-│   └── Player (CharacterBody3D)
-│       ├── Camera3D
-│       ├── CollisionShape3D
-│       └── UI (CanvasLayer)
-│           ├── Cursor (TextureRect)
-│           ├── Keyboard Capture Label
-│           ├── FPS (Label)
-│           ├── LauncherLayer → LauncherMenu
-│           ├── WindowMenuLayer → WindowMenu
-│           └── PauseMenuLayer → PauseMenu
-└── WlrCompositor (Node)
-```
-
----
-
-## Wayland Window Shader
-
-```glsl
-shader_type spatial;
-render_mode unshaded, blend_mix, cull_disabled;
-
-// UV remapping for rounded allocation
-vec2 uv = UV * content_size / texture_size;
-
-// Alpha un-premultiply
-vec4 tex = texture(texture_albedo, uv);
-if (tex.a > 0.0) tex.rgb /= tex.a;
-
-// Gamma correction (linear → sRGB)
-tex.rgb = pow(tex.rgb, vec3(1.0 / 2.2));
-
-// Alpha discard
-if (tex.a < 0.01) discard;
-```
-
----
-
-## Project Structure
-
-```
-demo/
-├── bin/                        # Built .so files
-├── scripts/
-│   ├── wayland_room.gd         # Main game script (~1310 lines)
-│   ├── launcher_menu.gd        # App launcher UI
-│   ├── window_menu.gd          # Window navigation menu
-│   ├── pause_menu.gd           # Settings / pause menu
-│   ├── player.gd               # FPS controller
-│   ├── fps.gd                  # FPS counter
-│   └── toast.gd                # Notification toast UI
-├── scenes/
-│   ├── wayland_room.tscn
-│   ├── player.tscn
-│   └── ...
-├── project.godot
-└── waylandgodot.gdextension
-
-src/
-├── wlr_compositor.h
-├── wlr_compositor.cpp          # Main compositor (~2200 lines)
-├── register_types.cpp
-├── protocol/                   # Generated Wayland protocol code
-└── SConstruct
-```
