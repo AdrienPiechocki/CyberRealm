@@ -16,6 +16,9 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
+#ifdef HAVE_DBUS
+#include <dbus/dbus.h>
+#endif
 #include <sys/mman.h>
 #include <sys/ioctl.h>
 #include <poll.h>
@@ -1119,7 +1122,7 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     wl_signal_add(&toplevel->events.request_resize, &ws.request_resize_listener);
 
     UtilityFunctions::print("waylandgodot: new_toplevel reçu, id=", id,
-        " app_id=", toplevel->app_id ? toplevel->app_id : "(pas encore fixé)");
+        " app_id=", toplevel->app_id ? String::utf8(toplevel->app_id) : String("(pas encore fixé)"));
 
     (void)id;
 }
@@ -1128,8 +1131,8 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, map_listener);
     WlrCompositor *self = ws->owner;
 
-    String title = ws->toplevel->title ? String(ws->toplevel->title) : String("");
-    String app_id = ws->toplevel->app_id ? String(ws->toplevel->app_id) : String("");
+    String title = ws->toplevel->title ? String::utf8(ws->toplevel->title) : String();
+    String app_id = ws->toplevel->app_id ? String::utf8(ws->toplevel->app_id) : String();
     self->emit_signal("window_mapped", ws->id, title, app_id);
 }
 
@@ -1997,8 +2000,8 @@ Array WlrCompositor::get_window_list() {
         if (!ws.toplevel || !ws.toplevel->base) continue;
         Dictionary entry;
         entry["id"] = ws.id;
-        entry["title"] = ws.toplevel->title ? String(ws.toplevel->title) : String("");
-        entry["app_id"] = ws.toplevel->app_id ? String(ws.toplevel->app_id) : String("");
+        entry["title"] = ws.toplevel->title ? String::utf8(ws.toplevel->title) : String();
+        entry["app_id"] = ws.toplevel->app_id ? String::utf8(ws.toplevel->app_id) : String();
         result.append(entry);
     }
     return result;
@@ -2070,6 +2073,8 @@ void WlrCompositor::init_dbus_notif_listener() {
     notif_arg_idx = 0;
 
     UtilityFunctions::print("waylandgodot: notif dbus-monitor (pid ", pid, ")");
+
+    start_notif_daemon();
 }
 
 void WlrCompositor::shutdown_dbus_notif_listener() {
@@ -2078,6 +2083,11 @@ void WlrCompositor::shutdown_dbus_notif_listener() {
         waitpid(notif_mon_pid, nullptr, WNOHANG);
         notif_mon_pid = -1;
     }
+    if (notif_daemon_pid > 0) {
+        kill(notif_daemon_pid, SIGTERM);
+        waitpid(notif_daemon_pid, nullptr, WNOHANG);
+        notif_daemon_pid = -1;
+    }
     if (notif_mon_fd >= 0) {
         close(notif_mon_fd);
         notif_mon_fd = -1;
@@ -2085,6 +2095,103 @@ void WlrCompositor::shutdown_dbus_notif_listener() {
     notif_buf.clear();
     notif_parse_state = 0;
     notif_depth = 0;
+}
+
+#ifdef HAVE_DBUS
+static DBusHandlerResult notif_daemon_filter(DBusConnection *conn,
+                                             DBusMessage *msg,
+                                             void *user_data) {
+    if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_METHOD_CALL)
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+    const char *iface = dbus_message_get_interface(msg);
+    const char *member = dbus_message_get_member(msg);
+    if (!iface || !member || strcmp(iface, "org.freedesktop.Notifications") != 0)
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+    DBusMessage *reply = nullptr;
+
+    if (strcmp(member, "Notify") == 0) {
+        reply = dbus_message_new_method_return(msg);
+        if (reply) {
+            dbus_uint32_t id = 0;
+            dbus_message_append_args(reply,
+                DBUS_TYPE_UINT32, &id,
+                DBUS_TYPE_INVALID);
+        }
+    } else if (strcmp(member, "CloseNotification") == 0) {
+        reply = dbus_message_new_method_return(msg);
+    } else if (strcmp(member, "GetCapabilities") == 0) {
+        reply = dbus_message_new_method_return(msg);
+        if (reply) {
+            DBusMessageIter iter, sub;
+            dbus_message_iter_init_append(reply, &iter);
+            dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &sub);
+            dbus_message_iter_close_container(&iter, &sub);
+        }
+    } else if (strcmp(member, "GetServerInformation") == 0) {
+        reply = dbus_message_new_method_return(msg);
+        if (reply) {
+            const char *name = "wayland-godot";
+            const char *vendor = "wayland-godot";
+            const char *ver = "1.0";
+            const char *spec = "1.2";
+            dbus_message_append_args(reply,
+                DBUS_TYPE_STRING, &name,
+                DBUS_TYPE_STRING, &vendor,
+                DBUS_TYPE_STRING, &ver,
+                DBUS_TYPE_STRING, &spec,
+                DBUS_TYPE_INVALID);
+        }
+    }
+
+    if (reply) {
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+#endif
+
+void WlrCompositor::start_notif_daemon() {
+#ifdef HAVE_DBUS
+    pid_t pid = fork();
+    if (pid < 0) {
+        UtilityFunctions::printerr("waylandgodot: fork échoué notif daemon");
+        return;
+    }
+
+    if (pid > 0) {
+        notif_daemon_pid = pid;
+        UtilityFunctions::print("waylandgodot: notif daemon (pid ", pid, ")");
+        return;
+    }
+
+    // Child: minimal org.freedesktop.Notifications daemon
+    DBusError err;
+    dbus_error_init(&err);
+    DBusConnection *conn = dbus_bus_get(DBUS_BUS_SESSION, &err);
+    if (!conn) {
+        dbus_error_free(&err);
+        _exit(0);
+    }
+    dbus_bus_request_name(conn, "org.freedesktop.Notifications", 0, &err);
+    dbus_error_free(&err);
+
+    dbus_connection_add_filter(conn, notif_daemon_filter, nullptr, nullptr);
+
+    while (true) {
+        dbus_connection_read_write(conn, 100);
+        while (dbus_connection_dispatch(conn) == DBUS_DISPATCH_DATA_REMAINS);
+    }
+
+    dbus_connection_unref(conn);
+    _exit(0);
+#else
+    UtilityFunctions::print("waylandgodot: notif daemon disabled (no dbus-1)");
+#endif
 }
 
 void WlrCompositor::poll_dbus() {
@@ -2109,6 +2216,34 @@ void WlrCompositor::poll_dbus() {
     // Flush la notification en attente si le message est complet
     if (notif_pending && !notif_emitted)
         emit_pending_notif();
+}
+
+static std::string unescape_dbus_string(const std::string &s) {
+    std::string out;
+    out.reserve(s.size());
+    for (size_t i = 0; i < s.size(); i++) {
+        if (s[i] == '\\' && i + 1 < s.size()) {
+            if (s[i + 1] == '\\') {
+                out += '\\'; i++;
+            } else if (s[i + 1] == '"') {
+                out += '"'; i++;
+            } else if (s[i + 1] == 'x' && i + 3 < s.size()) {
+                char hex[3] = {s[i + 2], s[i + 3], '\0'};
+                char *end = nullptr;
+                long val = strtol(hex, &end, 16);
+                if (end == hex + 2) {
+                    out += (char)val; i += 3;
+                } else {
+                    out += '\\';
+                }
+            } else {
+                out += '\\';
+            }
+        } else {
+            out += s[i];
+        }
+    }
+    return out;
 }
 
 void WlrCompositor::feed_notif_line(const std::string &line) {
@@ -2176,7 +2311,7 @@ void WlrCompositor::feed_notif_line(const std::string &line) {
         size_t start = line.find('"', s + 7);
         size_t end = start != std::string::npos ? line.find('"', start + 1) : std::string::npos;
         if (start != std::string::npos && end != std::string::npos) {
-            std::string val = line.substr(start + 1, end - start - 1);
+            std::string val = unescape_dbus_string(line.substr(start + 1, end - start - 1));
             if (notif_arg_idx == 0) notif_app_name = val;
             else if (notif_arg_idx == 2) notif_icon = val;
             else if (notif_arg_idx == 3) notif_summary = val;
@@ -2201,10 +2336,10 @@ void WlrCompositor::feed_notif_line(const std::string &line) {
 void WlrCompositor::emit_pending_notif() {
     if (notif_app_name.empty() && notif_summary.empty()) return;
     emit_signal("notification_received",
-        String(notif_app_name.c_str()),
-        String(notif_summary.c_str()),
-        String(notif_body.c_str()),
-        String(notif_icon.c_str()),
+        String::utf8(notif_app_name.c_str(), notif_app_name.length()),
+        String::utf8(notif_summary.c_str(), notif_summary.length()),
+        String::utf8(notif_body.c_str(), notif_body.length()),
+        String::utf8(notif_icon.c_str(), notif_icon.length()),
         notif_urgency);
     notif_emitted = 1;
     notif_pending = 0;

@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import os
+import subprocess
 
 env = SConscript("godot-cpp/SConstruct")
 
@@ -14,6 +15,13 @@ env.ParseConfig("pkg-config --cflags --libs wlroots-0.18 wayland-server xkbcommo
 # VK_KHR_external_memory_fd.  Les headers (vulkan/vulkan.h) et la
 # librairie de chargement (libvulkan.so) sont requis à la compilation.
 env.ParseConfig("pkg-config --cflags --libs vulkan")
+
+# dbus-1 pour le daemon de notification (optionnel)
+if subprocess.call(["pkg-config", "--exists", "dbus-1"]) == 0:
+    env.ParseConfig("pkg-config --cflags --libs dbus-1")
+    env.Append(CPPDEFINES=["HAVE_DBUS"])
+else:
+    print("WARNING: dbus-1 not found — notification daemon disabled")
 
 # wlroots 0.18 masque son API derrière cette macro tant qu'elle n'est pas
 # stabilisée - sans elle, tous ses headers refusent de compiler.

@@ -6,6 +6,7 @@
 [ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/window_menu.gd" id="4_window_menu"]
 [ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
 [ext_resource type="Script" uid="uid://bk5vm5nmqewlq" path="res://scripts/volume_mixer.gd" id="6_volume_mixer"]
+[ext_resource type="Script" path="res://scripts/notification_history.gd" id="7_notif_hist"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -194,3 +195,19 @@ offset_bottom = 250.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("6_volume_mixer")
+
+[node name="NotificationHistoryLayer" type="CanvasLayer" parent="."]
+
+[node name="NotificationHistory" type="PanelContainer" parent="NotificationHistoryLayer"]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -210.0
+offset_top = -250.0
+offset_right = 210.0
+offset_bottom = 250.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("7_notif_hist")

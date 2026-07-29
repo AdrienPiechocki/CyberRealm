@@ -15,7 +15,7 @@ func _physics_process(delta):
 	if position.y <= -50:
 		position = Vector3.ZERO
 	velocity.y += -gravity * delta
-	if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or focus_mode_active:
+	if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible or focus_mode_active:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -39,12 +39,12 @@ func _input(event):
 	if $PauseMenuLayer/PauseMenu.visible:
 		return
 	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
-		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible:
+		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible:
 			return
 		$PauseMenuLayer/PauseMenu.show_menu()
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
-		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible:
+		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:

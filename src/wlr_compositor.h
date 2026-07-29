@@ -274,6 +274,7 @@ class WlrCompositor : public Node {
     // --- Notification monitor (dbus-monitor subprocess) -----------------
     int notif_mon_fd = -1;
     pid_t notif_mon_pid = -1;
+    pid_t notif_daemon_pid = -1;
     std::string notif_buf;
     int notif_parse_state = 0; // 0=idle 1=header_seen 2=in_args
     int notif_arg_idx = 0;
@@ -288,6 +289,7 @@ class WlrCompositor : public Node {
     int notif_pending = 0;
     void init_dbus_notif_listener();
     void shutdown_dbus_notif_listener();
+    void start_notif_daemon();
     void poll_dbus();
     void feed_notif_line(const std::string &line);
     void emit_pending_notif();

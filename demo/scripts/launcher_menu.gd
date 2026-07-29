@@ -463,9 +463,6 @@ func _wrap_terminal(exec: String) -> String:
 func _on_app_clicked(command: String, is_terminal: bool) -> void:
 	if is_terminal:
 		command = _wrap_terminal(command)
-	else: 
-		var env_vars = "env -u DBUS_SESSION_BUS_ADDRESS "
-		command = env_vars + command
 	app_launch.emit(command)
 	hide_menu()
 
