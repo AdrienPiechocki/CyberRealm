@@ -1555,7 +1555,6 @@ void WlrCompositor::start_headless() {
     setenv("GDK_BACKEND", "wayland", 0);       
     setenv("QT_QPA_PLATFORM", "wayland", 0);   
     setenv("MOZ_ENABLE_WAYLAND", "1", 0);      
-    setenv("SDL_VIDEODRIVER", "wayland", 0);   
     setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 0);
 
     // 2. Désactiver les portails (très utile pour éviter les blocages sur les FileDialogs GTK)
