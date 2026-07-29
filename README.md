@@ -11,10 +11,10 @@ A full-featured Wayland compositor implemented as a Godot 4 GDExtension plugin. 
 sudo pacman -S wlroots0.18 wayland wayland-protocols pixman libdrm xwayland-satellite \
                libinput xkbcommon scons pkgconf vulkan-headers vulkan-icd-loader
 
-# Godot-cpp submodule
-git submodule update --init --recursive
+# Godot-cpp
+git clone https://github.com/godotengine/godot-cpp.git
 
-scons target=template_debug
+scons target=template_debug platform=linux
 ```
 
 The built shared library lands in `demo/bin/`. Open `demo/` as a Godot 4.2+ project and run `wayland_room.gd`.
