@@ -1,0 +1,6 @@
+[Desktop Entry]
+Name=CyberRealm
+Comment=Bureau 3D Wayland propulsé par Godot
+Exec=/usr/local/lib/cyberrealm/cyberrealm-session
+Type=Application
+DesktopNames=CyberRealm

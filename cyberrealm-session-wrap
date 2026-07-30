@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# CyberRealm session wrapper — finds and runs the session launcher binary.
+# This script is what the .desktop file points to.
+
+DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Find the session launcher binary
+LAUNCHER=""
+for d in "$DIR/demo/bin/cyberrealm-session" \
+         "$DIR/../cyberrealm-session" \
+         "/usr/local/bin/cyberrealm-session" \
+         "/usr/lib/cyberrealm/cyberrealm-session"; do
+    if [ -x "$d" ]; then
+        LAUNCHER="$d"
+        break
+    fi
+done
+
+if [ -z "$LAUNCHER" ]; then
+    echo "CyberRealm: session launcher not found. Run ./build-install.sh first." >&2
+    exit 1
+fi
+
+# Set up environment
+export XDG_CURRENT_DESKTOP=CyberRealm
+export CYBERREALM_PROJECT_DIR="${CYBERREALM_PROJECT_DIR:-$DIR/demo}"
+
+exec "$LAUNCHER" "$@"

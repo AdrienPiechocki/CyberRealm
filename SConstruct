@@ -5,7 +5,12 @@ import subprocess
 env = SConscript("godot-cpp/SConstruct")
 
 env.Append(CPPPATH=["src/"])
+
+# GDExtension shared library (C++)
 sources = Glob("src/*.cpp")
+
+# Session launcher binary (C) — only if wlroots is found
+launcher_sources = Glob("src/session_launcher.c")
 
 # Dépendances système via pkg-config. Adapter le nom du paquet wlroots
 # selon la version installée (wlroots-0.18, wlroots-0.19, ...).
@@ -82,3 +87,14 @@ else:
     )
 
 Default(library)
+
+# Build session launcher binary
+if launcher_sources:
+    # The launcher is a standalone binary, not a Godot plugin
+    launcher_env = env.Clone()
+    launcher_env.Append(LINKFLAGS=["-fPIE"])
+    launcher = launcher_env.Program(
+        "demo/bin/cyberrealm-session",
+        source=launcher_sources,
+    )
+    Default(launcher)
