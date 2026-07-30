@@ -4,13 +4,8 @@ extends Node3D
 ## À brancher sur une scène avec un Camera3D enfant nommé "Camera3D".
 
 @onready var compositor: WlrCompositor = $WlrCompositor
-@onready var launcher_menu = $Player/LauncherLayer/LauncherMenu
 @onready var window_menu = $Player/WindowMenuLayer/WindowMenu
 @onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
-@onready var volume_mixer = $Player/VolumeMixerLayer/VolumeMixer
-@onready var notification_history = $Player/NotificationHistoryLayer/NotificationHistory
-@onready var tray_menu = $Player/TrayMenuLayer/TrayMenu
-@onready var digital_clock = $Player/UI/DigitalClock
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -76,10 +71,6 @@ const PIN_MARGIN := 8
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
 
-# Toast notifications — pile d'alertes
-var toasts: Array[Dictionary] = []
-var toast_spacing := 44
-
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
@@ -126,25 +117,10 @@ func _ready() -> void:
 	compositor.pointer_lock_changed.connect(_on_pointer_lock_changed)
 	compositor.drag_icon_updated.connect(_on_drag_icon_updated)
 	compositor.drag_icon_removed.connect(_on_drag_icon_removed)
-	compositor.notification_received.connect(_on_notification_received)
 	compositor.start_headless()
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
-	launcher_menu.app_launch.connect(func(cmd): compositor.launch_app(cmd))
-
-	# Setup volume mixer
-	volume_mixer.setup(compositor)
-	volume_mixer.menu_closed.connect(_on_volume_mixer_closed)
-
-	# Setup notification history
-	notification_history.setup(compositor)
-	notification_history.menu_closed.connect(_on_notification_history_closed)
-
-	# Setup tray menu
-	tray_menu.setup(compositor)
-	tray_menu.menu_closed.connect(_on_tray_menu_closed)
-
 	# Setup du menu de navigation entre fenêtres
 	window_menu.setup(compositor, _get_window_texture)
 	window_menu.action_grab.connect(_on_window_menu_grab)
@@ -155,21 +131,15 @@ func _ready() -> void:
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 
-	pause_menu.fps_toggled.connect(func(v): $Player/UI/FPS.visible = v)
 	pause_menu.capture_label_toggled.connect(func(v): $Player/UI/Label.visible = v)
-	pause_menu.terminal_changed.connect(func(t): launcher_menu.terminal_emulator = t)
 	pause_menu.portal_backend_changed.connect(func(b): compositor.set_portal_backend(b))
 	pause_menu.polkit_agent_changed.connect(func(p): compositor.set_polkit_agent(p))
-	pause_menu.date_format_changed.connect(func(f): digital_clock.set_format(f))
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 	pause_menu.quit_requested.connect(_on_quit_requested)
 	
 	# Appliquer les réglages persistés
 	compositor.set_portal_backend(pause_menu.selected_portal_backend)
 	compositor.set_polkit_agent(pause_menu.selected_polkit_agent)
-	if pause_menu.selected_terminal != "":
-		launcher_menu.terminal_emulator = pause_menu.selected_terminal
-	digital_clock.set_format(pause_menu.selected_date_format)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -201,8 +171,6 @@ func _ready() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.z_index = 100
 	$Player/UI.add_child(drag_icon_rect)
-
-	# Toast notifications — rien à initialiser, créé à la volée
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -763,22 +731,13 @@ func _process(delta: float) -> void:
 		var mouse_pos := get_viewport().get_mouse_position()
 		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
 
-	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not launcher_menu.visible and not focus_mode and not window_menu.visible:
-		launcher_menu.toggle_menu()
+	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not focus_mode:
+		spawn_test_client()
 
-	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
+	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not focus_mode:
 		window_menu.toggle_menu()
 
-	if Input.is_action_just_pressed("volume_mixer") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
-		volume_mixer.toggle_menu()
-
-	if Input.is_action_just_pressed("notification_history") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
-		notification_history.toggle_menu()
-
-	if Input.is_action_just_pressed("tray_menu") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
-		tray_menu.toggle_menu()
-
-	if launcher_menu.visible or window_menu.visible or volume_mixer.visible or notification_history.visible or tray_menu.visible:
+	if window_menu.visible:
 		return
 
 	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
@@ -1139,21 +1098,8 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:
-	if pause_menu.visible or volume_mixer.visible or notification_history.visible or tray_menu.visible:
+	if pause_menu.visible:
 		return
-
-	# Quick-launch favoris F1-F12 (hors launcher, hors focus, hors interact)
-	if not launcher_menu.visible and not window_menu.visible and not volume_mixer.visible and not notification_history.visible and not tray_menu.visible and not focus_mode and not interact_mode_active:
-		if event is InputEventKey and event.pressed and not event.echo:
-			if event.keycode >= KEY_F1 and event.keycode <= KEY_F12:
-				var slot = event.keycode - KEY_F1 + 1
-				if slot >= 1 and slot <= 12:
-					var fav = launcher_menu.get_favorite(slot)
-					if fav.size() > 0:
-						compositor.launch_app(fav["exec"])
-						_show_toast("F" + str(slot) + "  →  " + fav["name"])
-						get_viewport().set_input_as_handled()
-						return
 
 	# En mode focus, forward le clavier et tracker la souris capturée
 	if focus_mode and focus_window_id != -1:
@@ -1275,15 +1221,6 @@ func _on_window_menu_pin(wid: int) -> void:
 func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
-func _on_volume_mixer_closed() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-
-func _on_notification_history_closed() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-
-func _on_tray_menu_closed() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-
 func _on_pause_menu_visibility_changed() -> void:
 	if pause_menu.visible:
 		if interact_mode_active:
@@ -1292,77 +1229,6 @@ func _on_pause_menu_visibility_changed() -> void:
 			$Player.interact_mode_active = false
 		if focus_mode:
 			_exit_focus_mode()
-
-func _on_notification_received(app_name: String, summary: String, body: String, app_icon: String, urgency: int, id: int, actions: PackedStringArray) -> void:
-	notification_history.add_notification(app_name, summary, body, app_icon, urgency, id, actions)
-	var text := ""
-	if summary != "":
-		text = summary
-		if body != "":
-			text += ": " + body
-	elif body != "":
-		text = body
-	else:
-		text = "Notification"
-	if app_icon != "":
-		text = "[ " + app_name + " ] " + text
-	if urgency == 2:
-		text = "⚠ " + text
-	_show_toast(text)
-
-func _show_toast(text: String) -> void:
-	var label := Label.new()
-	label.text = text
-	label.z_index = 50
-	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	label.add_theme_font_size_override("font_size", 16)
-	label.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.1, 0.1, 0.14, 0.9)
-	bg.corner_radius_top_left = 6
-	bg.corner_radius_top_right = 6
-	bg.corner_radius_bottom_left = 6
-	bg.corner_radius_bottom_right = 6
-	bg.content_margin_left = 16
-	bg.content_margin_right = 16
-	bg.content_margin_top = 6
-	bg.content_margin_bottom = 6
-	label.add_theme_stylebox_override("normal", bg)
-	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	$Player/UI.add_child(label)
-
-	var vp := get_viewport().get_visible_rect().size
-	label.reset_size()
-	var y_base := vp.y - 80
-
-	# Pousser les toasts existants vers le haut (uniquement le tween position)
-	var entry := {label = label, pos_tween = null, life_tween = null}
-	for t in toasts:
-		if is_instance_valid(t.label):
-			var off = t.label.position.y - toast_spacing
-			if t.pos_tween and t.pos_tween.is_valid():
-				t.pos_tween.kill()
-			t.pos_tween = create_tween().set_trans(Tween.TRANS_CUBIC)
-			t.pos_tween.tween_property(t.label, "position:y", off, 0.25)
-	toasts.append(entry)
-
-	label.position = Vector2((vp.x - label.size.x) / 2.0, y_base)
-	label.modulate.a = 1.0
-
-	# Cycle de vie (jamais tué) : attendre → fondre → supprimer
-	entry.life_tween = create_tween().set_trans(Tween.TRANS_CUBIC)
-	entry.life_tween.tween_interval(2.0)
-	entry.life_tween.tween_property(label, "modulate:a", 0.0, 0.5)
-	entry.life_tween.tween_callback(_remove_toast.bind(label))
-
-func _remove_toast(label: Label) -> void:
-	if not is_instance_valid(label): return
-	label.queue_free()
-	for i in toasts.size():
-		if toasts[i].label == label:
-			toasts.remove_at(i)
-			break
 
 func _on_quit_requested() -> void:
 	for wid in quads.keys():

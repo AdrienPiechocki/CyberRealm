@@ -14,10 +14,6 @@
 
 #include "vulkan_dmauf.h"
 
-#ifdef HAVE_DBUS
-#include <dbus/dbus.h>
-#endif
-
 extern "C" {
 #include <wayland-server-core.h>
 #include <xkbcommon/xkbcommon.h>
@@ -275,62 +271,7 @@ class WlrCompositor : public Node {
     pid_t polkit_agent_pid = -1;
     void launch_polkit_agent();
 
-    // --- Notification monitor (dbus-monitor subprocess) -----------------
-    int notif_mon_fd = -1;
-    pid_t notif_mon_pid = -1;
-    pid_t notif_daemon_pid = -1;
-    std::string notif_buf;
-    int notif_parse_state = 0; // 0=idle 1=header_seen 2=in_args
-    int notif_arg_idx = 0;
-    int notif_depth = 0;
-    std::string notif_app_name;
-    std::string notif_summary;
-    std::string notif_body;
-    std::string notif_icon;
-    int notif_urgency = 1;
-    int notif_urgency_pending = 0;
-    int notif_emitted = 0;
-    int notif_pending = 0;
-    // Action support
-    int notif_next_id = 1;
-    int notif_current_id = 0;
-    std::string notif_sender;
-    std::vector<std::string> notif_actions;
-    int notif_collect_actions = 0;
-    std::unordered_map<int, std::string> notif_sender_map;
-    void init_dbus_notif_listener();
-    void shutdown_dbus_notif_listener();
-    void start_notif_daemon();
-    void poll_dbus();
-    void feed_notif_line(const std::string &line);
-    void emit_pending_notif();
 
-#ifdef HAVE_DBUS
-    // --- System Tray (StatusNotifierWatcher) ---------------------------
-    struct TrayServiceInfo {
-        std::string service;
-        std::string object_path = "/StatusNotifierItem";
-        std::string interface_name = "org.kde.StatusNotifierItem";
-        std::string activate_method = "Activate"; // "Activate" or "SecondaryActivate"
-        bool has_context_menu = true;
-        std::string dbus_menu_path; // DBusMenu object path (empty if none)
-        std::string id;
-        std::string title;
-        std::string display_name; // resolved: Title > Id > proc name > service
-    };
-
-    Array get_dbus_menu_items(int index);
-    void dbus_menu_event(int index, int item_id);
-
-    void *tray_conn = nullptr;
-    bool tray_owned = false;
-    std::vector<TrayServiceInfo> tray_services;
-    bool tray_host_registered = false;
-    void init_tray_watcher();
-    void shutdown_tray_watcher();
-    void poll_tray();
-    static DBusHandlerResult tray_filter(DBusConnection *conn, DBusMessage *msg, void *user_data);
-#endif
 
     // --- Child processes ------------------------------------------------
     std::vector<pid_t> child_pids;
@@ -389,13 +330,7 @@ public:
     // Envoie une requête de fermeture (xdg_toplevel.close) à la fenêtre.
     void close_window(int window_id);
 
-    // Invoke a notification action via D-Bus.
-    void notif_invoke_action(int id, const String &action_key);
 
-    // System tray (StatusNotifier)
-    Array get_tray_items();
-    void tray_item_activate(int index);
-    void tray_item_context_menu(int index);
 };
 
 } // namespace godot

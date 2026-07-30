@@ -1,23 +1,17 @@
 extends PanelContainer
 
-signal fps_toggled(visible: bool)
 signal capture_label_toggled(visible: bool)
-signal terminal_changed(terminal: String)
 signal portal_backend_changed(backend: String)
 signal polkit_agent_changed(path: String)
-signal date_format_changed(format: String)
 signal quit_requested
 
-enum Page { MAIN, RESOLUTION, TERMINAL, PORTAL, POLKIT, KEYBINDS, DATE_FORMAT }
+enum Page { MAIN, RESOLUTION, PORTAL, POLKIT, KEYBINDS }
 
 var current_page := Page.MAIN
 var container: VBoxContainer
-var selected_terminal := ""
 var selected_portal_backend := "KDE"
 var selected_polkit_agent := ""
-var _show_fps := true
 var _show_capture_label := true
-var selected_date_format := "HH:MM, DD/mm/YYYY"
 var _binding_action := ""
 
 const RESOLUTIONS := [
@@ -38,8 +32,6 @@ func _ready() -> void:
 	visible = false
 	_save_default_keybinds()
 	_load_settings()
-	if selected_terminal == "":
-		_detect_terminal()
 	container = VBoxContainer.new()
 	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -49,7 +41,6 @@ func _ready() -> void:
 	call_deferred("_apply_initial_state")
 
 func _apply_initial_state() -> void:
-	fps_toggled.emit(_show_fps)
 	capture_label_toggled.emit(_show_capture_label)
 
 func _notification(what: int) -> void:
@@ -58,12 +49,9 @@ func _notification(what: int) -> void:
 
 func _save_settings() -> void:
 	var data := {
-		terminal = selected_terminal,
 		portal_backend = selected_portal_backend,
 		polkit_agent = selected_polkit_agent,
-		show_fps = _show_fps,
 		show_capture_label = _show_capture_label,
-		date_format = selected_date_format,
 		window_size = [DisplayServer.window_get_size().x, DisplayServer.window_get_size().y],
 		fullscreen = DisplayServer.window_get_mode() in [DisplayServer.WINDOW_MODE_FULLSCREEN, DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN],
 		keybinds = _serialize_keybinds(),
@@ -82,26 +70,20 @@ func _load_settings() -> void:
 	var parsed = JSON.parse_string(text)
 	if not parsed is Dictionary:
 		return
-	if parsed.has("terminal") and parsed.terminal != "":
-		selected_terminal = parsed.terminal
 	if parsed.has("portal_backend") and parsed.portal_backend != "":
 		selected_portal_backend = parsed.portal_backend
 	if parsed.has("polkit_agent"):
 		selected_polkit_agent = parsed.polkit_agent
-	if parsed.has("show_fps"):
-		_show_fps = parsed.show_fps
 	if parsed.has("show_capture_label"):
 		_show_capture_label = parsed.show_capture_label
-	if parsed.has("date_format") and parsed.date_format != "":
-		selected_date_format = parsed.date_format
 	if parsed.has("keybinds") and parsed.keybinds is Dictionary:
 		_deserialize_keybinds(parsed.keybinds)
 
 func _serialize_keybinds() -> Dictionary:
 	var result := {}
 	var actions := ["forward", "back", "left", "right", "jump",
-		"interact_mode", "launcher", "window_menu",
-		"grab", "focus_window", "pin_window", "volume_mixer", "notification_history", "tray_menu"]
+		"interact_mode", "window_menu",
+		"grab", "focus_window", "pin_window"]
 	for action in actions:
 		var events := InputMap.action_get_events(action)
 		if events.is_empty():
@@ -130,8 +112,8 @@ func _serialize_keybinds() -> Dictionary:
 
 func _deserialize_keybinds(data: Dictionary) -> void:
 	var actions := ["forward", "back", "left", "right", "jump",
-		"interact_mode", "launcher", "window_menu",
-		"grab", "focus_window", "pin_window", "volume_mixer", "notification_history", "tray_menu"]
+		"interact_mode", "window_menu",
+		"grab", "focus_window", "pin_window"]
 	for action in actions:
 		if not data.has(action):
 			continue
@@ -157,17 +139,10 @@ func _deserialize_keybinds(data: Dictionary) -> void:
 
 func _save_default_keybinds() -> void:
 	var actions := [	"forward", "back", "left", "right", "jump",
-		"interact_mode", "launcher", "window_menu",
-		"grab", "focus_window", "pin_window", "notification_history"]
+		"interact_mode", "window_menu",
+		"grab", "focus_window", "pin_window"]
 	for action in actions:
 		_default_keybinds[action] = InputMap.action_get_events(action).duplicate()
-
-func _detect_terminal() -> void:
-	var output: Array = []
-	if OS.execute("which", ["konsole"], output, true) == 0 and output[0].strip_edges() != "":
-		selected_terminal = "konsole"
-	else:
-		selected_terminal = "xterm"
 
 func _apply_styling() -> void:
 	var bg := StyleBoxFlat.new()
@@ -330,10 +305,6 @@ func _show_main() -> void:
 	)
 	container.add_child(fs_cb)
 
-	var term_btn := _make_btn("Choose Terminal")
-	term_btn.pressed.connect(_show_terminal)
-	container.add_child(term_btn)
-
 	var portal_btn := _make_btn("Portal Backend")
 	portal_btn.pressed.connect(_show_portal)
 	container.add_child(portal_btn)
@@ -346,14 +317,6 @@ func _show_main() -> void:
 	kb_btn.pressed.connect(_show_keybinds)
 	container.add_child(kb_btn)
 
-	var fps_cb := _make_cb("Show FPS", _show_fps)
-	fps_cb.get_meta("checkbox").toggled.connect(func(v: bool):
-		_show_fps = v
-		fps_toggled.emit(v)
-		_save_settings()
-	)
-	container.add_child(fps_cb)
-
 	var cap_cb := _make_cb("Show \"Keyboard Capture\"", _show_capture_label)
 	cap_cb.get_meta("checkbox").toggled.connect(func(v: bool):
 		_show_capture_label = v
@@ -361,10 +324,6 @@ func _show_main() -> void:
 		_save_settings()
 	)
 	container.add_child(cap_cb)
-
-	var clock_btn := _make_btn("Clock Format")
-	clock_btn.pressed.connect(_show_date_format)
-	container.add_child(clock_btn)
 
 	container.add_child(_make_spacer())
 
@@ -398,57 +357,7 @@ func _show_resolution() -> void:
 
 	container.add_child(_make_spacer())
 
-func _show_terminal() -> void:
-	current_page = Page.TERMINAL
-	_clear()
 
-	container.add_child(_make_back_btn())
-	container.add_child(_make_title("Terminal"))
-
-	var hint := Label.new()
-	hint.text = "Terminal launch command\n(e.g. konsole, alacritty, xterm)"
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size", 13)
-	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65, 0.8))
-	hint.custom_minimum_size = Vector2(0, 40)
-	container.add_child(hint)
-
-	var line_edit := LineEdit.new()
-	line_edit.text = selected_terminal
-	line_edit.placeholder_text = "konsole"
-	line_edit.custom_minimum_size = Vector2(0, 42)
-	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	line_edit.add_theme_font_size_override("font_size", 16)
-
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.12, 0.14, 0.2, 0.9)
-	bg.border_color = Color(0.3, 0.4, 0.6, 0.5)
-	bg.border_width_top = 1; bg.border_width_bottom = 1
-	bg.border_width_left = 1; bg.border_width_right = 1
-	bg.corner_radius_top_left = 5; bg.corner_radius_top_right = 5
-	bg.corner_radius_bottom_left = 5; bg.corner_radius_bottom_right = 5
-	bg.content_margin_left = 14; bg.content_margin_right = 14
-	bg.content_margin_top = 8; bg.content_margin_bottom = 8
-	line_edit.add_theme_stylebox_override("normal", bg)
-
-	var focus_bg := bg.duplicate()
-	focus_bg.border_color = Color(0.4, 0.6, 1.0, 0.7)
-	line_edit.add_theme_stylebox_override("focus", focus_bg)
-
-	container.add_child(line_edit)
-
-	var save_btn := _make_btn("Apply")
-	save_btn.pressed.connect(func():
-		var cmd := line_edit.text.strip_edges()
-		if cmd != "":
-			selected_terminal = cmd
-			terminal_changed.emit(cmd)
-		_save_settings()
-		_show_main()
-	)
-	container.add_child(save_btn)
-
-	container.add_child(_make_spacer())
 
 func _show_polkit() -> void:
 	current_page = Page.POLKIT
@@ -553,87 +462,6 @@ func _show_portal() -> void:
 
 	container.add_child(_make_spacer())
 
-func _show_date_format() -> void:
-	current_page = Page.DATE_FORMAT
-	_clear()
-
-	container.add_child(_make_back_btn())
-	container.add_child(_make_title("Clock Format"))
-
-	var hint := Label.new()
-	hint.text = "Tokens: HH hh MM SS AP DDD(Mon) mmm(Jan)\nDD mm YYYY YY  \\n=newline\nEx: DDD hh:MM AP\nor: HH:MM, DD/mm/YYYY"
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size", 13)
-	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65, 0.8))
-	hint.custom_minimum_size = Vector2(0, 70)
-	container.add_child(hint)
-
-	var preview := Label.new()
-	preview.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	preview.add_theme_font_size_override("font_size", 22)
-	preview.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
-	preview.custom_minimum_size = Vector2(0, 50)
-	container.add_child(preview)
-
-	var line_edit := LineEdit.new()
-	line_edit.text = selected_date_format
-	line_edit.placeholder_text = "HH:MM, DD/mm/YYYY"
-	line_edit.custom_minimum_size = Vector2(0, 42)
-	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	line_edit.add_theme_font_size_override("font_size", 16)
-
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.12, 0.14, 0.2, 0.9)
-	bg.border_color = Color(0.3, 0.4, 0.6, 0.5)
-	bg.border_width_top = 1; bg.border_width_bottom = 1
-	bg.border_width_left = 1; bg.border_width_right = 1
-	bg.corner_radius_top_left = 5; bg.corner_radius_top_right = 5
-	bg.corner_radius_bottom_left = 5; bg.corner_radius_bottom_right = 5
-	bg.content_margin_left = 14; bg.content_margin_right = 14
-	bg.content_margin_top = 8; bg.content_margin_bottom = 8
-	line_edit.add_theme_stylebox_override("normal", bg)
-
-	var focus_bg := bg.duplicate()
-	focus_bg.border_color = Color(0.4, 0.6, 1.0, 0.7)
-	line_edit.add_theme_stylebox_override("focus", focus_bg)
-
-	container.add_child(line_edit)
-
-	# Live preview
-	line_edit.text_changed.connect(func(new_text: String):
-		var d := Time.get_datetime_dict_from_system()
-		var s := new_text
-		s = s.replace("\\n", "\n")
-		const WEEKDAYS := ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-		const MONTHS := ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
-		s = s.replace("DDD", WEEKDAYS[d.weekday - 1])
-		s = s.replace("mmm", MONTHS[d.month - 1])
-		s = s.replace("YYYY", "%04d" % d.year)
-		s = s.replace("YY", "%02d" % (d.year % 100))
-		s = s.replace("MM", "%02d" % d.minute)
-		s = s.replace("SS", "%02d" % d.second)
-		var h12 = d.hour % 12
-		if h12 == 0: h12 = 12
-		s = s.replace("hh", "%02d" % h12)
-		s = s.replace("HH", "%02d" % d.hour)
-		s = s.replace("AP", "AM" if d.hour < 12 else "PM")
-		s = s.replace("mm", "%02d" % d.month)
-		s = s.replace("DD", "%02d" % d.day)
-		preview.text = s
-	)
-
-	var save_btn := _make_btn("Apply")
-	save_btn.pressed.connect(func():
-		var fmt := line_edit.text.strip_edges()
-		selected_date_format = fmt
-		date_format_changed.emit(fmt)
-		_save_settings()
-		_show_main()
-	)
-	container.add_child(save_btn)
-
-	container.add_child(_make_spacer())
-
 func _show_keybinds() -> void:
 	current_page = Page.KEYBINDS
 	_clear()
@@ -666,14 +494,10 @@ func _show_keybinds() -> void:
 		{"key": "right", "name": "Strafe Right"},
 		{"key": "jump", "name": "Jump"},
 		{"key": "interact_mode", "name": "Interact Mode"},
-		{"key": "launcher", "name": "App Launcher"},
 		{"key": "window_menu", "name": "Window Menu"},
 		{"key": "grab", "name": "Grab Window"},
 		{"key": "focus_window", "name": "Focus Window"},
 		{"key": "pin_window", "name": "Pin Window"},
-		{"key": "volume_mixer", "name": "Volume Mixer"},
-		{"key": "notification_history", "name": "Notification History"},
-		{"key": "tray_menu", "name": "System Tray"},
 	]
 
 	for entry in action_order:

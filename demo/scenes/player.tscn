@@ -1,14 +1,8 @@
 [gd_scene format=3 uid="uid://dl5med4hn5t14"]
 
 [ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player.gd" id="1_3vyb7"]
-[ext_resource type="Script" uid="uid://dr4qk3clpe7x8" path="res://scripts/fps.gd" id="2_g2els"]
-[ext_resource type="Script" uid="uid://dkb4gu57rbebb" path="res://scripts/launcher_menu.gd" id="3_launcher"]
 [ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/window_menu.gd" id="4_window_menu"]
 [ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
-[ext_resource type="Script" uid="uid://b2aeswbd1fm0c" path="res://scripts/volume_mixer.gd" id="6_volume_mixer"]
-[ext_resource type="Script" uid="uid://bwmtburu0heow" path="res://scripts/notification_history.gd" id="7_notif_hist"]
-[ext_resource type="Script" uid="uid://bk6gfwduoywan" path="res://scripts/tray_menu.gd" id="8_tray_menu"]
-[ext_resource type="Script" uid="uid://bxa5e762p8s5v" path="res://scripts/digital_clock.gd" id="9_dc"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -16,13 +10,6 @@
 
 [sub_resource type="LabelSettings" id="LabelSettings_jm82k"]
 font_size = 24
-
-[sub_resource type="LabelSettings" id="LabelSettings_qhqgy"]
-font_size = 24
-
-[sub_resource type="LabelSettings" id="LabelSettings_dc"]
-font_size = 22
-font_color = Color(0.85, 0.87, 0.9, 0.95)
 
 [node name="Player" type="CharacterBody3D" unique_id=1446411886]
 script = ExtResource("1_3vyb7")
@@ -60,68 +47,6 @@ text = "Keyboard Capture : OFF"
 label_settings = SubResource("LabelSettings_jm82k")
 horizontal_alignment = 1
 vertical_alignment = 1
-
-[node name="FPS" type="Label" parent="UI" unique_id=105167649]
-anchors_preset = 1
-anchor_left = 1.0
-anchor_right = 1.0
-offset_left = -40.0
-offset_bottom = 34.0
-grow_horizontal = 0
-label_settings = SubResource("LabelSettings_qhqgy")
-script = ExtResource("2_g2els")
-
-[node name="DigitalClock" type="Label" parent="UI" unique_id=1571857050]
-anchors_preset = 5
-anchor_left = 0.5
-anchor_right = 0.5
-offset_left = -160.0
-offset_top = 6.0
-offset_right = 160.0
-offset_bottom = 30.0
-grow_horizontal = 2
-label_settings = SubResource("LabelSettings_dc")
-horizontal_alignment = 1
-vertical_alignment = 1
-script = ExtResource("9_dc")
-
-[node name="LauncherLayer" type="CanvasLayer" parent="." unique_id=1968881354]
-
-[node name="LauncherMenu" type="PanelContainer" parent="LauncherLayer" unique_id=1041741569]
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -250.0
-offset_top = -200.0
-offset_right = 250.0
-offset_bottom = 200.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("3_launcher")
-
-[node name="VBoxContainer" type="VBoxContainer" parent="LauncherLayer/LauncherMenu" unique_id=365386299]
-layout_mode = 2
-theme_override_constants/separation = 0
-
-[node name="SearchBar" type="LineEdit" parent="LauncherLayer/LauncherMenu/VBoxContainer" unique_id=1033565985]
-layout_mode = 2
-placeholder_text = "Rechercher une application..."
-clear_button_enabled = true
-
-[node name="HSep" type="HSeparator" parent="LauncherLayer/LauncherMenu/VBoxContainer" unique_id=396179012]
-layout_mode = 2
-
-[node name="AppList" type="ScrollContainer" parent="LauncherLayer/LauncherMenu/VBoxContainer" unique_id=1636769477]
-layout_mode = 2
-size_flags_vertical = 3
-horizontal_scroll_mode = 0
-
-[node name="AppListContent" type="VBoxContainer" parent="LauncherLayer/LauncherMenu/VBoxContainer/AppList" unique_id=1770628819]
-layout_mode = 2
-size_flags_horizontal = 3
-theme_override_constants/separation = 2
 
 [node name="WindowMenuLayer" type="CanvasLayer" parent="." unique_id=1834194966]
 
@@ -199,51 +124,3 @@ offset_bottom = 300.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("5_pause_menu")
-
-[node name="VolumeMixerLayer" type="CanvasLayer" parent="." unique_id=1122334455]
-
-[node name="VolumeMixer" type="PanelContainer" parent="VolumeMixerLayer" unique_id=1122334456]
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -210.0
-offset_top = -250.0
-offset_right = 210.0
-offset_bottom = 250.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("6_volume_mixer")
-
-[node name="NotificationHistoryLayer" type="CanvasLayer" parent="." unique_id=522422025]
-
-[node name="NotificationHistory" type="PanelContainer" parent="NotificationHistoryLayer" unique_id=2116730979]
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -210.0
-offset_top = -250.0
-offset_right = 210.0
-offset_bottom = 250.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("7_notif_hist")
-
-[node name="TrayMenuLayer" type="CanvasLayer" parent="." unique_id=11692216]
-
-[node name="TrayMenu" type="PanelContainer" parent="TrayMenuLayer" unique_id=1693780070]
-anchors_preset = 8
-anchor_left = 0.5
-anchor_top = 0.5
-anchor_right = 0.5
-anchor_bottom = 0.5
-offset_left = -160.0
-offset_top = -200.0
-offset_right = 160.0
-offset_bottom = 200.0
-grow_horizontal = 2
-grow_vertical = 2
-script = ExtResource("8_tray_menu")
