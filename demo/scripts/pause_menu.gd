@@ -5,9 +5,10 @@ signal capture_label_toggled(visible: bool)
 signal terminal_changed(terminal: String)
 signal portal_backend_changed(backend: String)
 signal polkit_agent_changed(path: String)
+signal date_format_changed(format: String)
 signal quit_requested
 
-enum Page { MAIN, RESOLUTION, TERMINAL, PORTAL, POLKIT, KEYBINDS }
+enum Page { MAIN, RESOLUTION, TERMINAL, PORTAL, POLKIT, KEYBINDS, DATE_FORMAT }
 
 var current_page := Page.MAIN
 var container: VBoxContainer
@@ -16,6 +17,7 @@ var selected_portal_backend := "KDE"
 var selected_polkit_agent := ""
 var _show_fps := true
 var _show_capture_label := true
+var selected_date_format := "HH:MM, DD/mm/YYYY"
 var _binding_action := ""
 
 const RESOLUTIONS := [
@@ -61,6 +63,7 @@ func _save_settings() -> void:
 		polkit_agent = selected_polkit_agent,
 		show_fps = _show_fps,
 		show_capture_label = _show_capture_label,
+		date_format = selected_date_format,
 		window_size = [DisplayServer.window_get_size().x, DisplayServer.window_get_size().y],
 		fullscreen = DisplayServer.window_get_mode() in [DisplayServer.WINDOW_MODE_FULLSCREEN, DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN],
 		keybinds = _serialize_keybinds(),
@@ -89,6 +92,8 @@ func _load_settings() -> void:
 		_show_fps = parsed.show_fps
 	if parsed.has("show_capture_label"):
 		_show_capture_label = parsed.show_capture_label
+	if parsed.has("date_format") and parsed.date_format != "":
+		selected_date_format = parsed.date_format
 	if parsed.has("keybinds") and parsed.keybinds is Dictionary:
 		_deserialize_keybinds(parsed.keybinds)
 
@@ -357,6 +362,10 @@ func _show_main() -> void:
 	)
 	container.add_child(cap_cb)
 
+	var clock_btn := _make_btn("Clock Format")
+	clock_btn.pressed.connect(_show_date_format)
+	container.add_child(clock_btn)
+
 	container.add_child(_make_spacer())
 
 	var quit_btn := _make_btn("Quit", Color(0.25, 0.1, 0.1, 0.9))
@@ -537,6 +546,87 @@ func _show_portal() -> void:
 		if cmd != "":
 			selected_portal_backend = cmd
 			portal_backend_changed.emit(cmd)
+		_save_settings()
+		_show_main()
+	)
+	container.add_child(save_btn)
+
+	container.add_child(_make_spacer())
+
+func _show_date_format() -> void:
+	current_page = Page.DATE_FORMAT
+	_clear()
+
+	container.add_child(_make_back_btn())
+	container.add_child(_make_title("Clock Format"))
+
+	var hint := Label.new()
+	hint.text = "Tokens: HH hh MM SS AP DDD(Mon) mmm(Jan)\nDD mm YYYY YY  \\n=newline\nEx: DDD hh:MM AP\nor: HH:MM, DD/mm/YYYY"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.65, 0.8))
+	hint.custom_minimum_size = Vector2(0, 70)
+	container.add_child(hint)
+
+	var preview := Label.new()
+	preview.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	preview.add_theme_font_size_override("font_size", 22)
+	preview.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
+	preview.custom_minimum_size = Vector2(0, 50)
+	container.add_child(preview)
+
+	var line_edit := LineEdit.new()
+	line_edit.text = selected_date_format
+	line_edit.placeholder_text = "HH:MM, DD/mm/YYYY"
+	line_edit.custom_minimum_size = Vector2(0, 42)
+	line_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	line_edit.add_theme_font_size_override("font_size", 16)
+
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.12, 0.14, 0.2, 0.9)
+	bg.border_color = Color(0.3, 0.4, 0.6, 0.5)
+	bg.border_width_top = 1; bg.border_width_bottom = 1
+	bg.border_width_left = 1; bg.border_width_right = 1
+	bg.corner_radius_top_left = 5; bg.corner_radius_top_right = 5
+	bg.corner_radius_bottom_left = 5; bg.corner_radius_bottom_right = 5
+	bg.content_margin_left = 14; bg.content_margin_right = 14
+	bg.content_margin_top = 8; bg.content_margin_bottom = 8
+	line_edit.add_theme_stylebox_override("normal", bg)
+
+	var focus_bg := bg.duplicate()
+	focus_bg.border_color = Color(0.4, 0.6, 1.0, 0.7)
+	line_edit.add_theme_stylebox_override("focus", focus_bg)
+
+	container.add_child(line_edit)
+
+	# Live preview
+	line_edit.text_changed.connect(func(new_text: String):
+		var d := Time.get_datetime_dict_from_system()
+		var s := new_text
+		s = s.replace("\\n", "\n")
+		const WEEKDAYS := ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+		const MONTHS := ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+		s = s.replace("DDD", WEEKDAYS[d.weekday - 1])
+		s = s.replace("mmm", MONTHS[d.month - 1])
+		s = s.replace("YYYY", "%04d" % d.year)
+		s = s.replace("YY", "%02d" % (d.year % 100))
+		s = s.replace("MM", "%02d" % d.minute)
+		s = s.replace("SS", "%02d" % d.second)
+		var h12 = d.hour % 12
+		if h12 == 0: h12 = 12
+		s = s.replace("hh", "%02d" % h12)
+		s = s.replace("HH", "%02d" % d.hour)
+		s = s.replace("AP", "AM" if d.hour < 12 else "PM")
+		s = s.replace("mm", "%02d" % d.month)
+		s = s.replace("DD", "%02d" % d.day)
+		preview.text = s
+	)
+
+	var save_btn := _make_btn("Apply")
+	save_btn.pressed.connect(func():
+		var fmt := line_edit.text.strip_edges()
+		selected_date_format = fmt
+		date_format_changed.emit(fmt)
 		_save_settings()
 		_show_main()
 	)

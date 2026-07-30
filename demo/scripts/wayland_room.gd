@@ -10,6 +10,7 @@ extends Node3D
 @onready var volume_mixer = $Player/VolumeMixerLayer/VolumeMixer
 @onready var notification_history = $Player/NotificationHistoryLayer/NotificationHistory
 @onready var tray_menu = $Player/TrayMenuLayer/TrayMenu
+@onready var digital_clock = $Player/UI/DigitalClock
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -159,6 +160,7 @@ func _ready() -> void:
 	pause_menu.terminal_changed.connect(func(t): launcher_menu.terminal_emulator = t)
 	pause_menu.portal_backend_changed.connect(func(b): compositor.set_portal_backend(b))
 	pause_menu.polkit_agent_changed.connect(func(p): compositor.set_polkit_agent(p))
+	pause_menu.date_format_changed.connect(func(f): digital_clock.set_format(f))
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 	pause_menu.quit_requested.connect(_on_quit_requested)
 	
@@ -167,6 +169,7 @@ func _ready() -> void:
 	compositor.set_polkit_agent(pause_menu.selected_polkit_agent)
 	if pause_menu.selected_terminal != "":
 		launcher_menu.terminal_emulator = pause_menu.selected_terminal
+	digital_clock.set_format(pause_menu.selected_date_format)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()

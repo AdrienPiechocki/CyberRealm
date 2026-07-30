@@ -8,6 +8,7 @@
 [ext_resource type="Script" uid="uid://b2aeswbd1fm0c" path="res://scripts/volume_mixer.gd" id="6_volume_mixer"]
 [ext_resource type="Script" uid="uid://bwmtburu0heow" path="res://scripts/notification_history.gd" id="7_notif_hist"]
 [ext_resource type="Script" uid="uid://bk6gfwduoywan" path="res://scripts/tray_menu.gd" id="8_tray_menu"]
+[ext_resource type="Script" path="res://scripts/digital_clock.gd" id="9_dc"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -18,6 +19,10 @@ font_size = 24
 
 [sub_resource type="LabelSettings" id="LabelSettings_qhqgy"]
 font_size = 24
+
+[sub_resource type="LabelSettings" id="LabelSettings_dc"]
+font_size = 22
+font_color = Color(0.85, 0.87, 0.9, 0.95)
 
 [node name="Player" type="CharacterBody3D" unique_id=1446411886]
 script = ExtResource("1_3vyb7")
@@ -65,6 +70,21 @@ offset_bottom = 34.0
 grow_horizontal = 0
 label_settings = SubResource("LabelSettings_qhqgy")
 script = ExtResource("2_g2els")
+
+[node name="DigitalClock" type="Label" parent="UI"]
+anchors_preset = 2
+anchor_left = 0.5
+anchor_right = 0.5
+offset_left = -160.0
+offset_top = 6.0
+offset_right = 160.0
+offset_bottom = 30.0
+grow_horizontal = 2
+horizontal_alignment = 1
+vertical_alignment = 1
+mouse_filter = 2
+label_settings = SubResource("LabelSettings_dc")
+script = ExtResource("9_dc")
 
 [node name="LauncherLayer" type="CanvasLayer" parent="." unique_id=1968881354]
 
