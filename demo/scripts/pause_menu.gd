@@ -96,7 +96,7 @@ func _serialize_keybinds() -> Dictionary:
 	var result := {}
 	var actions := ["forward", "back", "left", "right", "jump",
 		"interact_mode", "launcher", "window_menu",
-		"grab", "focus_window", "pin_window", "volume_mixer"]
+		"grab", "focus_window", "pin_window", "volume_mixer", "notification_history", "tray_menu"]
 	for action in actions:
 		var events := InputMap.action_get_events(action)
 		if events.is_empty():
@@ -126,7 +126,7 @@ func _serialize_keybinds() -> Dictionary:
 func _deserialize_keybinds(data: Dictionary) -> void:
 	var actions := ["forward", "back", "left", "right", "jump",
 		"interact_mode", "launcher", "window_menu",
-		"grab", "focus_window", "pin_window", "volume_mixer"]
+		"grab", "focus_window", "pin_window", "volume_mixer", "notification_history", "tray_menu"]
 	for action in actions:
 		if not data.has(action):
 			continue
@@ -153,7 +153,7 @@ func _deserialize_keybinds(data: Dictionary) -> void:
 func _save_default_keybinds() -> void:
 	var actions := [	"forward", "back", "left", "right", "jump",
 		"interact_mode", "launcher", "window_menu",
-		"grab", "focus_window", "pin_window"]
+		"grab", "focus_window", "pin_window", "notification_history"]
 	for action in actions:
 		_default_keybinds[action] = InputMap.action_get_events(action).duplicate()
 
@@ -582,6 +582,8 @@ func _show_keybinds() -> void:
 		{"key": "focus_window", "name": "Focus Window"},
 		{"key": "pin_window", "name": "Pin Window"},
 		{"key": "volume_mixer", "name": "Volume Mixer"},
+		{"key": "notification_history", "name": "Notification History"},
+		{"key": "tray_menu", "name": "System Tray"},
 	]
 
 	for entry in action_order:

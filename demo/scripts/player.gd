@@ -39,12 +39,12 @@ func _input(event):
 	if $PauseMenuLayer/PauseMenu.visible:
 		return
 	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
-		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible:
+		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible or $TrayMenuLayer/TrayMenu.visible:
 			return
 		$PauseMenuLayer/PauseMenu.show_menu()
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
-		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible:
+		if $LauncherLayer/LauncherMenu.visible or $WindowMenuLayer/WindowMenu.visible or $VolumeMixerLayer/VolumeMixer.visible or $NotificationHistoryLayer/NotificationHistory.visible or $TrayMenuLayer/TrayMenu.visible:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:

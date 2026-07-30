@@ -9,6 +9,7 @@ extends Node3D
 @onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
 @onready var volume_mixer = $Player/VolumeMixerLayer/VolumeMixer
 @onready var notification_history = $Player/NotificationHistoryLayer/NotificationHistory
+@onready var tray_menu = $Player/TrayMenuLayer/TrayMenu
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -136,7 +137,12 @@ func _ready() -> void:
 	volume_mixer.menu_closed.connect(_on_volume_mixer_closed)
 
 	# Setup notification history
+	notification_history.setup(compositor)
 	notification_history.menu_closed.connect(_on_notification_history_closed)
+
+	# Setup tray menu
+	tray_menu.setup(compositor)
+	tray_menu.menu_closed.connect(_on_tray_menu_closed)
 
 	# Setup du menu de navigation entre fenêtres
 	window_menu.setup(compositor, _get_window_texture)
@@ -766,7 +772,10 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("notification_history") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
 		notification_history.toggle_menu()
 
-	if launcher_menu.visible or window_menu.visible or volume_mixer.visible or notification_history.visible:
+	if Input.is_action_just_pressed("tray_menu") and not interact_mode_active and not launcher_menu.visible and not focus_mode:
+		tray_menu.toggle_menu()
+
+	if launcher_menu.visible or window_menu.visible or volume_mixer.visible or notification_history.visible or tray_menu.visible:
 		return
 
 	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
@@ -1127,11 +1136,11 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	quad.position = window_start_local_pos + shift
 
 func _input(event: InputEvent) -> void:
-	if pause_menu.visible or volume_mixer.visible or notification_history.visible:
+	if pause_menu.visible or volume_mixer.visible or notification_history.visible or tray_menu.visible:
 		return
 
 	# Quick-launch favoris F1-F12 (hors launcher, hors focus, hors interact)
-	if not launcher_menu.visible and not window_menu.visible and not volume_mixer.visible and not notification_history.visible and not focus_mode and not interact_mode_active:
+	if not launcher_menu.visible and not window_menu.visible and not volume_mixer.visible and not notification_history.visible and not tray_menu.visible and not focus_mode and not interact_mode_active:
 		if event is InputEventKey and event.pressed and not event.echo:
 			if event.keycode >= KEY_F1 and event.keycode <= KEY_F12:
 				var slot = event.keycode - KEY_F1 + 1
@@ -1269,6 +1278,9 @@ func _on_volume_mixer_closed() -> void:
 func _on_notification_history_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
+func _on_tray_menu_closed() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
 func _on_pause_menu_visibility_changed() -> void:
 	if pause_menu.visible:
 		if interact_mode_active:
@@ -1278,8 +1290,8 @@ func _on_pause_menu_visibility_changed() -> void:
 		if focus_mode:
 			_exit_focus_mode()
 
-func _on_notification_received(app_name: String, summary: String, body: String, app_icon: String, urgency: int) -> void:
-	notification_history.add_notification(app_name, summary, body, app_icon, urgency)
+func _on_notification_received(app_name: String, summary: String, body: String, app_icon: String, urgency: int, id: int, actions: PackedStringArray) -> void:
+	notification_history.add_notification(app_name, summary, body, app_icon, urgency, id, actions)
 	var text := ""
 	if summary != "":
 		text = summary

@@ -127,6 +127,10 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_polkit_agent", "path"), &WlrCompositor::set_polkit_agent);
     ClassDB::bind_method(D_METHOD("get_polkit_agent"), &WlrCompositor::get_polkit_agent);
+    ClassDB::bind_method(D_METHOD("notif_invoke_action", "id", "action_key"), &WlrCompositor::notif_invoke_action);
+    ClassDB::bind_method(D_METHOD("get_tray_items"), &WlrCompositor::get_tray_items);
+    ClassDB::bind_method(D_METHOD("tray_item_activate", "index"), &WlrCompositor::tray_item_activate);
+    ClassDB::bind_method(D_METHOD("tray_item_context_menu", "index"), &WlrCompositor::tray_item_context_menu);
 
     ADD_SIGNAL(MethodInfo("window_mapped",
         PropertyInfo(Variant::INT, "id"),
@@ -173,7 +177,9 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::STRING, "summary"),
         PropertyInfo(Variant::STRING, "body"),
         PropertyInfo(Variant::STRING, "app_icon"),
-        PropertyInfo(Variant::INT, "urgency")));
+        PropertyInfo(Variant::INT, "urgency"),
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::PACKED_STRING_ARRAY, "actions")));
 }
 
 WlrCompositor::WlrCompositor() {
@@ -216,6 +222,9 @@ WlrCompositor::~WlrCompositor() {
     child_pids.clear();
 
     shutdown_dbus_notif_listener();
+#ifdef HAVE_DBUS
+    shutdown_tray_watcher();
+#endif
 }
 
 uint32_t WlrCompositor::get_time_msec() {
@@ -1567,6 +1576,9 @@ void WlrCompositor::start_headless() {
     // ----------------------------------------------------
     
     init_dbus_notif_listener();
+#ifdef HAVE_DBUS
+    init_tray_watcher();
+#endif
 
     if (!polkit_agent_path.is_empty()) {
         launch_polkit_agent();
@@ -1593,6 +1605,9 @@ void WlrCompositor::_process(double delta) {
     if (display) wl_display_flush_clients(display);
 
     poll_dbus();
+#ifdef HAVE_DBUS
+    poll_tray();
+#endif
 
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
@@ -2266,6 +2281,17 @@ void WlrCompositor::feed_notif_line(const std::string &line) {
             notif_icon.clear();
             notif_urgency = 1;
             notif_urgency_pending = 0;
+            notif_actions.clear();
+            notif_collect_actions = 0;
+            notif_sender.clear();
+            // Extract sender bus name from header line
+            size_t sp = line.find("sender=");
+            if (sp != std::string::npos) {
+                sp += 7; // skip "sender="
+                size_t ep = line.find(' ', sp);
+                if (ep != std::string::npos)
+                    notif_sender = line.substr(sp, ep - sp);
+            }
         }
         return;
     }
@@ -2294,53 +2320,358 @@ void WlrCompositor::feed_notif_line(const std::string &line) {
         }
     }
 
+    // Track array/dict depth
+    int prev_depth = notif_depth;
     for (char c : line) {
         if (c == '[' || c == '(') notif_depth++;
         if (c == ']' || c == ')') notif_depth--;
     }
     if (notif_depth < 0) notif_depth = 0;
 
+    // Actions array tracking
+    // After body (notif_pending set), the next array is the actions array
+    if (notif_collect_actions == 2 && line.find("array") != std::string::npos)
+        notif_collect_actions = 1;
+    // When the array closes (depth returns to 0), stop collecting
+    if (notif_collect_actions == 1 && prev_depth > 0 && notif_depth == 0)
+        notif_collect_actions = 0;
+
     if (notif_parse_state == 1)
         notif_parse_state = 2;
 
-    if (notif_depth > 0) return;
-
+    // Collect strings inside the actions array even when depth > 0
     size_t s;
-
     if ((s = line.find("string \"")) != std::string::npos) {
         size_t start = line.find('"', s + 7);
         size_t end = start != std::string::npos ? line.find('"', start + 1) : std::string::npos;
         if (start != std::string::npos && end != std::string::npos) {
             std::string val = unescape_dbus_string(line.substr(start + 1, end - start - 1));
-            if (notif_arg_idx == 0) notif_app_name = val;
-            else if (notif_arg_idx == 2) notif_icon = val;
-            else if (notif_arg_idx == 3) notif_summary = val;
-            else if (notif_arg_idx == 4) {
-                notif_body = val;
-                notif_pending = 1;
-                notif_arg_idx = 0;
+            if (notif_collect_actions == 1) {
+                notif_actions.push_back(val);
+            } else if (notif_depth == 0) {
+                if (notif_arg_idx == 0) notif_app_name = val;
+                else if (notif_arg_idx == 2) notif_icon = val;
+                else if (notif_arg_idx == 3) notif_summary = val;
+                else if (notif_arg_idx == 4) {
+                    notif_body = val;
+                    notif_pending = 1;
+                    notif_collect_actions = 2; // next array will be actions
+                    notif_arg_idx = 0;
+                }
             }
         }
-        if (notif_parse_state != 0)
+        if (notif_parse_state != 0 && notif_depth == 0)
             notif_arg_idx++;
         return;
     }
 
-    if (line.find("uint32 ") == 3 || line.find("int32 ") == 3 ||
-        line.find("boolean ") == 3 || line.find("byte ") == 3) {
-        notif_arg_idx++;
-        return;
+    if (notif_depth == 0) {
+        if (line.find("uint32 ") == 3 || line.find("int32 ") == 3 ||
+            line.find("boolean ") == 3 || line.find("byte ") == 3) {
+            notif_arg_idx++;
+            return;
+        }
     }
 }
 
 void WlrCompositor::emit_pending_notif() {
     if (notif_app_name.empty() && notif_summary.empty()) return;
+    notif_current_id = notif_next_id++;
+    if (!notif_sender.empty())
+        notif_sender_map[notif_current_id] = notif_sender;
+    PackedStringArray actions_psa;
+    for (const auto &a : notif_actions)
+        actions_psa.push_back(String::utf8(a.c_str(), a.length()));
     emit_signal("notification_received",
         String::utf8(notif_app_name.c_str(), notif_app_name.length()),
         String::utf8(notif_summary.c_str(), notif_summary.length()),
         String::utf8(notif_body.c_str(), notif_body.length()),
         String::utf8(notif_icon.c_str(), notif_icon.length()),
-        notif_urgency);
+        notif_urgency,
+        notif_current_id,
+        actions_psa);
     notif_emitted = 1;
     notif_pending = 0;
+    notif_actions.clear();
+    notif_collect_actions = 0;
+}
+
+void WlrCompositor::notif_invoke_action(int id, const String &action_key) {
+    auto it = notif_sender_map.find(id);
+    if (it == notif_sender_map.end())
+        return;
+    const std::string &sender = it->second;
+    CharString akey = action_key.utf8();
+    std::string cmd = "dbus-send --session --type=signal --dest=" + sender +
+        " /org/freedesktop/Notifications org.freedesktop.Notifications.ActionInvoked"
+        " uint32:" + std::to_string(id) +
+        " string:" + std::string(akey.get_data()) +
+        " >/dev/null 2>&1";
+    int ret = system(cmd.c_str());
+    (void)ret;
+}
+
+// =====================================================================
+// System Tray — StatusNotifierWatcher
+// =====================================================================
+
+#ifdef HAVE_DBUS
+
+DBusHandlerResult WlrCompositor::tray_filter(DBusConnection *conn, DBusMessage *msg, void *user_data) {
+    WlrCompositor *self = static_cast<WlrCompositor *>(user_data);
+
+    // Handle signals from existing watcher (observer mode)
+    if (dbus_message_get_type(msg) == DBUS_MESSAGE_TYPE_SIGNAL) {
+        const char *iface = dbus_message_get_interface(msg);
+        const char *member = dbus_message_get_member(msg);
+        if (!iface || !member) return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+        if (strcmp(iface, "org.kde.StatusNotifierWatcher") != 0)
+            return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+        if (strcmp(member, "StatusNotifierItemRegistered") == 0) {
+            const char *arg = nullptr;
+            if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID) && arg) {
+                std::string service = arg;
+                // Some watchers append the object path (e.g. ":1.239/StatusNotifierItem")
+                auto slash = service.find('/');
+                if (slash != std::string::npos)
+                    service = service.substr(0, slash);
+                bool found = false;
+                for (const auto &s : self->tray_services) {
+                    if (s == service) { found = true; break; }
+                }
+                if (!found) {
+                    self->tray_services.push_back(service);
+                    UtilityFunctions::print("waylandgodot: tray: item registered (signal): ", service.c_str());
+                }
+            }
+            return DBUS_HANDLER_RESULT_HANDLED;
+        }
+        if (strcmp(member, "StatusNotifierItemUnregistered") == 0) {
+            const char *arg = nullptr;
+            if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID) && arg) {
+                std::string service = arg;
+                auto slash = service.find('/');
+                if (slash != std::string::npos)
+                    service = service.substr(0, slash);
+                for (size_t i = 0; i < self->tray_services.size(); i++) {
+                    if (self->tray_services[i] == service) {
+                        self->tray_services.erase(self->tray_services.begin() + i);
+                        UtilityFunctions::print("waylandgodot: tray: item unregistered: ", service.c_str());
+                        break;
+                    }
+                }
+            }
+            return DBUS_HANDLER_RESULT_HANDLED;
+        }
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+    }
+
+    if (dbus_message_get_type(msg) != DBUS_MESSAGE_TYPE_METHOD_CALL)
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+    // Only handle method calls if we own the watcher name
+    if (!self->tray_owned)
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+    const char *iface = dbus_message_get_interface(msg);
+    const char *member = dbus_message_get_member(msg);
+    if (!iface || !member || strcmp(iface, "org.kde.StatusNotifierWatcher") != 0)
+        return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+
+    DBusMessage *reply = nullptr;
+
+    if (strcmp(member, "RegisterStatusNotifierItem") == 0) {
+        const char *arg = nullptr;
+        if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID)) {
+            std::string service;
+            const char *sender = dbus_message_get_sender(msg);
+            if (arg[0] == '/' && sender) {
+                service = sender;
+                } else {
+                    service = arg;
+                    // Strip any object path suffix that may be appended
+                    auto slash = service.find('/');
+                    if (slash != std::string::npos)
+                        service = service.substr(0, slash);
+                }
+            bool found = false;
+            for (const auto &s : self->tray_services) {
+                if (s == service) { found = true; break; }
+            }
+            if (!found) {
+                self->tray_services.push_back(service);
+                UtilityFunctions::print("waylandgodot: tray: item registered: ", service.c_str());
+            }
+        }
+        reply = dbus_message_new_method_return(msg);
+    } else if (strcmp(member, "RegisterStatusNotifierHost") == 0) {
+        self->tray_host_registered = true;
+        UtilityFunctions::print("waylandgodot: tray: host registered");
+        reply = dbus_message_new_method_return(msg);
+    } else if (strcmp(member, "IsStatusNotifierHostRegistered") == 0) {
+        reply = dbus_message_new_method_return(msg);
+        dbus_bool_t val = self->tray_host_registered ? TRUE : FALSE;
+        dbus_message_append_args(reply, DBUS_TYPE_BOOLEAN, &val, DBUS_TYPE_INVALID);
+    } else if (strcmp(member, "ProtocolVersion") == 0) {
+        reply = dbus_message_new_method_return(msg);
+        int32_t version = 0;
+        dbus_message_append_args(reply, DBUS_TYPE_INT32, &version, DBUS_TYPE_INVALID);
+    }
+
+    if (reply) {
+        dbus_connection_send(conn, reply, nullptr);
+        dbus_message_unref(reply);
+        return DBUS_HANDLER_RESULT_HANDLED;
+    }
+    return DBUS_HANDLER_RESULT_NOT_YET_HANDLED;
+}
+
+// No blocking property query needed — signals handle item discovery.
+
+void WlrCompositor::init_tray_watcher() {
+    DBusError err;
+    dbus_error_init(&err);
+    DBusConnection *conn = dbus_bus_get_private(DBUS_BUS_SESSION, &err);
+    if (!conn) {
+        UtilityFunctions::printerr("waylandgodot: tray: dbus_bus_get_private échoué: ", err.message);
+        dbus_error_free(&err);
+        return;
+    }
+    dbus_connection_set_exit_on_disconnect(conn, FALSE);
+
+    // Try to acquire the StatusNotifierWatcher name
+    int ret = dbus_bus_request_name(conn, "org.kde.StatusNotifierWatcher",
+        DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
+    if (ret != DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+        dbus_error_free(&err);
+        dbus_error_init(&err);
+        ret = dbus_bus_request_name(conn, "org.kde.StatusNotifierWatcher",
+            DBUS_NAME_FLAG_REPLACE_EXISTING | DBUS_NAME_FLAG_DO_NOT_QUEUE, &err);
+    }
+
+    dbus_connection_add_filter(conn, tray_filter, this, nullptr);
+    tray_conn = (void *)conn;
+
+    if (ret == DBUS_REQUEST_NAME_REPLY_PRIMARY_OWNER) {
+        tray_owned = true;
+        tray_host_registered = true;
+        UtilityFunctions::print("waylandgodot: tray: org.kde.StatusNotifierWatcher acquis");
+        // Register as StatusNotifierHost so items know a tray exists
+        const char *unique_name = dbus_bus_get_unique_name(conn);
+        if (unique_name) {
+            DBusMessage *host_msg = dbus_message_new_method_call(
+                "org.kde.StatusNotifierWatcher",
+                "/StatusNotifierWatcher",
+                "org.kde.StatusNotifierWatcher",
+                "RegisterStatusNotifierHost");
+            if (host_msg) {
+                dbus_message_append_args(host_msg, DBUS_TYPE_STRING, &unique_name, DBUS_TYPE_INVALID);
+                dbus_connection_send(conn, host_msg, nullptr);
+                dbus_message_unref(host_msg);
+                UtilityFunctions::print("waylandgodot: tray: auto-enregistrement comme hôte: ", unique_name);
+            }
+        }
+    } else {
+        tray_owned = false;
+        UtilityFunctions::print("waylandgodot: tray: watcher name pris, mode observateur");
+        // Match signals from the existing watcher to track items
+        DBusError match_err;
+        dbus_error_init(&match_err);
+        dbus_bus_add_match(conn,
+            "interface='org.kde.StatusNotifierWatcher',member='StatusNotifierItemRegistered'",
+            &match_err);
+        if (dbus_error_is_set(&match_err)) {
+            UtilityFunctions::printerr("waylandgodot: tray: échec match Registered: ", match_err.message);
+            dbus_error_free(&match_err);
+        }
+        dbus_bus_add_match(conn,
+            "interface='org.kde.StatusNotifierWatcher',member='StatusNotifierItemUnregistered'",
+            &match_err);
+        if (dbus_error_is_set(&match_err)) {
+            UtilityFunctions::printerr("waylandgodot: tray: échec match Unregistered: ", match_err.message);
+            dbus_error_free(&match_err);
+        }
+        // Rely on signals for item discovery — no blocking query needed
+    }
+    dbus_error_free(&err);
+}
+
+void WlrCompositor::shutdown_tray_watcher() {
+    if (tray_conn) {
+        DBusConnection *conn = (DBusConnection *)tray_conn;
+        if (tray_owned)
+            dbus_bus_release_name(conn, "org.kde.StatusNotifierWatcher", nullptr);
+        dbus_connection_unref(conn);
+        tray_conn = nullptr;
+        tray_owned = false;
+    }
+    tray_services.clear();
+}
+
+void WlrCompositor::poll_tray() {
+    if (!tray_conn) return;
+    DBusConnection *conn = (DBusConnection *)tray_conn;
+    dbus_connection_read_write(conn, 0);
+    while (dbus_connection_dispatch(conn) == DBUS_DISPATCH_DATA_REMAINS);
+}
+
+#endif // HAVE_DBUS
+
+Array WlrCompositor::get_tray_items() {
+    Array result;
+#ifdef HAVE_DBUS
+    for (size_t i = 0; i < tray_services.size(); i++) {
+        Dictionary item;
+        item["index"] = (int)i;
+        item["service"] = String::utf8(tray_services[i].c_str(), tray_services[i].length());
+        // Query Id and Title via D-Bus properties
+        item["id"] = "tray:" + String::utf8(tray_services[i].c_str(), tray_services[i].length());
+        item["title"] = String::utf8(tray_services[i].c_str(), tray_services[i].length());
+        result.push_back(item);
+    }
+#else
+    UtilityFunctions::print("waylandgodot: tray: non disponible (pas de dbus-1)");
+#endif
+    return result;
+}
+
+void WlrCompositor::tray_item_activate(int index) {
+#ifdef HAVE_DBUS
+    if (index < 0 || index >= (int)tray_services.size() || !tray_conn) return;
+    DBusConnection *conn = (DBusConnection *)tray_conn;
+    DBusMessage *msg = dbus_message_new_method_call(
+        tray_services[index].c_str(),
+        "/StatusNotifierItem",
+        "org.kde.StatusNotifierItem",
+        "Activate");
+    if (!msg) return;
+    int32_t x = 0, y = 0;
+    dbus_message_append_args(msg,
+        DBUS_TYPE_INT32, &x,
+        DBUS_TYPE_INT32, &y,
+        DBUS_TYPE_INVALID);
+    dbus_connection_send(conn, msg, nullptr);
+    dbus_message_unref(msg);
+#endif
+}
+
+void WlrCompositor::tray_item_context_menu(int index) {
+#ifdef HAVE_DBUS
+    if (index < 0 || index >= (int)tray_services.size() || !tray_conn) return;
+    DBusConnection *conn = (DBusConnection *)tray_conn;
+    DBusMessage *msg = dbus_message_new_method_call(
+        tray_services[index].c_str(),
+        "/StatusNotifierItem",
+        "org.kde.StatusNotifierItem",
+        "ContextMenu");
+    if (!msg) return;
+    int32_t x = 0, y = 0;
+    dbus_message_append_args(msg,
+        DBUS_TYPE_INT32, &x,
+        DBUS_TYPE_INT32, &y,
+        DBUS_TYPE_INVALID);
+    dbus_connection_send(conn, msg, nullptr);
+    dbus_message_unref(msg);
+#endif
 }

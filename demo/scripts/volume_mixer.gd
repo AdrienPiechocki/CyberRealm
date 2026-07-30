@@ -421,6 +421,10 @@ func hide_menu() -> void:
 func _process(delta: float) -> void:
 	if not visible:
 		return
+	refresh_timer += delta
+	if refresh_timer < 0.1:
+		return
+	refresh_timer = 0.0
 	_update_volumes()
 
 func _update_volumes() -> void:
