@@ -155,7 +155,7 @@ func _refresh_tabs() -> void:
 	var window_list: Array = compositor.get_window_list()
 	if window_list.is_empty():
 		var empty_label := Label.new()
-		empty_label.text = "  (aucune fenêtre ouverte)  "
+		empty_label.text = "  (no window open)  "
 		empty_label.add_theme_font_size_override("font_size", 13)
 		empty_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.7))
 		tabs_container.add_child(empty_label)
