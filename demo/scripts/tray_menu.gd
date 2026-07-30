@@ -52,6 +52,9 @@ func _make_title(text: String) -> Label:
 	return lbl
 
 func _refresh() -> void:
+	if _in_dbus_menu:
+		return
+
 	for c in container.get_children():
 		c.queue_free()
 
@@ -176,7 +179,7 @@ func _make_item_row(item: Dictionary) -> PanelContainer:
 
 	# Title
 	var title_lbl := Label.new()
-	title_lbl.text = item.get("id", "App #" + str(idx))
+	title_lbl.text = item.get("display_name", item.get("id", "App #%d" % idx))
 	title_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	title_lbl.add_theme_font_size_override("font_size", 14)
 	title_lbl.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
@@ -189,12 +192,21 @@ func _make_item_row(item: Dictionary) -> PanelContainer:
 	)
 	hbox.add_child(activate_btn)
 
-	var menu_btn := _make_small_btn("Menu")
-	menu_btn.pressed.connect(func():
-		if compositor_ref:
-			compositor_ref.tray_item_context_menu(idx)
-	)
-	hbox.add_child(menu_btn)
+	var show_menu = item.get("has_context_menu", true)
+	var dbus_menu = item.get("dbus_menu_path", "")
+	if not dbus_menu.is_empty():
+		show_menu = true
+	if show_menu:
+		var menu_btn := _make_small_btn("Menu")
+		menu_btn.pressed.connect(func():
+			if not compositor_ref:
+				return
+			if not dbus_menu.is_empty():
+				_show_dbus_menu(idx)
+			else:
+				compositor_ref.tray_item_context_menu(idx)
+		)
+		hbox.add_child(menu_btn)
 
 	return panel
 
@@ -242,6 +254,115 @@ func _process(delta: float) -> void:
 		return
 	refresh_timer = 0.0
 	_refresh()
+
+var _menu_tray_idx: int = -1
+var _in_dbus_menu: bool = false
+var _current_items: Array = []
+var _current_title: String = ""
+
+func _show_dbus_menu(tray_idx: int) -> void:
+	_menu_tray_idx = tray_idx
+	_in_dbus_menu = true
+	if not compositor_ref:
+		return
+	var items = compositor_ref.get_dbus_menu_items(tray_idx)
+	# Skip root item if it has children (unwrap directly to submenu)
+	if items.size() == 1:
+		var children = items[0].get("children", [])
+		if children.size() > 0:
+			items = children
+	_show_dbus_menu_items(items)
+
+func _show_dbus_menu_items(items: Array, title := "") -> void:
+	_current_items = items
+	_current_title = title
+	for c in container.get_children():
+		c.queue_free()
+
+	if not title.is_empty():
+		var back_btn := _make_btn("< Back")
+		back_btn.pressed.connect(func():
+			_show_dbus_menu_items(compositor_ref.get_dbus_menu_items(_menu_tray_idx))
+		)
+		container.add_child(back_btn)
+		var lbl := _make_title(title)
+		container.add_child(lbl)
+	else:
+		container.add_child(_make_title("D-BUS MENU"))
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 2)
+
+	for item in items:
+		var item_type = item.get("type", "standard")
+		var item_label = item.get("label", "")
+
+		if item_type == "separator":
+			var sep := HSeparator.new()
+			sep.custom_minimum_size = Vector2(0, 8)
+			list.add_child(sep)
+			continue
+
+		var visible = item.get("visible", true)
+		if not visible:
+			continue
+
+		# Hide items with empty labels (acts as separators)
+		if item_label.is_empty():
+			continue
+
+		var enabled = item.get("enabled", true)
+		var label = item_label
+		var item_id = item.get("id", 0)
+		var children = item.get("children", [])
+		var has_sub = children.size() > 0
+
+		var btn := Button.new()
+		btn.text = label if not label.is_empty() else "(unnamed)"
+		btn.disabled = not enabled
+		btn.custom_minimum_size = Vector2(0, 32)
+		btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		btn.add_theme_font_size_override("font_size", 13)
+
+		if has_sub:
+			btn.text += " >"
+
+		var n := StyleBoxFlat.new()
+		n.bg_color = Color(0.1, 0.12, 0.17, 0.8)
+		n.content_margin_left = 12
+		n.content_margin_right = 12
+		btn.add_theme_stylebox_override("normal", n)
+
+		btn.pressed.connect(func():
+			if not enabled:
+				return
+			if has_sub and compositor_ref:
+				_show_dbus_menu_items(children, label)
+			elif compositor_ref:
+				compositor_ref.dbus_menu_event(_menu_tray_idx, item_id)
+		)
+
+		list.add_child(btn)
+
+	# Spacer + Back to main
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 8)
+	list.add_child(spacer)
+
+	var back_to_main := _make_btn("Back to Tray Menu")
+	back_to_main.pressed.connect(func():
+		_in_dbus_menu = false
+		_refresh()
+	)
+	list.add_child(back_to_main)
+
+	scroll.add_child(list)
+	container.add_child(scroll)
 
 func _input(event: InputEvent) -> void:
 	if not visible:

@@ -78,6 +78,34 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {(int)Key::KEY_META, 125},
     {(int)Key::KEY_MENU, 139},
     {(int)Key::KEY_LESS, 86},
+    {(int)Key::KEY_NUMLOCK, 69},
+    // Numpad (fallback when keycode is already KP_*)
+    {(int)Key::KEY_KP_0, 82}, {(int)Key::KEY_KP_1, 79},
+    {(int)Key::KEY_KP_2, 80}, {(int)Key::KEY_KP_3, 81},
+    {(int)Key::KEY_KP_4, 75}, {(int)Key::KEY_KP_5, 76},
+    {(int)Key::KEY_KP_6, 77}, {(int)Key::KEY_KP_7, 71},
+    {(int)Key::KEY_KP_8, 72}, {(int)Key::KEY_KP_9, 73},
+    {(int)Key::KEY_KP_PERIOD, 83},
+    {(int)Key::KEY_KP_ADD, 78},
+    {(int)Key::KEY_KP_SUBTRACT, 74},
+    {(int)Key::KEY_KP_MULTIPLY, 55},
+    {(int)Key::KEY_KP_DIVIDE, 98},
+    {(int)Key::KEY_KP_ENTER, 96},
+};
+
+// Numpad evdev codes when location == 3 but physical_keycode is a regular key
+static const std::unordered_map<int, uint32_t> NUMPAD_EVDEV = {
+    {(int)Key::KEY_0, 82}, {(int)Key::KEY_1, 79},
+    {(int)Key::KEY_2, 80}, {(int)Key::KEY_3, 81},
+    {(int)Key::KEY_4, 75}, {(int)Key::KEY_5, 76},
+    {(int)Key::KEY_6, 77}, {(int)Key::KEY_7, 71},
+    {(int)Key::KEY_8, 72}, {(int)Key::KEY_9, 73},
+    {(int)Key::KEY_PERIOD, 83},
+    {(int)Key::KEY_SLASH, 98},
+    {(int)Key::KEY_ASTERISK, 55},
+    {(int)Key::KEY_MINUS, 74},
+    {(int)Key::KEY_EQUAL, 78}, // numpad + (unshifted =)
+    {(int)Key::KEY_ENTER, 96},
 };
 
 // ---------------------------------------------------------------------
@@ -131,6 +159,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_tray_items"), &WlrCompositor::get_tray_items);
     ClassDB::bind_method(D_METHOD("tray_item_activate", "index"), &WlrCompositor::tray_item_activate);
     ClassDB::bind_method(D_METHOD("tray_item_context_menu", "index"), &WlrCompositor::tray_item_context_menu);
+    ClassDB::bind_method(D_METHOD("get_dbus_menu_items", "index"), &WlrCompositor::get_dbus_menu_items);
+    ClassDB::bind_method(D_METHOD("dbus_menu_event", "index", "item_id"), &WlrCompositor::dbus_menu_event);
 
     ADD_SIGNAL(MethodInfo("window_mapped",
         PropertyInfo(Variant::INT, "id"),
@@ -1541,6 +1571,24 @@ void WlrCompositor::start_headless() {
     xkb_keymap_unref(keymap);
     xkb_context_unref(ctx);
 
+    // Enable NumLock by default
+    {
+        xkb_keymap *kmap = xkb_state_get_keymap(virtual_keyboard.xkb_state);
+        xkb_mod_index_t num_mod = xkb_keymap_mod_get_index(kmap, XKB_MOD_NAME_NUM);
+        if (num_mod != XKB_MOD_INVALID) {
+            xkb_state_update_mask(virtual_keyboard.xkb_state,
+                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_DEPRESSED),
+                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LATCHED),
+                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LOCKED) | (1u << num_mod),
+                0, 0, 0);
+            wlr_keyboard_notify_modifiers(&virtual_keyboard,
+                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_DEPRESSED),
+                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LATCHED),
+                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LOCKED),
+                xkb_state_serialize_layout(virtual_keyboard.xkb_state, XKB_STATE_LAYOUT_EFFECTIVE));
+        }
+    }
+
     wlr_seat_set_keyboard(seat, &virtual_keyboard);
     wlr_seat_set_capabilities(seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
 
@@ -1772,6 +1820,18 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     uint32_t evdev_code;
     if (godot_physical_keycode == (int)Key::KEY_ALT && key_location == 2) {
         evdev_code = 100; // KEY_RIGHTALT / AltGr
+    } else if (key_location == 3) {
+        // Numpad: try location-aware map first, fall back to generic map
+        auto np = NUMPAD_EVDEV.find(godot_physical_keycode);
+        if (np != NUMPAD_EVDEV.end()) {
+            evdev_code = np->second;
+        } else {
+            auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
+            if (it == GODOT_TO_EVDEV.end()) {
+                return;
+            }
+            evdev_code = it->second;
+        }
     } else {
         auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
         if (it == GODOT_TO_EVDEV.end()) {
@@ -2431,17 +2491,25 @@ DBusHandlerResult WlrCompositor::tray_filter(DBusConnection *conn, DBusMessage *
         if (strcmp(member, "StatusNotifierItemRegistered") == 0) {
             const char *arg = nullptr;
             if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID) && arg) {
-                std::string service = arg;
-                // Some watchers append the object path (e.g. ":1.239/StatusNotifierItem")
-                auto slash = service.find('/');
-                if (slash != std::string::npos)
-                    service = service.substr(0, slash);
+                std::string raw = arg;
+                std::string service;
+                std::string object_path = "/StatusNotifierItem";
+                auto slash = raw.find('/');
+                if (slash != std::string::npos) {
+                    service = raw.substr(0, slash);
+                    object_path = raw.substr(slash);
+                } else {
+                    service = raw;
+                }
                 bool found = false;
                 for (const auto &s : self->tray_services) {
-                    if (s == service) { found = true; break; }
+                    if (s.service == service) { found = true; break; }
                 }
                 if (!found) {
-                    self->tray_services.push_back(service);
+                    TrayServiceInfo info;
+                    info.service = service;
+                    info.object_path = object_path;
+                    self->tray_services.push_back(info);
                     UtilityFunctions::print("waylandgodot: tray: item registered (signal): ", service.c_str());
                 }
             }
@@ -2450,12 +2518,15 @@ DBusHandlerResult WlrCompositor::tray_filter(DBusConnection *conn, DBusMessage *
         if (strcmp(member, "StatusNotifierItemUnregistered") == 0) {
             const char *arg = nullptr;
             if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID) && arg) {
-                std::string service = arg;
-                auto slash = service.find('/');
+                std::string raw = arg;
+                std::string service;
+                auto slash = raw.find('/');
                 if (slash != std::string::npos)
-                    service = service.substr(0, slash);
+                    service = raw.substr(0, slash);
+                else
+                    service = raw;
                 for (size_t i = 0; i < self->tray_services.size(); i++) {
-                    if (self->tray_services[i] == service) {
+                    if (self->tray_services[i].service == service) {
                         self->tray_services.erase(self->tray_services.begin() + i);
                         UtilityFunctions::print("waylandgodot: tray: item unregistered: ", service.c_str());
                         break;
@@ -2485,22 +2556,28 @@ DBusHandlerResult WlrCompositor::tray_filter(DBusConnection *conn, DBusMessage *
         const char *arg = nullptr;
         if (dbus_message_get_args(msg, nullptr, DBUS_TYPE_STRING, &arg, DBUS_TYPE_INVALID)) {
             std::string service;
+            std::string object_path = "/StatusNotifierItem";
             const char *sender = dbus_message_get_sender(msg);
             if (arg[0] == '/' && sender) {
                 service = sender;
-                } else {
-                    service = arg;
-                    // Strip any object path suffix that may be appended
-                    auto slash = service.find('/');
-                    if (slash != std::string::npos)
-                        service = service.substr(0, slash);
+                object_path = arg;
+            } else {
+                service = arg;
+                auto slash = service.find('/');
+                if (slash != std::string::npos) {
+                    object_path = service.substr(slash);
+                    service = service.substr(0, slash);
                 }
+            }
             bool found = false;
             for (const auto &s : self->tray_services) {
-                if (s == service) { found = true; break; }
+                if (s.service == service) { found = true; break; }
             }
             if (!found) {
-                self->tray_services.push_back(service);
+                TrayServiceInfo info;
+                info.service = service;
+                info.object_path = object_path;
+                self->tray_services.push_back(info);
                 UtilityFunctions::print("waylandgodot: tray: item registered: ", service.c_str());
             }
         }
@@ -2618,16 +2695,196 @@ void WlrCompositor::poll_tray() {
 
 #endif // HAVE_DBUS
 
+static std::string query_sni_property(DBusConnection *conn, const std::string &service, const std::string &object_path, const std::string &iface_name, const std::string &prop) {
+    DBusMessage *msg = dbus_message_new_method_call(
+        service.c_str(),
+        object_path.c_str(),
+        "org.freedesktop.DBus.Properties",
+        "Get");
+    if (!msg) return "";
+
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(msg, &iter);
+    const char *iface = iface_name.c_str();
+    const char *pname = prop.c_str();
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &iface);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &pname);
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, msg, 2000, &err);
+    dbus_message_unref(msg);
+
+    if (!reply) {
+        dbus_error_free(&err);
+        return "";
+    }
+
+    std::string result;
+    DBusMessageIter reply_iter;
+    dbus_message_iter_init(reply, &reply_iter);
+    if (dbus_message_iter_get_arg_type(&reply_iter) == DBUS_TYPE_VARIANT) {
+        DBusMessageIter variant_iter;
+        dbus_message_iter_recurse(&reply_iter, &variant_iter);
+        int vt = dbus_message_iter_get_arg_type(&variant_iter);
+        if (vt == DBUS_TYPE_STRING || vt == DBUS_TYPE_OBJECT_PATH) {
+            const char *val = nullptr;
+            dbus_message_iter_get_basic(&variant_iter, &val);
+            if (val) result = val;
+        }
+    }
+
+    dbus_message_unref(reply);
+    return result;
+}
+
+static std::string get_process_name(DBusConnection *conn, const std::string &service) {
+    DBusMessage *msg = dbus_message_new_method_call(
+        "org.freedesktop.DBus",
+        "/",
+        "org.freedesktop.DBus",
+        "GetConnectionUnixProcessID");
+    if (!msg) return "";
+    const char *svc = service.c_str();
+    dbus_message_append_args(msg, DBUS_TYPE_STRING, &svc, DBUS_TYPE_INVALID);
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, msg, 2000, &err);
+    dbus_message_unref(msg);
+    if (!reply) {
+        dbus_error_free(&err);
+        return "";
+    }
+
+    uint32_t pid = 0;
+    if (!dbus_message_get_args(reply, &err, DBUS_TYPE_UINT32, &pid, DBUS_TYPE_INVALID)) {
+        dbus_message_unref(reply);
+        dbus_error_free(&err);
+        return "";
+    }
+    dbus_message_unref(reply);
+
+    // Read /proc/<pid>/comm for the process name
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%u/comm", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) return "";
+    char comm[256] = {};
+    if (fgets(comm, sizeof(comm), f)) {
+        size_t len = strlen(comm);
+        if (len > 0 && comm[len - 1] == '\n') comm[len - 1] = '\0';
+    }
+    fclose(f);
+    return comm[0] ? std::string(comm) : "";
+}
+
 Array WlrCompositor::get_tray_items() {
     Array result;
 #ifdef HAVE_DBUS
+    DBusConnection *conn = (DBusConnection *)tray_conn;
     for (size_t i = 0; i < tray_services.size(); i++) {
         Dictionary item;
         item["index"] = (int)i;
-        item["service"] = String::utf8(tray_services[i].c_str(), tray_services[i].length());
-        // Query Id and Title via D-Bus properties
-        item["id"] = "tray:" + String::utf8(tray_services[i].c_str(), tray_services[i].length());
-        item["title"] = String::utf8(tray_services[i].c_str(), tray_services[i].length());
+
+        if (tray_services[i].display_name.empty() && conn) {
+            const char *probe_ifaces[] = {"org.ayatana.StatusNotifierItem", "org.kde.StatusNotifierItem"};
+            std::string probe_paths[] = {tray_services[i].object_path, "/"};
+            bool found = false;
+            for (auto &iface : probe_ifaces) {
+                for (auto &probe : probe_paths) {
+                    std::string pid = query_sni_property(conn, tray_services[i].service, probe, iface, "Id");
+                    if (!pid.empty()) {
+                        tray_services[i].interface_name = iface;
+                        tray_services[i].object_path = probe;
+                        tray_services[i].id = pid;
+                        tray_services[i].title = query_sni_property(conn, tray_services[i].service, probe, iface, "Title");
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) break;
+            }
+            if (!found) {
+                tray_services[i].interface_name = "org.kde.StatusNotifierItem";
+                tray_services[i].object_path = "/";
+            }
+            // Introspect to discover available methods and D-Bus menu
+            {
+                DBusMessage *imsg = dbus_message_new_method_call(
+                    tray_services[i].service.c_str(),
+                    tray_services[i].object_path.c_str(),
+                    "org.freedesktop.DBus.Introspectable", "Introspect");
+                if (imsg) {
+                    DBusError ierr;
+                    dbus_error_init(&ierr);
+                    DBusMessage *ireply = dbus_connection_send_with_reply_and_block(conn, imsg, 2000, &ierr);
+                    dbus_message_unref(imsg);
+                    if (ireply) {
+                        const char *xml = nullptr;
+                        if (dbus_message_get_args(ireply, &ierr, DBUS_TYPE_STRING, &xml, DBUS_TYPE_INVALID) && xml) {
+                            std::string xml_str(xml);
+                            // Check if the probed interface is fully described in XML
+                            std::string iface_tag = std::string("<interface name=\"") + tray_services[i].interface_name + "\">";
+                            size_t iface_pos = xml_str.find(iface_tag);
+                            if (iface_pos != std::string::npos) {
+                                // Interface is fully described: check for methods reliably
+                                std::string iface_xml = xml_str.substr(iface_pos);
+                                size_t iface_end = iface_xml.find("</interface>");
+                                if (iface_end != std::string::npos)
+                                    iface_xml = iface_xml.substr(0, iface_end);
+
+                                // Check for Activate / SecondaryActivate
+                                if (iface_xml.find("<method name=\"Activate\"") == std::string::npos) {
+                                    tray_services[i].activate_method = "SecondaryActivate";
+                                }
+                                // Check for ContextMenu
+                                if (iface_xml.find("<method name=\"ContextMenu\"") == std::string::npos) {
+                                    tray_services[i].has_context_menu = false;
+                                }
+                            }
+                            // If the probed interface is not fully described, keep defaults (assume methods exist)
+                            // Query Menu property for DBusMenu support
+                            std::string menu_path = query_sni_property(conn, tray_services[i].service,
+                                tray_services[i].object_path, tray_services[i].interface_name, "Menu");
+                            if (!menu_path.empty() && menu_path[0] == '/') {
+                                tray_services[i].dbus_menu_path = menu_path;
+                            }
+                            // Also check for Menu child node as fallback detection
+                            if (tray_services[i].dbus_menu_path.empty() &&
+                                xml_str.find("<node name=\"Menu\"") != std::string::npos) {
+                                tray_services[i].dbus_menu_path = tray_services[i].object_path + "/Menu";
+                            }
+                        }
+                        dbus_message_unref(ireply);
+                    }
+                    dbus_error_free(&ierr);
+                }
+            }
+
+            // Select best display name: Title > process name > Id > service
+            if (!tray_services[i].title.empty()) {
+                tray_services[i].display_name = tray_services[i].title;
+            } else {
+                std::string proc = get_process_name(conn, tray_services[i].service);
+                if (!proc.empty()) {
+                    tray_services[i].display_name = proc;
+                } else if (!tray_services[i].id.empty()) {
+                    tray_services[i].display_name = tray_services[i].id;
+                }
+            }
+        }
+
+        if (tray_services[i].display_name.empty())
+            tray_services[i].display_name = tray_services[i].service;
+
+        item["service"] = String::utf8(tray_services[i].service.c_str(), tray_services[i].service.length());
+        item["id"] = String::utf8(tray_services[i].id.c_str(), tray_services[i].id.length());
+        item["title"] = String::utf8(tray_services[i].title.c_str(), tray_services[i].title.length());
+        item["display_name"] = String::utf8(tray_services[i].display_name.c_str(), tray_services[i].display_name.length());
+        item["has_context_menu"] = tray_services[i].has_context_menu;
+        item["dbus_menu_path"] = String::utf8(tray_services[i].dbus_menu_path.c_str(),
+            tray_services[i].dbus_menu_path.length());
         result.push_back(item);
     }
 #else
@@ -2636,34 +2893,253 @@ Array WlrCompositor::get_tray_items() {
     return result;
 }
 
+static Dictionary parse_dbusmenu_item(DBusMessageIter *item_iter) {
+    Dictionary result;
+
+    // int32 id
+    int32_t id = 0;
+    dbus_message_iter_get_basic(item_iter, &id);
+    dbus_message_iter_next(item_iter);
+    result["id"] = id;
+
+    // Detect format: (isa{sv}av) or (ia{sv}av)
+    // If second field is a string, it's standard format with type
+    if (dbus_message_iter_get_arg_type(item_iter) == DBUS_TYPE_STRING) {
+        const char *type = nullptr;
+        dbus_message_iter_get_basic(item_iter, &type);
+        dbus_message_iter_next(item_iter);
+        result["type"] = String::utf8(type ? type : "");
+    }
+
+    // dict a{sv} properties
+    if (dbus_message_iter_get_arg_type(item_iter) == DBUS_TYPE_ARRAY) {
+        DBusMessageIter props_iter;
+        dbus_message_iter_recurse(item_iter, &props_iter);
+        dbus_message_iter_next(item_iter);
+
+        while (dbus_message_iter_get_arg_type(&props_iter) == DBUS_TYPE_DICT_ENTRY) {
+            DBusMessageIter entry_iter;
+            dbus_message_iter_recurse(&props_iter, &entry_iter);
+
+            const char *key = nullptr;
+            dbus_message_iter_get_basic(&entry_iter, &key);
+            dbus_message_iter_next(&entry_iter);
+
+            DBusMessageIter val_iter;
+            dbus_message_iter_recurse(&entry_iter, &val_iter);
+
+            if (key) {
+                std::string k(key);
+                if (k == "label" && dbus_message_iter_get_arg_type(&val_iter) == DBUS_TYPE_STRING) {
+                    const char *val = nullptr;
+                    dbus_message_iter_get_basic(&val_iter, &val);
+                    if (val) result["label"] = String::utf8(val);
+                } else if (k == "enabled" && dbus_message_iter_get_arg_type(&val_iter) == DBUS_TYPE_BOOLEAN) {
+                    dbus_bool_t val = FALSE;
+                    dbus_message_iter_get_basic(&val_iter, &val);
+                    result["enabled"] = (bool)val;
+                } else if (k == "visible" && dbus_message_iter_get_arg_type(&val_iter) == DBUS_TYPE_BOOLEAN) {
+                    dbus_bool_t val = FALSE;
+                    dbus_message_iter_get_basic(&val_iter, &val);
+                    result["visible"] = (bool)val;
+                } else if (k == "toggle-type" && dbus_message_iter_get_arg_type(&val_iter) == DBUS_TYPE_STRING) {
+                    const char *val = nullptr;
+                    dbus_message_iter_get_basic(&val_iter, &val);
+                    if (val) result["toggle_type"] = String::utf8(val);
+                } else if (k == "toggle-state" && dbus_message_iter_get_arg_type(&val_iter) == DBUS_TYPE_INT32) {
+                    int32_t val = 0;
+                    dbus_message_iter_get_basic(&val_iter, &val);
+                    result["toggle_state"] = (int)val;
+                } else if (k == "children-display" && dbus_message_iter_get_arg_type(&val_iter) == DBUS_TYPE_STRING) {
+                    const char *val = nullptr;
+                    dbus_message_iter_get_basic(&val_iter, &val);
+                    if (val) result["children_display"] = String::utf8(val);
+                }
+            }
+            dbus_message_iter_next(&props_iter);
+        }
+    }
+
+    // children array: either a(v) in standard format or av in reduced
+    if (dbus_message_iter_get_arg_type(item_iter) == DBUS_TYPE_ARRAY) {
+        DBusMessageIter children_arr;
+        dbus_message_iter_recurse(item_iter, &children_arr);
+
+        Array children;
+        int child_type = dbus_message_iter_get_arg_type(&children_arr);
+        if (child_type == DBUS_TYPE_VARIANT) {
+            // a(v) — variants wrapping item structs
+            while (child_type == DBUS_TYPE_VARIANT) {
+                DBusMessageIter var_iter;
+                dbus_message_iter_recurse(&children_arr, &var_iter);
+
+                if (dbus_message_iter_get_arg_type(&var_iter) == DBUS_TYPE_STRUCT) {
+                    DBusMessageIter child_item;
+                    dbus_message_iter_recurse(&var_iter, &child_item);
+                    children.push_back(parse_dbusmenu_item(&child_item));
+                }
+                dbus_message_iter_next(&children_arr);
+                child_type = dbus_message_iter_get_arg_type(&children_arr);
+            }
+        } else if (child_type == DBUS_TYPE_STRUCT) {
+            // av — item structs directly (reduced format)
+            while (child_type == DBUS_TYPE_STRUCT) {
+                DBusMessageIter child_item;
+                dbus_message_iter_recurse(&children_arr, &child_item);
+                children.push_back(parse_dbusmenu_item(&child_item));
+                dbus_message_iter_next(&children_arr);
+                child_type = dbus_message_iter_get_arg_type(&children_arr);
+            }
+        }
+        result["children"] = children;
+    }
+
+    return result;
+}
+
+Array WlrCompositor::get_dbus_menu_items(int index) {
+    Array result;
+#ifdef HAVE_DBUS
+    if (index < 0 || index >= (int)tray_services.size() || !tray_conn) return result;
+    if (tray_services[index].dbus_menu_path.empty()) return result;
+
+    DBusConnection *conn = (DBusConnection *)tray_conn;
+
+    DBusMessage *msg = dbus_message_new_method_call(
+        tray_services[index].service.c_str(),
+        tray_services[index].dbus_menu_path.c_str(),
+        "com.canonical.dbusmenu",
+        "GetLayout");
+    if (!msg) return result;
+
+    int32_t parent_id = 0;
+    int32_t depth = -1;
+    const char *prop_names[] = {"label", "enabled", "visible", "toggle-type", "toggle-state", "children-display"};
+
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(msg, &iter);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &parent_id);
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &depth);
+
+    DBusMessageIter arr_iter;
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_ARRAY, "s", &arr_iter);
+    for (const char *p : prop_names) {
+        dbus_message_iter_append_basic(&arr_iter, DBUS_TYPE_STRING, &p);
+    }
+    dbus_message_iter_close_container(&iter, &arr_iter);
+
+    DBusError err;
+    dbus_error_init(&err);
+    DBusMessage *reply = dbus_connection_send_with_reply_and_block(conn, msg, 3000, &err);
+    dbus_message_unref(msg);
+    if (!reply) {
+        UtilityFunctions::printerr("waylandgodot: tray: GetLayout error: ", err.message);
+        dbus_error_free(&err);
+        return result;
+    }
+
+    DBusMessageIter reply_iter;
+    dbus_message_iter_init(reply, &reply_iter);
+
+    // Parse: u (revision) + (ia{sv}av) (root item struct)
+    if (dbus_message_iter_get_arg_type(&reply_iter) == DBUS_TYPE_UINT32) {
+        dbus_message_iter_next(&reply_iter);
+    }
+
+    if (dbus_message_iter_get_arg_type(&reply_iter) == DBUS_TYPE_STRUCT) {
+        DBusMessageIter item_iter;
+        dbus_message_iter_recurse(&reply_iter, &item_iter);
+        result.push_back(parse_dbusmenu_item(&item_iter));
+    } else if (dbus_message_iter_get_arg_type(&reply_iter) == DBUS_TYPE_ARRAY) {
+        DBusMessageIter items_iter;
+        dbus_message_iter_recurse(&reply_iter, &items_iter);
+        while (dbus_message_iter_get_arg_type(&items_iter) == DBUS_TYPE_STRUCT) {
+            DBusMessageIter si;
+            dbus_message_iter_recurse(&items_iter, &si);
+            result.push_back(parse_dbusmenu_item(&si));
+            dbus_message_iter_next(&items_iter);
+        }
+    }
+    dbus_message_unref(reply);
+#else
+    UtilityFunctions::print("waylandgodot: tray: dbus menu non disponible");
+#endif
+    return result;
+}
+
+void WlrCompositor::dbus_menu_event(int index, int item_id) {
+#ifdef HAVE_DBUS
+    if (index < 0 || index >= (int)tray_services.size() || !tray_conn) return;
+    if (tray_services[index].dbus_menu_path.empty()) return;
+
+    DBusConnection *conn = (DBusConnection *)tray_conn;
+
+    DBusMessage *msg = dbus_message_new_method_call(
+        tray_services[index].service.c_str(),
+        tray_services[index].dbus_menu_path.c_str(),
+        "com.canonical.dbusmenu",
+        "Event");
+    if (!msg) return;
+
+    DBusMessageIter iter;
+    dbus_message_iter_init_append(msg, &iter);
+
+    int32_t id = item_id;
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_INT32, &id);
+
+    const char *event_type = "clicked";
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_STRING, &event_type);
+
+    // Empty variant (string)
+    DBusMessageIter var_iter;
+    dbus_message_iter_open_container(&iter, DBUS_TYPE_VARIANT, "s", &var_iter);
+    const char *empty = "";
+    dbus_message_iter_append_basic(&var_iter, DBUS_TYPE_STRING, &empty);
+    dbus_message_iter_close_container(&iter, &var_iter);
+
+    uint32_t timestamp = 0;
+    dbus_message_iter_append_basic(&iter, DBUS_TYPE_UINT32, &timestamp);
+
+    dbus_connection_send(conn, msg, nullptr);
+    dbus_message_unref(msg);
+#endif
+}
+
 void WlrCompositor::tray_item_activate(int index) {
 #ifdef HAVE_DBUS
     if (index < 0 || index >= (int)tray_services.size() || !tray_conn) return;
     DBusConnection *conn = (DBusConnection *)tray_conn;
-    DBusMessage *msg = dbus_message_new_method_call(
-        tray_services[index].c_str(),
-        "/StatusNotifierItem",
-        "org.kde.StatusNotifierItem",
-        "Activate");
-    if (!msg) return;
-    int32_t x = 0, y = 0;
-    dbus_message_append_args(msg,
-        DBUS_TYPE_INT32, &x,
-        DBUS_TYPE_INT32, &y,
-        DBUS_TYPE_INVALID);
-    dbus_connection_send(conn, msg, nullptr);
-    dbus_message_unref(msg);
+
+    // Try both Activate and SecondaryActivate (one will be the detected method)
+    const char *methods[2] = {"Activate", "SecondaryActivate"};
+    for (int m = 0; m < 2; m++) {
+        DBusMessage *msg = dbus_message_new_method_call(
+            tray_services[index].service.c_str(),
+            tray_services[index].object_path.c_str(),
+            tray_services[index].interface_name.c_str(),
+            methods[m]);
+        if (!msg) continue;
+        int32_t x = 0, y = 0;
+        dbus_message_append_args(msg,
+            DBUS_TYPE_INT32, &x,
+            DBUS_TYPE_INT32, &y,
+            DBUS_TYPE_INVALID);
+        dbus_connection_send(conn, msg, nullptr);
+        dbus_message_unref(msg);
+    }
 #endif
 }
 
 void WlrCompositor::tray_item_context_menu(int index) {
 #ifdef HAVE_DBUS
     if (index < 0 || index >= (int)tray_services.size() || !tray_conn) return;
+    if (!tray_services[index].has_context_menu) return;
     DBusConnection *conn = (DBusConnection *)tray_conn;
+
     DBusMessage *msg = dbus_message_new_method_call(
-        tray_services[index].c_str(),
-        "/StatusNotifierItem",
-        "org.kde.StatusNotifierItem",
+        tray_services[index].service.c_str(),
+        tray_services[index].object_path.c_str(),
+        tray_services[index].interface_name.c_str(),
         "ContextMenu");
     if (!msg) return;
     int32_t x = 0, y = 0;

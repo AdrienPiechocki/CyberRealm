@@ -307,9 +307,24 @@ class WlrCompositor : public Node {
 
 #ifdef HAVE_DBUS
     // --- System Tray (StatusNotifierWatcher) ---------------------------
+    struct TrayServiceInfo {
+        std::string service;
+        std::string object_path = "/StatusNotifierItem";
+        std::string interface_name = "org.kde.StatusNotifierItem";
+        std::string activate_method = "Activate"; // "Activate" or "SecondaryActivate"
+        bool has_context_menu = true;
+        std::string dbus_menu_path; // DBusMenu object path (empty if none)
+        std::string id;
+        std::string title;
+        std::string display_name; // resolved: Title > Id > proc name > service
+    };
+
+    Array get_dbus_menu_items(int index);
+    void dbus_menu_event(int index, int item_id);
+
     void *tray_conn = nullptr;
     bool tray_owned = false;
-    std::vector<std::string> tray_services;
+    std::vector<TrayServiceInfo> tray_services;
     bool tray_host_registered = false;
     void init_tray_watcher();
     void shutdown_tray_watcher();
