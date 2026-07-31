@@ -1,4 +1,5 @@
 #include "wlr_compositor.h"
+#include "wlr_layer_shell_helpers.h"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -138,12 +139,23 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_keyboard_key);
     ClassDB::bind_method(D_METHOD("forward_pointer_relative_motion", "window_id", "dx", "dy", "dx_unaccel", "dy_unaccel"),
         &WlrCompositor::forward_pointer_relative_motion);
+    ClassDB::bind_method(D_METHOD("forward_pointer_motion_layer", "layer_id", "surface_x", "surface_y"),
+        &WlrCompositor::forward_pointer_motion_layer);
+    ClassDB::bind_method(D_METHOD("forward_pointer_button_layer", "layer_id", "button", "pressed"),
+        &WlrCompositor::forward_pointer_button_layer);
+    ClassDB::bind_method(D_METHOD("forward_pointer_axis_layer", "layer_id", "delta_x", "delta_y"),
+        &WlrCompositor::forward_pointer_axis_layer);
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
+
+    ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
+    ClassDB::bind_method(D_METHOD("get_layer_surface_info", "layer_id"), &WlrCompositor::get_layer_surface_info);
+    ClassDB::bind_method(D_METHOD("get_keyboard_focus_layer_id"), &WlrCompositor::get_keyboard_focus_layer_id);
+    ClassDB::bind_method(D_METHOD("close_layer_surface", "layer_id"), &WlrCompositor::close_layer_surface);
 
     ClassDB::bind_method(D_METHOD("get_window_list"), &WlrCompositor::get_window_list);
     ClassDB::bind_method(D_METHOD("close_window", "window_id"), &WlrCompositor::close_window);
@@ -197,6 +209,30 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::INT, "height")));
     ADD_SIGNAL(MethodInfo("drag_icon_removed"));
 
+    ADD_SIGNAL(MethodInfo("layer_surface_mapped",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::STRING, "namespace"),
+        PropertyInfo(Variant::INT, "layer"),
+        PropertyInfo(Variant::INT, "anchor"),
+        PropertyInfo(Variant::INT, "x"),
+        PropertyInfo(Variant::INT, "y"),
+        PropertyInfo(Variant::INT, "width"),
+        PropertyInfo(Variant::INT, "height"),
+        PropertyInfo(Variant::INT, "keyboard_interactive")));
+    ADD_SIGNAL(MethodInfo("layer_surface_unmapped", PropertyInfo(Variant::INT, "id")));
+    ADD_SIGNAL(MethodInfo("layer_surface_texture_updated",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::OBJECT, "texture"),
+        PropertyInfo(Variant::INT, "width"),
+        PropertyInfo(Variant::INT, "height")));
+    ADD_SIGNAL(MethodInfo("layer_popup_mapped",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::INT, "parent_layer_id"),
+        PropertyInfo(Variant::INT, "x"),
+        PropertyInfo(Variant::INT, "y"),
+        PropertyInfo(Variant::INT, "width"),
+        PropertyInfo(Variant::INT, "height")));
+
 }
 
 WlrCompositor::WlrCompositor() {
@@ -215,6 +251,9 @@ WlrCompositor::~WlrCompositor() {
         pair.second.capture_cache.reset(rd);
     }
     for (auto &pair : popups) {
+        pair.second.capture_cache.reset(rd);
+    }
+    for (auto &pair : layer_surfaces) {
         pair.second.capture_cache.reset(rd);
     }
     drag_icon_cache.reset(rd);
@@ -264,6 +303,11 @@ int WlrCompositor::find_window_id_by_surface(wlr_surface *surface) {
 PopupState *WlrCompositor::find_popup(int id) {
     auto it = popups.find(id);
     return it == popups.end() ? nullptr : &it->second;
+}
+
+LayerSurfaceState *WlrCompositor::find_layer_surface(int id) {
+    auto it = layer_surfaces.find(id);
+    return it == layer_surfaces.end() ? nullptr : &it->second;
 }
 
 // =====================================================================
@@ -614,6 +658,20 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         return false;
     }
 
+    // wlroots 0.18 ne fait aucun clear à begin_buffer_pass : l'offscreen est
+    // réutilisé entre les frames et le contenu semi-transparent s'accumule
+    // (alpha → 1 après quelques frames → fond opaque/noir). On efface donc
+    // explicitement avec un rect (0,0,0,0) en écriture directe (blend NONE)
+    // avant de re-rasteriser la surface par-dessus.
+    wlr_render_rect_options clear = {};
+    clear.box.x = 0;
+    clear.box.y = 0;
+    clear.box.width = cache.offscreen->width;
+    clear.box.height = cache.offscreen->height;
+    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
+    clear.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
+    wlr_render_pass_add_rect(pass, &clear);
+
     int blitted = 0;
     for (auto &inst : instances) {
         wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
@@ -903,6 +961,15 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) return false;
 
+    wlr_render_rect_options clear = {};
+    clear.box.x = 0;
+    clear.box.y = 0;
+    clear.box.width = cache.offscreen->width;
+    clear.box.height = cache.offscreen->height;
+    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
+    clear.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
+    wlr_render_pass_add_rect(pass, &clear);
+
     int blitted = 0;
     for (auto &inst : instances) {
         wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
@@ -1008,6 +1075,15 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         UtilityFunctions::printerr("waylandgodot: échec begin_buffer_pass");
         return false;
     }
+
+    wlr_render_rect_options clear = {};
+    clear.box.x = 0;
+    clear.box.y = 0;
+    clear.box.width = cache.offscreen->width;
+    clear.box.height = cache.offscreen->height;
+    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
+    clear.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
+    wlr_render_pass_add_rect(pass, &clear);
 
     wlr_render_texture_options opts = {};
     opts.texture = texture;
@@ -1326,6 +1402,19 @@ void WlrCompositor::on_popup_map(wl_listener *listener, void *data) {
     WlrCompositor *self = ps->owner;
 
     wlr_box geo = ps->popup->current.geometry;
+
+    // Popup attaché à une layer surface (tooltip waybar, menus...) : c'est
+    // un signal distinct, le script Godot le positionne par rapport à
+    // l'overlay de la layer surface plutôt qu'à un quad 3D.
+    if (ps->parent_layer_id >= 0) {
+        UtilityFunctions::print("waylandgodot: layer_popup_mapped id=", ps->id,
+            " parent_layer=", ps->parent_layer_id,
+            " x=", geo.x, " y=", geo.y, " w=", geo.width, " h=", geo.height);
+        self->emit_signal("layer_popup_mapped", ps->id, ps->parent_layer_id,
+            geo.x, geo.y, geo.width, geo.height);
+        return;
+    }
+
     UtilityFunctions::print("waylandgodot: popup_mapped id=", ps->id,
         " parent=", ps->parent_window_id,
         " parent_popup=", ps->parent_popup_id,
@@ -1350,6 +1439,13 @@ void WlrCompositor::on_popup_reposition(wl_listener *listener, void *data) {
         constraint_box.y = 0;
         constraint_box.width = parent->width > 0 ? parent->width : 800;
         constraint_box.height = parent->height > 0 ? parent->height : 600;
+        wlr_xdg_popup_unconstrain_from_box(ps->popup, &constraint_box);
+    } else if (LayerSurfaceState *parent_ls = self->find_layer_surface(ps->parent_layer_id)) {
+        wlr_box constraint_box = {};
+        constraint_box.x = 0;
+        constraint_box.y = 0;
+        constraint_box.width = parent_ls->width > 0 ? parent_ls->width : 1920;
+        constraint_box.height = parent_ls->height > 0 ? parent_ls->height : 1080;
         wlr_xdg_popup_unconstrain_from_box(ps->popup, &constraint_box);
     }
 
@@ -1382,6 +1478,9 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
         if (WindowState *parent = self->find_window(ps->parent_window_id)) {
             constraint_box.width = parent->width > 0 ? parent->width : 800;
             constraint_box.height = parent->height > 0 ? parent->height : 600;
+        } else if (LayerSurfaceState *parent_ls = self->find_layer_surface(ps->parent_layer_id)) {
+            constraint_box.width = parent_ls->width > 0 ? parent_ls->width : 1920;
+            constraint_box.height = parent_ls->height > 0 ? parent_ls->height : 1080;
         } else {
             constraint_box.width = 800;
             constraint_box.height = 600;
@@ -1395,6 +1494,312 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
         return;
     }
     self->emit_signal("popup_texture_updated", ps->id, ps->texture, ps->width, ps->height);
+}
+
+// =====================================================================
+// Layer shell (wlr-layer-shell-unstable-v1) — waybar, rofi, notifications
+// =====================================================================
+// Les layer surfaces sont des surfaces "ancrées" à l'output : le layout
+// (position + taille) est calculé ici en fonction des ancres, marges et
+// exclusive zones, exactement comme dans un compositeur 2D classique. Le
+// script Godot ne fait que positionner un overlay 2D aux coordonnées
+// (x, y, width, height) calculées ici.
+
+// Retire la zone occupée par une layer surface exclusive du "usable area"
+// pour les surfaces suivantes (algorithme standard de wlr-layer-shell).
+// Réserve l'espace exclusif dans la zone utilisable. Miroir exact de
+// layer_surface_exclusive_zone de wlroots : seule l'arête ancrée est
+// réduite (switch sur la combinaison d'ancres), pas toutes les arêtes.
+static void layer_apply_exclusive(wlr_box *usable_area, uint32_t anchor, int32_t exclusive,
+        int32_t margin_top, int32_t margin_right, int32_t margin_bottom, int32_t margin_left) {
+    if (exclusive <= 0) return;
+
+    const uint32_t T = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+    const uint32_t B = ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+    const uint32_t L = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+    const uint32_t R = ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+
+    switch (anchor) {
+    case T:
+    case (T | L | R):
+        usable_area->y += exclusive + margin_top;
+        usable_area->height -= exclusive + margin_top;
+        break;
+    case B:
+    case (B | L | R):
+        usable_area->height -= exclusive + margin_bottom;
+        break;
+    case L:
+    case (T | B | L):
+        usable_area->x += exclusive + margin_left;
+        usable_area->width -= exclusive + margin_left;
+        break;
+    case R:
+    case (T | B | R):
+        usable_area->width -= exclusive + margin_right;
+        break;
+    }
+
+    if (usable_area->width < 0) usable_area->width = 0;
+    if (usable_area->height < 0) usable_area->height = 0;
+}
+
+// Calcule la boîte (dans l'output, origine haut-gauche) d'une layer surface
+// depuis son état courant et la zone utilisable. Miroir exact de
+// wlr_scene_layer_surface_v1_configure de wlroots.
+static wlr_box layer_surface_box(const wlr_layer_surface_v1_state &state, const wlr_box &bounds) {
+    const uint32_t T = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+    const uint32_t B = ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+    const uint32_t L = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+    const uint32_t R = ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+
+    wlr_box box = {};
+    box.width = state.desired_width;
+    box.height = state.desired_height;
+
+    // Axe horizontal: desired_width == 0 => étire sur toute la zone (les
+    // ancres gauche+droite sont alors obligatoires côté client), sinon une
+    // ou deux ancres positionnent/centrent la boîte.
+    if (box.width == 0) {
+        box.x = bounds.x + state.margin.left;
+        box.width = bounds.width - (state.margin.left + state.margin.right);
+    } else if ((state.anchor & (L | R)) == (L | R)) {
+        box.x = bounds.x + bounds.width / 2 - box.width / 2;
+    } else if (state.anchor & L) {
+        box.x = bounds.x + state.margin.left;
+    } else if (state.anchor & R) {
+        box.x = bounds.x + bounds.width - box.width - state.margin.right;
+    } else {
+        box.x = bounds.x + bounds.width / 2 - box.width / 2;
+    }
+    if (box.width < 0) box.width = 0;
+
+    // Axe vertical: même logique.
+    if (box.height == 0) {
+        box.y = bounds.y + state.margin.top;
+        box.height = bounds.height - (state.margin.top + state.margin.bottom);
+    } else if ((state.anchor & (T | B)) == (T | B)) {
+        box.y = bounds.y + bounds.height / 2 - box.height / 2;
+    } else if (state.anchor & T) {
+        box.y = bounds.y + state.margin.top;
+    } else if (state.anchor & B) {
+        box.y = bounds.y + bounds.height - box.height - state.margin.bottom;
+    } else {
+        box.y = bounds.y + bounds.height / 2 - box.height / 2;
+    }
+    if (box.height < 0) box.height = 0;
+
+    return box;
+}
+
+void WlrCompositor::arrange_layer_surfaces() {
+    if (!layer_shell) return;
+
+    static const uint32_t layer_order[] = {
+        ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY,
+        ZWLR_LAYER_SHELL_V1_LAYER_TOP,
+        ZWLR_LAYER_SHELL_V1_LAYER_BOTTOM,
+        ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
+    };
+
+    wlr_box usable = {0, 0, output_width, output_height};
+    wlr_box full_area = usable;
+
+    // Deux passes: les surfaces avec exclusive_zone > 0 d'abord (elles
+    // réduisent le usable area), puis les autres. Chaque couche est
+    // parcourue de la plus haute à la plus basse, comme dans sway.
+    for (int pass = 0; pass < 2; pass++) {
+        bool exclusive_pass = (pass == 0);
+        for (uint32_t layer : layer_order) {
+            for (auto &pair : layer_surfaces) {
+                LayerSurfaceState &ls = pair.second;
+                wlr_layer_surface_v1 *lsrf = ls.layer_surface;
+                if (!lsrf || !lsrf->initialized) continue;
+
+                wlr_layer_surface_v1_state &state = lsrf->current;
+                if ((int)state.layer != (int)layer) continue;
+                if ((state.exclusive_zone > 0) != exclusive_pass) continue;
+
+                // La boîte est calculée depuis la zone utilisable AVANT de
+                // réserver l'exclusive_zone de cette surface elle-même
+                // (sinon une barre exclusive rétrécirait sa propre zone,
+                // exactement ce que fait wlr_scene_layer_surface_v1_configure
+                // de wlroots). exclusive_zone == -1 => pleine surface.
+                wlr_box bounds = (state.exclusive_zone == -1) ? full_area : usable;
+                wlr_box box = layer_surface_box(state, bounds);
+
+                // Ne configure que si la boîte change réellement : éviter de
+                // renvoyer un configure à chaque commit si rien n'a bougé
+                // (sinon ack/commit en boucle côté client).
+                if (ls.x != box.x || ls.y != box.y || ls.width != box.width || ls.height != box.height) {
+                    ls.x = box.x;
+                    ls.y = box.y;
+                    ls.width = box.width;
+                    ls.height = box.height;
+                    wlr_layer_surface_v1_configure(lsrf, box.width, box.height);
+                }
+
+                // Réserve l'espace exclusif pour les surfaces SUIVANTES
+                // (uniquement si la surface est mappée, comme sway).
+                if (state.exclusive_zone > 0 && lsrf->surface->mapped) {
+                    layer_apply_exclusive(&usable, state.anchor, state.exclusive_zone,
+                        state.margin.top, state.margin.right, state.margin.bottom, state.margin.left);
+                }
+            }
+        }
+    }
+}
+
+void WlrCompositor::focus_layer_surface(LayerSurfaceState &ls) {
+    if (!seat || !ls.layer_surface || !ls.layer_surface->surface) return;
+
+    uint32_t ki = ls.layer_surface->current.keyboard_interactive;
+    if (ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) return;
+
+    keyboard_focus_layer_id = ls.id;
+    wlr_seat_keyboard_notify_enter(seat, ls.layer_surface->surface,
+        virtual_keyboard.keycodes,
+        virtual_keyboard.num_keycodes,
+        &virtual_keyboard.modifiers);
+}
+
+void WlrCompositor::unfocus_layer_surface(LayerSurfaceState &ls) {
+    if (keyboard_focus_layer_id != ls.id) return;
+    keyboard_focus_layer_id = -1;
+
+    if (!seat) return;
+    // Rend le focus clavier à la fenêtre active si elle existe encore,
+    // sinon on vide le focus (wlroots le fait lui-même à l'unmap).
+    if (active_toplevel_id != -1) {
+        if (WindowState *ws = find_window(active_toplevel_id)) {
+            wlr_seat_keyboard_notify_enter(seat, ws->toplevel->base->surface,
+                virtual_keyboard.keycodes,
+                virtual_keyboard.num_keycodes,
+                &virtual_keyboard.modifiers);
+        }
+    }
+}
+
+void WlrCompositor::on_new_layer_surface(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, new_layer_surface_listener);
+    auto *layer_surface = static_cast<wlr_layer_surface_v1 *>(data);
+
+    if (!layer_surface->output) {
+        layer_surface->output = self->headless_output;
+    }
+
+    int id = self->next_layer_surface_id++;
+    LayerSurfaceState &ls = self->layer_surfaces[id];
+    ls.id = id;
+    ls.layer_surface = layer_surface;
+    ls.owner = self;
+
+    ls.map_listener.notify = WlrCompositor::on_layer_surface_map;
+    wl_signal_add(&layer_surface->surface->events.map, &ls.map_listener);
+
+    ls.unmap_listener.notify = WlrCompositor::on_layer_surface_unmap;
+    wl_signal_add(&layer_surface->surface->events.unmap, &ls.unmap_listener);
+
+    ls.destroy_listener.notify = WlrCompositor::on_layer_surface_destroy;
+    wl_signal_add(&layer_surface->events.destroy, &ls.destroy_listener);
+
+    ls.commit_listener.notify = WlrCompositor::on_layer_surface_commit;
+    wl_signal_add(&layer_surface->surface->events.commit, &ls.commit_listener);
+
+    ls.new_popup_listener.notify = WlrCompositor::on_layer_new_popup;
+    wl_signal_add(&layer_surface->events.new_popup, &ls.new_popup_listener);
+
+    UtilityFunctions::print("waylandgodot: new_layer_surface id=", id,
+        " namespace=", waylandgodot_layer_surface_get_namespace(layer_surface)
+            ? String::utf8(waylandgodot_layer_surface_get_namespace(layer_surface)) : String("(vide)"),
+        " layer=", (int)layer_surface->pending.layer);
+}
+
+void WlrCompositor::on_layer_surface_map(wl_listener *listener, void *data) {
+    LayerSurfaceState *ls = wl_container_of(listener, ls, map_listener);
+    WlrCompositor *self = ls->owner;
+
+    self->arrange_layer_surfaces();
+
+    wlr_layer_surface_v1_state &state = ls->layer_surface->current;
+
+    // Focus clavier automatique pour les surfaces EXCLUSIVE (waybar).
+    // Jamais pour la couche background (fond d'écran) : elle est invisible
+    // et ne doit pas avaler le clavier.
+    if (state.layer != ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND &&
+        state.keyboard_interactive == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+        self->focus_layer_surface(*ls);
+    }
+
+    String ns = waylandgodot_layer_surface_get_namespace(ls->layer_surface)
+        ? String::utf8(waylandgodot_layer_surface_get_namespace(ls->layer_surface)) : String();
+    self->emit_signal("layer_surface_mapped", ls->id, ns,
+        (int)state.layer, (int)state.anchor,
+        ls->x, ls->y, ls->width, ls->height,
+        (int)state.keyboard_interactive);
+}
+
+void WlrCompositor::on_layer_surface_unmap(wl_listener *listener, void *data) {
+    LayerSurfaceState *ls = wl_container_of(listener, ls, unmap_listener);
+    WlrCompositor *self = ls->owner;
+    self->unfocus_layer_surface(*ls);
+    self->emit_signal("layer_surface_unmapped", ls->id);
+}
+
+void WlrCompositor::on_layer_surface_destroy(wl_listener *listener, void *data) {
+    LayerSurfaceState *ls = wl_container_of(listener, ls, destroy_listener);
+    WlrCompositor *self = ls->owner;
+    int id = ls->id;
+
+    if (self->keyboard_focus_layer_id == id) {
+        self->keyboard_focus_layer_id = -1;
+    }
+
+    wl_list_remove(&ls->map_listener.link);
+    wl_list_remove(&ls->unmap_listener.link);
+    wl_list_remove(&ls->destroy_listener.link);
+    wl_list_remove(&ls->commit_listener.link);
+    wl_list_remove(&ls->new_popup_listener.link);
+
+    self->layer_surfaces.erase(id);
+}
+
+void WlrCompositor::on_layer_surface_commit(wl_listener *listener, void *data) {
+    LayerSurfaceState *ls = wl_container_of(listener, ls, commit_listener);
+    WlrCompositor *self = ls->owner;
+
+    self->arrange_layer_surfaces();
+
+    if (ls->layer_surface->initial_commit) {
+        // Le client vient d'envoyer sa config initiale; arrange_layer_surfaces
+        // vient d'envoyer le premier configure. On attend son ack + commit.
+        return;
+    }
+
+    if (!ls->layer_surface->surface) return;
+    // La couche background (fond d'écran) n'est jamais rendue côté Godot :
+    // inutile de la capturer à chaque frame.
+    if (ls->layer_surface->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) return;
+    if (!self->capture_surface(ls->layer_surface->surface, ls->texture, ls->width, ls->height, ls->capture_cache)) {
+        return;
+    }
+    self->emit_signal("layer_surface_texture_updated", ls->id, ls->texture, ls->width, ls->height);
+}
+
+void WlrCompositor::on_layer_new_popup(wl_listener *listener, void *data) {
+    LayerSurfaceState *ls = wl_container_of(listener, ls, new_popup_listener);
+    WlrCompositor *self = ls->owner;
+    auto *popup = static_cast<wlr_xdg_popup *>(data);
+
+    int id = self->next_popup_id++;
+    PopupState &ps = self->popups[id];
+    ps.id = id;
+    ps.parent_window_id = -1;
+    ps.parent_popup_id = -1;
+    ps.parent_layer_id = ls->id;
+    self->wire_popup(ps, popup);
+
+    UtilityFunctions::print("waylandgodot: new_popup (layer) id=", id, " parent_layer_id=", ls->id);
 }
 
 // =====================================================================
@@ -1466,6 +1871,15 @@ void WlrCompositor::start_headless() {
 
     wlr_renderer_init_wl_display(renderer, display);
 
+    // wl_shm : indispensable pour les clients qui rendent en CPU via des
+    // buffers partagés (waybar/Cairo, et le fallback des toolkits quand le
+    // dma-buf est indisponible). Sans ce global, waybar échoue avec
+    // "Failed to acquire the required resources" (le global wl_shm n'est
+    // jamais annoncé), et GTK/Qt en shm-fallback ne peuvent pas committer.
+    if (!wlr_renderer_init_wl_shm(renderer, display)) {
+        UtilityFunctions::printerr("waylandgodot: échec initialisation du global wl_shm");
+    }
+
     // --- Initialiser le pipeline Vulkan zero-copy si possible ---------
     //     Si VK_KHR_external_memory_fd est supporté par le pilote GPU,
     //     on pourra importer les DMA-BUF directement comme VkImage dans
@@ -1484,6 +1898,7 @@ void WlrCompositor::start_headless() {
 
     wlr_output *fake_output = wlr_headless_add_output(backend, 1280, 720);
     if (fake_output) {
+        headless_output = fake_output;
         wlr_output_state state;
         wlr_output_state_init(&state);
         wlr_output_state_set_enabled(&state, true);
@@ -1495,10 +1910,33 @@ void WlrCompositor::start_headless() {
         UtilityFunctions::printerr("waylandgodot: échec création output factice");
     }
 
+    // zxdg_output_manager_v1 : requis par waybar 0.15 (et ses modules GTK),
+    // qui échoue avec "Failed to acquire required resources." si le global
+    // n'est pas annoncé. Le layout est minimal (un seul output à l'origine).
+    output_layout = wlr_output_layout_create(display);
+    if (output_layout) {
+        wlr_output_layout_add_auto(output_layout, fake_output);
+        if (!wlr_xdg_output_manager_v1_create(display, output_layout)) {
+            UtilityFunctions::printerr("waylandgodot: échec création global zxdg_output_manager_v1");
+        }
+    } else {
+        UtilityFunctions::printerr("waylandgodot: échec création output layout");
+    }
+
     compositor = wlr_compositor_create(display, 6, renderer);
     xdg_shell = wlr_xdg_shell_create(display, 3);
     wlr_viewporter_create(display);
     wlr_subcompositor_create(display);
+
+    // wlr-layer-shell-unstable-v1 (waybar, rofi, notifications...). Le
+    // header de protocole est généré depuis protocols/ par le SConstruct.
+    layer_shell = wlr_layer_shell_v1_create(display, 4);
+    if (!layer_shell) {
+        UtilityFunctions::printerr("waylandgodot: échec création global wlr-layer-shell-v1");
+    } else {
+        new_layer_surface_listener.notify = WlrCompositor::on_new_layer_surface;
+        wl_signal_add(&layer_shell->events.new_surface, &new_layer_surface_listener);
+    }
 
     // Nécessaire pour les clients qui rendent via GPU/dmabuf (ex: Firefox
     // + WebRender). Sans ce global, ces clients tentent de committer des
@@ -1647,6 +2085,13 @@ void WlrCompositor::_process(double delta) {
             wlr_surface_send_frame_done(ps.popup->base->surface, &now);
         }
     }
+    for (auto &pair : layer_surfaces) {
+        LayerSurfaceState &ls = pair.second;
+        wlr_surface *surf = ls.layer_surface ? ls.layer_surface->surface : nullptr;
+        if (surf && surf->mapped) {
+            wlr_surface_send_frame_done(surf, &now);
+        }
+    }
 
     // Recapture TOUTES les fenêtres mappées à chaque frame. Dans un
     // compositeur 3D toutes les fenêtres sont visibles simultanément —
@@ -1689,6 +2134,19 @@ void WlrCompositor::_process(double delta) {
                 }
             }
         }
+    }
+
+    // Recapture des layer surfaces (waybar animate son contenu — horloge,
+    // CPU, réseau — donc il faut resampler chaque frame comme les fenêtres).
+    for (auto &pair : layer_surfaces) {
+        LayerSurfaceState &ls = pair.second;
+        wlr_surface *surf = ls.layer_surface ? ls.layer_surface->surface : nullptr;
+        if (!surf) continue;
+        if (!capture_surface(surf, ls.texture, ls.width, ls.height, ls.capture_cache)) {
+            continue;
+        }
+        emit_signal("layer_surface_texture_updated", ls.id, ls.texture,
+            ls.width, ls.height);
     }
 
     // Recapture du drag icon si un drag est actif.
@@ -1756,6 +2214,10 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
             active_toplevel_id = window_id;
         }
 
+        // Un clic sur une fenêtre reprend le focus clavier à une éventuelle
+        // layer surface keyboard-interactive (rofi/waybar) qui le détenait.
+        keyboard_focus_layer_id = -1;
+
         wlr_seat_keyboard_notify_enter(seat, ws->toplevel->base->surface,
             virtual_keyboard.keycodes,
             virtual_keyboard.num_keycodes,
@@ -1790,6 +2252,46 @@ void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double d
 void WlrCompositor::forward_pointer_leave() {
     if (!seat) return;
     wlr_seat_pointer_notify_clear_focus(seat);
+}
+
+void WlrCompositor::forward_pointer_motion_layer(int layer_id, double surface_x, double surface_y) {
+    LayerSurfaceState *ls = find_layer_surface(layer_id);
+    if (!ls || !ls->layer_surface) return;
+    notify_pointer_motion_on_surface(ls->layer_surface->surface, surface_x, surface_y);
+}
+
+void WlrCompositor::forward_pointer_button_layer(int layer_id, int button, bool pressed) {
+    LayerSurfaceState *ls = find_layer_surface(layer_id);
+    if (!ls || !ls->layer_surface || !seat) return;
+
+    wlr_seat_pointer_notify_button(seat, get_time_msec(), (uint32_t)button,
+        pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(seat);
+
+    // keyboard-interactive = on_demand/exclusive: un clic donne le focus
+    // clavier à la layer surface (indispensable pour rofi).
+    if (pressed) {
+        uint32_t ki = ls->layer_surface->current.keyboard_interactive;
+        if (ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_ON_DEMAND ||
+            ki == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE) {
+            focus_layer_surface(*ls);
+        }
+    }
+}
+
+void WlrCompositor::forward_pointer_axis_layer(int layer_id, double delta_x, double delta_y) {
+    LayerSurfaceState *ls = find_layer_surface(layer_id);
+    if (!ls || !ls->layer_surface || !seat) return;
+    uint32_t time = get_time_msec();
+    if (delta_y != 0.0) {
+        wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
+            delta_y, (int32_t)delta_y, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    }
+    if (delta_x != 0.0) {
+        wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+            delta_x, (int32_t)delta_x, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    }
+    wlr_seat_pointer_notify_frame(seat);
 }
 
 void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed) {
@@ -2044,6 +2546,46 @@ bool WlrCompositor::popup_accepts_input(int popup_id) {
     // Les tooltips ont une région d'input vide (wl_surface_set_input_region
     // avec une region empty). Les menus/dropdowns ont une région non vide.
     return !pixman_region32_empty(&ps->popup->base->surface->current.input);
+}
+
+void WlrCompositor::set_output_size(int width, int height) {
+    if (width < 1 || height < 1) return;
+    if (width == output_width && height == output_height) return;
+    output_width = width;
+    output_height = height;
+    arrange_layer_surfaces();
+}
+
+Dictionary WlrCompositor::get_layer_surface_info(int layer_id) {
+    Dictionary result;
+    LayerSurfaceState *ls = find_layer_surface(layer_id);
+    if (!ls || !ls->layer_surface) return result;
+
+    wlr_layer_surface_v1_state &state = ls->layer_surface->current;
+    const char *ns_cstr = waylandgodot_layer_surface_get_namespace(ls->layer_surface);
+    result["namespace"] = ns_cstr ? String::utf8(ns_cstr) : String();
+    result["layer"] = (int)state.layer;
+    result["anchor"] = (int)state.anchor;
+    result["keyboard_interactive"] = (int)state.keyboard_interactive;
+    result["margin_top"] = state.margin.top;
+    result["margin_right"] = state.margin.right;
+    result["margin_bottom"] = state.margin.bottom;
+    result["margin_left"] = state.margin.left;
+    result["x"] = ls->x;
+    result["y"] = ls->y;
+    result["width"] = ls->width;
+    result["height"] = ls->height;
+    return result;
+}
+
+int WlrCompositor::get_keyboard_focus_layer_id() const {
+    return keyboard_focus_layer_id;
+}
+
+void WlrCompositor::close_layer_surface(int layer_id) {
+    LayerSurfaceState *ls = find_layer_surface(layer_id);
+    if (!ls || !ls->layer_surface) return;
+    wlr_layer_surface_v1_destroy(ls->layer_surface);
 }
 
 Array WlrCompositor::get_window_list() {

@@ -5,7 +5,7 @@ import subprocess
 env = SConscript("godot-cpp/SConstruct")
 
 env.Append(CPPPATH=["src/"])
-sources = Glob("src/*.cpp")
+sources = Glob("src/*.cpp") + Glob("src/*.c")
 
 # Dépendances système via pkg-config. Adapter le nom du paquet wlroots
 # selon la version installée (wlroots-0.18, wlroots-0.19, ...).
@@ -49,6 +49,18 @@ sources += [xdg_shell_source]
 # Force la génération du header avant toute compilation qui l'inclut
 # (wlr_compositor.h dépend indirectement de xdg-shell-protocol.h).
 env.Depends(sources, xdg_shell_header)
+
+# wlr-layer-shell-unstable-v1: protocole wlroots (pas dans wayland-protocols).
+# Le XML est versionné dans protocols/ car il n'est pas installé sur toutes
+# les distros; seul le header serveur est nécessaire (wlroots fournit déjà
+# l'implémentation côté serveur via wlr_layer_shell_v1_create).
+layer_shell_xml = "protocols/wlr-layer-shell-unstable-v1.xml"
+layer_shell_header = env.Command(
+    "protocols/wlr-layer-shell-unstable-v1-protocol.h",
+    layer_shell_xml,
+    "wayland-scanner server-header $SOURCE $TARGET",
+)
+env.Depends(sources, layer_shell_header)
 
 # Protocoles instables: pointer-constraints-v1 + relative-pointer-v1
 pointer_constraints_xml = "/usr/share/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml"

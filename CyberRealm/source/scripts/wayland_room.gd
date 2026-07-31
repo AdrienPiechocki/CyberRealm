@@ -73,6 +73,34 @@ const PIN_MARGIN := 8
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
 
+# Layer surfaces (wlr-layer-shell-unstable-v1): waybar, rofi, notifications.
+# Rendu en overlays 2D ancrés à l'écran (pas de quads 3D), positionnés aux
+# coordonnées (x, y, width, height) calculées par arrange_layer_surfaces().
+const LAYER_BACKGROUND := 0
+const LAYER_BOTTOM := 1
+const LAYER_TOP := 2
+const LAYER_OVERLAY := 3
+# Fond d'écran (couche background, quickshell/DankMaterialShell) : on ne le
+# rend pas, il cacherait le contenu 3D du jeu.
+const SHOW_BACKGROUND_LAYER := false
+const ANCHOR_TOP := 1
+const ANCHOR_BOTTOM := 2
+const ANCHOR_LEFT := 4
+const ANCHOR_RIGHT := 8
+# z_index de base pour les overlays de layer surfaces. Toujours au-dessus du
+# contenu 3D et des fenêtres épinglées (PiP, z_index par défaut 0) comme dans
+# un compositeur classique ; les popups de layer passent encore au-dessus.
+const LAYER_Z_BASE := 1000
+
+var layer_rects: Dictionary = {} # layer_id (int) -> {rect, layer, anchor}
+var layer_popup_rects: Dictionary = {} # popup_id (int) -> {rect, parent_layer_id}
+var layer_overlay: Control
+var layer_shader: Shader
+# Mode "interaction layer" (touche Tab): souris libérée pour interagir avec
+# les overlays non interactifs (waybar, quickshell bar). Faux quand la souris
+# a été recapturée par un autre moyen.
+var layer_interact_active := false
+
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled;
@@ -101,6 +129,35 @@ void fragment() {
 }
 """
 
+# Shader des overlays 2D de layer surfaces: remappe le UV sur la zone de
+# contenu réelle. Le buffer d'allocation est arrondi au palier de 64 px
+# (round_up_capture_size côté C++, ex: barre waybar de 30 px -> buffer 64 px
+# de haut); sans ce remap le TextureRect étire toute la texture dans son
+# rectangle -> image écrasée. Même principe que WAYLAND_SHADER_CODE (3D) mais
+# en espace canvas_item. Gère aussi le buffer_scale (contenu en haut-gauche).
+const LAYER_SHADER_CODE = """
+shader_type canvas_item;
+
+uniform sampler2D u_tex : filter_linear;
+uniform vec2 u_content_size = vec2(0.0, 0.0);
+
+void fragment() {
+	if (u_content_size.x <= 0.0 || u_content_size.y <= 0.0) {
+		// Pas encore de texture capturée -> invisible.
+		COLOR = vec4(0.0, 0.0, 0.0, 0.0);
+	} else {
+		vec2 ts = vec2(textureSize(u_tex, 0));
+		vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0)
+			? UV * u_content_size / ts : UV;
+		vec4 tex = texture(u_tex, mapped_uv);
+		// Buffers Wayland pré-multipliés (wl_shm ARGB32, Cairo...):
+		// dé-pré-multiplier puis convertir sRGB -> linéaire (affichage 2D).
+		vec3 unmultiplied = tex.a > 0.01 ? tex.rgb / max(tex.a, 0.001) : tex.rgb;
+		COLOR = vec4(pow(unmultiplied, vec3(2.2)), tex.a);
+	}
+}
+"""
+
 func _ready() -> void:
 	# Matériau X-RAY: transparent, passe devant tout (no_depth_test)
 	xray_overlay = StandardMaterial3D.new()
@@ -119,7 +176,17 @@ func _ready() -> void:
 	compositor.pointer_lock_changed.connect(_on_pointer_lock_changed)
 	compositor.drag_icon_updated.connect(_on_drag_icon_updated)
 	compositor.drag_icon_removed.connect(_on_drag_icon_removed)
+	compositor.layer_surface_mapped.connect(_on_layer_surface_mapped)
+	compositor.layer_surface_unmapped.connect(_on_layer_surface_unmapped)
+	compositor.layer_surface_texture_updated.connect(_on_layer_surface_texture_updated)
+	compositor.layer_popup_mapped.connect(_on_layer_popup_mapped)
 	compositor.start_headless()
+	layer_shader = Shader.new()
+	layer_shader.code = LAYER_SHADER_CODE
+	# Les layer surfaces sont ancrées à l'écran : le compositeur doit
+	# connaître la taille du viewport pour le layout (arrange_layer_surfaces).
+	compositor.set_output_size(int(get_viewport().get_visible_rect().size.x),
+		int(get_viewport().get_visible_rect().size.y))
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
@@ -166,6 +233,12 @@ func _ready() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.z_index = 100
 	$Player/UI.add_child(drag_icon_rect)
+
+	# Overlay plein écran recevant les TextureRect des layer surfaces.
+	layer_overlay = Control.new()
+	layer_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
+	layer_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	$Player/UI.add_child(layer_overlay)
 
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
@@ -644,6 +717,13 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 		_create_focus_popup_overlay(id, parent_window_id, parent_popup_id, x, y, width, height)
 
 func _on_popup_unmapped(id: int) -> void:
+	# Popup d'une layer surface: overlay 2D, pas de quad 3D.
+	if layer_popup_rects.has(id):
+		if is_instance_valid(layer_popup_rects[id].rect):
+			layer_popup_rects[id].rect.queue_free()
+		layer_popup_rects.erase(id)
+		return
+
 	if popup_quads.has(id):
 		if is_instance_valid(popup_quads[id]):
 			popup_quads[id].queue_free()
@@ -657,6 +737,17 @@ func _on_popup_unmapped(id: int) -> void:
 		focus_popup_rects.erase(id)
 
 func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	# Popup d'une layer surface: on met simplement à jour l'overlay 2D.
+	if layer_popup_rects.has(id):
+		var popup_entry = layer_popup_rects[id]
+		popup_entry.rect.texture = texture
+		popup_entry.rect.set_meta("surface_size", Vector2(width, height))
+		var popup_mat := popup_entry.rect.material as ShaderMaterial
+		if popup_mat:
+			popup_mat.set_shader_parameter("u_tex", texture)
+			popup_mat.set_shader_parameter("u_content_size", Vector2(width, height))
+		return
+
 	if not popup_quads.has(id) or not is_instance_valid(popup_quads[id]):
 		return
 	var quad: MeshInstance3D = popup_quads[id]
@@ -713,6 +804,190 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 			popup_tex_rect.size = Vector2(info.width, info.height) * popup_scale
 			popup_tex_rect.position = popup_offset + Vector2(info.x, info.y) * popup_scale
 
+# ── Layer surfaces (waybar, rofi...) ─────────────────────────────────
+# Le compositeur calcule le layout (position + taille) dans
+# arrange_layer_surfaces() ; ici on ne fait que positionner les TextureRect
+# aux coordonnées reçues, dans l'ordre des couches du protocole.
+
+func _layer_z_index(layer: int, is_popup: bool = false) -> int:
+	return LAYER_Z_BASE + layer * 100 + (500 if is_popup else 0)
+
+func _on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: int, y: int, w: int, h: int, kb: int) -> void:
+	if layer_rects.has(id):
+		return
+	if layer == LAYER_BACKGROUND and not SHOW_BACKGROUND_LAYER:
+		return
+	var rect := TextureRect.new()
+	rect.texture = null
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rect.position = Vector2(x, y)
+	rect.size = Vector2(max(w, 1), max(h, 1))
+	rect.z_index = _layer_z_index(layer)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var mat := ShaderMaterial.new()
+	mat.shader = layer_shader
+	mat.set_shader_parameter("u_content_size", Vector2(w, h))
+	rect.material = mat
+	rect.set_meta("layer_id", id)
+	layer_overlay.add_child(rect)
+	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb}
+	print("[layer] mapped id=", id, " pos=(", x, ",", y, ") size=", w, "x", h, " anchor=", anchor)
+	if kb != 0:
+		# App interactive en overlay (rofi, launcher...): libérer la souris
+		# pour qu'elle soit utilisable sur l'overlay au lieu de tourner la
+		# caméra FPS. La recapture se fait au unmapped (voir plus bas).
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		var r := rect.get_global_rect()
+		if r.size.x > 0.0 and r.size.y > 0.0:
+			Input.warp_mouse(r.get_center())
+
+func _remove_layer_popups_for(layer_id: int) -> void:
+	for pid in layer_popup_rects.keys():
+		var entry = layer_popup_rects[pid]
+		if entry.parent_layer_id == layer_id:
+			if is_instance_valid(entry.rect):
+				entry.rect.queue_free()
+			layer_popup_rects.erase(pid)
+
+func _any_interactive_layer() -> bool:
+	for lid in layer_rects:
+		var entry = layer_rects[lid]
+		if int(entry.get("kb", 0)) != 0:
+			return true
+	return false
+
+func _toggle_layer_interact() -> void:
+	# Si un overlay interactif (rofi...) a le focus clavier, la touche lui
+	# est routée par _input : ne pas basculer le mode souris par-dessus.
+	if _any_interactive_layer() and compositor.get_keyboard_focus_layer_id() >= 0:
+		return
+	if layer_interact_active:
+		layer_interact_active = false
+		if Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		layer_interact_active = true
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+func _on_layer_surface_unmapped(id: int) -> void:
+	_remove_layer_popups_for(id)
+	if layer_rects.has(id):
+		var entry = layer_rects[id]
+		if is_instance_valid(entry.rect):
+			entry.rect.queue_free()
+		layer_rects.erase(id)
+	# Plus aucune app interactive en overlay → retour en mode FPS, sauf si on
+	# est dans un autre mode qui gère déjà la souris (focus, menus).
+	if not _any_interactive_layer() \
+			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
+			and not focus_mode and not pause_menu.visible and not window_menu.visible:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _on_layer_surface_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	if not layer_rects.has(id):
+		return
+	var entry = layer_rects[id]
+	entry.rect.texture = texture
+	var mat := entry.rect.material as ShaderMaterial
+	if mat:
+		mat.set_shader_parameter("u_tex", texture)
+		mat.set_shader_parameter("u_content_size", Vector2(width, height))
+	# Taille réelle du buffer capturé (peut dépasser la géométrie logique
+	# du signal mapped, GTK/Qt ajoutent une marge d'ombre). Le TextureRect
+	# garde la position calculée par le compositeur, seules les dimensions
+	# servent à la conversion souris -> coordonnées de surface.
+	entry.rect.set_meta("surface_size", Vector2(width, height))
+	# Le layout peut évoluer après le map (une autre layer surface qui se
+	# mappe, un redimensionnement du client...): re-synchroniser la
+	# position/taille calculée côté compositeur.
+	var info := compositor.get_layer_surface_info(id)
+	if not info.is_empty():
+		entry.rect.position = Vector2(info["x"], info["y"])
+		entry.rect.size = Vector2(max(int(info["width"]), 1), max(int(info["height"]), 1))
+	print("[layer] texture id=", id, " tex=", texture.get_size(), " content=", width, "x", height,
+		" rect=", entry.rect.position, " ", entry.rect.size, " viewport=", get_viewport().get_visible_rect().size)
+
+func _on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, w: int, h: int) -> void:
+	if not layer_rects.has(parent_layer_id):
+		return
+	var parent_entry = layer_rects[parent_layer_id]
+	var rect := TextureRect.new()
+	rect.texture = null
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	rect.stretch_mode = TextureRect.STRETCH_SCALE
+	rect.position = parent_entry.rect.position + Vector2(x, y)
+	rect.size = Vector2(max(w, 1), max(h, 1))
+	rect.z_index = _layer_z_index(LAYER_OVERLAY, true)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var mat := ShaderMaterial.new()
+	mat.shader = layer_shader
+	mat.set_shader_parameter("u_content_size", Vector2(w, h))
+	rect.material = mat
+	rect.set_meta("popup_id", popup_id)
+	layer_overlay.add_child(rect)
+	layer_popup_rects[popup_id] = {"rect": rect, "parent_layer_id": parent_layer_id}
+
+# La layer surface la plus en avant contenant pos (les popups de layer
+# passent devant les layer surfaces, elles-mêmes devant les fenêtres 3D).
+func _layer_at(pos: Vector2) -> Dictionary:
+	var best := {}
+	var best_z := -1
+	for pid in layer_popup_rects:
+		var entry = layer_popup_rects[pid]
+		if is_instance_valid(entry.rect) and entry.rect.get_global_rect().has_point(pos):
+			var z: int = entry.rect.z_index
+			if z > best_z:
+				best_z = z
+				best = {"kind": "layer_popup", "id": pid, "rect": entry.rect}
+	for lid in layer_rects:
+		var entry = layer_rects[lid]
+		if is_instance_valid(entry.rect) and entry.rect.get_global_rect().has_point(pos):
+			var z: int = entry.rect.z_index
+			if z > best_z:
+				best_z = z
+				best = {"kind": "layer", "id": lid, "rect": entry.rect}
+	return best
+
+# Conversion position souris -> coordonnées de surface (pixels buffer).
+func _layer_uv(hit: Dictionary, pos: Vector2) -> Vector2:
+	var rect: TextureRect = hit.rect
+	var local: Rect2 = rect.get_global_rect()
+	var size_px: Vector2 = rect.get_meta("surface_size", rect.size)
+	if rect.size.x > 0.0 and rect.size.y > 0.0:
+		return Vector2(
+			(pos.x - local.position.x) / rect.size.x * size_px.x,
+			(pos.y - local.position.y) / rect.size.y * size_px.y
+		)
+	return Vector2.ZERO
+
+func _handle_layer_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
+	var uv := _layer_uv(hit, mouse_pos)
+	if hit.kind == "layer_popup":
+		compositor.forward_pointer_motion_popup(hit.id, uv.x, uv.y)
+		if Input.is_action_just_pressed("left_click"):
+			compositor.forward_pointer_button_popup(hit.id, 0x110, true)
+		if Input.is_action_just_released("left_click"):
+			compositor.forward_pointer_button_popup(hit.id, 0x110, false)
+		if Input.is_action_just_pressed("right_click"):
+			compositor.forward_pointer_button_popup(hit.id, 0x111, true)
+		if Input.is_action_just_released("right_click"):
+			compositor.forward_pointer_button_popup(hit.id, 0x111, false)
+		return
+	compositor.forward_pointer_motion_layer(hit.id, uv.x, uv.y)
+	if Input.is_action_just_pressed("left_click"):
+		compositor.forward_pointer_button_layer(hit.id, 0x110, true)
+	if Input.is_action_just_released("left_click"):
+		compositor.forward_pointer_button_layer(hit.id, 0x110, false)
+	if Input.is_action_just_pressed("right_click"):
+		compositor.forward_pointer_button_layer(hit.id, 0x111, true)
+	if Input.is_action_just_released("right_click"):
+		compositor.forward_pointer_button_layer(hit.id, 0x111, false)
+	if Input.is_action_just_pressed("scroll_up"):
+		compositor.forward_pointer_axis_layer(hit.id, 0, -50.0)
+	if Input.is_action_just_pressed("scroll_down"):
+		compositor.forward_pointer_axis_layer(hit.id, 0, 50.0)
+
 # La fenêtre glisse le long de son propre plan d'orientation initial.
 func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
@@ -741,6 +1016,17 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not focus_mode:
 		window_menu.toggle_menu()
 
+	# Tab : bascule le mode "interaction layer" — libère la souris pour
+	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
+	# (sinon elle est capturée et fait tourner la caméra FPS).
+	if Input.is_action_just_pressed("layer_interact") and not interact_mode_active and not focus_mode:
+		_toggle_layer_interact()
+
+	# Si la souris est repassée en mode FPS autrement (clic hors overlay,
+	# fermeture d'un overlay interactif...), resynchroniser l'état.
+	if layer_interact_active and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		layer_interact_active = false
+
 	if window_menu.visible:
 		return
 
@@ -751,6 +1037,22 @@ func _process(delta: float) -> void:
 			#return
 		_handle_focus_input()
 		return
+
+	# Layer surfaces (waybar/rofi): quand la souris est visible et survole
+	# une layer surface ou son popup, on forward l'input vers elle et on
+	# laisse le raycast 3D de côté (les overlays 2D passent devant la scène).
+	if not pause_menu.visible and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED \
+			and (not layer_rects.is_empty() or not layer_popup_rects.is_empty()):
+		var _mouse_pos := get_viewport().get_mouse_position()
+		var hit := _layer_at(_mouse_pos)
+		# Signale à player.gd si la souris est sur une layer : le prochain
+		# clic ne doit pas recapturer la souris mais partir vers l'overlay.
+		$Player.layer_pointer_active = not hit.is_empty()
+		if not hit.is_empty():
+			_handle_layer_pointer(hit, _mouse_pos)
+			return
+	else:
+		$Player.layer_pointer_active = false
 
 	# F en visant une fenêtre → entrer en mode focus
 	if Input.is_action_just_pressed("focus_window") and not interact_mode_active:
@@ -1126,6 +1428,21 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 
 func _input(event: InputEvent) -> void:
 	if pause_menu.visible:
+		return
+
+	# Une layer surface keyboard-interactive (rofi, waybar menu) détient le
+	# focus clavier : forward vers elle, quel que soit le mode de la souris.
+	if event is InputEventKey and compositor.get_keyboard_focus_layer_id() >= 0:
+		var key_event := event as InputEventKey
+		var code = key_event.physical_keycode
+		if code == 0:
+			code = key_event.keycode
+		if key_event.unicode == 60 or code == 167:
+			code = KEY_LESS
+		elif key_event.unicode == 62:
+			code = KEY_GREATER
+		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+		get_viewport().set_input_as_handled()
 		return
 
 	# En mode focus, forward le clavier et tracker la souris capturée

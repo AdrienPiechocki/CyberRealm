@@ -7,6 +7,10 @@ var mouse_sensitivity = 0.002
 
 var interact_mode_active := false
 var focus_mode_active := false
+# Positionné par wayland_room.gd : vrai quand la souris survole une layer
+# surface (waybar/rofi) en mode visible. Empêche le click de recapturer la
+# souris (FPS) pour laisser wayland_room forwarder le clic vers l'overlay.
+var layer_pointer_active := false
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -45,6 +49,8 @@ func _input(event):
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
 		if $WindowMenuLayer/WindowMenu.visible:
+			return
+		if layer_pointer_active:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:

@@ -36,6 +36,15 @@ extern "C" {
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
+// wlr_layer_shell_v1.h (et le header de protocole généré) sont du C qui
+// utilise `namespace` comme nom de membre/paramètre, mot-clé C++. Le
+// `#define` temporaire les rend parsables depuis du C++ (le champ n'est
+// alors accessible que via le shim C wlr_layer_shell_helpers.c).
+#define namespace wlr_namespace_field
+#include <wlr/types/wlr_layer_shell_v1.h>
+#undef namespace
+#include <wlr/types/wlr_output_layout.h>
+#include <wlr/types/wlr_xdg_output_v1.h>
 }
 
 namespace godot {
@@ -120,6 +129,7 @@ struct PopupState {
     int id = -1;
     int parent_window_id = -1;
     int parent_popup_id = -1;
+    int parent_layer_id = -1; // popup attaché à une layer surface (>= 0), sinon -1
     wlr_xdg_popup *popup = nullptr;
 
     wl_listener map_listener{};
@@ -132,6 +142,39 @@ struct PopupState {
     Ref<Texture2D> texture;
     int width = 0;
     int height = 0;
+
+    // Buffer/mapping/tampon CPU réutilisés d'une frame à l'autre pour la
+    // capture (voir CaptureCache).
+    CaptureCache capture_cache;
+
+    class WlrCompositor *owner = nullptr;
+};
+
+// Une surface wlr-layer-shell (waybar, rofi, notifications...). Dans ce
+// compositeur 3D, les layer surfaces sont rendues côté Godot comme des
+// overlays 2D ancrés à l'écran (le "output" = le viewport), avec la même
+// sémantique que wlr-layer-shell: chaque surface est ancrée à un bord, a
+// une taille, une marge, une exclusive zone et un niveau de couche
+// (background/bottom/top/overlay).
+struct LayerSurfaceState {
+    int id = -1;
+    wlr_layer_surface_v1 *layer_surface = nullptr;
+
+    wl_listener map_listener{};
+    wl_listener unmap_listener{};
+    wl_listener destroy_listener{};
+    wl_listener commit_listener{};
+    wl_listener new_popup_listener{};
+
+    Ref<Texture2D> texture;
+    int width = 0;
+    int height = 0;
+
+    // Position calculée par le layout (arrange_layer_surfaces), relative à
+    // l'origine de l'output (0,0 = coin haut-gauche). Utilisée par le
+    // script Godot pour positionner l'overlay, et pour le hit-testing.
+    int x = 0;
+    int y = 0;
 
     // Buffer/mapping/tampon CPU réutilisés d'une frame à l'autre pour la
     // capture (voir CaptureCache).
@@ -153,10 +196,15 @@ class WlrCompositor : public Node {
     wlr_seat *seat = nullptr;
     wlr_pointer_constraints_v1 *pointer_constraints = nullptr;
     wlr_relative_pointer_manager_v1 *relative_pointer_manager = nullptr;
+    wlr_layer_shell_v1 *layer_shell = nullptr;
+    // Output layout: nécessaire pour zxdg_output_v1 (waybar 0.15 échoue avec
+    // "Failed to acquire required resources." si le global est absent).
+    wlr_output_layout *output_layout = nullptr;
 
     wlr_keyboard virtual_keyboard{};
 
     wl_listener new_toplevel_listener{};
+    wl_listener new_layer_surface_listener{};
     wl_listener new_constraint_listener{};
     wl_listener request_start_drag_listener{};
     wl_listener start_drag_listener{};
@@ -176,11 +224,31 @@ class WlrCompositor : public Node {
     std::unordered_map<int, PopupState> popups;
     int next_popup_id = 1;
 
+    // Layer surfaces (wlr-layer-shell): rendues côté Godot en overlays 2D.
+    std::unordered_map<int, LayerSurfaceState> layer_surfaces;
+    int next_layer_surface_id = 1;
+
+    // "Output" virtuel utilisé pour le layout des layer surfaces. Par
+    // défaut la résolution du fake output headless; le script Godot le
+    // synchronise avec la taille réelle de son viewport via set_output_size.
+    int output_width = 1920;
+    int output_height = 1080;
+    wlr_output *headless_output = nullptr;
+
+    // Layer surface qui reçoit actuellement le focus clavier, -1 = aucune.
+    int keyboard_focus_layer_id = -1;
+
     // Compteur de frames pour throttler la recapture "de sécurité" des
     // popups dans _process (voir commentaire dans _process).
     uint64_t frame_counter = 0;
 
     static void on_new_toplevel(wl_listener *listener, void *data);
+    static void on_new_layer_surface(wl_listener *listener, void *data);
+    static void on_layer_surface_map(wl_listener *listener, void *data);
+    static void on_layer_surface_unmap(wl_listener *listener, void *data);
+    static void on_layer_surface_destroy(wl_listener *listener, void *data);
+    static void on_layer_surface_commit(wl_listener *listener, void *data);
+    static void on_layer_new_popup(wl_listener *listener, void *data);
     static void on_new_constraint(wl_listener *listener, void *data);
     static void on_request_start_drag(wl_listener *listener, void *data);
     static void on_start_drag(wl_listener *listener, void *data);
@@ -212,6 +280,18 @@ class WlrCompositor : public Node {
     static void on_popup_reposition(wl_listener *listener, void *data);
 
     void wire_popup(PopupState &ps, wlr_xdg_popup *popup);
+
+    // Recalcule la position/taille de chaque layer surface en fonction de
+    // ses ancres, marges, exclusive zones et du niveau de couche, puis
+    // envoie les configures. À appeler après chaque commit et quand la
+    // taille de l'output change.
+    void arrange_layer_surfaces();
+
+    // Donne/reprend le focus clavier d'une layer surface keyboard-interactive.
+    void focus_layer_surface(LayerSurfaceState &ls);
+    void unfocus_layer_surface(LayerSurfaceState &ls);
+
+    LayerSurfaceState *find_layer_surface(int id);
 
     // Tente le chemin dmabuf (GPU render + mmap), puis retombe sur le
     // readback CPU (WLR_BUFFER_CAP_DATA_PTR). Retourne false si aucun
@@ -301,6 +381,9 @@ public:
     void forward_pointer_axis(int window_id, double delta_x, double delta_y);
     void forward_pointer_leave();
     void forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel);
+    void forward_pointer_motion_layer(int layer_id, double surface_x, double surface_y);
+    void forward_pointer_button_layer(int layer_id, int button, bool pressed);
+    void forward_pointer_axis_layer(int layer_id, double delta_x, double delta_y);
     void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
     void release_all_keys();
 
@@ -315,6 +398,22 @@ public:
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
     Dictionary get_window_geometry(int window_id);
+
+    // Taille de l'output virtuel (viewport Godot) pour le layout des layer
+    // surfaces. À appeler par le script dès qu'il connaît sa taille réelle
+    // et à chaque changement de résolution.
+    void set_output_size(int width, int height);
+
+    // Infos complètes d'une layer surface pour le positionnement côté Godot:
+    // Dictionary { namespace, layer, anchor, keyboard_interactive,
+    // margin_top/right/bottom/left, x, y, width, height }.
+    Dictionary get_layer_surface_info(int layer_id);
+
+    // Id de la layer surface qui détient le focus clavier, -1 si aucune.
+    int get_keyboard_focus_layer_id() const;
+
+    // Demande la fermeture d'une layer surface (waybar/rofi...).
+    void close_layer_surface(int layer_id);
 
     // Renvoie true si le popup a une région d'input non vide (menus,
     // dropdowns). Les tooltips ont une région d'input vide et ne doivent
