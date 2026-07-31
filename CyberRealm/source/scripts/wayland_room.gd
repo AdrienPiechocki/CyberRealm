@@ -247,9 +247,8 @@ func spawn_test_client() -> void:
 # SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
 # nouvelle fenêtre apparaît juste devant celle-ci (sur l'axe caméra ->
 # fenêtre) au lieu de 1 m devant la caméra.
-const SPAWN_RAY_DISTANCE := 5.0 # m, longueur du raycast de spawn
+const SPAWN_RAY_DISTANCE := 1.0 # m, longueur du raycast de spawn
 const SPAWN_IN_FRONT_DISTANCE := 0.1 # m devant la fenêtre touchée
-const SPAWN_MIN_CAM_DISTANCE := 0.5 # m, garde-fou contre un spawn derrière la caméra
 
 func next_spawn_pos() -> Vector3:
 	var camera: Camera3D = $Player/Camera3D
@@ -263,7 +262,7 @@ func next_spawn_pos() -> Vector3:
 		var body: Node3D = hit.collider
 		if body.has_meta("window_id"):
 			var hit_dist: float = cam_pos.distance_to(hit.position)
-			return cam_pos + cam_forward * maxf(SPAWN_MIN_CAM_DISTANCE, hit_dist - SPAWN_IN_FRONT_DISTANCE)
+			return cam_pos + cam_forward * (hit_dist - SPAWN_IN_FRONT_DISTANCE)
 	return cam_pos + cam_forward
 
 func _enter_focus_mode(id: int) -> void:
