@@ -276,8 +276,6 @@ class WlrCompositor : public Node {
     // --- Child processes ------------------------------------------------
     std::vector<pid_t> child_pids;
 
-    bool stopped = false;
-
     // --- Drag-and-drop icon -------------------------------------------
     wlr_drag *active_drag = nullptr;
     CaptureCache drag_icon_cache;
@@ -293,7 +291,6 @@ public:
     ~WlrCompositor() override;
 
     void start_headless();
-    void stop();
 
     void _process(double delta) override;
 

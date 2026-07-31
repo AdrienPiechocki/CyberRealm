@@ -131,8 +131,15 @@ func _ready() -> void:
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 
+	pause_menu.capture_label_toggled.connect(func(v): $Player/UI/Label.visible = v)
+	pause_menu.portal_backend_changed.connect(func(b): compositor.set_portal_backend(b))
+	pause_menu.polkit_agent_changed.connect(func(p): compositor.set_polkit_agent(p))
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 	pause_menu.quit_requested.connect(_on_quit_requested)
+	
+	# Appliquer les réglages persistés
+	compositor.set_portal_backend(pause_menu.selected_portal_backend)
+	compositor.set_polkit_agent(pause_menu.selected_polkit_agent)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -1229,5 +1236,4 @@ func _on_quit_requested() -> void:
 
 	await get_tree().create_timer(0.2).timeout
 
-	compositor.stop()
 	get_tree().quit()

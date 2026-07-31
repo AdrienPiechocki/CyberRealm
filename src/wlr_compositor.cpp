@@ -123,7 +123,6 @@ static const wlr_keyboard_impl waylandgodot_KEYBOARD_IMPL = {
 
 void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("start_headless"), &WlrCompositor::start_headless);
-    ClassDB::bind_method(D_METHOD("stop"), &WlrCompositor::stop);
     ClassDB::bind_method(D_METHOD("forward_pointer_motion", "window_id", "surface_x", "surface_y"),
         &WlrCompositor::forward_pointer_motion);
     ClassDB::bind_method(D_METHOD("forward_pointer_motion_popup", "popup_id", "surface_x", "surface_y"),
@@ -207,18 +206,17 @@ WlrCompositor::WlrCompositor() {
     }
 }
 
-void WlrCompositor::stop() {
-    if (stopped) return;
-    stopped = true;
+WlrCompositor::~WlrCompositor() {
+    // Libérer les ressources Vulkan tant que RenderingDevice est encore
+    // valide (avant que les maps windows/popups ne détruisent les
+    // CaptureCache via leurs destructeurs).
     RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
     for (auto &pair : windows) {
         pair.second.capture_cache.reset(rd);
     }
-    windows.clear();
     for (auto &pair : popups) {
         pair.second.capture_cache.reset(rd);
     }
-    popups.clear();
     drag_icon_cache.reset(rd);
     vulkan_import.flush_pending();
     vulkan_import.cleanup();
@@ -226,31 +224,21 @@ void WlrCompositor::stop() {
     if (display) {
         wl_display_destroy_clients(display);
         wl_display_destroy(display);
-        display = nullptr;
-        event_loop = nullptr;
     }
 
+    // Tuer tous les processus enfants lancés par launch_app()
+    // killpg car setsid() crée un nouveau process group par shell
     for (pid_t pid : child_pids) {
         killpg(pid, SIGTERM);
     }
+    // Récolter les zombies sans bloquer
     for (pid_t pid : child_pids) {
         int status;
         waitpid(pid, &status, WNOHANG);
     }
     child_pids.clear();
 
-    backend = nullptr;
-    renderer = nullptr;
-    allocator = nullptr;
-    compositor = nullptr;
-    xdg_shell = nullptr;
-    seat = nullptr;
-    pointer_constraints = nullptr;
-    relative_pointer_manager = nullptr;
-}
 
-WlrCompositor::~WlrCompositor() {
-    stop();
 }
 
 uint32_t WlrCompositor::get_time_msec() {
