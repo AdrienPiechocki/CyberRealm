@@ -51,7 +51,7 @@ const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 var focus_mode := false
 var focus_window_id := -1
 var focus_texture_rect: TextureRect
-var focus_close_button: Button
+#var focus_close_button: Button
 var focus_surface_size := Vector2.ZERO
 var focus_content_offset := Vector2.ZERO
 var focus_content_size := Vector2.ZERO
@@ -91,6 +91,12 @@ const ANCHOR_RIGHT := 8
 # contenu 3D et des fenêtres épinglées (PiP, z_index par défaut 0) comme dans
 # un compositeur classique ; les popups de layer passent encore au-dessus.
 const LAYER_Z_BASE := 1000
+
+# z_index du mode focus : la fenêtre focus s'affiche au-dessus des layer
+# surfaces (layers jusqu'à LAYER_Z_BASE + 800) et de leurs popups.
+const FOCUS_Z_BASE := 2000
+const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
+const FOCUS_CLOSE_Z := FOCUS_Z_BASE + 100
 
 var layer_rects: Dictionary = {} # layer_id (int) -> {rect, layer, anchor}
 var layer_popup_rects: Dictionary = {} # popup_id (int) -> {rect, parent_layer_id}
@@ -212,23 +218,24 @@ func _ready() -> void:
 	focus_texture_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	focus_texture_rect.mouse_filter = Control.MOUSE_FILTER_PASS
 	focus_texture_rect.visible = false
+	focus_texture_rect.z_index = FOCUS_Z_BASE
 	focus_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	$Player/UI.add_child(focus_texture_rect)
 
 	# Bouton X pour quitter le mode focus
-	focus_close_button = Button.new()
-	focus_close_button.text = "✕"
-	focus_close_button.custom_minimum_size = Vector2(40, 40)
-	focus_close_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	focus_close_button.offset_left = -50
-	focus_close_button.offset_top = 50
-	focus_close_button.offset_right = -10
-	focus_close_button.offset_bottom = 50
-	focus_close_button.z_index = 20
-	focus_close_button.visible = false
-	focus_close_button.pressed.connect(_exit_focus_mode)
-	focus_close_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	$Player/UI.add_child(focus_close_button)
+	#focus_close_button = Button.new()
+	#focus_close_button.text = "✕"
+	#focus_close_button.custom_minimum_size = Vector2(40, 40)
+	#focus_close_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	#focus_close_button.offset_left = -50
+	#focus_close_button.offset_top = 50
+	#focus_close_button.offset_right = -10
+	#focus_close_button.offset_bottom = 50
+	#focus_close_button.z_index = FOCUS_CLOSE_Z
+	#focus_close_button.visible = false
+	#focus_close_button.pressed.connect(_exit_focus_mode)
+	#focus_close_button.mouse_filter = Control.MOUSE_FILTER_STOP
+	#$Player/UI.add_child(focus_close_button)
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -296,7 +303,7 @@ func _enter_focus_mode(id: int) -> void:
 	# Cacher le quad 3D, afficher le overlay 2D
 	quad.visible = false
 	focus_texture_rect.visible = true
-	focus_close_button.visible = true
+	#focus_close_button.visible = true
 
 	# Libérer la souris pour interagir avec la fenêtre, centrée sur l'écran
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
@@ -330,7 +337,7 @@ func _exit_focus_mode() -> void:
 	# Cacher le overlay, libérer la texture
 	focus_texture_rect.visible = false
 	focus_texture_rect.texture = null
-	focus_close_button.visible = false
+	#focus_close_button.visible = false
 	focus_mode = false
 	focus_window_id = -1
 	focus_mouse_captured = false
@@ -400,6 +407,7 @@ func _create_focus_popup_overlay(popup_id: int, parent_window_id: int, parent_po
 	popup_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	popup_tex_rect.size = Vector2(pw, ph) * popup_scale
 	popup_tex_rect.position = popup_offset + Vector2(x, y) * popup_scale
+	popup_tex_rect.z_index = FOCUS_POPUP_Z
 	$Player/UI.add_child(popup_tex_rect)
 	focus_popup_rects[popup_id] = popup_tex_rect
 
@@ -504,19 +512,19 @@ func _handle_focus_input() -> void:
 		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 
-	if Input.is_action_just_pressed("left_click"):
+	if Input.is_action_just_pressed("left_click", true):
 		compositor.forward_pointer_button(focus_window_id, 0x110, true)
-	if Input.is_action_just_released("left_click"):
+	if Input.is_action_just_released("left_click", true):
 		compositor.forward_pointer_button(focus_window_id, 0x110, false)
 
-	if Input.is_action_just_pressed("right_click"):
+	if Input.is_action_just_pressed("right_click", true):
 		compositor.forward_pointer_button(focus_window_id, 0x111, true)
-	if Input.is_action_just_released("right_click"):
+	if Input.is_action_just_released("right_click", true):
 		compositor.forward_pointer_button(focus_window_id, 0x111, false)
 
-	if Input.is_action_just_pressed("scroll_up"):
+	if Input.is_action_just_pressed("scroll_up", true):
 		compositor.forward_pointer_axis(focus_window_id, 0, -50.0)
-	if Input.is_action_just_pressed("scroll_down"):
+	if Input.is_action_just_pressed("scroll_down", true):
 		compositor.forward_pointer_axis(focus_window_id, 0, 50.0)
 
 func _on_pointer_lock_changed(window_id: int, locked: bool) -> void:
@@ -865,6 +873,8 @@ func _on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: i
 		# App interactive en overlay (rofi, launcher...): libérer la souris
 		# pour qu'elle soit utilisable sur l'overlay au lieu de tourner la
 		# caméra FPS. La recapture se fait au unmapped (voir plus bas).
+		layer_interact_active = true
+		$Player.layer_pointer_active = true
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		var r := rect.get_global_rect()
 		if r.size.x > 0.0 and r.size.y > 0.0:
@@ -892,10 +902,12 @@ func _toggle_layer_interact() -> void:
 		return
 	if layer_interact_active:
 		layer_interact_active = false
+		$Player.layer_pointer_active = false
 		if Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
 			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
 		layer_interact_active = true
+		$Player.layer_pointer_active = true
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func _on_layer_surface_unmapped(id: int) -> void:
@@ -910,6 +922,8 @@ func _on_layer_surface_unmapped(id: int) -> void:
 	if not _any_interactive_layer() \
 			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
 			and not focus_mode and not pause_menu.visible and not window_menu.visible:
+		layer_interact_active = false
+		$Player.layer_pointer_active = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_layer_surface_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
@@ -991,27 +1005,27 @@ func _handle_layer_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
 	var uv := _layer_uv(hit, mouse_pos)
 	if hit.kind == "layer_popup":
 		compositor.forward_pointer_motion_popup(hit.id, uv.x, uv.y)
-		if Input.is_action_just_pressed("left_click"):
+		if Input.is_action_just_pressed("left_click", true):
 			compositor.forward_pointer_button_popup(hit.id, 0x110, true)
-		if Input.is_action_just_released("left_click"):
+		if Input.is_action_just_released("left_click", true):
 			compositor.forward_pointer_button_popup(hit.id, 0x110, false)
-		if Input.is_action_just_pressed("right_click"):
+		if Input.is_action_just_pressed("right_click", true):
 			compositor.forward_pointer_button_popup(hit.id, 0x111, true)
-		if Input.is_action_just_released("right_click"):
+		if Input.is_action_just_released("right_click", true):
 			compositor.forward_pointer_button_popup(hit.id, 0x111, false)
 		return
 	compositor.forward_pointer_motion_layer(hit.id, uv.x, uv.y)
-	if Input.is_action_just_pressed("left_click"):
+	if Input.is_action_just_pressed("left_click", true):
 		compositor.forward_pointer_button_layer(hit.id, 0x110, true)
-	if Input.is_action_just_released("left_click"):
+	if Input.is_action_just_released("left_click", true):
 		compositor.forward_pointer_button_layer(hit.id, 0x110, false)
-	if Input.is_action_just_pressed("right_click"):
+	if Input.is_action_just_pressed("right_click", true):
 		compositor.forward_pointer_button_layer(hit.id, 0x111, true)
-	if Input.is_action_just_released("right_click"):
+	if Input.is_action_just_released("right_click", true):
 		compositor.forward_pointer_button_layer(hit.id, 0x111, false)
-	if Input.is_action_just_pressed("scroll_up"):
+	if Input.is_action_just_pressed("scroll_up", true):
 		compositor.forward_pointer_axis_layer(hit.id, 0, -50.0)
-	if Input.is_action_just_pressed("scroll_down"):
+	if Input.is_action_just_pressed("scroll_down", true):
 		compositor.forward_pointer_axis_layer(hit.id, 0, 50.0)
 
 # La fenêtre glisse le long de son propre plan d'orientation initial.
@@ -1033,6 +1047,46 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 func _keyboard_busy() -> bool:
 	return compositor.get_keyboard_focus_layer_id() >= 0
 
+# Détecte si l'événement correspond à un custom bind et lance sa commande.
+# Renvoie true si l'événement a été consommé.
+func _try_custom_bind(event: InputEvent) -> bool:
+	if _keyboard_busy() or interact_mode_active:
+		return false
+	var binds: Array = pause_menu.get_custom_binds()
+	for bind in binds:
+		if not bind is Dictionary:
+			continue
+		var command: String = bind.get("command", "")
+		if command == "":
+			continue
+		var matched := false
+		if bind.get("type", "") == "mouse":
+			if event is InputEventMouseButton and event.pressed:
+				matched = event.button_index == int(bind.get("code", -1)) \
+					and _event_matches_mods(event, bind.get("mods", {}))
+		else:
+			if event is InputEventKey and event.pressed and not event.echo:
+				var kev := event as InputEventKey
+				var code := kev.physical_keycode
+				if code == 0:
+					code = kev.keycode
+				matched = code == int(bind.get("code", 0)) \
+					and _event_matches_mods(kev, bind.get("mods", {}))
+		if matched:
+			compositor.launch_app(command)
+			return true
+	return false
+
+# Vrai si les modificateurs de l'événement correspondent exactement à ceux du bind.
+func _event_matches_mods(event: InputEvent, mods: Dictionary) -> bool:
+	var ev := event as InputEventWithModifiers
+	if ev == null:
+		return mods.is_empty()
+	return ev.ctrl_pressed == mods.get("ctrl", false) \
+		and ev.shift_pressed == mods.get("shift", false) \
+		and ev.alt_pressed == mods.get("alt", false) \
+		and ev.meta_pressed == mods.get("super", false)
+
 func _process(delta: float) -> void:
 	_update_xray(delta)
 	_update_flashes(delta)
@@ -1042,16 +1096,16 @@ func _process(delta: float) -> void:
 		var mouse_pos := get_viewport().get_mouse_position()
 		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
 
-	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not focus_mode and not _keyboard_busy():
+	if Input.is_action_just_pressed("launcher", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		spawn_test_client()
 
-	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not focus_mode and not _keyboard_busy():
+	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		window_menu.toggle_menu()
 
 	# Tab : bascule le mode "interaction layer" — libère la souris pour
 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
 	# (sinon elle est capturée et fait tourner la caméra FPS).
-	if Input.is_action_just_pressed("layer_interact") and not interact_mode_active and not focus_mode and not _keyboard_busy():
+	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		_toggle_layer_interact()
 
 	# Si la souris est repassée en mode FPS autrement (clic hors overlay,
@@ -1064,9 +1118,9 @@ func _process(delta: float) -> void:
 
 	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
 	if focus_mode:
-		#if Input.is_action_just_pressed("focus_window"):
-			#_exit_focus_mode()
-			#return
+		if Input.is_action_just_pressed("focus_window"):
+			_exit_focus_mode()
+			return
 		_handle_focus_input()
 		return
 
@@ -1079,12 +1133,12 @@ func _process(delta: float) -> void:
 		var hit := _layer_at(_mouse_pos)
 		# Signale à player.gd si la souris est sur une layer : le prochain
 		# clic ne doit pas recapturer la souris mais partir vers l'overlay.
-		$Player.layer_pointer_active = not hit.is_empty()
+		#$Player.layer_pointer_active = not hit.is_empty()
 		if not hit.is_empty():
 			_handle_layer_pointer(hit, _mouse_pos)
 			return
-	else:
-		$Player.layer_pointer_active = false
+	#else:
+		#$Player.layer_pointer_active = false
 
 	# Clavier occupé par un overlay keyboard-interactive (rofi, waybar...):
 	# les touches partent vers l'overlay, les binds du jeu (focus, pin,
@@ -1093,7 +1147,7 @@ func _process(delta: float) -> void:
 		return
 
 	# F en visant une fenêtre → entrer en mode focus
-	if Input.is_action_just_pressed("focus_window") and not interact_mode_active:
+	if Input.is_action_just_pressed("focus_window", true) and not interact_mode_active:
 		var cam := $Player/Camera3D
 		var mouse_pos := get_viewport().get_mouse_position()
 		var ray_origin = cam.project_ray_origin(mouse_pos)
@@ -1109,7 +1163,7 @@ func _process(delta: float) -> void:
 				return
 
 	# P en visant une fenêtre → pin/unpin PiP
-	if Input.is_action_just_pressed("pin_window") and not interact_mode_active:
+	if Input.is_action_just_pressed("pin_window", true) and not interact_mode_active:
 		var cam := $Player/Camera3D
 		var mouse_pos := get_viewport().get_mouse_position()
 		var ray_origin = cam.project_ray_origin(mouse_pos)
@@ -1129,7 +1183,7 @@ func _process(delta: float) -> void:
 				return
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
-	if Input.is_action_just_pressed("interact_mode"):
+	if Input.is_action_just_pressed("interact_mode", true):
 		if interact_mode_active:
 			compositor.release_all_keys()
 		interact_mode_active = not interact_mode_active
@@ -1153,25 +1207,25 @@ func _process(delta: float) -> void:
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
-		if Input.is_action_just_pressed("scroll_up"):
+		if Input.is_action_just_pressed("scroll_up", true):
 			move_depth += 0.25
-		if Input.is_action_just_pressed("scroll_down"):
+		if Input.is_action_just_pressed("scroll_down", true):
 			move_depth -= 0.25
 		_update_move(ray_origin, ray_dir, delta)
-		if Input.is_action_just_released("grab"):
+		if Input.is_action_just_released("grab", true):
 			is_moving = false
 			active_window_id = -1
 		return
 	if is_resizing:
 		_update_resize(ray_origin, ray_dir)
-		if Input.is_action_just_released("left_click"):
+		if Input.is_action_just_released("left_click", true):
 			is_resizing = false
 			resizing_edge = ""
 			active_window_id = -1
 		return
 	if is_moving_2d:
 		_update_move_2d(ray_origin, ray_dir, delta)
-		if Input.is_action_just_released("left_click"):
+		if Input.is_action_just_released("left_click", true):
 			is_moving_2d = false
 			active_window_id = -1
 		return
@@ -1221,15 +1275,15 @@ func _process(delta: float) -> void:
 		uv.x * win_size.x + content_offset_fwd.x,
 		uv.y * win_size.y + content_offset_fwd.y)
 
-	if Input.is_action_just_pressed("grab") and not interact_mode_active:
+	if Input.is_action_just_pressed("grab", true) and not interact_mode_active:
 		active_window_id = wid
 		is_moving = true
 		move_depth = cam.global_position.distance_to(quad.global_position)
-	if Input.is_action_just_released("grab"):
+	if Input.is_action_just_released("grab", true):
 		active_window_id = wid
 		is_moving = false
 		move_depth = 0.0
-	if Input.is_action_just_pressed("left_click"):
+	if Input.is_action_just_pressed("left_click", true):
 		focused_window_id = wid
 		var edge := _border_edge(uv, win_size, body)
 		# UV * win_size donne directement les coordonnées dans le repère
@@ -1275,18 +1329,18 @@ func _process(delta: float) -> void:
 		
 		else:
 			compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
-	if Input.is_action_just_released("left_click"):
+	if Input.is_action_just_released("left_click", true):
 		compositor.forward_pointer_button(wid, 0x110, false)
 
-	if Input.is_action_just_pressed("right_click"):
+	if Input.is_action_just_pressed("right_click", true):
 		focused_window_id = wid
 		compositor.forward_pointer_button(wid, 0x111, true)
-	if Input.is_action_just_released("right_click"):
+	if Input.is_action_just_released("right_click", true):
 		compositor.forward_pointer_button(wid, 0x111, false)
 
-	if Input.is_action_just_pressed("scroll_up"):
+	if Input.is_action_just_pressed("scroll_up", true):
 		compositor.forward_pointer_axis(wid, 0, -50.0)
-	if Input.is_action_just_pressed("scroll_down"):
+	if Input.is_action_just_pressed("scroll_down", true):
 		compositor.forward_pointer_axis(wid, 0, 50.0)
 
 # Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que
@@ -1319,9 +1373,9 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vect
 	var pid: int = body.get_meta("popup_id")
 	compositor.forward_pointer_motion_popup(pid, uv.x * win_size.x, uv.y * win_size.y)
 
-	if Input.is_action_just_pressed("left_click"):
+	if Input.is_action_just_pressed("left_click", true):
 		compositor.forward_pointer_button_popup(pid, 0x110, true)
-	if Input.is_action_just_released("left_click"):
+	if Input.is_action_just_released("left_click", true):
 		compositor.forward_pointer_button_popup(pid, 0x110, false)
 
 # Bord touché (marge en pixels de texture) -> "" si le clic est dans le
@@ -1513,6 +1567,12 @@ func _input(event: InputEvent) -> void:
 				event.relative.x, event.relative.y,
 				event.relative.x, event.relative.y)
 		return
+
+	# Custom binds: une touche enregistrée lance une commande/app.
+	if not interact_mode_active and not _keyboard_busy() and not window_menu.visible:
+		if _try_custom_bind(event):
+			get_viewport().set_input_as_handled()
+			return
 
 	if focused_window_id == -1 or not interact_mode_active:
 		return

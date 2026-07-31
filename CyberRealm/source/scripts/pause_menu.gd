@@ -16,9 +16,16 @@ const REMAPPABLE_ACTIONS := [
 ]
 
 var _settings: Dictionary = {}
-var _current_view := "main" # "main" | "keybinds" | "startup" | "launcher"
+var _current_view := "main" # "main" | "keybinds" | "startup" | "launcher" | "custom"
 var _waiting_action := "" # action en cours de rebind, "" = aucun
 var _keybinds_buttons: Dictionary = {} # action -> Button
+# Capture d'une touche pour un custom bind
+var _custom_key_waiting := false
+var _custom_keycode := 0
+var _custom_is_mouse := false
+var _custom_mods: Dictionary = {} # {"ctrl": bool, "shift": bool, "alt": bool, "super": bool}
+var _custom_key_btn: Button = null
+var _custom_cmd_edit: LineEdit = null
 
 func _ready() -> void:
 	process_mode = PROCESS_MODE_ALWAYS
@@ -173,6 +180,10 @@ func _show_main() -> void:
 	launcher_btn.pressed.connect(_show_launcher)
 	container.add_child(launcher_btn)
 
+	var custom_btn := _make_btn("Custom Binds")
+	custom_btn.pressed.connect(_show_custom_binds)
+	container.add_child(custom_btn)
+
 	var quit_btn := _make_btn("Quit", Color(0.25, 0.1, 0.1, 0.9))
 	quit_btn.pressed.connect(func():
 		quit_requested.emit()
@@ -187,7 +198,7 @@ func _show_keybinds() -> void:
 	container.add_child(_make_title("REMAP KEYBINDS"))
 
 	var hint := Label.new()
-	hint.text = "Click an action, then press a key or mouse button (Escape = cancel)."
+	hint.text = "Click an action, then press a key or mouse button (hold Ctrl/Shift/Alt/Super for modifiers, Escape = cancel)."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
@@ -211,6 +222,7 @@ func _show_keybinds() -> void:
 
 		var label := Label.new()
 		label.text = action
+		label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		label.custom_minimum_size = Vector2(190, 0)
 		label.add_theme_font_size_override("font_size", 14)
 		label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
@@ -336,6 +348,97 @@ func _show_launcher() -> void:
 
 	container.add_child(_make_back_btn())
 
+func _show_custom_binds() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "custom"
+	_custom_key_waiting = false
+	_custom_keycode = 0
+	_custom_is_mouse = false
+	_custom_mods = {}
+
+	container.add_child(_make_title("CUSTOM BINDS"))
+
+	var hint := Label.new()
+	hint.text = "A key launches a command (hold Ctrl/Shift/Alt/Super to set modifiers)."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	var list := VBoxContainer.new()
+	list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	list.add_theme_constant_override("separation", 4)
+	scroll.add_child(list)
+	container.add_child(scroll)
+
+	var binds: Array = _settings.get("custom_binds", [])
+	if binds.is_empty():
+		var empty_label := Label.new()
+		empty_label.text = "(no custom binds)"
+		empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		empty_label.add_theme_font_size_override("font_size", 13)
+		empty_label.add_theme_color_override("font_color", Color(0.5, 0.52, 0.58))
+		list.add_child(empty_label)
+	else:
+		for i in binds.size():
+			var bind: Dictionary = binds[i]
+			var row := HBoxContainer.new()
+			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+			var label := Label.new()
+			label.text = _custom_bind_text(bind)
+			label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+			label.add_theme_font_size_override("font_size", 14)
+			label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+			row.add_child(label)
+
+			var launch_btn := _make_btn("Launch")
+			launch_btn.custom_minimum_size = Vector2(100, 36)
+			launch_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			launch_btn.pressed.connect(_launch_app.bind(String(bind.get("command", ""))))
+			row.add_child(launch_btn)
+
+			var remove_btn := _make_btn("Remove", Color(0.25, 0.1, 0.1, 0.9))
+			remove_btn.custom_minimum_size = Vector2(100, 36)
+			remove_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			remove_btn.pressed.connect(_remove_custom_bind.bind(i))
+			row.add_child(remove_btn)
+
+			list.add_child(row)
+
+	container.add_child(_make_spacer())
+
+	var add_row := HBoxContainer.new()
+	add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+	_custom_key_btn = _make_btn(_custom_key_label())
+	_custom_key_btn.custom_minimum_size = Vector2(110, 36)
+	_custom_key_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_custom_key_btn.pressed.connect(_start_custom_key_capture)
+	add_row.add_child(_custom_key_btn)
+
+	_custom_cmd_edit = _make_line_edit()
+	_custom_cmd_edit.placeholder_text = "command to launch"
+	_custom_cmd_edit.text_submitted.connect(func(_t: String):
+		_add_custom_bind()
+	)
+	add_row.add_child(_custom_cmd_edit)
+
+	var add_btn := _make_btn("Add")
+	add_btn.custom_minimum_size = Vector2(80, 36)
+	add_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	add_btn.pressed.connect(_add_custom_bind)
+	add_row.add_child(add_btn)
+
+	container.add_child(add_row)
+
+	container.add_child(_make_back_btn())
+
 # ── Startup apps ─────────────────────────────────────────────────────
 
 func get_startup_apps() -> Array:
@@ -385,6 +488,95 @@ func _test_launcher_from_edit(le: LineEdit) -> void:
 	if cmd != "":
 		app_launch_requested.emit(cmd)
 
+# ── Custom binds ─────────────────────────────────────────────────────
+
+func get_custom_binds() -> Array:
+	return _settings.get("custom_binds", [])
+
+func _custom_bind_text(bind: Dictionary) -> String:
+	var key_text := ""
+	if bind.get("type", "") == "mouse":
+		key_text = _mouse_button_name(bind.get("code", 0))
+	else:
+		key_text = OS.get_keycode_string(bind.get("code", 0))
+	var mods := _mods_to_string(bind.get("mods", {}))
+	if mods != "":
+		key_text = mods + "+" + key_text
+	var cmd: String = bind.get("command", "")
+	return "%s → %s" % [key_text, cmd]
+
+func _custom_key_label() -> String:
+	if _custom_keycode == 0:
+		return "Set key"
+	var key_text := ""
+	if _custom_is_mouse:
+		key_text = _mouse_button_name(_custom_keycode)
+	else:
+		key_text = OS.get_keycode_string(_custom_keycode)
+	var mods := _mods_to_string(_custom_mods)
+	if mods != "":
+		return mods + "+" + key_text
+	return key_text
+
+func _mods_from_event(event: InputEvent) -> Dictionary:
+	if event is InputEventWithModifiers:
+		var ev := event as InputEventWithModifiers
+		return {
+			"ctrl": ev.ctrl_pressed,
+			"shift": ev.shift_pressed,
+			"alt": ev.alt_pressed,
+			"super": ev.meta_pressed,
+		}
+	return {}
+
+func _mods_to_string(mods: Dictionary) -> String:
+	var parts: PackedStringArray = []
+	if mods.get("ctrl", false):
+		parts.append("Ctrl")
+	if mods.get("shift", false):
+		parts.append("Shift")
+	if mods.get("alt", false):
+		parts.append("Alt")
+	if mods.get("super", false):
+		parts.append("Super")
+	return "+".join(parts)
+
+func _event_matches_mods(event: InputEvent, mods: Dictionary) -> bool:
+	var ev := event as InputEventWithModifiers
+	if ev == null:
+		return mods.is_empty()
+	return ev.ctrl_pressed == mods.get("ctrl", false) \
+		and ev.shift_pressed == mods.get("shift", false) \
+		and ev.alt_pressed == mods.get("alt", false) \
+		and ev.meta_pressed == mods.get("super", false)
+
+func _start_custom_key_capture() -> void:
+	_custom_key_waiting = true
+	if _custom_key_btn:
+		_custom_key_btn.text = "Press key..."
+
+func _add_custom_bind() -> void:
+	if not _custom_cmd_edit or not _custom_keycode or _custom_cmd_edit.text.strip_edges() == "":
+		return
+	var binds: Array = _settings.get("custom_binds", [])
+	binds.append({
+		"type": "mouse" if _custom_is_mouse else "key",
+		"code": _custom_keycode,
+		"mods": _custom_mods,
+		"command": _custom_cmd_edit.text.strip_edges(),
+	})
+	_settings["custom_binds"] = binds
+	_save_settings()
+	_show_custom_binds()
+
+func _remove_custom_bind(index: int) -> void:
+	var binds: Array = _settings.get("custom_binds", [])
+	if index >= 0 and index < binds.size():
+		binds.remove_at(index)
+	_settings["custom_binds"] = binds
+	_save_settings()
+	_show_custom_binds()
+
 # ── Keybinds ─────────────────────────────────────────────────────────
 
 func _binding_text(action: String) -> String:
@@ -399,9 +591,17 @@ func _binding_text(action: String) -> String:
 			code = kev.keycode
 		if code == 0:
 			return "None"
-		return OS.get_keycode_string(code)
+		var text := OS.get_keycode_string(code)
+		var mods := _mods_to_string(_mods_from_event(kev))
+		if mods != "":
+			return mods + "+" + text
+		return text
 	if ev is InputEventMouseButton:
-		return _mouse_button_name(ev.button_index)
+		var text := _mouse_button_name(ev.button_index)
+		var mods := _mods_to_string(_mods_from_event(ev))
+		if mods != "":
+			return mods + "+" + text
+		return text
 	return "None"
 
 func _mouse_button_name(button: int) -> String:
@@ -440,6 +640,7 @@ func _apply_saved_keybinds() -> void:
 			"mouse":
 				var ev := InputEventMouseButton.new()
 				ev.button_index = bind.get("button", MOUSE_BUTTON_LEFT)
+				_apply_mods(ev, bind.get("mods", {}))
 				InputMap.action_erase_events(action)
 				InputMap.action_add_event(action, ev)
 			"key":
@@ -447,8 +648,17 @@ func _apply_saved_keybinds() -> void:
 				if code != 0:
 					var kev := InputEventKey.new()
 					kev.physical_keycode = code
+					_apply_mods(kev, bind.get("mods", {}))
 					InputMap.action_erase_events(action)
 					InputMap.action_add_event(action, kev)
+
+func _apply_mods(event: InputEvent, mods: Dictionary) -> void:
+	if event is InputEventWithModifiers:
+		var ev := event as InputEventWithModifiers
+		ev.ctrl_pressed = mods.get("ctrl", false)
+		ev.shift_pressed = mods.get("shift", false)
+		ev.alt_pressed = mods.get("alt", false)
+		ev.meta_pressed = mods.get("super", false)
 
 func _save_keybinds() -> void:
 	var binds := {}
@@ -465,9 +675,9 @@ func _save_keybinds() -> void:
 			if code == 0:
 				code = kev.keycode
 			if code != 0:
-				binds[action] = {"type": "key", "code": code}
+				binds[action] = {"type": "key", "code": code, "mods": _mods_from_event(kev)}
 		elif ev is InputEventMouseButton:
-			binds[action] = {"type": "mouse", "button": ev.button_index}
+			binds[action] = {"type": "mouse", "button": ev.button_index, "mods": _mods_from_event(ev)}
 	_settings["keybinds"] = binds
 	_save_settings()
 
@@ -494,7 +704,11 @@ func _input(event: InputEvent) -> void:
 
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
-			if _waiting_action != "":
+			if _custom_key_waiting:
+				_custom_key_waiting = false
+				if _custom_key_btn:
+					_custom_key_btn.text = _custom_key_label()
+			elif _waiting_action != "":
 				_cancel_rebind()
 			elif _current_view == "main":
 				hide_menu()
@@ -503,18 +717,51 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
+	if _custom_key_waiting:
+		var custom_captured := false
+		if event is InputEventKey and event.pressed and not event.echo:
+			var kev := event as InputEventKey
+			var k := kev.physical_keycode if kev.physical_keycode != 0 else kev.keycode
+			if k != 0 and not k in [KEY_CTRL, KEY_SHIFT, KEY_ALT, KEY_META]:
+				_custom_keycode = k
+				_custom_is_mouse = false
+				_custom_mods = _mods_from_event(kev)
+				custom_captured = true
+		elif event is InputEventMouseButton and event.pressed:
+			_custom_keycode = event.button_index
+			_custom_is_mouse = true
+			_custom_mods = _mods_from_event(event)
+			custom_captured = true
+		if custom_captured:
+			_custom_key_waiting = false
+			if _custom_key_btn:
+				_custom_key_btn.text = _custom_key_label()
+			get_viewport().set_input_as_handled()
+			return
+
 	if _waiting_action == "":
 		return
 
 	var new_event: InputEvent = null
 	if event is InputEventKey and event.pressed and not event.echo:
-		var ev := InputEventKey.new()
-		ev.physical_keycode = event.physical_keycode if event.physical_keycode != 0 else event.keycode
-		if ev.physical_keycode != 0:
+		var kev := event as InputEventKey
+		var code := kev.physical_keycode if kev.physical_keycode != 0 else kev.keycode
+		if code != 0 and not code in [KEY_CTRL, KEY_SHIFT, KEY_ALT, KEY_META]:
+			var ev := InputEventKey.new()
+			ev.physical_keycode = code
+			ev.ctrl_pressed = kev.ctrl_pressed
+			ev.shift_pressed = kev.shift_pressed
+			ev.alt_pressed = kev.alt_pressed
+			ev.meta_pressed = kev.meta_pressed
 			new_event = ev
 	elif event is InputEventMouseButton and event.pressed:
+		var mbtn := event as InputEventMouseButton
 		var ev := InputEventMouseButton.new()
-		ev.button_index = event.button_index
+		ev.button_index = mbtn.button_index
+		ev.ctrl_pressed = mbtn.ctrl_pressed
+		ev.shift_pressed = mbtn.shift_pressed
+		ev.alt_pressed = mbtn.alt_pressed
+		ev.meta_pressed = mbtn.meta_pressed
 		new_event = ev
 
 	if new_event == null:

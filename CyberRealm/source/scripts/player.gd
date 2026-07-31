@@ -38,25 +38,28 @@ func _physics_process(delta):
 		velocity.z = 0
 		move_and_slide()
 		return
-	var input = Input.get_vector("left", "right", "forward", "back")
+	var input := Vector2(
+		float(Input.is_action_pressed("right", true)) - float(Input.is_action_pressed("left", true)),
+		float(Input.is_action_pressed("back", true)) - float(Input.is_action_pressed("forward", true))
+	)
 	var movement_dir = transform.basis * Vector3(input.x, 0, input.y)
 	velocity.x = movement_dir.x * speed
 	velocity.z = movement_dir.z * speed
 
 	if not interact_mode_active:
 		move_and_slide()
-		if is_on_floor() and Input.is_action_just_pressed("jump"):
+		if is_on_floor() and Input.is_action_just_pressed("jump", true):
 			velocity.y = jump_speed
-		$UI/Label.text = "Keyboard Capture : OFF"
+		$UI/Cursor.label_settings.font_color = Color.WHITE
 	else:
-		$UI/Label.text = "Keyboard Capture : ON"
+		$UI/Cursor.label_settings.font_color = Color.BLACK
 
 func _input(event):
 	if focus_mode_active:
 		return
 	if $PauseMenuLayer/PauseMenu.visible:
 		return
-	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
+	if event.is_action_pressed("pause_menu") and not interact_mode_active:
 		if $WindowMenuLayer/WindowMenu.visible:
 			return
 		# Un overlay keyboard-interactive (rofi, menu waybar...) détient le
