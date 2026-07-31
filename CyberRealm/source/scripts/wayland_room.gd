@@ -103,7 +103,7 @@ var layer_interact_active := false
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
-render_mode unshaded, blend_mix, cull_disabled;
+render_mode unshaded, blend_mix, cull_disabled, depth_draw_always;
 
 uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
@@ -217,7 +217,7 @@ func _ready() -> void:
 	focus_close_button.custom_minimum_size = Vector2(40, 40)
 	focus_close_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	focus_close_button.offset_left = -50
-	focus_close_button.offset_top = 10
+	focus_close_button.offset_top = 50
 	focus_close_button.offset_right = -10
 	focus_close_button.offset_bottom = 50
 	focus_close_button.z_index = 20
@@ -851,7 +851,6 @@ func _on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: i
 	rect.set_meta("layer_id", id)
 	layer_overlay.add_child(rect)
 	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb}
-	print("[layer] mapped id=", id, " pos=(", x, ",", y, ") size=", w, "x", h, " anchor=", anchor)
 	if kb != 0:
 		# App interactive en overlay (rofi, launcher...): libérer la souris
 		# pour qu'elle soit utilisable sur l'overlay au lieu de tourner la
@@ -924,8 +923,6 @@ func _on_layer_surface_texture_updated(id: int, texture: Texture2D, width: int, 
 	if not info.is_empty():
 		entry.rect.position = Vector2(info["x"], info["y"])
 		entry.rect.size = Vector2(max(int(info["width"]), 1), max(int(info["height"]), 1))
-	print("[layer] texture id=", id, " tex=", texture.get_size(), " content=", width, "x", height,
-		" rect=", entry.rect.position, " ", entry.rect.size, " viewport=", get_viewport().get_visible_rect().size)
 
 func _on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, w: int, h: int) -> void:
 	if not layer_rects.has(parent_layer_id):
@@ -1043,8 +1040,8 @@ func _process(delta: float) -> void:
 
 	# Si la souris est repassée en mode FPS autrement (clic hors overlay,
 	# fermeture d'un overlay interactif...), resynchroniser l'état.
-	if layer_interact_active and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		layer_interact_active = false
+	#if layer_interact_active and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		#layer_interact_active = false
 
 	if window_menu.visible:
 		return
