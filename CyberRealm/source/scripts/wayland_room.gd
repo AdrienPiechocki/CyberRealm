@@ -12,6 +12,8 @@ var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var xray_windows: Dictionary = {} # window_id (int) -> bool
 var xray_time: float = 0.0
 var xray_overlay: StandardMaterial3D # material pour l'effet X-RAY (no_depth_test)
+var flash_windows: Dictionary = {} # window_id (int) -> {mat, elapsed} — flash blanc à l'ouverture
+const FLASH_DURATION := 0.4
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 var interact_mode_active := false
 
@@ -455,6 +457,8 @@ func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 		camera.global_transform.basis,
 		quad.global_position
 	)
+
+	_start_flash(id, quad)
 	
 	#print("Fenêtre mappée: ", title, " (", app_id, ") id=", id)
 
@@ -466,6 +470,7 @@ func _on_window_unmapped(id: int) -> void:
 	_unpin_window(id)
 	window_textures.erase(id)
 	xray_windows.erase(id)
+	_end_flash(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -718,6 +723,7 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 
 func _process(delta: float) -> void:
 	_update_xray(delta)
+	_update_flashes(delta)
 
 	# Suivi de l'icône de drag-and-drop
 	if drag_icon_rect and drag_icon_rect.visible:
@@ -1200,6 +1206,38 @@ func _update_xray(delta: float) -> void:
 	xray_time += delta
 	var pulse := (sin(xray_time * 6.0) * 0.5 + 0.5) # 0..1, ~1 Hz
 	xray_overlay.albedo_color.a = 0.3 + pulse * 0.5
+
+func _start_flash(id: int, quad: MeshInstance3D) -> void:
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(0.8, 0.8, .8)
+	mat.no_depth_test = true
+	mat.render_priority = 10
+	quad.material_overlay = mat
+	flash_windows[id] = {"mat": mat, "elapsed": 0.0}
+
+func _end_flash(id: int) -> void:
+	if not flash_windows.has(id):
+		return
+	var entry: Dictionary = flash_windows[id]
+	if quads.has(id) and is_instance_valid(quads[id]):
+		quads[id].material_overlay = null
+	flash_windows.erase(id)
+
+func _update_flashes(delta: float) -> void:
+	if flash_windows.is_empty():
+		return
+	for id in flash_windows.keys():
+		var entry: Dictionary = flash_windows[id]
+		entry["elapsed"] += delta
+		var t: float = entry["elapsed"] / FLASH_DURATION
+		if t >= 1.0:
+			_end_flash(id)
+		else:
+			var mat: StandardMaterial3D = entry.get("mat")
+			if mat:
+				mat.albedo_color.a = (1.0 - t) * 0.9
 
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
