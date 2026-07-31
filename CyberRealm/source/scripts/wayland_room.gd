@@ -359,12 +359,15 @@ func _unpin_window(id: int) -> void:
 
 func _handle_focus_input() -> void:
 
+	var surf_x: float
+	var surf_y: float
+
 	# Souris capturée: maintenir le pointer focus + forward relatif via _input
 	if focus_mouse_captured:
 		# Maintenir le pointer focus sur la surface (nécessaire pour que
 		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
-		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
-		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		surf_x = focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 	else:
 		# Souris visible: position absolue, curseur custom suit la souris
@@ -395,8 +398,8 @@ func _handle_focus_input() -> void:
 		else:
 			focus_mouse_uv = Vector2(0.5, 0.5)
 
-		var surf_x := focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
-		var surf_y := focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		surf_x = focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 
 	if Input.is_action_just_pressed("left_click"):
@@ -442,7 +445,9 @@ func _on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	var body := StaticBody3D.new()
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
-	shape.size = Vector3(mesh.size.x, mesh.size.y, 0.05)
+	# Épaisseur fine : la face avant du boîtier reste proche du plan visuel
+	# du quad, sinon le raycast renvoie un point décalé en incidence rasant.
+	shape.size = Vector3(mesh.size.x, mesh.size.y, 0.01)
 	col.shape = shape
 	body.add_child(col)
 	body.set_meta("window_id", id)
@@ -614,7 +619,7 @@ func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: i
 		var body := StaticBody3D.new()
 		var col := CollisionShape3D.new()
 		var shape := BoxShape3D.new()
-		shape.size = Vector3(mesh.size.x, mesh.size.y, 0.05)
+		shape.size = Vector3(mesh.size.x, mesh.size.y, 0.01)
 		col.shape = shape
 		body.add_child(col)
 		body.set_meta("popup_id", id)
@@ -792,6 +797,12 @@ func _process(delta: float) -> void:
 
 	var cam: Camera3D = $Player/Camera3D
 	var mouse_pos := get_viewport().get_mouse_position()
+	# En MOUSE_MODE_CAPTURED (souris FPS), get_mouse_position() reste figée
+	# à l'endroit où le curseur était au moment de la capture — pas au centre
+	# de l'écran. Le viseur est au centre du viewport : c'est donc ce centre
+	# qui doit guider le rayon, sinon les clics sont décalés d'autant.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		mouse_pos = get_viewport().get_visible_rect().size / 2.0
 	var ray_origin := cam.project_ray_origin(mouse_pos)
 	var ray_dir := cam.project_ray_normal(mouse_pos)
 
@@ -839,7 +850,7 @@ func _process(delta: float) -> void:
 
 	if body.has_meta("popup_id"):
 		is_in_window = true
-		_handle_popup_pointer(body, hit)
+		_handle_popup_pointer(body, hit, ray_origin, ray_dir)
 		return
 
 	if not body.has_meta("window_id"):
@@ -852,11 +863,14 @@ func _process(delta: float) -> void:
 	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
 	var mesh: QuadMesh = quad.mesh
 
-	var local := quad.to_local(hit.position)
-	var uv := Vector2(
-		(local.x / mesh.size.x) + 0.5,
-		0.5 - (local.y / mesh.size.y)
-	)
+	# Le point de contact du raycast est sur la FACE AVANT du boîtier de
+	# collision (0.05 m d'épaisseur), pas sur le plan visuel du quad (z=0).
+	# En incidence rasant — fenêtre proche, regard levé vers la barre de
+	# titre — la face avant est décalée du plan visuel de ~0.025·tan(angle):
+	# à 60° ça fait ~3 cm ≈ 20+ px trop bas, de quoi rater la croix et
+	# cliquer le bouton juste en dessous. On réintersecte donc le rayon
+	# avec le plan exact du quad.
+	var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
 	var wid: int = body.get_meta("window_id")
 	# La texture est découpée à la window_geometry, donc UV * surface_size
 	# donne des coordonnées dans le repère geometry. Le client Wayland
@@ -938,16 +952,30 @@ func _process(delta: float) -> void:
 # Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que
 # pour une fenêtre, mais routé vers forward_pointer_motion_popup/
 # forward_pointer_button_popup puisqu'un popup n'a pas de window_id.
-func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary) -> void:
+#
+# UV exact sur le plan visuel du quad : le point renvoyé par le raycast est
+# sur la face avant du boîtier de collision (épais), donc décalé du plan
+# z=0 du quad de ~0.025·tan(angle). Négligeable de loin, mais à bout
+# portant ça décale le clic de plusieurs dizaines de pixels vers le bas.
+func _uv_at_plane(quad: MeshInstance3D, mesh: QuadMesh, ray_origin: Vector3, ray_dir: Vector3, fallback: Vector3) -> Vector2:
+	var quad_plane := Plane(quad.global_transform.basis.z.normalized(), quad.global_position)
+	var plane_hit = quad_plane.intersects_ray(ray_origin, ray_dir)
+	if plane_hit == null:
+		plane_hit = fallback
+	var local := quad.to_local(plane_hit)
+	return Vector2(
+		(local.x / mesh.size.x) + 0.5,
+		0.5 - (local.y / mesh.size.y)
+	)
+
+func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var quad: MeshInstance3D = body.get_parent()
 	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
 	var mesh: QuadMesh = quad.mesh
 
-	var local := quad.to_local(hit.position)
-	var uv := Vector2(
-		(local.x / mesh.size.x) + 0.5,
-		0.5 - (local.y / mesh.size.y)
-	)
+	# Même correction que pour une fenêtre : l'UV se calcule sur le plan
+	# visuel du quad, pas sur la face avant du boîtier de collision.
+	var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
 	var pid: int = body.get_meta("popup_id")
 	compositor.forward_pointer_motion_popup(pid, uv.x * win_size.x, uv.y * win_size.y)
 
