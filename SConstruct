@@ -70,14 +70,14 @@ env.Depends(sources, relative_pointer_header)
 
 if env["platform"] == "macos":
     library = env.SharedLibrary(
-        "demo/bin/libwaylandgodot.{}.{}.framework/libwaylandgodot.{}.{}".format(
+        "CyberRealm/source/bin/libwaylandgodot.{}.{}.framework/libwaylandgodot.{}.{}".format(
             env["platform"], env["target"], env["platform"], env["target"]
         ),
         source=sources,
     )
 else:
     library = env.SharedLibrary(
-        "demo/bin/libwaylandgodot{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
+        "CyberRealm/source/bin/libwaylandgodot{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
         source=sources,
     )
 

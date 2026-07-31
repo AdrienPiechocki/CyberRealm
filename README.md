@@ -17,7 +17,7 @@ git clone https://github.com/godotengine/godot-cpp.git
 scons target=template_debug platform=linux
 ```
 
-The built shared library lands in `demo/bin/`. Open `demo/` as a Godot 4.2+ project and run `wayland_room.gd`.
+The built shared library lands in `CyberRealm/source/bin/`. Open `CyberRealm/source/` as a Godot 4.2+ project and run `wayland_room.gd`.
 
 ---
 

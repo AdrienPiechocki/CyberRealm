@@ -1,7 +1,7 @@
 godot-cpp/
-demo/bin/*.so
-demo/bin/*.dylib
-demo/bin/*.dll
+CyberRealm/source/bin/*.so
+CyberRealm/source/bin/*.dylib
+CyberRealm/source/bin/*.dll
 .sconsign.dblite
 *.os
 *.o
