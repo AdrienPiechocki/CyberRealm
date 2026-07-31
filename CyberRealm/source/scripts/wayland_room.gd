@@ -13,7 +13,7 @@ var xray_windows: Dictionary = {} # window_id (int) -> bool
 var xray_time: float = 0.0
 var xray_overlay: StandardMaterial3D # material pour l'effet X-RAY (no_depth_test)
 var flash_windows: Dictionary = {} # window_id (int) -> {mat, elapsed} — flash blanc à l'ouverture
-const FLASH_DURATION := 0.4
+const FLASH_DURATION := 0.2
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 var interact_mode_active := false
 
@@ -243,9 +243,28 @@ func _ready() -> void:
 func spawn_test_client() -> void:
 	compositor.launch_app("konsole")
 
+# Position de spawn des nouvelles fenêtres : on caste un rayon de
+# SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
+# nouvelle fenêtre apparaît juste devant celle-ci (sur l'axe caméra ->
+# fenêtre) au lieu de 1 m devant la caméra.
+const SPAWN_RAY_DISTANCE := 5.0 # m, longueur du raycast de spawn
+const SPAWN_IN_FRONT_DISTANCE := 0.1 # m devant la fenêtre touchée
+const SPAWN_MIN_CAM_DISTANCE := 0.5 # m, garde-fou contre un spawn derrière la caméra
+
 func next_spawn_pos() -> Vector3:
-	var camera := $Player/Camera3D
-	return camera.global_position - camera.global_basis.z
+	var camera: Camera3D = $Player/Camera3D
+	var cam_pos: Vector3 = camera.global_position
+	var cam_forward: Vector3 = -camera.global_basis.z
+	var space := get_world_3d().direct_space_state
+	var params := PhysicsRayQueryParameters3D.create(
+		cam_pos, cam_pos + cam_forward * SPAWN_RAY_DISTANCE)
+	var hit := space.intersect_ray(params)
+	if not hit.is_empty():
+		var body: Node3D = hit.collider
+		if body.has_meta("window_id"):
+			var hit_dist: float = cam_pos.distance_to(hit.position)
+			return cam_pos + cam_forward * maxf(SPAWN_MIN_CAM_DISTANCE, hit_dist - SPAWN_IN_FRONT_DISTANCE)
+	return cam_pos + cam_forward
 
 func _enter_focus_mode(id: int) -> void:
 	if not quads.has(id) or not is_instance_valid(quads[id]):
@@ -1556,7 +1575,7 @@ func _start_flash(id: int, quad: MeshInstance3D) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = Color(0.8, 0.8, .8)
+	mat.albedo_color = Color(0.4, 0.4, .4)
 	mat.no_depth_test = true
 	mat.render_priority = 10
 	quad.material_overlay = mat
