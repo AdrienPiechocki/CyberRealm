@@ -190,6 +190,9 @@ func _ready() -> void:
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
+	# Apps à lancer automatiquement au démarrage (configurées depuis le menu pause)
+	for cmd in pause_menu.get_startup_apps():
+		compositor.launch_app(cmd)
 	# Setup du menu de navigation entre fenêtres
 	window_menu.setup(compositor, _get_window_texture)
 	window_menu.action_grab.connect(_on_window_menu_grab)
@@ -202,6 +205,7 @@ func _ready() -> void:
 
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 	pause_menu.quit_requested.connect(_on_quit_requested)
+	pause_menu.app_launch_requested.connect(compositor.launch_app)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -241,7 +245,7 @@ func _ready() -> void:
 	$Player/UI.add_child(layer_overlay)
 
 func spawn_test_client() -> void:
-	compositor.launch_app("konsole")
+	compositor.launch_app(pause_menu.get_launcher_command())
 
 # Position de spawn des nouvelles fenêtres : on caste un rayon de
 # SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
@@ -273,6 +277,9 @@ func _enter_focus_mode(id: int) -> void:
 	focused_window_id = id
 	focus_mouse_captured = false
 	focus_mouse_uv = Vector2(0.5, 0.5)
+
+	# Passer la fenêtre en plein écran pendant le mode focus
+	compositor.set_window_fullscreen(id, true)
 
 	# Récupérer la texture courante depuis le shader
 	var quad: MeshInstance3D = quads[id]
@@ -311,6 +318,10 @@ func _exit_focus_mode() -> void:
 		return
 
 	compositor.release_all_keys()
+
+	# Sortir la fenêtre du plein écran
+	if focus_window_id != -1:
+		compositor.set_window_fullscreen(focus_window_id, false)
 
 	# Réafficher le quad 3D
 	if quads.has(focus_window_id) and is_instance_valid(quads[focus_window_id]):
@@ -1016,6 +1027,12 @@ func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> voi
 		# Déplacement fluide uniquement sur les axes X/Y locaux du plan
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
+# Vrai quand un overlay keyboard-interactive (rofi, waybar...) détient le
+# focus clavier : les touches sont routées vers lui, aucun bind du jeu ne
+# doit se déclencher.
+func _keyboard_busy() -> bool:
+	return compositor.get_keyboard_focus_layer_id() >= 0
+
 func _process(delta: float) -> void:
 	_update_xray(delta)
 	_update_flashes(delta)
@@ -1025,16 +1042,16 @@ func _process(delta: float) -> void:
 		var mouse_pos := get_viewport().get_mouse_position()
 		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
 
-	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not focus_mode:
+	if Input.is_action_just_pressed("launcher") and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		spawn_test_client()
 
-	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not focus_mode:
+	if Input.is_action_just_pressed("window_menu") and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		window_menu.toggle_menu()
 
 	# Tab : bascule le mode "interaction layer" — libère la souris pour
 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
 	# (sinon elle est capturée et fait tourner la caméra FPS).
-	if Input.is_action_just_pressed("layer_interact") and not interact_mode_active and not focus_mode:
+	if Input.is_action_just_pressed("layer_interact") and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		_toggle_layer_interact()
 
 	# Si la souris est repassée en mode FPS autrement (clic hors overlay,
@@ -1068,6 +1085,12 @@ func _process(delta: float) -> void:
 			return
 	else:
 		$Player.layer_pointer_active = false
+
+	# Clavier occupé par un overlay keyboard-interactive (rofi, waybar...):
+	# les touches partent vers l'overlay, les binds du jeu (focus, pin,
+	# interact_mode, grab...) ne doivent pas se déclencher.
+	if _keyboard_busy():
+		return
 
 	# F en visant une fenêtre → entrer en mode focus
 	if Input.is_action_just_pressed("focus_window") and not interact_mode_active:

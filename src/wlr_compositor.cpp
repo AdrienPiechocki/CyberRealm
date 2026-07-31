@@ -148,6 +148,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
+    ClassDB::bind_method(D_METHOD("set_window_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_window_fullscreen);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
@@ -2511,6 +2512,24 @@ void WlrCompositor::set_window_size(int window_id, int width, int height) {
 
     wlr_xdg_toplevel_set_size(ws->toplevel, width, height);
     wlr_xdg_surface_schedule_configure(ws->toplevel->base);
+}
+
+void WlrCompositor::set_window_fullscreen(int window_id, bool fullscreen) {
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel) return;
+
+    wlr_xdg_toplevel_set_fullscreen(ws->toplevel, fullscreen);
+    if (fullscreen) {
+        int fw = 1920, fh = 1080;
+        if (Viewport *vp = get_viewport()) {
+            Rect2 vr = vp->get_visible_rect();
+            fw = (int)vr.size.x;
+            fh = (int)vr.size.y;
+        }
+        wlr_xdg_toplevel_set_size(ws->toplevel, fw, fh);
+    }
+    wlr_xdg_surface_schedule_configure(ws->toplevel->base);
+    emit_signal("window_fullscreen_changed", ws->id, fullscreen);
 }
 
 void WlrCompositor::set_x11_display(const String &display_name) {

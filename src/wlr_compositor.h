@@ -330,6 +330,7 @@ class WlrCompositor : public Node {
     void notify_pointer_motion_on_surface(wlr_surface *surface, double surface_x, double surface_y);
 
     void set_window_size(int window_id, int width, int height);
+    void set_window_fullscreen(int window_id, bool fullscreen);
 
     void set_x11_display(const String &display_name);
 

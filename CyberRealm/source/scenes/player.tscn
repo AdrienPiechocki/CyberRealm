@@ -41,8 +41,12 @@ horizontal_alignment = 1
 vertical_alignment = 1
 
 [node name="Label" type="Label" parent="UI" unique_id=846923457]
-offset_right = 40.0
-offset_bottom = 23.0
+anchors_preset = 2
+anchor_top = 1.0
+anchor_bottom = 1.0
+offset_top = -34.0
+offset_right = 274.0
+grow_vertical = 0
 text = "Keyboard Capture : OFF"
 label_settings = SubResource("LabelSettings_jm82k")
 horizontal_alignment = 1

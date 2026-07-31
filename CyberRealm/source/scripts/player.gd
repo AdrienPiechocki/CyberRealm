@@ -11,15 +11,29 @@ var focus_mode_active := false
 # surface (waybar/rofi) en mode visible. Empêche le click de recapturer la
 # souris (FPS) pour laisser wayland_room forwarder le clic vers l'overlay.
 var layer_pointer_active := false
+# Référence paresseuse au compositeur, pour connaître la layer surface qui
+# détient le focus clavier (rofi, menu waybar...).
+var _compositor: WlrCompositor = null
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _get_compositor() -> WlrCompositor:
+	if _compositor == null or not is_instance_valid(_compositor):
+		var scene := get_tree().current_scene
+		if scene != null:
+			_compositor = scene.get_node_or_null("WlrCompositor") as WlrCompositor
+	return _compositor
+
+func _keyboard_busy() -> bool:
+	var comp := _get_compositor()
+	return comp != null and comp.get_keyboard_focus_layer_id() >= 0
 
 func _physics_process(delta):
 	if position.y <= -50:
 		position = Vector3.ZERO
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active:
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy():
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -44,6 +58,11 @@ func _input(event):
 		return
 	if event.is_action_pressed("ui_cancel") and not interact_mode_active:
 		if $WindowMenuLayer/WindowMenu.visible:
+			return
+		# Un overlay keyboard-interactive (rofi, menu waybar...) détient le
+		# clavier : laisser l'Escape lui être routé au lieu d'ouvrir le menu
+		# pause.
+		if _get_compositor() and _get_compositor().get_keyboard_focus_layer_id() >= 0:
 			return
 		$PauseMenuLayer/PauseMenu.show_menu()
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
