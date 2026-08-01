@@ -45,6 +45,7 @@ extern "C" {
 #undef namespace
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
+#include <wlr/types/wlr_session_lock_v1.h>
 }
 
 namespace godot {
@@ -183,6 +184,43 @@ struct LayerSurfaceState {
     class WlrCompositor *owner = nullptr;
 };
 
+// Une surface ext-session-lock-v1 (lockscreen quickshell/dms). Le
+// lockscreen est rendu plein écran, au-dessus de toutes les layer surfaces
+// et du contenu 3D : c'est le seul élément visible tant que le session est
+// verrouillée.
+struct SessionLockSurfaceState {
+    int id = -1;
+    wlr_session_lock_surface_v1 *lock_surface = nullptr;
+
+    wl_listener map_listener{};
+    wl_listener unmap_listener{};
+    wl_listener destroy_listener{};
+    wl_listener commit_listener{};
+
+    Ref<Texture2D> texture;
+    int width = 0;
+    int height = 0;
+
+    CaptureCache capture_cache;
+
+    class WlrCompositor *owner = nullptr;
+};
+
+// État global d'un ext-session-lock-v1 actif. Un seul verrou à la fois
+// (le protocole interdit qu'un client en demande un second pendant qu'un
+// autre est actif).
+struct SessionLockState {
+    wlr_session_lock_v1 *lock = nullptr;
+    bool locked_sent = false;
+
+    wl_listener new_surface_listener{};
+    wl_listener unlock_listener{};
+    wl_listener destroy_listener{};
+
+    std::unordered_map<int, SessionLockSurfaceState> surfaces;
+    int next_surface_id = 1;
+};
+
 class WlrCompositor : public Node {
     GDCLASS(WlrCompositor, Node)
 
@@ -228,6 +266,15 @@ class WlrCompositor : public Node {
     std::unordered_map<int, LayerSurfaceState> layer_surfaces;
     int next_layer_surface_id = 1;
 
+    // Session lock (ext-session-lock-v1): manager + état du verrou actif.
+    // Le lockscreen est rendu plein écran par-dessus tout le reste.
+    wlr_session_lock_manager_v1 *session_lock_manager = nullptr;
+    wl_listener new_session_lock_listener{};
+    SessionLockState session_lock;
+
+    bool session_lock_active() const;
+    SessionLockSurfaceState *get_active_lock_surface();
+
     // "Output" virtuel utilisé pour le layout des layer surfaces. Par
     // défaut la résolution du fake output headless; le script Godot le
     // synchronise avec la taille réelle de son viewport via set_output_size.
@@ -253,6 +300,15 @@ class WlrCompositor : public Node {
     static void on_request_start_drag(wl_listener *listener, void *data);
     static void on_start_drag(wl_listener *listener, void *data);
     static void on_drag_destroy(wl_listener *listener, void *data);
+
+    static void on_new_session_lock(wl_listener *listener, void *data);
+    static void on_session_lock_new_surface(wl_listener *listener, void *data);
+    static void on_session_lock_surface_map(wl_listener *listener, void *data);
+    static void on_session_lock_surface_unmap(wl_listener *listener, void *data);
+    static void on_session_lock_surface_destroy(wl_listener *listener, void *data);
+    static void on_session_lock_surface_commit(wl_listener *listener, void *data);
+    static void on_session_lock_unlock(wl_listener *listener, void *data);
+    static void on_session_lock_destroy(wl_listener *listener, void *data);
 
     // Presse-papier (wl_data_device) + sélection primaire (Ctrl+V vs
     // clic molette). Un client demande à devenir la source du
@@ -385,6 +441,9 @@ public:
     void forward_pointer_motion_layer(int layer_id, double surface_x, double surface_y);
     void forward_pointer_button_layer(int layer_id, int button, bool pressed);
     void forward_pointer_axis_layer(int layer_id, double delta_x, double delta_y);
+    void forward_pointer_motion_lock(double surface_x, double surface_y);
+    void forward_pointer_button_lock(int button, bool pressed);
+    void forward_pointer_axis_lock(double delta_x, double delta_y);
     void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
     void release_all_keys();
 

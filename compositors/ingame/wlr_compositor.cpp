@@ -145,6 +145,12 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_pointer_button_layer);
     ClassDB::bind_method(D_METHOD("forward_pointer_axis_layer", "layer_id", "delta_x", "delta_y"),
         &WlrCompositor::forward_pointer_axis_layer);
+    ClassDB::bind_method(D_METHOD("forward_pointer_motion_lock", "surface_x", "surface_y"),
+        &WlrCompositor::forward_pointer_motion_lock);
+    ClassDB::bind_method(D_METHOD("forward_pointer_button_lock", "button", "pressed"),
+        &WlrCompositor::forward_pointer_button_lock);
+    ClassDB::bind_method(D_METHOD("forward_pointer_axis_lock", "delta_x", "delta_y"),
+        &WlrCompositor::forward_pointer_axis_lock);
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
@@ -234,6 +240,14 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::INT, "width"),
         PropertyInfo(Variant::INT, "height")));
 
+    ADD_SIGNAL(MethodInfo("session_lock_locked"));
+    ADD_SIGNAL(MethodInfo("session_lock_unlocked"));
+    ADD_SIGNAL(MethodInfo("session_lock_surface_texture_updated",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::OBJECT, "texture"),
+        PropertyInfo(Variant::INT, "width"),
+        PropertyInfo(Variant::INT, "height")));
+
 }
 
 WlrCompositor::WlrCompositor() {
@@ -255,6 +269,9 @@ WlrCompositor::~WlrCompositor() {
         pair.second.capture_cache.reset(rd);
     }
     for (auto &pair : layer_surfaces) {
+        pair.second.capture_cache.reset(rd);
+    }
+    for (auto &pair : session_lock.surfaces) {
         pair.second.capture_cache.reset(rd);
     }
     drag_icon_cache.reset(rd);
@@ -1804,6 +1821,194 @@ void WlrCompositor::on_layer_new_popup(wl_listener *listener, void *data) {
 }
 
 // =====================================================================
+// ext-session-lock-v1 (lockscreen quickshell/dms)
+// =====================================================================
+
+bool WlrCompositor::session_lock_active() const {
+    return session_lock.lock != nullptr;
+}
+
+// Renvoie la première surface de verrouillage mappée (il ne devrait y en
+// avoir qu'une : le protocole autorise une surface par output, et ce
+// compositeur n'a qu'un seul output virtuel).
+SessionLockSurfaceState *WlrCompositor::get_active_lock_surface() {
+    for (auto &pair : session_lock.surfaces) {
+        SessionLockSurfaceState &ss = pair.second;
+        if (ss.lock_surface && ss.lock_surface->surface &&
+            ss.lock_surface->surface->mapped) {
+            return &ss;
+        }
+    }
+    return nullptr;
+}
+
+void WlrCompositor::on_new_session_lock(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, new_session_lock_listener);
+    auto *lock = static_cast<wlr_session_lock_v1 *>(data);
+
+    // Le protocole interdit de demander un second verrou pendant qu'un
+    // autre est actif ; si un client le fait quand même, on finit l'ancien
+    // (cela détruit ses surfaces et vide session_lock.surfaces) avant de
+    // prendre le nouveau.
+    if (self->session_lock.lock) {
+        wlr_session_lock_v1_destroy(self->session_lock.lock);
+    }
+
+    self->session_lock.lock = lock;
+    self->session_lock.locked_sent = false;
+    self->session_lock.surfaces.clear();
+    self->session_lock.next_surface_id = 1;
+
+    self->session_lock.new_surface_listener.notify = WlrCompositor::on_session_lock_new_surface;
+    wl_signal_add(&lock->events.new_surface, &self->session_lock.new_surface_listener);
+
+    self->session_lock.unlock_listener.notify = WlrCompositor::on_session_lock_unlock;
+    wl_signal_add(&lock->events.unlock, &self->session_lock.unlock_listener);
+
+    self->session_lock.destroy_listener.notify = WlrCompositor::on_session_lock_destroy;
+    wl_signal_add(&lock->events.destroy, &self->session_lock.destroy_listener);
+
+    UtilityFunctions::print("waylandgodot: session lock demandé");
+}
+
+void WlrCompositor::on_session_lock_new_surface(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, session_lock.new_surface_listener);
+    auto *lock_surface = static_cast<wlr_session_lock_surface_v1 *>(data);
+
+    if (!lock_surface->output) {
+        lock_surface->output = self->headless_output;
+    }
+
+    int id = self->session_lock.next_surface_id++;
+    SessionLockSurfaceState &ss = self->session_lock.surfaces[id];
+    ss.id = id;
+    ss.lock_surface = lock_surface;
+    ss.owner = self;
+
+    ss.map_listener.notify = WlrCompositor::on_session_lock_surface_map;
+    wl_signal_add(&lock_surface->surface->events.map, &ss.map_listener);
+
+    ss.unmap_listener.notify = WlrCompositor::on_session_lock_surface_unmap;
+    wl_signal_add(&lock_surface->surface->events.unmap, &ss.unmap_listener);
+
+    ss.destroy_listener.notify = WlrCompositor::on_session_lock_surface_destroy;
+    wl_signal_add(&lock_surface->events.destroy, &ss.destroy_listener);
+
+    ss.commit_listener.notify = WlrCompositor::on_session_lock_surface_commit;
+    wl_signal_add(&lock_surface->surface->events.commit, &ss.commit_listener);
+
+    // Pleine surface de l'output : le lockscreen quickshell attend ce
+    // configure (avec les dimensions de l'écran) avant de committer.
+    wlr_session_lock_surface_v1_configure(lock_surface, self->output_width, self->output_height);
+
+    UtilityFunctions::print("waylandgodot: session lock surface id=", id);
+}
+
+void WlrCompositor::on_session_lock_surface_map(wl_listener *listener, void *data) {
+    SessionLockSurfaceState *ss = wl_container_of(listener, ss, map_listener);
+    WlrCompositor *self = ss->owner;
+    if (!self->seat || !ss->lock_surface) return;
+
+    // Le lockscreen détient tout l'input : focus clavier sur sa surface
+    // (le champ password en a besoin), le pointeur y est envoyé en continu
+    // par le script Godot tant que le session est verrouillée.
+    self->keyboard_focus_layer_id = -1;
+    wlr_seat_keyboard_notify_enter(self->seat, ss->lock_surface->surface,
+        self->virtual_keyboard.keycodes,
+        self->virtual_keyboard.num_keycodes,
+        &self->virtual_keyboard.modifiers);
+
+    if (self->capture_surface(ss->lock_surface->surface, ss->texture,
+            ss->width, ss->height, ss->capture_cache)) {
+        self->emit_signal("session_lock_surface_texture_updated",
+            ss->id, ss->texture, ss->width, ss->height);
+    }
+
+    // Une fois une surface mappée, on peut annoncer "locked" au client :
+    // c'est ce qui lui autorise unlock_and_destroy (le password submit).
+    if (self->session_lock.lock && !self->session_lock.locked_sent) {
+        self->session_lock.locked_sent = true;
+        wlr_session_lock_v1_send_locked(self->session_lock.lock);
+        UtilityFunctions::print("waylandgodot: session verrouillée (locked envoyé)");
+    }
+
+    self->emit_signal("session_lock_locked");
+}
+
+void WlrCompositor::on_session_lock_surface_unmap(wl_listener *listener, void *data) {
+    SessionLockSurfaceState *ss = wl_container_of(listener, ss, unmap_listener);
+    // La texture reste affichée côté Godot (le unlock détruit ensuite la
+    // surface, ce qui la masquera proprement).
+}
+
+void WlrCompositor::on_session_lock_surface_destroy(wl_listener *listener, void *data) {
+    SessionLockSurfaceState *ss = wl_container_of(listener, ss, destroy_listener);
+    WlrCompositor *self = ss->owner;
+    int id = ss->id;
+
+    RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+    ss->capture_cache.reset(rd);
+
+    wl_list_remove(&ss->map_listener.link);
+    wl_list_remove(&ss->unmap_listener.link);
+    wl_list_remove(&ss->destroy_listener.link);
+    wl_list_remove(&ss->commit_listener.link);
+
+    self->session_lock.surfaces.erase(id);
+}
+
+void WlrCompositor::on_session_lock_surface_commit(wl_listener *listener, void *data) {
+    SessionLockSurfaceState *ss = wl_container_of(listener, ss, commit_listener);
+    WlrCompositor *self = ss->owner;
+    if (!ss->lock_surface || !ss->lock_surface->surface) return;
+
+    if (!self->capture_surface(ss->lock_surface->surface, ss->texture,
+            ss->width, ss->height, ss->capture_cache)) {
+        return;
+    }
+    self->emit_signal("session_lock_surface_texture_updated",
+        ss->id, ss->texture, ss->width, ss->height);
+}
+
+void WlrCompositor::on_session_lock_unlock(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, session_lock.unlock_listener);
+
+    // Rendre le focus clavier à la fenêtre active s'il en existe une.
+    if (self->seat && self->active_toplevel_id != -1) {
+        if (WindowState *ws = self->find_window(self->active_toplevel_id)) {
+            wlr_seat_keyboard_notify_enter(self->seat, ws->toplevel->base->surface,
+                self->virtual_keyboard.keycodes,
+                self->virtual_keyboard.num_keycodes,
+                &self->virtual_keyboard.modifiers);
+        }
+    }
+
+    // Le client détruit ensuite le lock et ses surfaces ; le script Godot
+    // masque l'overlay du lockscreen dès ce signal.
+    self->emit_signal("session_lock_unlocked");
+}
+
+void WlrCompositor::on_session_lock_destroy(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, session_lock.destroy_listener);
+
+    // lock_destroy a déjà détruit toutes les surfaces (chaque destroy a
+    // vidé session_lock.surfaces via on_session_lock_surface_destroy).
+    RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+    for (auto &pair : self->session_lock.surfaces) {
+        pair.second.capture_cache.reset(rd);
+    }
+    self->session_lock.surfaces.clear();
+
+    wl_list_remove(&self->session_lock.new_surface_listener.link);
+    wl_list_remove(&self->session_lock.unlock_listener.link);
+    wl_list_remove(&self->session_lock.destroy_listener.link);
+
+    self->session_lock.lock = nullptr;
+    self->session_lock.locked_sent = false;
+    UtilityFunctions::print("waylandgodot: session lock détruit");
+}
+
+// =====================================================================
 // Cycle de vie
 // =====================================================================
 
@@ -1937,6 +2142,18 @@ void WlrCompositor::start_headless() {
     } else {
         new_layer_surface_listener.notify = WlrCompositor::on_new_layer_surface;
         wl_signal_add(&layer_shell->events.new_surface, &new_layer_surface_listener);
+    }
+
+    // ext-session-lock-v1 : le lockscreen de quickshell/dms (WlSessionLock
+    // → ext_session_lock_manager_v1). Sans ce global, `dms ipc lock lock`
+    // passe bien le shell en mode verrouillé mais aucune surface de
+    // verrouillage ne peut être créée → écran noir/rien ne s'affiche.
+    session_lock_manager = wlr_session_lock_manager_v1_create(display);
+    if (!session_lock_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global ext_session_lock_manager_v1");
+    } else {
+        new_session_lock_listener.notify = WlrCompositor::on_new_session_lock;
+        wl_signal_add(&session_lock_manager->events.new_lock, &new_session_lock_listener);
     }
 
     // Nécessaire pour les clients qui rendent via GPU/dmabuf (ex: Firefox
@@ -2093,6 +2310,13 @@ void WlrCompositor::_process(double delta) {
             wlr_surface_send_frame_done(surf, &now);
         }
     }
+    for (auto &pair : session_lock.surfaces) {
+        SessionLockSurfaceState &ss = pair.second;
+        wlr_surface *surf = ss.lock_surface ? ss.lock_surface->surface : nullptr;
+        if (surf && surf->mapped) {
+            wlr_surface_send_frame_done(surf, &now);
+        }
+    }
 
     // Recapture TOUTES les fenêtres mappées à chaque frame. Dans un
     // compositeur 3D toutes les fenêtres sont visibles simultanément —
@@ -2148,6 +2372,19 @@ void WlrCompositor::_process(double delta) {
         }
         emit_signal("layer_surface_texture_updated", ls.id, ls.texture,
             ls.width, ls.height);
+    }
+
+    // Recapture des surfaces de verrouillage (le lockscreen anime son fond
+    // et son champ password; on le resample comme les autres surfaces).
+    for (auto &pair : session_lock.surfaces) {
+        SessionLockSurfaceState &ss = pair.second;
+        wlr_surface *surf = ss.lock_surface ? ss.lock_surface->surface : nullptr;
+        if (!surf || !surf->mapped) continue;
+        if (!capture_surface(surf, ss.texture, ss.width, ss.height, ss.capture_cache)) {
+            continue;
+        }
+        emit_signal("session_lock_surface_texture_updated", ss.id, ss.texture,
+            ss.width, ss.height);
     }
 
     // Recapture du drag icon si un drag est actif.
@@ -2283,6 +2520,36 @@ void WlrCompositor::forward_pointer_button_layer(int layer_id, int button, bool 
 void WlrCompositor::forward_pointer_axis_layer(int layer_id, double delta_x, double delta_y) {
     LayerSurfaceState *ls = find_layer_surface(layer_id);
     if (!ls || !ls->layer_surface || !seat) return;
+    uint32_t time = get_time_msec();
+    if (delta_y != 0.0) {
+        wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
+            delta_y, (int32_t)delta_y, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    }
+    if (delta_x != 0.0) {
+        wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+            delta_x, (int32_t)delta_x, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    }
+    wlr_seat_pointer_notify_frame(seat);
+}
+
+void WlrCompositor::forward_pointer_motion_lock(double surface_x, double surface_y) {
+    SessionLockSurfaceState *ss = get_active_lock_surface();
+    if (!ss || !ss->lock_surface || !ss->lock_surface->surface) return;
+    notify_pointer_motion_on_surface(ss->lock_surface->surface, surface_x, surface_y);
+}
+
+void WlrCompositor::forward_pointer_button_lock(int button, bool pressed) {
+    SessionLockSurfaceState *ss = get_active_lock_surface();
+    if (!ss || !ss->lock_surface || !seat) return;
+
+    wlr_seat_pointer_notify_button(seat, get_time_msec(), (uint32_t)button,
+        pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(seat);
+}
+
+void WlrCompositor::forward_pointer_axis_lock(double delta_x, double delta_y) {
+    SessionLockSurfaceState *ss = get_active_lock_surface();
+    if (!ss || !ss->lock_surface || !seat) return;
     uint32_t time = get_time_msec();
     if (delta_y != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
@@ -2573,6 +2840,15 @@ void WlrCompositor::set_output_size(int width, int height) {
     output_width = width;
     output_height = height;
     arrange_layer_surfaces();
+
+    // Le lockscreen doit toujours couvrir toute la surface de l'output :
+    // on le reconfigure à la nouvelle taille (le client recommittera).
+    if (session_lock.lock) {
+        for (auto &pair : session_lock.surfaces) {
+            wlr_session_lock_surface_v1_configure(pair.second.lock_surface,
+                width, height);
+        }
+    }
 }
 
 Dictionary WlrCompositor::get_layer_surface_info(int layer_id) {

@@ -98,6 +98,11 @@ const FOCUS_Z_BASE := 2000
 const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
 const FOCUS_CLOSE_Z := FOCUS_Z_BASE + 100
 
+# z_index du lockscreen (ext-session-lock-v1) : au-dessus de tout — layer
+# surfaces, mode focus, PiP — car un session verrouillée ne doit montrer
+# que le lockscreen.
+const SESSION_LOCK_Z := 3000
+
 var layer_rects: Dictionary = {} # layer_id (int) -> {rect, layer, anchor}
 var layer_popup_rects: Dictionary = {} # popup_id (int) -> {rect, parent_layer_id}
 var layer_overlay: Control
@@ -106,6 +111,12 @@ var layer_shader: Shader
 # les overlays non interactifs (waybar, quickshell bar). Faux quand la souris
 # a été recapturée par un autre moyen.
 var layer_interact_active := false
+
+# Session lock (ext-session-lock-v1): quand true, le lockscreen quickshell
+# est affiché plein écran et reçoit tout l'input (pointeur + clavier).
+var session_locked := false
+var session_lock_rect: TextureRect
+var session_lock_surface_id := -1
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
@@ -186,6 +197,9 @@ func _ready() -> void:
 	compositor.layer_surface_unmapped.connect(_on_layer_surface_unmapped)
 	compositor.layer_surface_texture_updated.connect(_on_layer_surface_texture_updated)
 	compositor.layer_popup_mapped.connect(_on_layer_popup_mapped)
+	compositor.session_lock_locked.connect(_on_session_lock_locked)
+	compositor.session_lock_unlocked.connect(_on_session_lock_unlocked)
+	compositor.session_lock_surface_texture_updated.connect(_on_session_lock_surface_texture_updated)
 	compositor.start_headless()
 	layer_shader = Shader.new()
 	layer_shader.code = LAYER_SHADER_CODE
@@ -919,12 +933,12 @@ func _on_layer_surface_unmapped(id: int) -> void:
 		layer_rects.erase(id)
 	# Plus aucune app interactive en overlay → retour en mode FPS, sauf si on
 	# est dans un autre mode qui gère déjà la souris (focus, menus).
-	if not _any_interactive_layer() \
-			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
-			and not focus_mode and not pause_menu.visible and not window_menu.visible:
-		layer_interact_active = false
-		$Player.layer_pointer_active = false
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	#if not _any_interactive_layer() \
+			#and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
+			#and not focus_mode and not pause_menu.visible and not window_menu.visible:
+		#layer_interact_active = false
+		#$Player.layer_pointer_active = false
+		#Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_layer_surface_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	if not layer_rects.has(id):
@@ -967,6 +981,56 @@ func _on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int,
 	rect.set_meta("popup_id", popup_id)
 	layer_overlay.add_child(rect)
 	layer_popup_rects[popup_id] = {"rect": rect, "parent_layer_id": parent_layer_id}
+
+# ----------------------------------------------------------------------
+# Session lock (ext-session-lock-v1): le lockscreen quickshell/dms est
+# affiché plein écran (z_index SESSION_LOCK_Z, au-dessus de tout) et
+# reçoit tout l'input — pointeur ET clavier — jusqu'à l'unlock.
+# ----------------------------------------------------------------------
+
+func _on_session_lock_locked() -> void:
+	session_locked = true
+	session_lock_surface_id = -1
+	if session_lock_rect == null or not is_instance_valid(session_lock_rect):
+		session_lock_rect = TextureRect.new()
+		session_lock_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		session_lock_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		session_lock_rect.stretch_mode = TextureRect.STRETCH_SCALE
+		session_lock_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		session_lock_rect.z_index = SESSION_LOCK_Z
+		var mat := ShaderMaterial.new()
+		mat.shader = layer_shader
+		session_lock_rect.material = mat
+		layer_overlay.add_child(session_lock_rect)
+	# Le lockscreen détient la souris et le clavier jusqu'à l'unlock.
+	layer_interact_active = true
+	$Player.layer_pointer_active = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+func _on_session_lock_unlocked() -> void:
+	session_locked = false
+	session_lock_surface_id = -1
+	if session_lock_rect != null and is_instance_valid(session_lock_rect):
+		session_lock_rect.queue_free()
+		session_lock_rect = null
+	# Retour à l'état normal (capture FPS) sauf si un overlay interactif
+	# ou un autre mode gère déjà la souris.
+	if not _any_interactive_layer() \
+			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
+			and not focus_mode and not pause_menu.visible and not window_menu.visible:
+		layer_interact_active = false
+		$Player.layer_pointer_active = false
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _on_session_lock_surface_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	session_lock_surface_id = id
+	if session_lock_rect == null or not is_instance_valid(session_lock_rect):
+		return
+	session_lock_rect.texture = texture
+	var mat := session_lock_rect.material as ShaderMaterial
+	if mat:
+		mat.set_shader_parameter("u_tex", texture)
+		mat.set_shader_parameter("u_content_size", Vector2(width, height))
 
 # La layer surface la plus en avant contenant pos (les popups de layer
 # passent devant les layer surfaces, elles-mêmes devant les fenêtres 3D).
@@ -1095,6 +1159,25 @@ func _process(delta: float) -> void:
 	if drag_icon_rect and drag_icon_rect.visible:
 		var mouse_pos := get_viewport().get_mouse_position()
 		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
+
+	# Session verrouillée : tout le pointeur part vers la surface de
+	# verrouillage (le curseur y est visible), rien ne va au jeu.
+	if session_locked:
+		var _mp := get_viewport().get_mouse_position()
+		compositor.forward_pointer_motion_lock(_mp.x, _mp.y)
+		if Input.is_action_just_pressed("left_click", true):
+			compositor.forward_pointer_button_lock(0x110, true)
+		if Input.is_action_just_released("left_click", true):
+			compositor.forward_pointer_button_lock(0x110, false)
+		if Input.is_action_just_pressed("right_click", true):
+			compositor.forward_pointer_button_lock(0x111, true)
+		if Input.is_action_just_released("right_click", true):
+			compositor.forward_pointer_button_lock(0x111, false)
+		if Input.is_action_just_pressed("scroll_up", true):
+			compositor.forward_pointer_axis_lock(0.0, -50.0)
+		if Input.is_action_just_pressed("scroll_down", true):
+			compositor.forward_pointer_axis_lock(0.0, 50.0)
+		return
 
 	if Input.is_action_just_pressed("launcher", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		spawn_test_client()
@@ -1520,6 +1603,21 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 
 func _input(event: InputEvent) -> void:
 	if pause_menu.visible:
+		return
+
+	# Session verrouillée : tout le clavier part vers le lockscreen (le
+	# champ password de quickshell), aucun bind du jeu ne doit répondre.
+	if session_locked and event is InputEventKey:
+		var key_event := event as InputEventKey
+		var code = key_event.physical_keycode
+		if code == 0:
+			code = key_event.keycode
+		if key_event.unicode == 60 or code == 167:
+			code = KEY_LESS
+		elif key_event.unicode == 62:
+			code = KEY_GREATER
+		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+		get_viewport().set_input_as_handled()
 		return
 
 	# Une layer surface keyboard-interactive (rofi, waybar menu) détient le
