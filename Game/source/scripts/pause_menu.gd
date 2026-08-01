@@ -1,6 +1,5 @@
 extends PanelContainer
 
-signal quit_requested
 signal app_launch_requested(command: String)
 
 const SETTINGS_PATH := "user://settings.json"
@@ -10,13 +9,13 @@ var container: VBoxContainer
 # Actions remappables depuis le menu (ordre d'affichage).
 const REMAPPABLE_ACTIONS := [
 	"forward", "back", "left", "right", "jump",
-	"interact_mode", "launcher", "window_menu",
+	"interact_mode", "window_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "layer_interact",
 	"left_click", "right_click", "scroll_up", "scroll_down",
 ]
 
 var _settings: Dictionary = {}
-var _current_view := "main" # "main" | "keybinds" | "startup" | "launcher" | "custom"
+var _current_view := "main" # "main" | "keybinds" | "startup" | "custom"
 var _waiting_action := "" # action en cours de rebind, "" = aucun
 var _keybinds_buttons: Dictionary = {} # action -> Button
 # Capture d'une touche pour un custom bind
@@ -166,8 +165,6 @@ func _show_main() -> void:
 
 	container.add_child(_make_title("MAIN MENU"))
 
-	container.add_child(_make_spacer())
-
 	var keybinds_btn := _make_btn("Remap keybinds")
 	keybinds_btn.pressed.connect(_show_keybinds)
 	container.add_child(keybinds_btn)
@@ -176,19 +173,15 @@ func _show_main() -> void:
 	startup_btn.pressed.connect(_show_startup_apps)
 	container.add_child(startup_btn)
 
-	var launcher_btn := _make_btn("Launcher Command")
-	launcher_btn.pressed.connect(_show_launcher)
-	container.add_child(launcher_btn)
-
 	var custom_btn := _make_btn("Custom Binds")
 	custom_btn.pressed.connect(_show_custom_binds)
 	container.add_child(custom_btn)
-
-	var quit_btn := _make_btn("Quit", Color(0.25, 0.1, 0.1, 0.9))
-	quit_btn.pressed.connect(func():
-		quit_requested.emit()
-	)
-	container.add_child(quit_btn)
+	
+	container.add_child(_make_spacer())
+	
+	var back_btn := _make_btn("Back")
+	back_btn.pressed.connect(hide_menu)
+	container.add_child(back_btn)
 
 func _show_keybinds() -> void:
 	_clear()
@@ -316,38 +309,6 @@ func _show_startup_apps() -> void:
 
 	container.add_child(_make_back_btn())
 
-func _show_launcher() -> void:
-	_clear()
-	_waiting_action = ""
-	_current_view = "launcher"
-
-	container.add_child(_make_title("LAUNCHER COMMAND"))
-
-	var hint := Label.new()
-	hint.text = "Command launched by the launcher key."
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size", 12)
-	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
-	container.add_child(hint)
-
-	container.add_child(_make_spacer())
-
-	var row := HBoxContainer.new()
-	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var le := _make_line_edit()
-	le.text = get_launcher_command()
-	le.select_all()
-	row.add_child(le)
-	container.add_child(row)
-
-	container.add_child(_make_spacer())
-
-	var save_btn := _make_btn("Save")
-	save_btn.pressed.connect(_save_launcher_command_from_edit.bind(le))
-	container.add_child(save_btn)
-
-	container.add_child(_make_back_btn())
-
 func _show_custom_binds() -> void:
 	_clear()
 	_waiting_action = ""
@@ -466,27 +427,6 @@ func _remove_startup_app(cmd: String) -> void:
 	_settings["startup_apps"] = apps
 	_save_settings()
 	_show_startup_apps()
-
-# ── Launcher command ─────────────────────────────────────────────────
-
-func get_launcher_command() -> String:
-	var cmd: String = _settings.get("launcher_command", "")
-	if cmd == "":
-		cmd = "konsole"
-	return cmd
-
-func _save_launcher_command_from_edit(le: LineEdit) -> void:
-	var cmd := le.text.strip_edges()
-	if cmd == "":
-		return
-	_settings["launcher_command"] = cmd
-	_save_settings()
-	_show_launcher()
-
-func _test_launcher_from_edit(le: LineEdit) -> void:
-	var cmd := le.text.strip_edges()
-	if cmd != "":
-		app_launch_requested.emit(cmd)
 
 # ── Custom binds ─────────────────────────────────────────────────────
 

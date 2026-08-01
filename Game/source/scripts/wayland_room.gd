@@ -225,7 +225,6 @@ func _ready() -> void:
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
-	pause_menu.quit_requested.connect(_on_quit_requested)
 	pause_menu.app_launch_requested.connect(compositor.launch_app)
 
 	# TextureRect plein écran pour le mode focus
@@ -236,21 +235,6 @@ func _ready() -> void:
 	focus_texture_rect.z_index = FOCUS_Z_BASE
 	focus_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	$Player/UI.add_child(focus_texture_rect)
-
-	# Bouton X pour quitter le mode focus
-	#focus_close_button = Button.new()
-	#focus_close_button.text = "✕"
-	#focus_close_button.custom_minimum_size = Vector2(40, 40)
-	#focus_close_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	#focus_close_button.offset_left = -50
-	#focus_close_button.offset_top = 50
-	#focus_close_button.offset_right = -10
-	#focus_close_button.offset_bottom = 50
-	#focus_close_button.z_index = FOCUS_CLOSE_Z
-	#focus_close_button.visible = false
-	#focus_close_button.pressed.connect(_exit_focus_mode)
-	#focus_close_button.mouse_filter = Control.MOUSE_FILTER_STOP
-	#$Player/UI.add_child(focus_close_button)
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -265,9 +249,6 @@ func _ready() -> void:
 	layer_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	$Player/UI.add_child(layer_overlay)
-
-func spawn_test_client() -> void:
-	compositor.launch_app(pause_menu.get_launcher_command())
 
 # Position de spawn des nouvelles fenêtres : on caste un rayon de
 # SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
@@ -1187,9 +1168,6 @@ func _process(delta: float) -> void:
 			compositor.forward_pointer_axis_lock(0.0, 50.0)
 		return
 
-	if Input.is_action_just_pressed("launcher", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
-		spawn_test_client()
-
 	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		window_menu.toggle_menu()
 
@@ -1834,11 +1812,3 @@ func _on_pause_menu_visibility_changed() -> void:
 			$Player.interact_mode_active = false
 		if focus_mode:
 			_exit_focus_mode()
-
-func _on_quit_requested() -> void:
-	for wid in quads.keys():
-		compositor.close_window(wid)
-
-	await get_tree().create_timer(0.2).timeout
-
-	get_tree().quit()
