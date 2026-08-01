@@ -111,6 +111,7 @@ var layer_shader: Shader
 # les overlays non interactifs (waybar, quickshell bar). Faux quand la souris
 # a été recapturée par un autre moyen.
 var layer_interact_active := false
+var layer_interact_manual := false
 
 # Session lock (ext-session-lock-v1): quand true, le lockscreen quickshell
 # est affiché plein écran et reçoit tout l'input (pointeur + clavier).
@@ -933,12 +934,12 @@ func _on_layer_surface_unmapped(id: int) -> void:
 		layer_rects.erase(id)
 	# Plus aucune app interactive en overlay → retour en mode FPS, sauf si on
 	# est dans un autre mode qui gère déjà la souris (focus, menus).
-	#if not _any_interactive_layer() \
-			#and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
-			#and not focus_mode and not pause_menu.visible and not window_menu.visible:
-		#layer_interact_active = false
-		#$Player.layer_pointer_active = false
-		#Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if not layer_interact_manual and not _any_interactive_layer() \
+			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
+			and not focus_mode and not pause_menu.visible and not window_menu.visible:
+		layer_interact_active = false
+		$Player.layer_pointer_active = false
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_layer_surface_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	if not layer_rects.has(id):
@@ -1197,6 +1198,10 @@ func _process(delta: float) -> void:
 	# (sinon elle est capturée et fait tourner la caméra FPS).
 	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		_toggle_layer_interact()
+		if layer_interact_active:
+			layer_interact_manual = true
+		else:
+			layer_interact_manual = false
 
 	# Si la souris est repassée en mode FPS autrement (clic hors overlay,
 	# fermeture d'un overlay interactif...), resynchroniser l'état.
