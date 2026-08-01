@@ -1272,6 +1272,27 @@ func _process(delta: float) -> void:
 					_pin_window(wid)
 				return
 
+	# K en visant une fenêtre → demander sa fermeture (close)
+	if Input.is_action_just_pressed("kill_window", true) and not interact_mode_active:
+		var cam := $Player/Camera3D
+		var mouse_pos := get_viewport().get_mouse_position()
+		# En MOUSE_MODE_CAPTURED, get_mouse_position() reste figée au point de
+		# capture : le viseur étant au centre du viewport, c'est ce centre qui
+		# doit guider le rayon (comme le raycast pointeur principal).
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			mouse_pos = get_viewport().get_visible_rect().size / 2.0
+		var ray_origin = cam.project_ray_origin(mouse_pos)
+		var ray_dir = cam.project_ray_normal(mouse_pos)
+		var to = ray_origin + ray_dir * 1000.0
+		var space := get_world_3d().direct_space_state
+		var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+		var hit := space.intersect_ray(params)
+		if not hit.is_empty():
+			var body: Node3D = hit.collider
+			if body.has_meta("window_id"):
+				compositor.close_window(body.get_meta("window_id"))
+				return
+
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
 	if Input.is_action_just_pressed("interact_mode", true):
 		if interact_mode_active:
