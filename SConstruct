@@ -4,8 +4,8 @@ import subprocess
 
 env = SConscript("godot-cpp/SConstruct")
 
-env.Append(CPPPATH=["src/"])
-sources = Glob("src/*.cpp") + Glob("src/*.c")
+env.Append(CPPPATH=["compositors/ingame/"])
+sources = Glob("compositors/ingame/*.cpp") + Glob("compositors/ingame/*.c")
 
 # Dépendances système via pkg-config. Adapter le nom du paquet wlroots
 # selon la version installée (wlroots-0.18, wlroots-0.19, ...).
@@ -34,17 +34,17 @@ env.Append(CPPDEFINES=["WLR_USE_UNSTABLE"])
 xdg_shell_xml = "/usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml"
 
 xdg_shell_header = env.Command(
-    "protocols/xdg-shell-protocol.h",
+    "compositors/protocols/xdg-shell-protocol.h",
     xdg_shell_xml,
     "wayland-scanner server-header $SOURCE $TARGET",
 )
 xdg_shell_source = env.Command(
-    "protocols/xdg-shell-protocol.c",
+    "compositors/protocols/xdg-shell-protocol.c",
     xdg_shell_xml,
     "wayland-scanner private-code $SOURCE $TARGET",
 )
 
-env.Append(CPPPATH=["protocols/"])
+env.Append(CPPPATH=["compositors/protocols/"])
 sources += [xdg_shell_source]
 # Force la génération du header avant toute compilation qui l'inclut
 # (wlr_compositor.h dépend indirectement de xdg-shell-protocol.h).
@@ -54,9 +54,9 @@ env.Depends(sources, xdg_shell_header)
 # Le XML est versionné dans protocols/ car il n'est pas installé sur toutes
 # les distros; seul le header serveur est nécessaire (wlroots fournit déjà
 # l'implémentation côté serveur via wlr_layer_shell_v1_create).
-layer_shell_xml = "protocols/wlr-layer-shell-unstable-v1.xml"
+layer_shell_xml = "compositors/protocols/wlr-layer-shell-unstable-v1.xml"
 layer_shell_header = env.Command(
-    "protocols/wlr-layer-shell-unstable-v1-protocol.h",
+    "compositors/protocols/wlr-layer-shell-unstable-v1-protocol.h",
     layer_shell_xml,
     "wayland-scanner server-header $SOURCE $TARGET",
 )
@@ -65,14 +65,14 @@ env.Depends(sources, layer_shell_header)
 # Protocoles instables: pointer-constraints-v1 + relative-pointer-v1
 pointer_constraints_xml = "/usr/share/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml"
 pointer_constraints_header = env.Command(
-    "protocols/pointer-constraints-unstable-v1-protocol.h",
+    "compositors/protocols/pointer-constraints-unstable-v1-protocol.h",
     pointer_constraints_xml,
     "wayland-scanner server-header $SOURCE $TARGET",
 )
 
 relative_pointer_xml = "/usr/share/wayland-protocols/unstable/relative-pointer/relative-pointer-unstable-v1.xml"
 relative_pointer_header = env.Command(
-    "protocols/relative-pointer-unstable-v1-protocol.h",
+    "compositors/protocols/relative-pointer-unstable-v1-protocol.h",
     relative_pointer_xml,
     "wayland-scanner server-header $SOURCE $TARGET",
 )
@@ -82,14 +82,14 @@ env.Depends(sources, relative_pointer_header)
 
 if env["platform"] == "macos":
     library = env.SharedLibrary(
-        "CyberRealm/source/bin/libwaylandgodot.{}.{}.framework/libwaylandgodot.{}.{}".format(
+        "Game/source/bin/libwaylandgodot.{}.{}.framework/libwaylandgodot.{}.{}".format(
             env["platform"], env["target"], env["platform"], env["target"]
         ),
         source=sources,
     )
 else:
     library = env.SharedLibrary(
-        "CyberRealm/source/bin/libwaylandgodot{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
+        "Game/source/bin/libwaylandgodot{}{}".format(env["suffix"], env["SHLIBSUFFIX"]),
         source=sources,
     )
 

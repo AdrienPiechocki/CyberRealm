@@ -4,9 +4,9 @@
 # display manager (GDM, SDDM, LightDM, ...). No autologin.
 #
 # Usage:
-#   ./install-kiosk.sh             install the "CyberRealm Kiosk" session
-#   ./install-kiosk.sh --restart   also restart the running display manager
-#   ./install-kiosk.sh --uninstall remove the session entry
+#   ./install.sh             install the "CyberRealm Kiosk" session
+#   ./install.sh --restart   also restart the running display manager
+#   ./install.sh --uninstall remove the session entry
 #
 # Options:
 #   -r, --restart   restart the active display manager (sddm/gdm/lightdm)
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-BIN="$SCRIPT_DIR/cyberrealm"
+BIN="$SCRIPT_DIR/compositors/main/cyberrealm"
 SESSIONS_DIR=/usr/share/wayland-sessions
 DESKTOP_FILE="$SESSIONS_DIR/cyberrealm.desktop"
 
@@ -67,14 +67,14 @@ mkdir -p "$SESSIONS_DIR"
 cat > "$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Type=Application
-Name=CyberRealm Kiosk
-Comment=Launch CyberRealm fullscreen (Wayland kiosk compositor)
+Name=CyberRealm
+Comment=Launch CyberRealm
 Exec=$BIN
 EOF
 chmod 644 "$DESKTOP_FILE"
 echo "Installed $DESKTOP_FILE"
 echo "  (Exec=$BIN)"
-echo "Pick \"CyberRealm Kiosk\" in your display manager's session menu (GDM, SDDM, LightDM...)."
+echo "Pick \"CyberRealm\" in your display manager's session menu (GDM, SDDM, LightDM...)."
 
 if [[ $do_restart -eq 1 ]]; then
 	for dm in sddm gdm lightdm; do

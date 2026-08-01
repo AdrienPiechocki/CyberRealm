@@ -536,10 +536,10 @@ static char *get_game_path(void) {
 		return NULL;
 	}
 	*slash = '\0';
-	if (strlen(path) + strlen("/../CyberRealm/build/CyberRealm.x86_64") >= sizeof(path)) {
+	if (strlen(path) + strlen("/../../Game/build/CyberRealm.x86_64") >= sizeof(path)) {
 		return NULL;
 	}
-	strcat(path, "/../CyberRealm/build/CyberRealm.x86_64");
+	strcat(path, "/../../Game/build/CyberRealm.x86_64");
 	return path;
 }
 
