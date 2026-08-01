@@ -100,6 +100,7 @@ struct server {
 
 	struct toplevel *toplevel;
 	pid_t game_pid;
+	const char *exit_reason;
 };
 
 static int handle_sigchld(int signal_number, void *data) {
@@ -107,6 +108,7 @@ static int handle_sigchld(int signal_number, void *data) {
 	while (waitpid(-1, NULL, WNOHANG) > 0) {
 	}
 	struct server *server = data;
+	server->exit_reason = "sigchld";
 	wl_display_terminate(server->display);
 	return 0;
 }
@@ -180,6 +182,7 @@ static void keyboard_handle_key(struct wl_listener *listener, void *data) {
 			event->state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		for (int i = 0; i < nsyms; i++) {
 			if (syms[i] == XKB_KEY_q) {
+				server->exit_reason = "ctrl-alt-q";
 				wl_display_terminate(server->display);
 				handled = true;
 			}
@@ -453,6 +456,7 @@ static void xdg_toplevel_unmap(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct toplevel *toplevel = wl_container_of(listener, toplevel, unmap);
 	if (toplevel->server->toplevel == toplevel) {
+		toplevel->server->exit_reason = "toplevel-unmap";
 		wl_display_terminate(toplevel->server->display);
 	}
 }
@@ -485,6 +489,7 @@ static void xdg_toplevel_destroy(struct wl_listener *listener, void *data) {
 	(void)data;
 	struct toplevel *toplevel = wl_container_of(listener, toplevel, destroy);
 	if (toplevel->server->toplevel == toplevel) {
+		toplevel->server->exit_reason = "toplevel-destroy";
 		wl_display_terminate(toplevel->server->display);
 	}
 	wl_list_remove(&toplevel->map.link);
@@ -688,7 +693,7 @@ int main(int argc, char *argv[]) {
 
 	wlr_log(WLR_INFO, "Running kiosk compositor on WAYLAND_DISPLAY=%s", socket);
 	wl_display_run(server.display);
-	wlr_log(WLR_INFO, "display run returned");
+	wlr_log(WLR_INFO, "display run returned (exit_reason=%s)", server.exit_reason ? server.exit_reason : "unknown");
 
 	if (server.game_pid > 0) {
 		kill(server.game_pid, SIGTERM);
