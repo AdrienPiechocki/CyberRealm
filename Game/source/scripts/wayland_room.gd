@@ -1034,22 +1034,29 @@ func _on_session_lock_surface_texture_updated(id: int, texture: Texture2D, width
 
 # La layer surface la plus en avant contenant pos (les popups de layer
 # passent devant les layer surfaces, elles-mêmes devant les fenêtres 3D).
+# À z égal, on préfère une surface keyboard-interactive : les surfaces
+# décoratives plein écran (dms:frame, mask vide, kb=0) captureraient sinon
+# tout l'input d'une app interactive du même layer (le launcher dms:spotlight).
 func _layer_at(pos: Vector2) -> Dictionary:
 	var best := {}
 	var best_z := -1
+	var best_interactive := false
 	for pid in layer_popup_rects:
 		var entry = layer_popup_rects[pid]
 		if is_instance_valid(entry.rect) and entry.rect.get_global_rect().has_point(pos):
 			var z: int = entry.rect.z_index
-			if z > best_z:
+			if z > best_z or (z == best_z and not best_interactive):
 				best_z = z
+				best_interactive = true
 				best = {"kind": "layer_popup", "id": pid, "rect": entry.rect}
 	for lid in layer_rects:
 		var entry = layer_rects[lid]
 		if is_instance_valid(entry.rect) and entry.rect.get_global_rect().has_point(pos):
 			var z: int = entry.rect.z_index
-			if z > best_z:
+			var interactive: bool = int(entry.get("kb", 0)) != 0
+			if z > best_z or (z == best_z and interactive and not best_interactive):
 				best_z = z
+				best_interactive = interactive
 				best = {"kind": "layer", "id": lid, "rect": entry.rect}
 	return best
 
