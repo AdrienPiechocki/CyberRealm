@@ -168,10 +168,14 @@ void fragment() {
 		vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0)
 			? UV * u_content_size / ts : UV;
 		vec4 tex = texture(u_tex, mapped_uv);
-		// Buffers Wayland pré-multipliés (wl_shm ARGB32, Cairo...):
-		// dé-pré-multiplier puis convertir sRGB -> linéaire (affichage 2D).
+		// Buffers Wayland pré-multipliés (wl_shm ARGB32, Cairo...) :
+		// dé-pré-multiplier en sRGB et sortir la couleur droite avec son
+		// alpha (blend_mix = straight alpha). Pas de pow(2.2) : contraire-
+		// ment au shader spatial (3D, linéaire), le canvas 2D de Godot
+		// composite en sRGB -> gamma-appliquer assombrissait les pixels
+		// semi-transparents (halos, alpha cassé).
 		vec3 unmultiplied = tex.a > 0.01 ? tex.rgb / max(tex.a, 0.001) : tex.rgb;
-		COLOR = vec4(pow(unmultiplied, vec3(2.2)), tex.a);
+		COLOR = vec4(unmultiplied, tex.a);
 	}
 }
 """
