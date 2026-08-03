@@ -5,3 +5,4 @@ Game/source/bin/*.dll
 .sconsign.dblite
 *.os
 *.o
+compositors/dwl/

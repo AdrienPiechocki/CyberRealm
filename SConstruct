@@ -9,7 +9,7 @@ sources = Glob("compositors/ingame/*.cpp") + Glob("compositors/ingame/*.c")
 
 # Dépendances système via pkg-config. Adapter le nom du paquet wlroots
 # selon la version installée (wlroots-0.18, wlroots-0.19, ...).
-env.ParseConfig("pkg-config --cflags --libs wlroots-0.18 wayland-server xkbcommon libdrm")
+env.ParseConfig("pkg-config --cflags --libs wlroots-0.19 wayland-server xkbcommon libdrm")
 
 # Vulkan — nécessaire pour l'import zero-copy DMA-BUF → VkImage via
 # VK_KHR_external_memory_fd.  Les headers (vulkan/vulkan.h) et la
@@ -23,7 +23,7 @@ if subprocess.call(["pkg-config", "--exists", "dbus-1"]) == 0:
 else:
     print("WARNING: dbus-1 not found — notification daemon disabled")
 
-# wlroots 0.18 masque son API derrière cette macro tant qu'elle n'est pas
+# wlroots 0.19 masque son API derrière cette macro tant qu'elle n'est pas
 # stabilisée - sans elle, tous ses headers refusent de compiler.
 env.Append(CPPDEFINES=["WLR_USE_UNSTABLE"])
 
