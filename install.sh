@@ -24,7 +24,7 @@ cat > "$SCRIPT_DIR/compositors/dwl/dwl.desktop" <<EOF
 [Desktop Entry]
 Name=CyberRealm
 Comment=Launch CyberRealm via dwl
-Exec=dwl -s $GAME
+Exec=dwl -s "$GAME; kill -TERM \\\$PPID"
 Type=Application
 EOF
 
