@@ -6,6 +6,7 @@ extends Node3D
 @onready var compositor: WlrCompositor = $WlrCompositor
 @onready var window_menu = $Player/WindowMenuLayer/WindowMenu
 @onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
+var _present_frame_counter := 0 # throttling du readback viewport pour OBS
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -206,6 +207,9 @@ func _ready() -> void:
 	compositor.session_lock_unlocked.connect(_on_session_lock_unlocked)
 	compositor.session_lock_surface_texture_updated.connect(_on_session_lock_surface_texture_updated)
 	compositor.start_headless()
+	# Portails de capture pour OBS : xdg-desktop-portal (backend wlr) +
+	# xdg-desktop-portal-wlr, dans la session du jeu (socket cyberrealm-0).
+	compositor.launch_portals()
 	layer_shader = Shader.new()
 	layer_shader.code = LAYER_SHADER_CODE
 	# Les layer surfaces sont ancrées à l'écran : le compositeur doit
@@ -253,6 +257,16 @@ func _ready() -> void:
 	layer_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	$Player/UI.add_child(layer_overlay)
+
+# Capture écran pour OBS : lit l'image du viewport (GPU→CPU) et la présente
+# à l'output headless du compositeur, qui devient la "source écran" capturée
+# par xdg-desktop-portal-wlr (wlr-screencopy / ext_image_capture output).
+func _present_viewport_frame() -> void:
+	var vp := get_viewport()
+	var img := vp.get_texture().get_image()
+	if img == null or img.is_empty():
+		return
+	compositor.present_viewport_frame(img.get_data(), img.get_width(), img.get_height())
 
 # Position de spawn des nouvelles fenêtres : on caste un rayon de
 # SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
@@ -1147,6 +1161,22 @@ func _event_matches_mods(event: InputEvent, mods: Dictionary) -> bool:
 func _process(delta: float) -> void:
 	_update_xray(delta)
 	_update_flashes(delta)
+
+	# Capture écran pour OBS (xdg-desktop-portal-wlr) : présente la vue du
+	# viewport (ce que le joueur voit) à l'output headless, qu'alimente la
+	# source ext_image_capture "output". Le readback GPU→CPU coûte cher : on
+	# l'échantillonne à ~30 FPS (1 frame sur 2) — suffisant pour l'aperçu
+	# d'OBS — sans sacrifier la performance du jeu.
+	_present_frame_counter = (_present_frame_counter + 1) & 1
+
+	# Synchroniser le curseur Wayland (wlr_cursor) avec la position de la
+	# souris Godot. Le curseur est composité dans le frame screencopy par
+	# wlroots, donc il apparaîtra dans la capture OBS.
+	var _cursor_pos := get_viewport().get_mouse_position()
+	compositor.set_cursor_position(_cursor_pos.x, _cursor_pos.y)
+
+	if _present_frame_counter == 0:
+		_present_viewport_frame()
 
 	# Suivi de l'icône de drag-and-drop
 	if drag_icon_rect and drag_icon_rect.visible:

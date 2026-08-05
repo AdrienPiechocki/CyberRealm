@@ -28,14 +28,87 @@
 extern "C" {
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/render/dmabuf.h>
+#include <wlr/render/swapchain.h>
+#include <wlr/render/pass.h>
+#include <wlr/render/wlr_renderer.h>
+#include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
 #include <libdrm/drm_fourcc.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_viewporter.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_xcursor_manager.h>
 }
 
+#include "ext-image-capture-source-v1-protocol.h"
+
 using namespace godot;
+
+// =====================================================================
+// Capture de fenêtres pour xdg-desktop-portal-wlr
+// (ext_foreign_toplevel_image_capture_source_manager_v1 — manager absent
+// de wlroots 0.19.3, voir ext_foreign_toplevel_image_capture_source.c)
+// =====================================================================
+
+void WlrCompositor::toplevel_source_start(wlr_ext_image_capture_source_v1 *base, bool with_cursors) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, base);
+    source->num_started++;
+}
+
+void WlrCompositor::toplevel_source_stop(wlr_ext_image_capture_source_v1 *base) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, base);
+    if (source->num_started > 0) {
+        source->num_started--;
+    }
+}
+
+void WlrCompositor::toplevel_source_schedule_frame(wlr_ext_image_capture_source_v1 *base) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, base);
+    source->needs_frame = true;
+}
+
+void WlrCompositor::toplevel_source_copy_frame(wlr_ext_image_capture_source_v1 *base,
+        wlr_ext_image_copy_capture_frame_v1 *frame,
+        wlr_ext_image_capture_source_v1_frame_event *event) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, base);
+    WindowState *ws = source->window;
+    // Le buffer exact-size contient le dernier rendu de la fenêtre (recopié
+    // depuis offscreen dans _process à chaque frame) ; copie GPU→buffer
+    // client par wlroots. On ne peut pas passer capture_cache.offscreen
+    // directement : il est pad'dé à 64px alors que copy_buffer exige des
+    // tailles identiques (BUFFER_CONSTRAINTS sinon).
+    if (!ws || !source->capture_buffer) {
+        wlr_ext_image_copy_capture_frame_v1_fail(frame,
+            EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
+        return;
+    }
+    if (!wlr_ext_image_copy_capture_frame_v1_copy_buffer(frame,
+            source->capture_buffer, source->compositor->renderer)) {
+        return;
+    }
+    timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    wlr_ext_image_copy_capture_frame_v1_ready(frame, WL_OUTPUT_TRANSFORM_NORMAL, &now);
+}
+
+wlr_ext_image_capture_source_v1_cursor *WlrCompositor::toplevel_source_get_pointer_cursor(
+        wlr_ext_image_capture_source_v1 *base, wlr_seat *seat) {
+    return nullptr;
+}
+
+static const wlr_ext_image_capture_source_v1_interface toplevel_source_impl = {
+    .start = WlrCompositor::toplevel_source_start,
+    .stop = WlrCompositor::toplevel_source_stop,
+    .schedule_frame = WlrCompositor::toplevel_source_schedule_frame,
+    .copy_frame = WlrCompositor::toplevel_source_copy_frame,
+    .get_pointer_cursor = WlrCompositor::toplevel_source_get_pointer_cursor,
+};
+
+static const struct ext_foreign_toplevel_image_capture_source_manager_v1_interface foreign_toplevel_source_manager_impl = {
+    .create_source = WlrCompositor::on_foreign_toplevel_source_manager_create_source,
+    .destroy = WlrCompositor::on_foreign_toplevel_source_manager_destroy,
+};
 
 // ---------------------------------------------------------------------
 // Table de correspondance Key (Godot, physical_keycode) -> evdev keycode
@@ -160,6 +233,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
+    ClassDB::bind_method(D_METHOD("present_viewport_frame", "rgba", "width", "height"), &WlrCompositor::present_viewport_frame);
     ClassDB::bind_method(D_METHOD("get_layer_surface_info", "layer_id"), &WlrCompositor::get_layer_surface_info);
     ClassDB::bind_method(D_METHOD("get_keyboard_focus_layer_id"), &WlrCompositor::get_keyboard_focus_layer_id);
     ClassDB::bind_method(D_METHOD("close_layer_surface", "layer_id"), &WlrCompositor::close_layer_surface);
@@ -174,6 +248,9 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_polkit_agent", "path"), &WlrCompositor::set_polkit_agent);
     ClassDB::bind_method(D_METHOD("get_polkit_agent"), &WlrCompositor::get_polkit_agent);
+    ClassDB::bind_method(D_METHOD("launch_portals"), &WlrCompositor::launch_portals);
+
+    ClassDB::bind_method(D_METHOD("set_cursor_position", "x", "y"), &WlrCompositor::set_cursor_position);
 
 
     ADD_SIGNAL(MethodInfo("window_mapped",
@@ -278,7 +355,53 @@ WlrCompositor::~WlrCompositor() {
     vulkan_import.flush_pending();
     vulkan_import.cleanup();
 
+    if (present_buffer) {
+        wlr_buffer_drop(present_buffer);
+        present_buffer = nullptr;
+    }
+
     if (display) {
+        // Retirer TOUS les listeners attachés aux objets wlr AVANT de
+        // détruire le display. wlroots exige que les signaux de
+        // xdg_shell (new_surface/new_toplevel/new_popup/destroy) soient
+        // sans listener à la destruction : wlr_xdg_shell_destroy() fait
+        // assert(wl_list_empty(...)) et abort() sinon (crash 23:08).
+        // Les listeners per-objets (toplevel/popup/layer/drag/constraint)
+        // sont retirés par leurs propres handlers lors de
+        // wl_display_destroy_clients() ci-dessous, il ne faut donc pas
+        // les toucher ici.
+        if (!wl_list_empty(&new_toplevel_listener.link))
+            wl_list_remove(&new_toplevel_listener.link);
+        if (!wl_list_empty(&new_layer_surface_listener.link))
+            wl_list_remove(&new_layer_surface_listener.link);
+        if (!wl_list_empty(&new_session_lock_listener.link))
+            wl_list_remove(&new_session_lock_listener.link);
+        if (!wl_list_empty(&request_start_drag_listener.link))
+            wl_list_remove(&request_start_drag_listener.link);
+        if (!wl_list_empty(&start_drag_listener.link))
+            wl_list_remove(&start_drag_listener.link);
+        if (!wl_list_empty(&request_set_selection_listener.link))
+            wl_list_remove(&request_set_selection_listener.link);
+        if (!wl_list_empty(&request_set_primary_selection_listener.link))
+            wl_list_remove(&request_set_primary_selection_listener.link);
+        if (!wl_list_empty(&new_constraint_listener.link))
+            wl_list_remove(&new_constraint_listener.link);
+        if (!wl_list_empty(&keyboard_key_listener.link))
+            wl_list_remove(&keyboard_key_listener.link);
+        if (!wl_list_empty(&keyboard_modifiers_listener.link))
+            wl_list_remove(&keyboard_modifiers_listener.link);
+
+        // Détruire le curseur AVANT le display (wlr_cursor/wlr_cursor_manager
+        // dépendent du display pour leurs ressources internes).
+        if (cursor_manager) {
+            wlr_xcursor_manager_destroy(cursor_manager);
+            cursor_manager = nullptr;
+        }
+        if (cursor) {
+            wlr_cursor_destroy(cursor);
+            cursor = nullptr;
+        }
+
         wl_display_destroy_clients(display);
         wl_display_destroy(display);
     }
@@ -294,6 +417,22 @@ WlrCompositor::~WlrCompositor() {
         waitpid(pid, &status, WNOHANG);
     }
     child_pids.clear();
+
+    // Terminer le bus D-Bus privé de la session du jeu
+    if (dbus_daemon_pid > 0) {
+        kill(dbus_daemon_pid, SIGTERM);
+        waitpid(dbus_daemon_pid, nullptr, WNOHANG);
+        dbus_daemon_pid = -1;
+    }
+
+    // Nettoyer le fichier d'adresse D-Bus utilisé par dwl
+    {
+        const char *rt = getenv("XDG_RUNTIME_DIR");
+        if (rt) {
+            std::string path = std::string(rt) + "/cyberrealm-session-bus";
+            unlink(path.c_str());
+        }
+    }
 
 
 }
@@ -1250,6 +1389,20 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
 
     String title = ws->toplevel->title ? String::utf8(ws->toplevel->title) : String();
     String app_id = ws->toplevel->app_id ? String::utf8(ws->toplevel->app_id) : String();
+
+    // Handle ext-foreign-toplevel-list-v1 : c'est ce que le chooser de
+    // portal-wlr liste pour proposer la "capture fenêtre" à OBS.
+    if (self->foreign_toplevel_list) {
+        wlr_ext_foreign_toplevel_handle_v1_state state = {
+            .title = ws->toplevel->title ? ws->toplevel->title : "",
+            .app_id = ws->toplevel->app_id ? ws->toplevel->app_id : "",
+        };
+        ws->foreign_handle = wlr_ext_foreign_toplevel_handle_v1_create(self->foreign_toplevel_list, &state);
+        if (ws->foreign_handle) {
+            ws->foreign_handle->data = ws;
+        }
+    }
+
     self->emit_signal("window_mapped", ws->id, title, app_id);
 }
 
@@ -1268,6 +1421,14 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
         self->active_toplevel_id = -1;
     }
 
+    // Capture fenêtre : stopper une éventuelle source ext_image_capture
+    // (envoie "stopped" à portal-wlr) et retirer le handle foreign-toplevel.
+    self->destroy_toplevel_image_source(ws->image_source);
+    if (ws->foreign_handle) {
+        wlr_ext_foreign_toplevel_handle_v1_destroy(ws->foreign_handle);
+        ws->foreign_handle = nullptr;
+    }
+
     wl_list_remove(&ws->map_listener.link);
     wl_list_remove(&ws->unmap_listener.link);
     wl_list_remove(&ws->destroy_listener.link);
@@ -1282,12 +1443,200 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
     self->windows.erase(id);
 }
 
+// --- Capture fenêtre (ext_foreign_toplevel_image_capture_source_manager) --
+
+void WlrCompositor::on_foreign_toplevel_source_manager_bind(wl_client *client,
+        void *data, uint32_t version, uint32_t id) {
+    WlrCompositor *self = static_cast<WlrCompositor *>(data);
+    wl_resource *resource = wl_resource_create(client,
+        &ext_foreign_toplevel_image_capture_source_manager_v1_interface, version, id);
+    if (!resource) {
+        wl_client_post_no_memory(client);
+        return;
+    }
+    wl_resource_set_implementation(resource, &foreign_toplevel_source_manager_impl, self, nullptr);
+}
+
+void WlrCompositor::on_foreign_toplevel_source_manager_create_source(wl_client *client,
+        wl_resource *resource, uint32_t source, wl_resource *toplevel_handle) {
+    WlrCompositor *self = static_cast<WlrCompositor *>(wl_resource_get_user_data(resource));
+
+    wlr_ext_foreign_toplevel_handle_v1 *handle = nullptr;
+    if (toplevel_handle) {
+        handle = wlr_ext_foreign_toplevel_handle_v1_from_resource(toplevel_handle);
+    }
+    WindowState *ws = nullptr;
+    if (handle) {
+        ws = static_cast<WindowState *>(handle->data);
+    }
+    if (!ws || !self->foreign_toplevel_list) {
+        // Source inerte : pas de capture possible (fenêtre déjà fermée ou
+        // handle inconnu). Le client recevra "stopped" dès qu'il essaiera.
+        wlr_ext_image_capture_source_v1_create_resource(nullptr, client, source);
+        return;
+    }
+
+    if (!ws->image_source) {
+        auto *src = new WlrCompositorToplevelSource();
+        src->compositor = self;
+        src->window = ws;
+        wlr_ext_image_capture_source_v1_init(&src->base, &toplevel_source_impl);
+        ws->image_source = src;
+        self->update_toplevel_source_constraints(src);
+    }
+    wlr_ext_image_capture_source_v1_create_resource(&ws->image_source->base, client, source);
+}
+
+void WlrCompositor::on_foreign_toplevel_source_manager_destroy(wl_client *client,
+        wl_resource *resource) {
+    wl_resource_destroy(resource);
+}
+
+void WlrCompositor::update_toplevel_source_constraints(WlrCompositorToplevelSource *source) {
+    WindowState *ws = source->window;
+    if (!ws || !renderer || !allocator) return;
+    if (ws->width <= 0 || ws->height <= 0) return;
+
+    // Le buffer de capture exact-size (w×h) : recopié depuis offscreen dans
+    // _process, et c'est lui que copy_frame fournit à wlroots (tailles
+    // identiques exigées par wlr_ext_image_copy_capture_frame_v1_copy_buffer).
+    // Même format linéaire que le buffer offscreen des fenêtres (le renderer
+    // peut le cibler via begin_buffer_pass, en GPU comme en fallback pixman).
+    if (!source->capture_buffer ||
+            source->capture_buffer->width != ws->width ||
+            source->capture_buffer->height != ws->height) {
+        if (source->capture_buffer) {
+            wlr_buffer_drop(source->capture_buffer);
+            source->capture_buffer = nullptr;
+        }
+        const wlr_drm_format_set *formats =
+            wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+        if (formats) {
+            static const uint32_t preferred[] = {
+                DRM_FORMAT_ABGR8888, DRM_FORMAT_XBGR8888,
+                DRM_FORMAT_ARGB8888, DRM_FORMAT_XRGB8888,
+            };
+            for (uint32_t f : preferred) {
+                const wlr_drm_format *fmt = wlr_drm_format_set_get(formats, f);
+                if (!fmt) continue;
+                uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
+                struct wlr_drm_format linear_fmt = {};
+                linear_fmt.format = f;
+                linear_fmt.modifiers = &linear_mod;
+                linear_fmt.len = 1;
+                wlr_buffer *buf = wlr_allocator_create_buffer(
+                    allocator, ws->width, ws->height, &linear_fmt);
+                if (buf) {
+                    source->capture_buffer = buf;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Les contraintes annoncées à portal-wlr (tailles/formats/dmabuf device)
+    // sont extraites d'un swapchain temporaire, comme le fait wlroots pour
+    // les sources output. Le swapchain est détruit juste après : wlroots en
+    // copie les formats et la largeur/hauteur.
+    const wlr_drm_format_set *formats = wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
+    const wlr_drm_format *fmt = formats ? wlr_drm_format_set_get(formats, DRM_FORMAT_XRGB8888) : nullptr;
+    if (!fmt) return;
+
+    wlr_swapchain *swapchain = wlr_swapchain_create(allocator, ws->width, ws->height, fmt);
+    if (!swapchain) return;
+    wlr_ext_image_capture_source_v1_set_constraints_from_swapchain(
+        &source->base, swapchain, renderer);
+    wlr_swapchain_destroy(swapchain);
+}
+
+// Recopie la sous-région w×h de l'offscreen (pad'dé à 64px) vers le buffer
+// exact-size de la source, une fois par frame dans _process. C'est ce buffer
+// que copy_frame présente à wlroots lors des captures de fenêtre.
+void WlrCompositor::blit_toplevel_capture(WlrCompositorToplevelSource *source) {
+    WindowState *ws = source->window;
+    if (!ws || !source->capture_buffer || !ws->capture_cache.offscreen) return;
+    if (!renderer) return;
+    if (source->capture_buffer->width != ws->width ||
+            source->capture_buffer->height != ws->height) {
+        update_toplevel_source_constraints(source);
+    }
+
+    wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(
+        renderer, source->capture_buffer, nullptr);
+    if (!pass) return;
+
+    wlr_render_rect_options clear = {};
+    clear.box.x = 0;
+    clear.box.y = 0;
+    clear.box.width = source->capture_buffer->width;
+    clear.box.height = source->capture_buffer->height;
+    clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
+    clear.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
+    wlr_render_pass_add_rect(pass, &clear);
+
+    wlr_texture *tex = wlr_texture_from_buffer(renderer, ws->capture_cache.offscreen);
+    if (tex) {
+        wlr_render_texture_options opts = {};
+        opts.texture = tex;
+        opts.dst_box.x = 0;
+        opts.dst_box.y = 0;
+        opts.dst_box.width = ws->width;
+        opts.dst_box.height = ws->height;
+        opts.src_box.x = 0;
+        opts.src_box.y = 0;
+        opts.src_box.width = ws->width;
+        opts.src_box.height = ws->height;
+        opts.transform = WL_OUTPUT_TRANSFORM_NORMAL;
+        opts.filter_mode = WLR_SCALE_FILTER_NEAREST;
+        wlr_render_pass_add_texture(pass, &opts);
+        wlr_texture_destroy(tex);
+    }
+    wlr_render_pass_submit(pass);
+}
+
+void WlrCompositor::destroy_toplevel_image_source(WlrCompositorToplevelSource *source) {
+    if (!source) return;
+    WindowState *ws = source->window;
+    if (ws && ws->image_source == source) {
+        ws->image_source = nullptr;
+    }
+    if (source->capture_buffer) {
+        wlr_buffer_drop(source->capture_buffer);
+        source->capture_buffer = nullptr;
+    }
+    wlr_ext_image_capture_source_v1_finish(&source->base);
+    delete source;
+}
+
 void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, commit_listener);
     WlrCompositor *self = ws->owner;
 
     if (ws->toplevel->base->initial_commit) {
-        wlr_xdg_toplevel_set_size(ws->toplevel, 1280, 720);
+        // Honorer l'état demandé avant le commit initial (fullscreen/maximize
+        // demandés par certains clients avant leur premier commit, ex. Firefox),
+        // sinon on les écraserait avec la taille par défaut.
+        if (ws->toplevel->requested.fullscreen) {
+            int fw = 1920, fh = 1080;
+            if (Viewport *vp = self->get_viewport()) {
+                Rect2 vr = vp->get_visible_rect();
+                fw = (int)vr.size.x;
+                fh = (int)vr.size.y;
+            }
+            wlr_xdg_toplevel_set_fullscreen(ws->toplevel, true);
+            wlr_xdg_toplevel_set_size(ws->toplevel, fw, fh);
+        } else if (ws->toplevel->requested.maximized) {
+            int mw = 1920, mh = 1080;
+            if (Viewport *vp = self->get_viewport()) {
+                Rect2 vr = vp->get_visible_rect();
+                mw = (int)vr.size.x;
+                mh = (int)vr.size.y;
+            }
+            wlr_xdg_toplevel_set_maximized(ws->toplevel, true);
+            wlr_xdg_toplevel_set_size(ws->toplevel, mw, mh);
+        } else {
+            wlr_xdg_toplevel_set_size(ws->toplevel, 1280, 720);
+        }
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
         return;
     }
@@ -1307,6 +1656,15 @@ void WlrCompositor::on_request_fullscreen(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, request_fullscreen_listener);
     wlr_xdg_toplevel *toplevel = ws->toplevel;
     bool fullscreen = toplevel->requested.fullscreen;
+
+    // Un client peut demander le plein écran avant son commit initial
+    // (surface non initialisée). Les setters wlr_xdg_toplevel_set_* appellent
+    // wlr_xdg_surface_schedule_configure() en interne, qui fait un assert.
+    // L'état demandé reste dans toplevel->requested et est appliqué lors du
+    // commit initial dans on_surface_commit().
+    if (!toplevel->base->initialized) {
+        return;
+    }
 
     // Récupère la taille du viewport Godot pour dimensionner le plein écran.
     int fw = 1920, fh = 1080;
@@ -1328,6 +1686,13 @@ void WlrCompositor::on_request_maximize(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, request_maximize_listener);
     wlr_xdg_toplevel *toplevel = ws->toplevel;
 
+    // Même remarque que on_request_fullscreen : les setters
+    // wlr_xdg_toplevel_set_* ne doivent pas être appelés avant le commit
+    // initial (assert dans wlr_xdg_surface_schedule_configure()).
+    if (!toplevel->base->initialized) {
+        return;
+    }
+
     int mw = 1920, mh = 1080;
     if (Viewport *vp = ws->owner->get_viewport()) {
         Rect2 vr = vp->get_visible_rect();
@@ -1346,7 +1711,9 @@ void WlrCompositor::on_request_minimize(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, request_minimize_listener);
     // On ignore la minimisation (pas de concept de "taskbar" dans ce compositeur 3D)
     // mais on doit quand même répondre par un configure.
-    wlr_xdg_surface_schedule_configure(ws->toplevel->base);
+    if (ws->toplevel->base->initialized) {
+        wlr_xdg_surface_schedule_configure(ws->toplevel->base);
+    }
 }
 
 void WlrCompositor::on_request_move(wl_listener *listener, void *data) {
@@ -1450,6 +1817,13 @@ void WlrCompositor::on_popup_unmap(wl_listener *listener, void *data) {
 void WlrCompositor::on_popup_reposition(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, reposition_listener);
     WlrCompositor *self = ps->owner;
+
+    // wlr_xdg_popup_unconstrain_from_box() appelle aussi
+    // wlr_xdg_surface_schedule_configure() en interne : ne pas l'appeler
+    // avant le commit initial du popup.
+    if (!ps->popup->base->initialized) {
+        return;
+    }
 
     if (WindowState *parent = self->find_window(ps->parent_window_id)) {
         wlr_box constraint_box = {};
@@ -2156,6 +2530,38 @@ void WlrCompositor::start_headless() {
         wl_signal_add(&session_lock_manager->events.new_lock, &new_session_lock_listener);
     }
 
+    // Capture pour xdg-desktop-portal-wlr (OBS). wlroots fournit le manager
+    // ext_image_copy_capture_v1 (sessions/frames), les sources "output"
+    // (capture écran, alimentées par les commits de headless_output — voir
+    // present_viewport_frame) et la liste des toplevels. Le manager de
+    // sources "foreign toplevel" (capture fenêtre) n'existe pas dans
+    // wlroots 0.19.3 : on l'implémente ici (voir
+    // ext_foreign_toplevel_image_capture_source.c).
+    image_copy_capture_manager = wlr_ext_image_copy_capture_manager_v1_create(display, 1);
+    if (!image_copy_capture_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global ext_image_copy_capture_manager_v1");
+    }
+    output_image_capture_source_manager = wlr_ext_output_image_capture_source_manager_v1_create(display, 1);
+    if (!output_image_capture_source_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global ext_output_image_capture_source_manager_v1");
+    }
+    foreign_toplevel_list = wlr_ext_foreign_toplevel_list_v1_create(display, 1);
+    if (!foreign_toplevel_list) {
+        UtilityFunctions::printerr("waylandgodot: échec création global ext_foreign_toplevel_list_v1");
+    }
+    foreign_toplevel_source_manager = wl_global_create(display,
+        &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1, this,
+        WlrCompositor::on_foreign_toplevel_source_manager_bind);
+    if (!foreign_toplevel_source_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global ext_foreign_toplevel_image_capture_source_manager_v1");
+    }
+    // Fallback zwlr_screencopy_v1 pour les clients qui ne connaissent que ce
+    // protocole (capture depuis les commits output, cf. present_viewport_frame).
+    screencopy_manager = wlr_screencopy_manager_v1_create(display);
+    if (!screencopy_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global zwlr_screencopy_manager_v1");
+    }
+
     // Nécessaire pour les clients qui rendent via GPU/dmabuf (ex: Firefox
     // + WebRender). Sans ce global, ces clients tentent de committer des
     // buffers dmabuf que le compositeur ne peut pas interpréter -> la
@@ -2240,7 +2646,25 @@ void WlrCompositor::start_headless() {
     new_toplevel_listener.notify = WlrCompositor::on_new_toplevel;
     wl_signal_add(&xdg_shell->events.new_toplevel, &new_toplevel_listener);
 
-    const char *socket = wl_display_add_socket_auto(display);
+    // Socket à nom STABLE ("cyberrealm-0") : dwl (compositors/dwl_custom)
+    // teste son existence dans $XDG_RUNTIME_DIR pour rediriger les apps
+    // lancées depuis ses raccourcis vers le compositeur du jeu. Un socket
+    // orphelin (crash précédent) est supprimé d'abord, sinon
+    // wl_display_add_socket échoue. En cas de collision, repli sur un nom
+    // aléatoire (dans ce cas dwl lancera les apps sur son propre socket).
+    const char *socket = nullptr;
+    {
+        const char *rt = getenv("XDG_RUNTIME_DIR");
+        if (rt) {
+            std::string path = std::string(rt) + "/cyberrealm-0";
+            unlink(path.c_str());
+        }
+        if (wl_display_add_socket(display, "cyberrealm-0") == 0) {
+            socket = "cyberrealm-0";
+        } else {
+            socket = wl_display_add_socket_auto(display);
+        }
+    }
     if (!socket) {
         UtilityFunctions::printerr("waylandgodot: impossible de créer le socket Wayland");
         return;
@@ -2272,6 +2696,28 @@ void WlrCompositor::start_headless() {
     if (!wlr_backend_start(backend)) {
         UtilityFunctions::printerr("waylandgodot: échec démarrage backend");
         return;
+    }
+
+    // Curseur Wayland : wlr_cursor + wlr_xcursor_manager. Le curseur est
+    // requis pour que zwlr_screencopy_v1 et ext_image_capture supportent le
+    // cursor mode embedded (mode 1). Sans lui, xdg-desktop-portal-wlr rejette
+    // la demande → "Unavailable cursor mode 1" → OBS ne peut pas capturer.
+    // Le curseur est rendu dans le frame screencopy par wlroots
+    // automatiquement lorsque le wlr_cursor est attaché à l'output layout.
+    // INIT APRÈS wlr_backend_start : l'output headless doit être démarré
+    // avant toute opération cursor (attach/warp/set_xcursor).
+    UtilityFunctions::print("waylandgodot: init cursor...");
+    cursor = wlr_cursor_create();
+    if (cursor) {
+        cursor_manager = wlr_xcursor_manager_create(nullptr, 24);
+        if (cursor_manager) {
+            wlr_xcursor_manager_load(cursor_manager, 1.0f);
+            UtilityFunctions::print("waylandgodot: wlr_cursor + xcursor_manager OK");
+        } else {
+            UtilityFunctions::printerr("waylandgodot: échec création xcursor_manager");
+        }
+    } else {
+        UtilityFunctions::printerr("waylandgodot: échec création wlr_cursor");
     }
 
     UtilityFunctions::print("waylandgodot: compositeur headless prêt sur ", socket);
@@ -2332,6 +2778,36 @@ void WlrCompositor::_process(double delta) {
                 emit_signal("window_texture_updated", ws.id, ws.texture,
                     ws.width, ws.height);
             }
+        }
+        // Capture fenêtre OBS : copier l'offscreen fraîchement rendu vers le
+        // buffer exact-size de la source (s'il y a une session active).
+        if (ws.image_source) {
+            WlrCompositorToplevelSource *src = ws.image_source;
+            if (src->num_started > 0 || src->needs_frame) {
+                blit_toplevel_capture(src);
+            }
+        }
+    }
+
+    // Capture de fenêtres pour OBS (xdg-desktop-portal-wlr) : produire les
+    // frames demandées par les sessions ext_image_copy_capture actives.
+    // Le buffer offscreen vient d'être re-rendu juste au-dessus ; les
+    // contraintes (taille) suivent la géométrie courante de la fenêtre.
+    for (auto &pair : windows) {
+        WindowState &ws = pair.second;
+        if (!ws.image_source) continue;
+        WlrCompositorToplevelSource *src = ws.image_source;
+        if (ws.width > 0 && ws.height > 0 &&
+                (ws.width != (int)src->base.width || ws.height != (int)src->base.height)) {
+            update_toplevel_source_constraints(src);
+        }
+        if (src->needs_frame && ws.width > 0 && ws.height > 0) {
+            pixman_region32_t damage;
+            pixman_region32_init_rect(&damage, 0, 0, ws.width, ws.height);
+            wlr_ext_image_capture_source_v1_frame_event event = { .damage = &damage };
+            wl_signal_emit_mutable(&src->base.events.frame, &event);
+            pixman_region32_fini(&damage);
+            src->needs_frame = false;
         }
     }
 
@@ -2447,7 +2923,9 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
         // simultanément. Ne pas désactiver la fenêtre précédente :
         // wlr_xdg_toplevel_set_activated(false) fait throttler le rendu
         // côté client (Firefox gèle la vidéo, GTK arrête les animations).
-        if (active_toplevel_id != window_id) {
+        // set_activated() appelle schedule_configure() en interne : l'ignorer
+        // si la surface n'est pas encore initialisée.
+        if (active_toplevel_id != window_id && ws->toplevel->base->initialized) {
             wlr_xdg_toplevel_set_activated(ws->toplevel, true);
             active_toplevel_id = window_id;
         }
@@ -2728,6 +3206,11 @@ String WlrCompositor::get_portal_backend() const {
     return portal_backend;
 }
 
+void WlrCompositor::set_cursor_position(double x, double y) {
+    cursor_x = x;
+    cursor_y = y;
+}
+
 void WlrCompositor::set_polkit_agent(const String &path) {
     polkit_agent_path = path;
     if (!polkit_agent_path.is_empty()) {
@@ -2770,12 +3253,97 @@ void WlrCompositor::launch_app(const String &command) {
     }
 }
 
+// Lance xdg-desktop-portal + xdg-desktop-portal-wlr dans la session du jeu.
+// Le daemon principal choisit son backend d'après XDG_CURRENT_DESKTOP
+// ("dwl" → wlr-portals.conf → backend wlr), et portal-wlr se connecte au
+// compositeur via WAYLAND_DISPLAY (cyberrealm-0).
+//
+// IMPORTANT : tout doit tourner sur un bus D-Bus SESSION privé. La session de
+// login (host KDE) partage le bus utilisateur /run/user/$UID/bus : le daemon
+// xdg-desktop-portal du host y possède déjà le nom org.freedesktop.portal.Desktop
+// et route ScreenCast vers le backend kde (inutilisable sans kwin) — le
+// nôtre quitterait aussitôt. On démarre donc d'abord un dbus-daemon privé.
+void WlrCompositor::launch_portals() {
+    start_private_dbus();
+    // Les binaires portal sont dans /usr/lib/ (pas dans $PATH sur Arch) :
+    // il faut les chemins absolus pour que sh -c les trouve.
+    launch_app("/usr/lib/xdg-desktop-portal");
+    launch_app("/usr/lib/xdg-desktop-portal-wlr");
+}
+
+// Démarre un dbus-daemon de session privé (socket neuf dans /tmp) et bascule
+// DBUS_SESSION_BUS_ADDRESS dessus. L'adresse est lue sur le pipe créé avant
+// fork ; le daemon tourne en avant-plan (--nofork) comme enfant du jeu, il
+// sera terminé dans le destructeur.
+void WlrCompositor::start_private_dbus() {
+    if (dbus_daemon_pid > 0) return;
+
+    int pipefd[2];
+    if (pipe(pipefd) != 0) {
+        UtilityFunctions::printerr("waylandgodot: pipe() a échoué pour le bus D-Bus privé");
+        return;
+    }
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        close(pipefd[1]);
+        execl("/usr/bin/dbus-daemon", "dbus-daemon", "--session",
+            "--nofork", "--nopidfile", "--print-address=1", (char *)nullptr);
+        _exit(127);
+    } else if (pid < 0) {
+        close(pipefd[0]);
+        close(pipefd[1]);
+        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour le bus D-Bus privé");
+        return;
+    }
+
+    close(pipefd[1]);
+    char buf[2048] = {0};
+    ssize_t n = read(pipefd[0], buf, sizeof(buf) - 1);
+    close(pipefd[0]);
+
+    if (n > 0) {
+        char *nl = strchr(buf, '\n');
+        if (nl) *nl = '\0';
+        if (buf[0] != '\0') {
+            setenv("DBUS_SESSION_BUS_ADDRESS", buf, 1);
+            dbus_daemon_pid = pid;
+
+            // Écrire l'adresse du bus dans un fichier pour que dwl la
+            // Propage aux apps lancées via ses raccourcis clavier.
+            // Sans ça, les apps héritent du bus D-Bus système (KDE) et
+            // ne trouvent pas les portails CyberRealm → OBS ne voit pas
+            // les sources screencast.
+            const char *rt = getenv("XDG_RUNTIME_DIR");
+            if (rt) {
+                std::string path = std::string(rt) + "/cyberrealm-session-bus";
+                FILE *f = fopen(path.c_str(), "w");
+                if (f) {
+                    fprintf(f, "%s\n", buf);
+                    fclose(f);
+                }
+            }
+
+            return;
+        }
+    }
+    // Échec de lecture (le daemon n'a pas imprimé d'adresse) : on le tue.
+    kill(pid, SIGTERM);
+    waitpid(pid, nullptr, WNOHANG);
+}
+
 void WlrCompositor::set_window_size(int window_id, int width, int height) {
     WindowState *ws = find_window(window_id);
     if (!ws || !ws->toplevel) return;
 
     if (width < 50) width = 50;
     if (height < 50) height = 50;
+
+    if (!ws->toplevel->base->initialized) {
+        return;
+    }
 
     wlr_xdg_toplevel_set_size(ws->toplevel, width, height);
     wlr_xdg_surface_schedule_configure(ws->toplevel->base);
@@ -2784,6 +3352,10 @@ void WlrCompositor::set_window_size(int window_id, int width, int height) {
 void WlrCompositor::set_window_fullscreen(int window_id, bool fullscreen) {
     WindowState *ws = find_window(window_id);
     if (!ws || !ws->toplevel) return;
+
+    if (!ws->toplevel->base->initialized) {
+        return;
+    }
 
     wlr_xdg_toplevel_set_fullscreen(ws->toplevel, fullscreen);
     if (fullscreen) {
@@ -2849,6 +3421,148 @@ void WlrCompositor::set_output_size(int width, int height) {
                 width, height);
         }
     }
+}
+
+// =====================================================================
+// present_viewport_frame — présente la vue 3D du jeu sur l'output headless
+// =====================================================================
+// C'est le buffer affiché par l'output virtuel : wlr-screencopy et la source
+// ext_image_capture "output" (capture écran de portal-wlr/OBS) le copient à
+// chaque commit. Le script Godot appelle cette méthode chaque frame avec
+// l'image du viewport racine (ce que le joueur voit réellement).
+// =====================================================================
+void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int width, int height) {
+    if (!renderer || !allocator || !headless_output) return;
+    if (width <= 0 || height <= 0) return;
+    if (rgba.size() < (int64_t)width * height * 4) return;
+
+    // (Re)crée le buffer présenté si le format/taille change. On choisit un
+    // format DATA_PTR (ARGB8888) : c'est un dmabuf CPU-accessible, exactement
+    // comme le buffer offscreen du chemin pixels — compatible avec la copie
+    // via le renderer (wlr_texture_from_buffer) utilisée par la source output.
+    if (!present_buffer || present_width != width || present_height != height) {
+        if (present_buffer) {
+            wlr_buffer_drop(present_buffer);
+            present_buffer = nullptr;
+        }
+        const wlr_drm_format_set *formats =
+            wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
+        const wlr_drm_format *fmt = formats
+            ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888)
+            : nullptr;
+        if (!fmt) {
+            UtilityFunctions::printerr("waylandgodot: present: ARGB8888 non supporté en DATA_PTR");
+            return;
+        }
+        present_buffer = wlr_allocator_create_buffer(allocator, width, height, fmt);
+        if (!present_buffer) {
+            UtilityFunctions::printerr("waylandgodot: present: échec allocation buffer");
+            return;
+        }
+        present_width = width;
+        present_height = height;
+    }
+
+    // Upload RGBA8 (Godot) → ARGB8888 en mémoire (BGRA little-endian).
+    void *data = nullptr;
+    uint32_t format = 0;
+    size_t stride = 0;
+    if (!wlr_buffer_begin_data_ptr_access(present_buffer,
+            WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride)) {
+        return;
+    }
+    const uint8_t *src = rgba.ptr();
+    uint8_t *dst = static_cast<uint8_t *>(data);
+    for (int y = 0; y < height; y++) {
+        const uint8_t *srow = src + (size_t)y * width * 4;
+        uint8_t *drow = dst + (size_t)y * stride;
+        for (int x = 0; x < width; x++) {
+            drow[x * 4 + 0] = srow[x * 4 + 2]; // B <- R
+            drow[x * 4 + 1] = srow[x * 4 + 1]; // G
+            drow[x * 4 + 2] = srow[x * 4 + 0]; // R <- B
+            drow[x * 4 + 3] = 0xFF;            // A
+        }
+    }
+    wlr_buffer_end_data_ptr_access(present_buffer);
+
+    // Dessiner le curseur xcursor dans le buffer présenté pour qu'il
+    // apparaisse dans la capture screencopy (OBS). Le cursor_manager a
+    // chargé le thème xcursor ; on récupère l'image "default" et on la
+    // composit dans le buffer ARGB8888 à la position (cursor_x, cursor_y).
+    if (cursor_manager && cursor) {
+        struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(
+            cursor_manager, "default", 1.0f);
+        if (xcursor && xcursor->image_count > 0) {
+            int frame = wlr_xcursor_frame(xcursor, 0);
+            if (frame >= 0 && frame < (int)xcursor->image_count) {
+                struct wlr_xcursor_image *img = xcursor->images[frame];
+                if (img && img->buffer) {
+                    // Re-mapper le buffer pour dessiner le cursor
+                    void *buf_data = nullptr;
+                    uint32_t buf_format = 0;
+                    size_t buf_stride = 0;
+                    if (wlr_buffer_begin_data_ptr_access(present_buffer,
+                            WLR_BUFFER_DATA_PTR_ACCESS_WRITE,
+                            &buf_data, &buf_format, &buf_stride)) {
+                        int cx = (int)cursor_x - (int)img->hotspot_x;
+                        int cy = (int)cursor_y - (int)img->hotspot_y;
+                        // Dessiner le cursor image (ARGB8888) avec alpha blend
+                        uint8_t *dst_base = static_cast<uint8_t *>(buf_data);
+                        const uint8_t *src_img = img->buffer;
+                        for (uint32_t iy = 0; iy < img->height; iy++) {
+                            int dy = cy + (int)iy;
+                            if (dy < 0 || dy >= height) continue;
+                            uint8_t *drow = dst_base + (size_t)dy * buf_stride;
+                            const uint8_t *srow = src_img + (size_t)iy * img->width * 4;
+                            for (uint32_t ix = 0; ix < img->width; ix++) {
+                                int dx = cx + (int)ix;
+                                if (dx < 0 || dx >= width) continue;
+                                // src = ARGB8888 (little-endian: B,G,R,A)
+                                uint8_t sa = srow[ix * 4 + 3];
+                                if (sa == 0) continue;
+                                uint8_t sr = srow[ix * 4 + 2];
+                                uint8_t sg = srow[ix * 4 + 1];
+                                uint8_t sb = srow[ix * 4 + 0];
+                                uint8_t *dp = drow + dx * 4;
+                                if (sa == 255) {
+                                    dp[0] = sb;
+                                    dp[1] = sg;
+                                    dp[2] = sr;
+                                    dp[3] = 0xFF;
+                                } else {
+                                    // Alpha blend
+                                    float a = sa / 255.0f;
+                                    dp[0] = (uint8_t)(sb * a + dp[0] * (1.0f - a));
+                                    dp[1] = (uint8_t)(sg * a + dp[1] * (1.0f - a));
+                                    dp[2] = (uint8_t)(sr * a + dp[2] * (1.0f - a));
+                                    dp[3] = 0xFF;
+                                }
+                            }
+                        }
+                        wlr_buffer_end_data_ptr_access(present_buffer);
+                    }
+                }
+            }
+        }
+    }
+
+    wlr_output_state state;
+    wlr_output_state_init(&state);
+    wlr_output_state_set_enabled(&state, true);
+    if (!headless_output->current_mode ||
+            (int)headless_output->current_mode->width != width ||
+            (int)headless_output->current_mode->height != height) {
+        wlr_output_state_set_custom_mode(&state, width, height, 0);
+    }
+    wlr_output_state_set_buffer(&state, present_buffer);
+    pixman_region32_t damage;
+    pixman_region32_init_rect(&damage, 0, 0, width, height);
+    wlr_output_state_set_damage(&state, &damage);
+    pixman_region32_fini(&damage);
+    if (!wlr_output_commit_state(headless_output, &state)) {
+        UtilityFunctions::printerr("waylandgodot: present: échec commit output");
+    }
+    wlr_output_state_finish(&state);
 }
 
 Dictionary WlrCompositor::get_layer_surface_info(int layer_id) {

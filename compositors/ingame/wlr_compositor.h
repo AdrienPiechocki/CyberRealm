@@ -46,6 +46,12 @@ extern "C" {
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_xdg_output_v1.h>
 #include <wlr/types/wlr_session_lock_v1.h>
+#include <wlr/types/wlr_ext_image_copy_capture_v1.h>
+#include <wlr/types/wlr_ext_image_capture_source_v1.h>
+#include <wlr/types/wlr_ext_foreign_toplevel_list_v1.h>
+#include <wlr/types/wlr_screencopy_v1.h>
+#include <wlr/types/wlr_cursor.h>
+#include <wlr/types/wlr_xcursor_manager.h>
 }
 
 namespace godot {
@@ -123,7 +129,31 @@ struct WindowState {
     // capture (voir CaptureCache).
     CaptureCache capture_cache;
 
+    // Handle ext-foreign-toplevel-list-v1 annoncé à portal-wlr (titre de la
+    // fenêtre pour la capture fenêtre). Créé au map, détruit au destroy.
+    wlr_ext_foreign_toplevel_handle_v1 *foreign_handle = nullptr;
+
+    // Source de capture fenêtre (ext-foreign-toplevel-image-capture-source-v1),
+    // créée à la demande quand portal-wlr capture cette fenêtre. NULL tant que
+    // personne ne la capture.
+    struct WlrCompositorToplevelSource *image_source = nullptr;
+
     class WlrCompositor *owner = nullptr;
+};
+
+// Source de capture fenêtre pour ext_image_copy_capture : permet à portal-wlr
+// de streamer le contenu d'une fenêtre individuelle dans OBS.
+struct WlrCompositorToplevelSource {
+    wlr_ext_image_capture_source_v1 base;
+    class WlrCompositor *compositor = nullptr;
+    WindowState *window = nullptr;
+    size_t num_started = 0;
+    bool needs_frame = false;
+    // Buffer à la taille EXACTE de la fenêtre (w×h), recopié chaque frame
+    // depuis capture_cache.offscreen (padded à 64px). wlr_ext_image_copy_
+    // capture_frame_v1_copy_buffer exige src->width == dst->width, donc on
+    // ne peut pas passer offscreen (padded) directement.
+    wlr_buffer *capture_buffer = nullptr;
 };
 
 struct PopupState {
@@ -238,6 +268,40 @@ class WlrCompositor : public Node {
     // Output layout: nécessaire pour zxdg_output_v1 (waybar 0.15 échoue avec
     // "Failed to acquire required resources." si le global est absent).
     wlr_output_layout *output_layout = nullptr;
+
+    // Curseur Wayland (wlr_cursor + wlr_cursor_manager) : requis pour que
+    // zwlr_screencopy_v1 et ext_image_capture supportent le cursor mode
+    // embedded (mode 1). Sans wlr_cursor, xdg-desktop-portal-wlr rejette la
+    // demande avec "Unavailable cursor mode 1" → OBS ne peut pas capturer.
+    wlr_cursor *cursor = nullptr;
+    struct wlr_xcursor_manager *cursor_manager = nullptr;
+    double cursor_x = 0;
+    double cursor_y = 0;
+
+    // --- Capture (xdg-desktop-portal-wlr) -------------------------------
+    // ext_image_copy_capture_v1 : sessions/frames fournies par wlroots, avec
+    // les sources "output" (capture écran = vue 3D du jeu) et les sources
+    // "foreign toplevel" (capture fenêtre, implémentées ici).
+    wlr_ext_image_copy_capture_manager_v1 *image_copy_capture_manager = nullptr;
+    wlr_ext_output_image_capture_source_manager_v1 *output_image_capture_source_manager = nullptr;
+    wl_global *foreign_toplevel_source_manager = nullptr; // ext_foreign_toplevel_image_capture_source_manager_v1 (custom)
+    wlr_ext_foreign_toplevel_list_v1 *foreign_toplevel_list = nullptr;
+    // Fallback zwlr_screencopy_v1 (ancien protocole) : en wlroots 0.19 il
+    // capture aussi depuis les commits output, donc marche avec le buffer de
+    // present_viewport_frame. Sert si un client n'utilise que ce protocole.
+    wlr_screencopy_manager_v1 *screencopy_manager = nullptr;
+
+    // Buffer présenté à l'output headless à chaque frame : contient la vue 3D
+    // du jeu (readback du viewport Godot). C'est ce buffer que capturent
+    // wlr-screencopy / ext_image_capture (source output).
+    wlr_buffer *present_buffer = nullptr;
+    int present_width = 0;
+    int present_height = 0;
+
+    // Cycle de vie des sources de capture fenêtre.
+    void update_toplevel_source_constraints(WlrCompositorToplevelSource *source);
+    void blit_toplevel_capture(WlrCompositorToplevelSource *source);
+    void destroy_toplevel_image_source(WlrCompositorToplevelSource *source);
 
     wlr_keyboard virtual_keyboard{};
 
@@ -401,7 +465,13 @@ class WlrCompositor : public Node {
     bool gpu_pipeline_active = false;
 
     // --- Portal backend (XDG_CURRENT_DESKTOP) ---------------------------
-    String portal_backend = "KDE";
+    // "dwl:wlr" : le daemon xdg-desktop-portal split sur ':' et cherche
+    // "<desktop>-portals.conf" pour chaque entrée. "dwl" seul ne matche
+    // AUCUN fichier de config ni aucun UseIn des backends installés → pas de
+    // backend ScreenCast pour OBS. Le suffixe ":wlr" fait charger
+    // /usr/share/xdg-desktop-portal/wlr-portals.conf (default=wlr) → backend
+    // xdg-desktop-portal-wlr. Overridable via WAYLANDGODOT_PORTAL_BACKEND.
+    String portal_backend = "dwl:wlr";
 
     // --- Polkit agent ---------------------------------------------------
     String polkit_agent_path = "";
@@ -412,6 +482,11 @@ class WlrCompositor : public Node {
 
     // --- Child processes ------------------------------------------------
     std::vector<pid_t> child_pids;
+    // Bus D-Bus privé de la session du jeu : les portails et les apps lancées
+    // par le jeu s'y connectent, isolés du bus de la session de login (sinon
+    // xdg-desktop-portal de la session hôte garde le nom et le backend wlr ne
+    // sert jamais OBS).
+    int dbus_daemon_pid = -1;
 
     // --- Drag-and-drop icon -------------------------------------------
     wlr_drag *active_drag = nullptr;
@@ -452,8 +527,23 @@ public:
     void set_portal_backend(const String &backend);
     String get_portal_backend() const;
 
+    // Positionne le curseur Wayland à des coordonnées absolues (output space).
+    // Appelé par le script Godot pour synchroniser la position du curseur
+    // avec le pointeur de la caméra 3D — nécessaire pour que le curseur
+    // soit rendu dans la capture screencopy (OBS).
+    void set_cursor_position(double x, double y);
+
     void set_polkit_agent(const String &path);
     String get_polkit_agent() const;
+
+    // Lance xdg-desktop-portal + xdg-desktop-portal-wlr dans la session du
+    // jeu (backend wlr grâce à XDG_CURRENT_DESKTOP=dwl). À appeler une fois
+    // le compositeur démarré (socket prêt).
+    void launch_portals();
+    // Démarre un dbus-daemon de session privé et bascule la variable
+    // d'environnement DBUS_SESSION_BUS_ADDRESS dessus (héritée par les
+    // enfants). Appelé automatiquement par launch_portals().
+    void start_private_dbus();
 
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
@@ -463,6 +553,11 @@ public:
     // surfaces. À appeler par le script dès qu'il connaît sa taille réelle
     // et à chaque changement de résolution.
     void set_output_size(int width, int height);
+
+    // Présente une frame RGBA8 (PackedByteArray) sur l'output headless — la
+    // "capture écran" de portal-wlr. Appelé par le script Godot avec l'image
+    // du viewport (ce que le joueur voit).
+    void present_viewport_frame(const PackedByteArray &rgba, int width, int height);
 
     // Infos complètes d'une layer surface pour le positionnement côté Godot:
     // Dictionary { namespace, layer, anchor, keyboard_interactive,
@@ -488,6 +583,24 @@ public:
 
     // Envoie une requête de fermeture (xdg_toplevel.close) à la fenêtre.
     void close_window(int window_id);
+
+    // --- Capture fenêtre pour xdg-desktop-portal-wlr -------------------
+    // Callbacks ext_foreign_toplevel_image_capture_source_manager_v1
+    // (manager implémenté ici, absent de wlroots 0.19) et implémentation
+    // wlr_ext_image_capture_source_v1 des sources fenêtre. Publiques car
+    // référencées par des tables de pointeurs au namespace scope.
+    static void on_foreign_toplevel_source_manager_bind(wl_client *client, void *data, uint32_t version, uint32_t id);
+    static void on_foreign_toplevel_source_manager_create_source(wl_client *client, wl_resource *resource, uint32_t source, wl_resource *toplevel_handle);
+    static void on_foreign_toplevel_source_manager_destroy(wl_client *client, wl_resource *resource);
+
+    static void toplevel_source_start(wlr_ext_image_capture_source_v1 *base, bool with_cursors);
+    static void toplevel_source_stop(wlr_ext_image_capture_source_v1 *base);
+    static void toplevel_source_schedule_frame(wlr_ext_image_capture_source_v1 *base);
+    static void toplevel_source_copy_frame(wlr_ext_image_capture_source_v1 *base,
+        wlr_ext_image_copy_capture_frame_v1 *frame,
+        wlr_ext_image_capture_source_v1_frame_event *event);
+    static wlr_ext_image_capture_source_v1_cursor *toplevel_source_get_pointer_cursor(
+        wlr_ext_image_capture_source_v1 *base, wlr_seat *seat);
 
 
 };

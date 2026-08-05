@@ -80,6 +80,31 @@ relative_pointer_header = env.Command(
 env.Depends(sources, pointer_constraints_header)
 env.Depends(sources, relative_pointer_header)
 
+# ext-image-copy-capture-v1 + ext-image-capture-source-v1 (staging): requis
+# par xdg-desktop-portal-wlr pour la capture écran (output) et fenêtre
+# (foreign toplevel). Le header serveur est généré depuis le staging de
+# wayland-protocols ; l'implémentation des sessions/frames est fournie par
+# wlroots (wlr_ext_image_copy_capture_manager_v1_create +
+# wlr_ext_output_image_capture_source_manager_v1_create). Seul le manager
+# "foreign toplevel" n'existe pas encore dans wlroots 0.19 : son interface
+# wire est définie dans ext_foreign_toplevel_image_capture_source.c.
+ext_image_copy_capture_xml = "/usr/share/wayland-protocols/staging/ext-image-copy-capture/ext-image-copy-capture-v1.xml"
+ext_image_copy_capture_header = env.Command(
+    "compositors/protocols/ext-image-copy-capture-v1-protocol.h",
+    ext_image_copy_capture_xml,
+    "wayland-scanner server-header $SOURCE $TARGET",
+)
+
+ext_image_capture_source_xml = "/usr/share/wayland-protocols/staging/ext-image-capture-source/ext-image-capture-source-v1.xml"
+ext_image_capture_source_header = env.Command(
+    "compositors/protocols/ext-image-capture-source-v1-protocol.h",
+    ext_image_capture_source_xml,
+    "wayland-scanner server-header $SOURCE $TARGET",
+)
+
+env.Depends(sources, ext_image_copy_capture_header)
+env.Depends(sources, ext_image_capture_source_header)
+
 if env["platform"] == "macos":
     library = env.SharedLibrary(
         "Game/source/bin/libwaylandgodot.{}.{}.framework/libwaylandgodot.{}.{}".format(
