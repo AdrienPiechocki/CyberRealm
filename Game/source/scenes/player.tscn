@@ -1,0 +1,133 @@
+[gd_scene format=3 uid="uid://dl5med4hn5t14"]
+
+[ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player.gd" id="1_3vyb7"]
+[ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/window_menu.gd" id="4_window_menu"]
+[ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
+[ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
+
+[sub_resource type="LabelSettings" id="LabelSettings_3vyb7"]
+font_size = 24
+
+[node name="Player" type="CharacterBody3D" unique_id=1446411886]
+script = ExtResource("1_3vyb7")
+
+[node name="Camera3D" type="Camera3D" parent="." unique_id=379586654]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+current = true
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1210636511]
+shape = SubResource("CapsuleShape3D_jm82k")
+
+[node name="UI" type="CanvasLayer" parent="." unique_id=1597255441]
+
+[node name="Cursor" type="Label" parent="UI" unique_id=2064678941]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -20.0
+offset_top = -11.5
+offset_right = 20.0
+offset_bottom = 11.5
+grow_horizontal = 2
+grow_vertical = 2
+text = "+"
+label_settings = SubResource("LabelSettings_3vyb7")
+horizontal_alignment = 1
+vertical_alignment = 1
+
+[node name="WindowMenuLayer" type="CanvasLayer" parent="." unique_id=1834194966]
+
+[node name="WindowMenu" type="PanelContainer" parent="WindowMenuLayer" unique_id=274649233]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -450.0
+offset_top = -300.0
+offset_right = 450.0
+offset_bottom = 300.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("4_window_menu")
+
+[node name="VBox" type="VBoxContainer" parent="WindowMenuLayer/WindowMenu" unique_id=1600511704]
+layout_mode = 2
+theme_override_constants/separation = 0
+
+[node name="TopBar" type="ScrollContainer" parent="WindowMenuLayer/WindowMenu/VBox" unique_id=905922496]
+custom_minimum_size = Vector2(0, 40)
+layout_mode = 2
+vertical_scroll_mode = 0
+
+[node name="Tabs" type="HBoxContainer" parent="WindowMenuLayer/WindowMenu/VBox/TopBar" unique_id=1109707379]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 2
+
+[node name="Content" type="HBoxContainer" parent="WindowMenuLayer/WindowMenu/VBox" unique_id=1898825113]
+layout_mode = 2
+size_flags_vertical = 3
+theme_override_constants/separation = 0
+
+[node name="Preview" type="TextureRect" parent="WindowMenuLayer/WindowMenu/VBox/Content" unique_id=1457333269]
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 3
+expand_mode = 3
+stretch_mode = 5
+
+[node name="TitleLabel" type="Label" parent="WindowMenuLayer/WindowMenu/VBox/Content/Preview" unique_id=1631641381]
+layout_mode = 0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_top = -30.0
+grow_horizontal = 2
+grow_vertical = 0
+horizontal_alignment = 1
+vertical_alignment = 2
+
+[node name="VSeparator" type="VSeparator" parent="WindowMenuLayer/WindowMenu/VBox/Content" unique_id=2068084526]
+layout_mode = 2
+
+[node name="Actions" type="VBoxContainer" parent="WindowMenuLayer/WindowMenu/VBox/Content" unique_id=1047274707]
+custom_minimum_size = Vector2(160, 0)
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="CaptureSelectorLayer" type="CanvasLayer" parent="." unique_id=1962819427]
+
+[node name="CaptureSelector" type="PanelContainer" parent="CaptureSelectorLayer" unique_id=1962819428]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -280.0
+offset_top = -210.0
+offset_right = 280.0
+offset_bottom = 210.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("6_capture_selector")
+
+[node name="PauseMenuLayer" type="CanvasLayer" parent="." unique_id=330881426]
+
+[node name="PauseMenu" type="PanelContainer" parent="PauseMenuLayer" unique_id=1079082883]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -250.0
+offset_top = -300.0
+offset_right = 250.0
+offset_bottom = 300.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("5_pause_menu")

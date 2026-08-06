@@ -1,0 +1,690 @@
+extends Node3D
+## Quads 3D des fenêtres Wayland mappées et de leurs popups, plus toute la
+## logique de pointage raycast : hover, clic, grab, déplacement et
+## redimensionnement depuis la caméra du joueur.
+## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
+
+signal window_created(window_id: int, quad: MeshInstance3D)
+
+const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
+const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARGIN
+						 # pour rester cliquable via raycast) = redimensionnement diagonal
+const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
+
+# Position de spawn des nouvelles fenêtres : on caste un rayon de
+# SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
+# nouvelle fenêtre apparaît juste devant celle-ci (sur l'axe caméra ->
+# fenêtre) au lieu de 1 m devant la caméra.
+const SPAWN_RAY_DISTANCE := 1.0 # m, longueur du raycast de spawn
+const SPAWN_IN_FRONT_DISTANCE := 0.1 # m devant la fenêtre touchée
+
+const WAYLAND_SHADER_CODE = """
+shader_type spatial;
+render_mode unshaded, blend_mix, cull_disabled, depth_draw_always;
+
+uniform sampler2D window_texture : filter_linear_mipmap;
+uniform vec2 content_size = vec2(0.0, 0.0);
+
+void fragment() {
+	// Quand le buffer d'allocation (VkImage / texture) est plus grand que
+	// le contenu réel (allocation arrondie au palier supérieur, ou surface
+	// réduite sans réallocation), le UV doit être remappé pour n'échantil-
+    // lonner que la zone de contenu. Sans ça, UV [0,1] couvre la totalité
+    // de la texture (y compris la zone transparente/stale), déformant
+	// l'image.
+	vec2 ts = vec2(textureSize(window_texture, 0));
+	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
+		? UV * content_size / ts : UV;
+	vec4 tex = texture(window_texture, mapped_uv);
+	if (tex.a > 0.01) {
+		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
+		ALBEDO = pow(unmultiplied, vec3(2.2));
+		ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
+	} else {
+		discard;
+	}
+}
+"""
+
+var compositor: WlrCompositor
+var player: Node3D
+
+var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
+var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
+var window_textures: Dictionary = {} # window_id (int) -> Texture2D
+var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
+
+var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
+
+var resizing_edge := "" # "left", "right", "top", "bottom", "topleft", etc.
+var is_resizing := false
+var is_moving := false
+var active_window_id := -1
+var is_in_window := false
+# Déplacement: distance (caméra -> fenêtre) figée au moment du grab, la
+# fenêtre suit ensuite le viseur le long de ce rayon.
+var move_depth := 0.0
+
+var is_moving_2d := false
+var move_2d_plane := Plane()
+var move_2d_offset := Vector3.ZERO
+
+# Redimensionnement: même principe de rayon à profondeur fixe, mais on
+# garde aussi la base locale du quad et ses dimensions de départ pour
+# convertir le déplacement du viseur (unités monde) en pixels de surface.
+var resize_depth := 0.0
+var resize_start_world := Vector3.ZERO
+var resize_right_dir := Vector3.RIGHT
+var resize_up_dir := Vector3.UP
+var window_start_size := Vector2.ZERO # taille geometry (px) au moment du grab
+var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
+var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
+var window_start_content_offset := Vector2.ZERO # offset geometry dans la surface au moment du grab
+
+func setup(compositor_ref: WlrCompositor, player_ref: Node3D) -> void:
+	compositor = compositor_ref
+	player = player_ref
+
+func _camera() -> Camera3D:
+	return player.get_node("Camera3D") as Camera3D
+
+func next_spawn_pos() -> Vector3:
+	var camera: Camera3D = _camera()
+	var cam_pos: Vector3 = camera.global_position
+	var cam_forward: Vector3 = -camera.global_basis.z
+	var space := get_world_3d().direct_space_state
+	var params := PhysicsRayQueryParameters3D.create(
+		cam_pos, cam_pos + cam_forward * SPAWN_RAY_DISTANCE)
+	var hit := space.intersect_ray(params)
+	if not hit.is_empty():
+		var body: Node3D = hit.collider
+		if body.has_meta("window_id"):
+			var hit_dist: float = cam_pos.distance_to(hit.position)
+			return cam_pos + cam_forward * (hit_dist - SPAWN_IN_FRONT_DISTANCE)
+	return cam_pos + cam_forward
+
+func get_window_texture(wid: int) -> Texture2D:
+	return window_textures.get(wid, null)
+
+# Infos nécessaires au mode focus pour basculer la fenêtre en overlay 2D.
+func get_quad_info(id: int) -> Dictionary:
+	var info := {}
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return info
+	var quad: MeshInstance3D = quads[id]
+	var mat := quad.material_override as ShaderMaterial
+	info["texture"] = mat.get_shader_parameter("window_texture") if mat else null
+	var body: StaticBody3D = quad.get_child(0)
+	info["surface_size"] = body.get_meta("surface_size", Vector2(1, 1))
+	info["content_offset"] = body.get_meta("content_offset", Vector2.ZERO)
+	info["content_size"] = body.get_meta("content_size", Vector2(1, 1))
+	return info
+
+func set_quad_visible(id: int, visible: bool) -> void:
+	if quads.has(id) and is_instance_valid(quads[id]):
+		quads[id].visible = visible
+
+func grab_window_from_menu(wid: int) -> void:
+	if not quads.has(wid) or not is_instance_valid(quads[wid]):
+		return
+	var quad: MeshInstance3D = quads[wid]
+	var cam := _camera()
+	active_window_id = wid
+	is_moving = true
+	move_depth = cam.global_position.distance_to(quad.global_position)
+
+func toggle_hide(id: int) -> void:
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+	var quad: MeshInstance3D = quads[id]
+	quad.visible = not quad.visible
+	var body: StaticBody3D = quad.get_child(0)
+	if body is StaticBody3D:
+		body.get_child(0).disabled = not quad.visible
+
+func on_window_mapped(id: int, _title: String, _app_id: String) -> void:
+	var quad := MeshInstance3D.new()
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(1.6, 1.0) # ratio ajusté au premier texture_updated
+	quad.mesh = mesh
+
+	var shader := Shader.new()
+	shader.code = WAYLAND_SHADER_CODE
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.render_priority = 0
+	quad.material_override = mat
+
+	var body := StaticBody3D.new()
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	# Épaisseur fine : la face avant du boîtier reste proche du plan visuel
+	# du quad, sinon le raycast renvoie un point décalé en incidence rasant.
+	shape.size = Vector3(mesh.size.x, mesh.size.y, 0.01)
+	col.shape = shape
+	body.add_child(col)
+	body.set_meta("window_id", id)
+	quad.add_child(body)
+
+	add_child(quad)
+	quads[id] = quad
+	quad.global_position = next_spawn_pos()
+	var camera := _camera()
+
+	quad.global_transform = Transform3D(
+		camera.global_transform.basis,
+		quad.global_position
+	)
+
+	window_created.emit(id, quad)
+
+func on_window_unmapped(id: int) -> void:
+	if focused_window_id == id:
+		focused_window_id = -1
+	window_textures.erase(id)
+	if quads.has(id):
+		var quad = quads[id]
+		if is_instance_valid(quad):
+			quad.queue_free()
+		quads.erase(id)
+
+func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	# Tracker la texture pour le menu de navigation
+	window_textures[id] = texture
+
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+	var quad: MeshInstance3D = quads[id]
+	# Toujours mettre à jour la texture du shader : le pipeline Vulkan peut
+	# avoir créé un nouveau VkImage/Texture2DRD si la taille a changé, et
+	# l'ancien a été libéré. Ne pas mettre à jour laissait le shader
+	# échantillonner un VkImage libéré → tearing/corruption GPU.
+	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
+	# content_size = taille réelle du contenu (w × h). Le shader s'en
+	# sert pour remapper UV quand le buffer d'allocation est plus grand
+	# (round_up_capture_size) — sans ça, le contenu serait comprimé
+	# dans le coin supérieur-gauche du mesh.
+	(quad.material_override as ShaderMaterial).set_shader_parameter("content_size", Vector2(width, height))
+
+	# Toujours synchroniser les métadonnées (surface_size, content_offset,
+	# content_size) même pendant un resize : le calcul UV pour le forwarding
+	# des événements pointeur utilise surface_size, et les détections de
+	# bord utilisent content_size/content_offset. Sans ça, les UV sont
+	# wrong dès que le client commite la nouvelle taille.
+	var body: StaticBody3D = quad.get_child(0)
+	body.set_meta("surface_size", Vector2(width, height))
+	var geo := compositor.get_window_geometry(id)
+	body.set_meta("content_offset", Vector2(geo["x"], geo["y"]))
+	body.set_meta("content_size", Vector2(geo["width"], geo["height"]))
+
+	# Pendant un redimensionnement actif, _update_resize contrôle la taille
+	# du mesh, la position du quad et la CollisionShape3D. Ne pas écraser
+	# ces valeurs ici : la texture capturée est probablement encore à
+	# l'ancienne taille (le client n'a pas encore committé le buffer à la
+	# nouvelle taille), donc recalculer le mesh sur sa base causerait un
+	# flickering entre l'aspect cible et l'aspect stale à chaque frame.
+	if is_resizing and active_window_id == id:
+		return
+
+	# Garde le ratio d'aspect réel de la fenêtre. Utilise la hauteur
+	# courante du mesh (pas un hardcoded 3.0) pour éviter un saut de
+	# taille après un resize où la hauteur a été interpolée.
+	var aspect := float(width) / float(max(height, 1))
+	var mesh: QuadMesh = quad.mesh
+	var current_h: float = mesh.size.y if mesh.size.y > 0.0 else 3.0
+	mesh.size = Vector2(current_h * aspect, current_h)
+
+	# La CollisionShape3D doit suivre la même taille que le mesh, sinon le
+	# raycast teste une zone qui ne correspond plus à ce qui est affiché.
+	var col: CollisionShape3D = body.get_child(0)
+	var shape: BoxShape3D = col.shape
+	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
+
+func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
+	var parent_quad: MeshInstance3D = null
+	var parent_px_size := Vector2(1, 1)
+
+	if parent_popup_id != -1 and popup_quads.has(parent_popup_id) and is_instance_valid(popup_quads[parent_popup_id]):
+		# Sous-menu: parenté sur le popup qui l'a ouvert, pas sur la fenêtre racine.
+		parent_quad = popup_quads[parent_popup_id]
+		parent_px_size = parent_quad.get_meta("surface_size", Vector2(1, 1))
+	elif quads.has(parent_window_id) and is_instance_valid(quads[parent_window_id]):
+		parent_quad = quads[parent_window_id]
+		var parent_body: StaticBody3D = parent_quad.get_child(0)
+		parent_px_size = parent_body.get_meta("surface_size", Vector2(1, 1))
+
+	if parent_quad == null:
+		return
+
+	var parent_mesh: QuadMesh = parent_quad.mesh
+
+	# Conversion pixels -> mètres, en réutilisant l'échelle déjà connue du
+	# parent immédiat (mêmes unités que sa propre capture de texture).
+	var _scale := Vector2(
+		parent_mesh.size.x / max(parent_px_size.x, 1.0),
+		parent_mesh.size.y / max(parent_px_size.y, 1.0)
+	)
+
+	var quad := MeshInstance3D.new()
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2(max(width * _scale.x, 0.01), max(height * _scale.y, 0.01))
+	quad.mesh = mesh
+	# Mémorisé pour qu'un éventuel sous-sous-menu puisse recalculer son
+	# échelle à partir de CE popup plutôt que de la fenêtre racine, et pour
+	# que _on_popup_texture_updated puisse redimensionner le mesh sur la
+	# même base quand le buffer réel (potentiellement plus grand que la
+	# géométrie logique ci-dessus) arrive.
+	quad.set_meta("surface_size", Vector2(width, height))
+	quad.set_meta("px_scale", _scale)
+
+	# (x, y) = coin haut-gauche du popup relatif au coin haut-gauche de la
+	# géométrie du parent immédiat. Le quad parent est centré sur son
+	# origine locale, d'où le décalage de -size/2 pour repartir du vrai
+	# coin haut-gauche.
+	var local_left := -parent_mesh.size.x / 2.0 + x * _scale.x
+	var local_top := parent_mesh.size.y / 2.0 - y * _scale.y
+	quad.position = Vector3(
+		local_left + mesh.size.x / 2.0,
+		local_top - mesh.size.y / 2.0,
+		0.02 # léger décalage devant le parent pour éviter le z-fighting
+	)
+
+	var shader := Shader.new()
+	shader.code = WAYLAND_SHADER_CODE
+	var mat := ShaderMaterial.new()
+	mat.shader = shader
+	mat.render_priority = 1 # Force l'affichage au-dessus des fenêtres
+	quad.material_override = mat
+
+	# Les tooltips ont une région d'input vide: on les affiche mais on ne
+	# crée pas de collision body, pour que le raycast passe au travers et
+	# atteigne la fenêtre/le popup en dessous.
+	if compositor.popup_accepts_input(id):
+		var body := StaticBody3D.new()
+		var col := CollisionShape3D.new()
+		var shape := BoxShape3D.new()
+		shape.size = Vector3(mesh.size.x, mesh.size.y, 0.01)
+		col.shape = shape
+		body.add_child(col)
+		body.set_meta("popup_id", id)
+		body.set_meta("surface_size", Vector2(width, height))
+		quad.add_child(body)
+	else:
+		quad.set_meta("tooltip", true)
+
+	parent_quad.add_child(quad)
+	popup_quads[id] = quad
+
+	# Stocker les infos parent pour le mode focus
+	popup_parent_info[id] = {
+		"parent_window_id": parent_window_id,
+		"parent_popup_id": parent_popup_id,
+		"x": x, "y": y, "width": width, "height": height
+	}
+
+func on_popup_unmapped(id: int) -> void:
+	if popup_quads.has(id):
+		if is_instance_valid(popup_quads[id]):
+			popup_quads[id].queue_free()
+		popup_quads.erase(id)
+	popup_parent_info.erase(id)
+
+func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	if not popup_quads.has(id) or not is_instance_valid(popup_quads[id]):
+		return
+	var quad: MeshInstance3D = popup_quads[id]
+	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
+
+	# popup_mapped donne la géométrie logique (xdg_surface.set_window_geometry),
+	# utilisée uniquement pour le placement relatif au parent. Le buffer
+	# réellement capturé ici peut être plus grand (marge d'ombre ajoutée par
+	# le client, GTK/Qt notamment) - sans cette resynchronisation, le hover
+	# convertissait les uv avec l'échelle de la géométrie logique au lieu de
+	# celle du buffer affiché, envoyant des coordonnées fausses au client.
+	var mesh: QuadMesh = quad.mesh
+	var old_size := mesh.size
+	var aspect := float(width) / float(max(height, 1))
+	mesh.size = Vector2(old_size.y * aspect, old_size.y) if old_size.y > 0.0 else Vector2(1, 1)
+
+	quad.set_meta("surface_size", Vector2(width, height)) # utilisé par un éventuel sous-menu
+
+	# Les tooltips n'ont pas de collision body (pas d'input region).
+	if quad.get_child_count() > 0:
+		var body: StaticBody3D = quad.get_child(0)
+		body.set_meta("surface_size", Vector2(width, height))
+		var col: CollisionShape3D = body.get_child(0)
+		var shape: BoxShape3D = col.shape
+		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
+
+# Pointage raycast principal, appelé à chaque frame par wayland_room.gd.
+# Gère hover/clic/scroll vers les fenêtres et popups, ainsi que les grabs
+# de déplacement (G) et de redimensionnement (bords/coins).
+func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, interact_active: bool) -> void:
+	# Une prise en cours (déplacement/redimensionnement) continue d'être mise
+	# à jour même si le viseur ne pointe plus sur la fenêtre: en
+	# MOUSE_MODE_CAPTURED (souris FPS), get_viewport().get_mouse_position()
+	# reste figée au centre de l'écran - seule l'orientation de la caméra
+	# bouge - donc on pilote le drag via le rayon caméra, pas via une
+	# position écran qui ne varie jamais pendant le drag.
+	if is_moving:
+		if Input.is_action_just_pressed("scroll_up", true):
+			move_depth += 0.25
+		if Input.is_action_just_pressed("scroll_down", true):
+			move_depth -= 0.25
+		_update_move(ray_origin, ray_dir, delta)
+		if Input.is_action_just_released("grab", true):
+			is_moving = false
+			active_window_id = -1
+		return
+	if is_resizing:
+		_update_resize(ray_origin, ray_dir)
+		if Input.is_action_just_released("left_click", true):
+			is_resizing = false
+			resizing_edge = ""
+			active_window_id = -1
+		return
+	if is_moving_2d:
+		_update_move_2d(ray_origin, ray_dir, delta)
+		if Input.is_action_just_released("left_click", true):
+			is_moving_2d = false
+			active_window_id = -1
+		return
+
+	var to := ray_origin + ray_dir * 1000.0
+	var space := get_world_3d().direct_space_state
+	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+	var hit := space.intersect_ray(params)
+
+	if hit.is_empty():
+		is_in_window = false
+		compositor.forward_pointer_leave()
+		return
+
+	var body: Node3D = hit.collider
+
+	if body.has_meta("popup_id"):
+		is_in_window = true
+		_handle_popup_pointer(body, hit, ray_origin, ray_dir)
+		return
+
+	if not body.has_meta("window_id"):
+		is_in_window = false
+		compositor.forward_pointer_leave()
+		return
+	else:
+		is_in_window = true
+	var quad: MeshInstance3D = body.get_parent()
+	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
+	var mesh: QuadMesh = quad.mesh
+
+	# Le point de contact du raycast est sur la FACE AVANT du boîtier de
+	# collision (0.05 m d'épaisseur), pas sur le plan visuel du quad (z=0).
+	# En incidence rasant — fenêtre proche, regard levé vers la barre de
+	# titre — la face avant est décalée du plan visuel de ~0.025·tan(angle):
+	# à 60° ça fait ~3 cm ≈ 20+ px trop bas, de quoi rater la croix et
+	# cliquer le bouton juste en dessous. On réintersecte donc le rayon
+	# avec le plan exact du quad.
+	var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
+	var wid: int = body.get_meta("window_id")
+	# La texture est découpée à la window_geometry, donc UV * surface_size
+	# donne des coordonnées dans le repère geometry. Le client Wayland
+	# attend des coordonnées dans le repère surface (incluant les ombres),
+	# d'où l'ajout de content_offset.
+	var content_offset_fwd: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	compositor.forward_pointer_motion(wid,
+		uv.x * win_size.x + content_offset_fwd.x,
+		uv.y * win_size.y + content_offset_fwd.y)
+
+	if Input.is_action_just_pressed("grab", true) and not interact_active:
+		active_window_id = wid
+		is_moving = true
+		move_depth = _camera().global_position.distance_to(quad.global_position)
+	if Input.is_action_just_released("grab", true):
+		active_window_id = wid
+		is_moving = false
+		move_depth = 0.0
+	if Input.is_action_just_pressed("left_click", true):
+		focused_window_id = wid
+		var edge := _border_edge(uv, win_size, body)
+		# UV * win_size donne directement les coordonnées dans le repère
+		# contenu (la texture est découpée à la geometry), donc la zone
+		# de barre de titre est relative au bord visible du contenu.
+		var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+		var content_size: Vector2 = body.get_meta("content_size", win_size)
+		if content_size.x <= 0 or content_size.y <= 0:
+			content_offset = Vector2.ZERO
+			content_size = win_size
+		var titlebar_px := uv.x * win_size.x
+		var titlebar_py := uv.y * win_size.y
+		var in_titlebar := titlebar_py >= 0 and titlebar_py < BORDER_MARGIN * BORDER_MARGIN \
+			and titlebar_px > 75 and titlebar_px < content_size.x - 75
+
+		if edge != "":
+			# Bord de la fenêtre -> redimensionnement.
+			active_window_id = wid
+			resizing_edge = edge
+			is_resizing = true
+			resize_depth = _camera().global_position.distance_to(quad.global_position)
+			resize_start_world = ray_origin + ray_dir * resize_depth
+			resize_right_dir = quad.global_transform.basis.x.normalized()
+			resize_up_dir = quad.global_transform.basis.y.normalized()
+			window_start_size = win_size
+			window_start_content_offset = content_offset
+			window_start_mesh_size = mesh.size
+			window_start_local_pos = quad.position
+
+		elif in_titlebar:
+			# Move on a 2D plane (simulation de barre de titre)
+			active_window_id = wid
+			is_moving_2d = true
+
+			# On crée un plan infini basé sur l'orientation de la fenêtre (axe Z)
+			var normal = quad.global_transform.basis.z.normalized()
+			move_2d_plane = Plane(normal, quad.global_position)
+
+			# Calcul de l'offset initial pour éviter que la fenêtre "saute" au centre du curseur
+			var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
+			if _hit != null:
+				move_2d_offset = quad.global_position - _hit
+
+		else:
+			compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
+	if Input.is_action_just_released("left_click", true):
+		compositor.forward_pointer_button(wid, 0x110, false)
+
+	if Input.is_action_just_pressed("right_click", true):
+		focused_window_id = wid
+		compositor.forward_pointer_button(wid, 0x111, true)
+	if Input.is_action_just_released("right_click", true):
+		compositor.forward_pointer_button(wid, 0x111, false)
+
+	if Input.is_action_just_pressed("scroll_up", true):
+		compositor.forward_pointer_axis(wid, 0, -50.0)
+	if Input.is_action_just_pressed("scroll_down", true):
+		compositor.forward_pointer_axis(wid, 0, 50.0)
+
+# Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que
+# pour une fenêtre, mais routé vers forward_pointer_motion_popup/
+# forward_pointer_button_popup puisqu'un popup n'a pas de window_id.
+func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vector3, ray_dir: Vector3) -> void:
+	var quad: MeshInstance3D = body.get_parent()
+	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
+	var mesh: QuadMesh = quad.mesh
+
+	# Même correction que pour une fenêtre : l'UV se calcule sur le plan
+	# visuel du quad, pas sur la face avant du boîtier de collision.
+	var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
+	var pid: int = body.get_meta("popup_id")
+	compositor.forward_pointer_motion_popup(pid, uv.x * win_size.x, uv.y * win_size.y)
+
+	if Input.is_action_just_pressed("left_click", true):
+		compositor.forward_pointer_button_popup(pid, 0x110, true)
+	if Input.is_action_just_released("left_click", true):
+		compositor.forward_pointer_button_popup(pid, 0x110, false)
+
+# UV exact sur le plan visuel du quad : le point renvoyé par le raycast est
+# sur la face avant du boîtier de collision (épais), donc décalé du plan
+# z=0 du quad de ~0.025·tan(angle). Négligeable de loin, mais à bout
+# portant ça décale le clic de plusieurs dizaines de pixels vers le bas.
+func _uv_at_plane(quad: MeshInstance3D, mesh: QuadMesh, ray_origin: Vector3, ray_dir: Vector3, fallback: Vector3) -> Vector2:
+	var quad_plane := Plane(quad.global_transform.basis.z.normalized(), quad.global_position)
+	var plane_hit = quad_plane.intersects_ray(ray_origin, ray_dir)
+	if plane_hit == null:
+		plane_hit = fallback
+	var local := quad.to_local(plane_hit)
+	return Vector2(
+		(local.x / mesh.size.x) + 0.5,
+		0.5 - (local.y / mesh.size.y)
+	)
+
+# Bord touché (marge en pixels de texture) -> "" si le clic est dans le
+# corps de la fenêtre.
+func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
+	# Récupère la géométrie de contenu (sans ombres CSD). Si le client n'a
+	# pas défini de géométrie (par ex. application SSD), on retombe sur la
+	# taille complète de la surface.
+	var _content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	var content_size: Vector2 = body.get_meta("content_size", win_size)
+	if content_size.x <= 0 or content_size.y <= 0:
+		_content_offset = Vector2.ZERO
+		content_size = win_size
+	# Convertit les coordonnées UV en pixels de contenu. La texture est
+	# découpée à la window_geometry, donc UV * win_size donne directement
+	# les coordonnées dans le repère contenu (pas besoin de soustraire
+	# content_offset). BORDER_MARGIN est relatif au bord visible du contenu.
+	var px := uv.x * win_size.x
+	var py := uv.y * win_size.y
+
+	# Coins du bas: zone carrée large (CORNER_MARGIN), facile à viser via
+	# raycast - aucun risque de conflit, pas de boutons de fenêtre en bas.
+	var near_bottom_wide := py > content_size.y - CORNER_MARGIN
+	var near_left_wide := px < CORNER_MARGIN
+	var near_right_wide := px > content_size.x - CORNER_MARGIN
+	if near_bottom_wide and near_left_wide:
+		return "bottomleft"
+	if near_bottom_wide and near_right_wide:
+		return "bottomright"
+
+	# Coins du haut: zone fine (BORDER_MARGIN), volontairement petite pour ne
+	# pas voler les clics destinés aux boutons fermer/réduire/agrandir, qui
+	# vivent dans cette même région (voir zone reservée 75px plus bas dans
+	# le handler de clic).
+	var near_top := py < BORDER_MARGIN
+	var near_left := px < BORDER_MARGIN
+	var near_right := px > content_size.x - BORDER_MARGIN
+	if near_top and near_left:
+		return "topleft"
+	if near_top and near_right:
+		return "topright"
+
+	# Bords simples: bande fine (BORDER_MARGIN), hors des zones de coin.
+	var edge := ""
+	if py < BORDER_MARGIN:
+		edge += "top"
+	elif py > content_size.y - BORDER_MARGIN:
+		edge += "bottom"
+	if px < BORDER_MARGIN:
+		edge += "left"
+	elif px > content_size.x - BORDER_MARGIN:
+		edge += "right"
+	return edge
+
+# La fenêtre suit le viseur le long du rayon caméra, à profondeur figée
+# (distance capturée au moment du grab) - fonctionne même si la souris ne
+# se déplace jamais à l'écran (mode capturé), puisque seule l'orientation
+# de la caméra entre ici en jeu.
+func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
+	if active_window_id == -1 or not quads.has(active_window_id):
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	var cam: Camera3D = _camera()
+	var target_pos = ray_origin + ray_dir * move_depth
+	# Déplacement fluide
+	quad.global_position = quad.global_position.lerp(
+		target_pos,
+		10.0 * delta
+	)
+	# Rotation
+	quad.global_basis = cam.global_basis
+
+# La fenêtre glisse le long de son propre plan d'orientation initial.
+func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
+	if active_window_id == -1 or not quads.has(active_window_id):
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	var hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
+
+	if hit != null:
+		var target_pos = hit + move_2d_offset
+		# Déplacement fluide uniquement sur les axes X/Y locaux du plan
+		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
+
+func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
+	if active_window_id == -1 or not quads.has(active_window_id):
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	var mesh: QuadMesh = quad.mesh
+
+	# Delta du viseur (unités monde) projeté sur la même profondeur figée
+	# qu'au moment du grab, puis exprimé dans la base locale du quad.
+	var cur_world := ray_origin + ray_dir * resize_depth
+	var world_delta := cur_world - resize_start_world
+	var local_dx := world_delta.dot(resize_right_dir)
+	var local_dy := world_delta.dot(resize_up_dir)
+
+	# Ratio pixels de surface / unité monde, figé au grab (le mesh ne
+	# change pas de taille pendant le drag, seul window_texture_updated
+	# le fera une fois le client redessiné à la nouvelle taille).
+	var px_per_unit_x: float = window_start_size.x / max(window_start_mesh_size.x, 0.001)
+	var px_per_unit_y: float = window_start_size.y / max(window_start_mesh_size.y, 0.001)
+
+	var new_w := window_start_size.x
+	var new_h := window_start_size.y
+	if "right" in resizing_edge:
+		new_w = window_start_size.x + local_dx * px_per_unit_x
+	elif "left" in resizing_edge:
+		new_w = window_start_size.x - local_dx * px_per_unit_x
+	if "top" in resizing_edge:
+		new_h = window_start_size.y + local_dy * px_per_unit_y
+	elif "bottom" in resizing_edge:
+		new_h = window_start_size.y - local_dy * px_per_unit_y
+
+	new_w = max(new_w, MIN_SURFACE_SIZE)
+	new_h = max(new_h, MIN_SURFACE_SIZE)
+
+	# set_window_size envoie les dimensions de la SURFACE (buffer) au client
+	# Wayland, pas la geometry. Les ombres CSD sont typiquement symétriques,
+	# donc surface = geometry + 2 * content_offset.
+	var surface_w := int(new_w) + int(window_start_content_offset.x) * 2
+	var surface_h := int(new_h) + int(window_start_content_offset.y) * 2
+	compositor.set_window_size(active_window_id, surface_w, surface_h)
+
+	# Met à jour la taille du mesh ET la position en même temps pour que
+	# le bord fixe reste immobile pendant le drag. Sans cette mise à jour,
+	# seul le position changeait → le bord "fixe" dérivait car le mesh
+	# gardait l'ancienne taille (causant le tearing visible pendant le
+	# resize).
+	var new_mesh_w: float = window_start_mesh_size.x * (new_w / max(window_start_size.x, 1.0))
+	var new_mesh_h: float = window_start_mesh_size.y * (new_h / max(window_start_size.y, 1.0))
+	mesh.size = Vector2(new_mesh_w, new_mesh_h)
+
+	# La CollisionShape3D doit suivre la même taille que le mesh.
+	var body: StaticBody3D = quad.get_child(0)
+	var col: CollisionShape3D = body.get_child(0)
+	var shape: BoxShape3D = col.shape
+	shape.size = Vector3(new_mesh_w, new_mesh_h, shape.size.z)
+
+	# Repositionne le bord fixe: le shift compense exactement la moitié
+	# du delta taille, de sorte que le bord opposé ne bouge pas.
+	var delta_w_world: float = (new_mesh_w - window_start_mesh_size.x) / 2.0
+	var delta_h_world: float = (new_mesh_h - window_start_mesh_size.y) / 2.0
+	var shift := Vector3.ZERO
+	if "left" in resizing_edge:
+		shift -= resize_right_dir * delta_w_world
+	elif "right" in resizing_edge:
+		shift += resize_right_dir * delta_w_world
+	if "top" in resizing_edge:
+		shift += resize_up_dir * delta_h_world
+	elif "bottom" in resizing_edge:
+		shift -= resize_up_dir * delta_h_world
+	quad.position = window_start_local_pos + shift

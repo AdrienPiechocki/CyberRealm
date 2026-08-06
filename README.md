@@ -1,212 +1,189 @@
-# Wayland-Godot — Wayland Compositor as a Godot GDExtension
+# CyberRealm
 
-A full-featured Wayland compositor implemented as a Godot 4 GDExtension plugin. Uses **wlroots 0.18** as the compositor backend and renders Wayland windows as textured 3D quads inside a Godot scene. No physical display required — runs headless with `wlr_headless_backend`.
+A game where your desktop lives inside a 3D virtual world.
 
----
+CyberRealm embeds a **complete Wayland compositor inside a Godot 4 game**. Every
+window is a real Wayland surface rendered as a textured 3D quad that floats in a
+room you walk around in — with a first-person camera, raycast interaction,
+drag-and-drop, and even a fullscreen "focus" mode. Your Linux desktop's apps
+(KDE/Plasma, GTK, Firefox, terminals, games…) run unmodified inside the game
+world.
 
-## Build
-
-```bash
-# Dependencies (Arch Linux)
-sudo pacman -S wlroots0.18 wayland wayland-protocols pixman libdrm xwayland-satellite \
-               libinput xkbcommon scons pkgconf vulkan-headers vulkan-icd-loader
-
-# Godot-cpp
-git clone https://github.com/godotengine/godot-cpp.git
-
-scons target=template_debug platform=linux
-```
-
-The built shared library lands in `demo/bin/`. Open `demo/` as a Godot 4.2+ project and run `wayland_room.gd`.
-
----
+Built on [wlroots](https://gitlab.freedesktop.org/wlroots/wlroots) 0.19 and
+Godot 4.7, with a GDExtension (C++) that instantiates the compositor as a native
+Godot node and streams every surface into the engine through a **zero-copy
+Vulkan DMA-BUF import**.
 
 ## Features
 
-### Compositor Core (C++, wlroots 0.18)
+- **A real compositor, in-game** — a headless wlroots backend runs inside the
+  game. Windows are fully functional Wayland surfaces: keyboard, pointer,
+  pointer constraints, primary selection and data drag-and-drop are forwarded
+  between the game and the apps.
+- **3D windows** — each mapped window becomes a raycastable quad in the scene.
+  Grab (`G`), move, resize from any edge, or point and click into it.
+- **Focus mode** (`F`) — pull any window to the front as a fullscreen 2D overlay
+  for real work; release it back into the 3D world.
+- **Picture-in-picture** (`P`) — pin windows as small overlays that stay on top
+  while you keep interacting with the world.
+- **Layer surfaces** — waybar, rofi and friends are rendered as screen-anchored
+  2D overlays inside the 3D view, with proper keyboard-interactive focus
+  (a modifier key hands the pointer to the overlay).
+- **Session lock** — the compositor's session-lock surfaces are shown and
+  interacted with in-game.
+- **X11 support** — X applications run through
+  [xwayland-satellite](https://gitlab.freedesktop.org/xwayland-satellite/xwayland-satellite),
+  forwarded as XWayland surfaces.
+- **OBS capture built-in** — ships a patched `xdg-desktop-portal-wlr` so OBS can
+  add *screen* and *window* capture sources straight from the game, choosing the
+  target with an in-game selector UI.
+- **Effects** — X-RAY finder highlights any window's quad; windows flash when
+  they open.
+- **Navigation menu** (`B`) — a window switcher with live previews (grab, focus,
+  hide, find, pin, close).
+- **Pause menu** (`Esc`) — remappable keybinds, startup apps, and custom
+  keybinds that launch arbitrary commands inside the compositor.
+- **KWin integration** — an optional KWin script fullscreens the game when
+  launched from Plasma and blocks all KDE global shortcuts while it has focus.
 
-- **Headless backend** — `wlr_headless_backend_create()`, no physical display or GPU output needed
-- **Fake output** — 1280x720 output committed at up to 120 FPS
-- **Wayland protocols supported:**
+## How it works
 
-| Protocol | Version | Purpose |
-|---|---|---|
-| `wl_compositor` | 6 | Surface management |
-| `wl_seat` | — | Pointer + keyboard capabilities |
-| `xdg_shell` | 3 | Toplevel windows, popups, nested popups |
-| `wl_subcompositor` | — | Sub-surfaces (required by Firefox WebRender) |
-| `wl_viewporter` | — | Surface viewport / cropping |
-| `linux_dmabuf_v1` | 4 | DMA-BUF buffer sharing for GPU clients |
-| `wl_data_device_manager` | — | Clipboard, drag-and-drop |
-| `wl_primary_selection_v1` | — | Middle-click primary selection |
-| `zwp_pointer_constraints_v1` | — | Pointer lock (LOCKED + CONFINED) |
-| `zwp_relative_pointer_v1` | — | Relative pointer motion events |
+```
+            ┌───────────────────────────────  CyberRealm  ────────────────────────────────┐
+            │                                                                             │
+  Godot 4.7 │   Game scripts (GDScript)                                                    │
+  + Jolt    │     wayland_room.gd  (orchestrator)                                          │
+            │       ├─ Windows3D    3D quads, grab/move/resize, raycast pointer           │
+            │       ├─ FocusMode    fullscreen 2D focus mode                              │
+            │       ├─ LayerSurfaces  waybar/rofi overlays + session lock                 │
+            │       ├─ PinnedWindows  picture-in-picture                                  │
+            │       └─ Effects      X-RAY finder + open-flash                             │
+            │                                                                             │
+            │   GDExtension "libwaylandgodot" (C++, SCons)                                │
+            │     WlrCompositor (Node)  — full wlroots 0.19 compositor                    │
+            │       ├─ xdg-shell, layer-shell, session-lock, pointer-constraints,         │
+            │       │  relative-pointer, primary-selection, data-device (DnD)             │
+            │       ├─ headless backend + xwayland-satellite (XWayland)                   │
+            │       └─ VulkanDmaBufImport — zero-copy DMA-BUF → VkImage → Texture2D       │
+            │                                                                             │
+            └───────────────────────────┬─────────────────────────────────────────────────┘
+                                        │  Wayland socket (e.g. XDG_RUNTIME_DIR/cyberrealm-0)
+             ┌──────────────────────────▼──────────────────────────────┐
+             │  Real apps: Plasma, Firefox, terminals, games, rofi…   │
+             │  xdg-desktop-portal(-wlr) for OBS capture (PipeWire)   │
+             └─────────────────────────────────────────────────────────┘
+```
 
-### Three-Tier Rendering Pipeline
+The heavy lifting lives in the C++ module: it renders every Wayland surface into
+an offscreen DMA-BUF buffer, imports the file descriptor into Godot's Vulkan
+renderer as a `Texture2DRD` (via `VK_KHR_external_memory_fd`), and the GDScript
+layer handles presentation and interaction. Capture caches are reused across
+frames to avoid re-exporting/re-mapping buffers every frame.
 
-Auto-negotiated per-surface, in priority order:
+## Repository layout
 
-#### 1. Vulkan Zero-Copy (GPU → GPU, preferred)
-- wlroots renders via EGL/GLES2 to a DMA-BUF offscreen buffer
-- DMA-BUF fd imported into Godot's Vulkan device via `VK_KHR_external_memory_fd`
-- `VkImage` (LINEAR tiling) + `VkDeviceMemory` bound to the imported buffer
-- Wrapped as a Godot `RID` via `texture_create_from_extension`, then `Texture2DRD`
-- **No mmap, no memcpy** — the shader samples the GPU buffer directly
-- Cross-API GPU sync via `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` (Linux 5.20+) with `DMA_BUF_IOCTL_SYNC` fallback
-- Deferred resource destruction (one frame delayed) to avoid GPU stalls
+```
+.
+├── Game/source/          Godot 4.7 project (scenes, GDScript scripts, assets)
+│   └── scenes/
+│       ├── wayland_room.tscn     main scene (WlrCompositor + Player + UI)
+│       └── player.tscn
+├── compositors/
+│   ├── ingame/           GDExtension C++ module — the embedded compositor
+│   │   ├── wlr_compositor.cpp    the Wayland compositor as a Godot Node
+│   │   ├── vulkan_dmauf.*        zero-copy DMA-BUF → Vulkan texture import
+│   │   └── register_types.cpp    GDExtension entry point
+│   ├── portal-wlr/       patches for xdg-desktop-portal-wlr (window capture)
+│   ├── kwin/             KWin script (fullscreen + block global shortcuts)
+│   │                     and the `cyberrealm-launch` app launcher wrapper
+│   └── protocols/        vendored/protocol-generated headers
+├── godot-cpp/            godot-cpp dependency (built via SCons)
+├── install.sh            one-shot build & install (Arch Linux)
+└── SConstruct            GDExtension build script
+```
 
-#### 2. DMA-BUF + mmap (fallback)
-- GPU-rendered DMA-BUF, checked for linear modifier
-- mmap the fd for direct CPU read
-- Per-pixel copy with BGRA→RGBA swizzle when needed
-- `CaptureCache` reuses buffers across frames
+## Requirements
 
-#### 3. Pixman CPU (last resort)
-- Software rendering via Pixman, direct pixel access through `wlr_buffer_begin_data_ptr_access`
-- Per-pixel BGRA→RGBA swizzle
-- Can be forced with `WAYLANDGODOT_FORCE_PIXMAN=1`
+- Arch Linux (the install script uses `pacman`)
+- Godot 4.7 (headless-capable build, used to export the game)
+- `wlroots 0.19`, `wayland`, `wayland-protocols`, `pixman`, `libdrm`,
+  `libinput`, `xwayland-satellite`, `vulkan-headers`, `vulkan-icd-loader`,
+  `scons`, `pkgconf`, `meson`, `ninja`
+- `xdg-desktop-portal-wlr` (for OBS capture)
+- A running Wayland session (e.g. KDE/Plasma) to launch the game from
 
-#### Rendering Optimizations
-- **Rounded allocation** — capture dimensions rounded up to next 64px step to avoid reallocation during resize
-- **Per-frame recapture** — all mapped windows re-captured each frame (Firefox needs this without focus)
-- **Performance logging** — per-stage timing logged when total exceeds 2ms
+## Build & install
 
-### Window Management
+```bash
+git clone --recurse-submodules https://github.com/you/CyberRealm.git
+cd CyberRealm
+./install.sh
+```
 
-- **Toplevel windows** spawn as 3D quads facing the player
-- **Popups** — nested sub-menus, tooltips, context menus with correct positioning
-- **Drag-and-drop** — full `wl_data_device_manager` protocol with drag icon capture
-- **Window moving** — middle-click drag (3D depth), titlebar drag (2D on plane)
-- **Window resizing** — 8 edge/corner zones (20px corners, 5px edges), 500px minimum
-- **Depth adjustment** — scroll while grabbing moves window closer/farther
-- **`close_window(id)`** — sends `xdg_toplevel.send_close()`
-- **`set_window_size(id, w, h)`** — configures a new size
+`install.sh`:
 
-### Keyboard Input
+1. Installs the system dependencies with `pacman`.
+2. Clones `godot-cpp` and builds the GDExtension (`scons target=template_debug`
+   and `template_release`).
+3. Clones and patches `xdg-desktop-portal-wlr` (v0.8.2) into `build/portal`.
+4. Exports the Godot project to `Game/build/CyberRealm.x86_64`.
+5. Installs the KWin script, the `cyberrealm-launch` wrapper, and a
+   `.desktop` launcher.
 
-- Virtual software keyboard (`wlr_keyboard`, XKB layout `fr`)
-- 75+ key Godot→evdev translation table
-- AZERTY fixes (`<` and `>` keys)
-- AltGr support (key location 2 → `KEY_RIGHTALT`)
-- Keyboard focus on click, `release_all_keys()` on mode exit
-- **Interact mode** (middle-click toggle) — all keyboard forwarded to focused window
+If you'd rather build manually, `scons target=template_debug platform=linux`
+builds the GDExtension and `godot --headless --path Game/source --export-release
+Linux Game/build/CyberRealm.x86_64` exports the game.
 
-### Pointer Input
+## Running
 
-- Absolute motion with auto-enter/motion/frame
-- Mouse buttons (left, right) and axis (vertical + horizontal scroll)
-- Relative pointer via `zwp_relative_pointer_v1`
-- Pointer lock via `zwp_pointer_constraints_v1` (LOCKED + CONFINED)
-- Physics raycast from camera to 3D quads for hit-testing
+Launch the game (from Plasma or any launcher):
 
-### Focus Mode
+```bash
+Game/build/CyberRealm.x86_64
+```
 
-- **F** key to enter/exit fullscreen focus on a targeted window
-- Fullscreen `TextureRect` with `STRETCH_KEEP_ASPECT_CENTERED`
-- Pixel-perfect pointer mapping
-- Pointer lock auto-captures mouse when client requests it (FPS games)
-- Keyboard and mouse input forwarded to the focused window
-- Popup overlays rendered as sub-TextureRects in focus mode
-- Auto-exit if the window is unmapped
-- **✕** close button in top-right corner
+On startup the game spawns its own compositor, starts XWayland on `:1`, and
+launches your configured startup apps inside the room. The KWin script puts the
+game in fullscreen and blocks KDE global shortcuts while it has focus.
 
-### Window Pinning (Picture-in-Picture)
+To launch an app inside the compositor from outside the game, use the wrapper
+(useful in `.desktop` files):
 
-- **P** key to pin/unpin a window
-- Stacked thumbnails (640x360) with blue border in the top-left corner
-- Live updates from `window_texture_updated` signal
+```bash
+cyberrealm-launch firefox
+```
 
-### X-Ray / Find Mode
+## Controls
 
-- Window menu **FIND** action toggles a red pulsing overlay on a window
-- `no_depth_test = true`, `render_priority = 10`, ~1Hz alpha pulse
+| Input                | Action                                        |
+| -------------------- | --------------------------------------------- |
+| `W` `A` `S` `D`/`Z` `Q` `S` `D` | Move in the room                |
+| `Space`              | Jump                                          |
+| Mouse                | Look around / point at windows                |
+| Middle-click (hold)  | Interact mode (grab, move, resize windows)    |
+| Left / right click   | Click into a window / pass to the compositor  |
+| `G`                  | Grab a window (drag it around)                |
+| `F`                  | Focus a window (fullscreen 2D mode)           |
+| `P`                  | Pin / unpin a window (picture-in-picture)     |
+| `K`                  | Close the focused window                      |
+| `B`                  | Window navigation menu                        |
+| `Shift` (hold)       | Hand the pointer to a layer overlay (waybar/rofi) |
+| `Esc`                | Pause menu (keybinds, startup apps, custom binds) |
 
-### Desktop Notifications
+All keybinds can be remapped from the pause menu.
 
-- Subprocess `dbus-monitor --session interface='org.freedesktop.Notifications'` with pipe IPC
-- Parses notification fields: app_name, summary, body, icon, urgency
-- Emitted as `notification_received(app_name, summary, body, app_icon, urgency)` signal
-- Urgency levels: 0=low, 1=normal, 2=critical
-- Displayed as stacking toasts in the 3D UI overlay
+## Capturing with OBS
 
-### Application Launcher
+The game runs its own `xdg-desktop-portal-wlr`, so in OBS you can add a
+**Screen Capture (PipeWire)** source. When you do, CyberRealm pops up a capture
+selector letting you pick between the whole screen or any open window. Your
+choice is fed back to the portal and OBS starts streaming the game view.
 
-- **R** key opens the launcher menu
-- Parses `.desktop` files from standard XDG directories
-- Deduplication by `Exec` line
-- 10 canonical categories with collapsible headers and app counts
-- Real-time search across all categories
-- Favorites system (F1–F12 quick-launch slots)
-- Right-click to assign, persistent in `user://favorites.json`
-- Auto-detection of terminal emulator (konsole, alacritty, kitty, xterm) for `Terminal=true` apps
+## Notes & limitations
 
-### Window Menu
-
-- **B** key opens the window navigation menu
-- Tab bar with all open windows, click to select
-- Live preview of selected window's texture
-- Action buttons: **GRAB**, **FOCUS**, **HIDE/SHOW**, **PIN**, **FIND**, **QUIT**
-
-### Settings Menu (Pause Menu)
-
-- **Escape** opens the pause menu with multi-page settings:
-  - **Resolution** — 6 presets (1280x720 to 3840x2160), fullscreen toggle
-  - **Terminal** — custom terminal command
-  - **Portal Backend** — `XDG_CURRENT_DESKTOP` value
-  - **Polkit Agent** — path to authentication agent
-  - **Keybinds** — rebind any of 11 actions (forward, back, left, right, jump, interact_mode, launcher, window_menu, grab, focus_window, pin_window)
-  - FPS counter toggle, capture label toggle
-- Persisted to `user://settings.json`
-
-### XWayland Support
-
-- `xwayland-satellite :1` launched automatically on startup
-- `DISPLAY=:1` environment variable set for X11 clients
-
-### Child Process Management
-
-- All forked processes tracked in a `child_pids` vector
-- `killpg(SIGTERM)` on shutdown, zombies reaped with `WNOHANG`
-
----
-
-## GDExtension Signals
-
-| Signal | Parameters | Description |
-|---|---|---|
-| `window_mapped` | id, title, app_id | New toplevel window |
-| `window_unmapped` | id | Toplevel window closed |
-| `window_texture_updated` | id, texture, width, height | Content re-rendered |
-| `popup_mapped` | id, parent_window_id, parent_popup_id, x, y, w, h | Popup appeared |
-| `popup_unmapped` | id | Popup closed |
-| `popup_texture_updated` | id, texture, width, height | Popup re-rendered |
-| `pointer_lock_changed` | window_id, locked | Pointer lock toggled |
-| `window_fullscreen_changed` | id, fullscreen | Fullscreen state changed |
-| `drag_icon_updated` | texture, width, height | Drag icon appeared |
-| `drag_icon_removed` | — | Drag icon removed |
-| `notification_received` | app_name, summary, body, app_icon, urgency | Desktop notification |
-
----
-
-## Input Map (Default Bindings)
-
-| Action | Key | Description |
-|---|---|---|
-| `forward` | Z | Move forward (AZERTY) |
-| `back` | S | Move backward |
-| `left` | Q | Strafe left (AZERTY) |
-| `right` | D | Strafe right |
-| `jump` | Space | Jump |
-| `interact_mode` | Middle-click | Toggle keyboard capture to window |
-| `launcher` | R | Open app launcher |
-| `window_menu` | B | Open window menu |
-| `grab` | G | Grab window |
-| `focus_window` | F | Enter/exit focus mode |
-| `pin_window` | P | Pin/unpin window |
-| `left_click` | Mouse 1 | Click Wayland window |
-| `right_click` | Mouse 2 | Right-click Wayland window |
-| `scroll_up` | Wheel up | Scroll up |
-| `scroll_down` | Wheel down | Scroll down |
-| `ui_cancel` | Escape | Pause menu / exit menus |
-
-
+- The project currently targets a Linux Wayland environment (KDE Plasma was the
+  reference session); the embedded compositor requires wlroots 0.19.
+- The GDExtension must be rebuilt if your wlroots version differs (see the
+  `pkg-config` line in `SConstruct`).
+- No release binary is committed — `build/` is gitignored and produced by
+  `install.sh`.
