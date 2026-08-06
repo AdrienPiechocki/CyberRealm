@@ -302,10 +302,14 @@ func _process(delta: float) -> void:
 	if window_menu.visible or capture_selector.visible:
 		return
 
-	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
+	# Mode focus: F pour sortir, K pour fermer la fenêtre, sinon router les
+	# inputs souris/clavier
 	if focus.is_active():
 		if Input.is_action_just_pressed("focus_window"):
 			focus.exit_focus()
+			return
+		if Input.is_action_just_pressed("kill_window", true):
+			compositor.close_window(focus.get_focus_window_id())
 			return
 		focus.handle_focus_input()
 		return
