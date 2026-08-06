@@ -313,6 +313,16 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::OBJECT, "texture"),
         PropertyInfo(Variant::INT, "width"),
         PropertyInfo(Variant::INT, "height")));
+    // Position/taille (layout) recalculées par arrange_layer_surfaces.
+    // Émis UNIQUEMENT quand la boîte change (pas à chaque commit) : le
+    // script positionne le TextureRect sans avoir à re-requérir
+    // get_layer_surface_info (allocation d'un Dictionary) à chaque frame.
+    ADD_SIGNAL(MethodInfo("layer_surface_layout_changed",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::INT, "x"),
+        PropertyInfo(Variant::INT, "y"),
+        PropertyInfo(Variant::INT, "width"),
+        PropertyInfo(Variant::INT, "height")));
     ADD_SIGNAL(MethodInfo("layer_popup_mapped",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::INT, "parent_layer_id"),
@@ -539,6 +549,12 @@ static inline int round_up_capture_size(int v) {
     static constexpr int CAPTURE_SIZE_STEP = 64;
     return (v + CAPTURE_SIZE_STEP - 1) / CAPTURE_SIZE_STEP * CAPTURE_SIZE_STEP;
 }
+
+// Filet de sécurité pour la recapture des layer surfaces : même sans commit
+// de la surface racine, une sous-surface peut committer (bloc clock, module
+// avec son propre wl_surface...). On re-capture alors périodiquement les
+// surfaces non-dirty. 20 ≈ une fois par seconde à 60 FPS.
+static constexpr int LAYER_SAFETY_RECAPTURE_INTERVAL = 20;
 
 CaptureCache::~CaptureCache() {
     reset();
@@ -2021,6 +2037,8 @@ void WlrCompositor::arrange_layer_surfaces() {
                     ls.width = box.width;
                     ls.height = box.height;
                     wlr_layer_surface_v1_configure(lsrf, box.width, box.height);
+                    emit_signal("layer_surface_layout_changed",
+                        ls.id, ls.x, ls.y, ls.width, ls.height);
                 }
 
                 // Réserve l'espace exclusif pour les surfaces SUIVANTES
@@ -2154,20 +2172,13 @@ void WlrCompositor::on_layer_surface_commit(wl_listener *listener, void *data) {
 
     self->arrange_layer_surfaces();
 
-    if (ls->layer_surface->initial_commit) {
-        // Le client vient d'envoyer sa config initiale; arrange_layer_surfaces
-        // vient d'envoyer le premier configure. On attend son ack + commit.
-        return;
-    }
-
-    if (!ls->layer_surface->surface) return;
-    // La couche background (fond d'écran) n'est jamais rendue côté Godot :
-    // inutile de la capturer à chaque frame.
-    if (ls->layer_surface->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) return;
-    if (!self->capture_surface(ls->layer_surface->surface, ls->texture, ls->width, ls->height, ls->capture_cache)) {
-        return;
-    }
-    self->emit_signal("layer_surface_texture_updated", ls->id, ls->texture, ls->width, ls->height);
+    // La capture effective (render pass offscreen + synchronisation + signal)
+    // est déléguée à _process, qui capture AU PLUS UNE FOIS par frame par
+    // surface. Capturer ici EN PLUS de la boucle _process faisait que chaque
+    // surface qui commit était rendue deux fois par frame (render pass GPU +
+    // sync DMA-BUF bloquante + signal en double) — cause directe de jank sur
+    // les overlays animés (barres quickshell, notifications, launcher).
+    ls->dirty = true;
 }
 
 void WlrCompositor::on_layer_new_popup(wl_listener *listener, void *data) {
@@ -2703,7 +2714,7 @@ void WlrCompositor::start_headless() {
     // 3. Thème sombre : force les apps GTK (GTK3/GTK4, et Firefox qui suit la
     // préférence GTK) à s'ouvrir en sombre, cohérent avec l'ambiance du jeu.
     // Écrasement forcé : le thème sombre prime sur un éventuel GTK_THEME.
-    setenv("GTK_THEME", "Adwaita:dark", 1);
+    // setenv("GTK_THEME", "Adwaita:dark", 1);
     // 4. Qt/KDE : sans XDG_CURRENT_DESKTOP=KDE, Qt choisit un platformtheme
     // générique qui ignore kdeglobals → apps KDE (Dolphin...) en clair. Forcer
     // le platformtheme "kde" (KDEPlasmaPlatformTheme6 de plasma-integration)
@@ -2862,15 +2873,30 @@ void WlrCompositor::_process(double delta) {
         }
     }
 
-    // Recapture des layer surfaces (waybar animate son contenu — horloge,
-    // CPU, réseau — donc il faut resampler chaque frame comme les fenêtres).
+    // Recapture des layer surfaces : uniquement celles qui ont committé
+    // depuis la dernière capture (dirty posé par on_layer_surface_commit),
+    // plus un filet de sécurité périodique pour les sous-surfaces qui
+    // committent indépendamment de la surface racine (rare côté quickshell,
+    // mais le rendu passe alors par wlr_surface_for_each_surface). Une
+    // surface statique (barre sans animation) n'est plus rendue/re-samplée
+    // à chaque frame, et une surface animée n'est plus capturée deux fois
+    // (commit handler + boucle).
     for (auto &pair : layer_surfaces) {
         LayerSurfaceState &ls = pair.second;
         wlr_surface *surf = ls.layer_surface ? ls.layer_surface->surface : nullptr;
-        if (!surf) continue;
+        if (!surf || !surf->mapped) continue;
+        // La couche background (fond d'écran) n'est jamais rendue côté Godot.
+        if (ls.layer_surface->current.layer == ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
+            ls.dirty = false;
+            continue;
+        }
+        if (!ls.dirty && (frame_counter % LAYER_SAFETY_RECAPTURE_INTERVAL) != 0) {
+            continue;
+        }
         if (!capture_surface(surf, ls.texture, ls.width, ls.height, ls.capture_cache)) {
             continue;
         }
+        ls.dirty = false;
         emit_signal("layer_surface_texture_updated", ls.id, ls.texture,
             ls.width, ls.height);
     }

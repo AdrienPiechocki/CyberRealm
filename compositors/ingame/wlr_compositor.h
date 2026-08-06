@@ -201,6 +201,17 @@ struct LayerSurfaceState {
     int width = 0;
     int height = 0;
 
+    // true = le client a committé un nouveau buffer depuis la dernière
+    // capture. Posé par on_layer_surface_commit, consommé par _process :
+    // la capture n'a lieu QU'UNE FOIS par frame pour une surface qui
+    // commit, et jamais pour une surface statique. Sans ça, une surface
+    // animée (barre quickshell, notification, launcher) était capturée
+    // DEUX fois par frame (une fois dans le commit handler, une fois dans
+    // la boucle _process) et une surface statique était rendue/re-samplée
+    // inutilement à chaque frame — le gros du coût étant le render pass
+    // GPU + la synchronisation DMA-BUF bloquante (poll) + le signal.
+    bool dirty = true;
+
     // Position calculée par le layout (arrange_layer_surfaces), relative à
     // l'origine de l'output (0,0 = coin haut-gauche). Utilisée par le
     // script Godot pour positionner l'overlay, et pour le hit-testing.
