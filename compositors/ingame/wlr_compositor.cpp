@@ -3166,6 +3166,7 @@ void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
     auto *cdata = new ConstraintDestroyData{self, window_id, {}};
     cdata->listener.notify = [](wl_listener *l, void *) {
         ConstraintDestroyData *cd = wl_container_of(l, cd, listener);
+        wl_list_remove(&cd->listener.link);
         cd->self->emit_signal("pointer_lock_changed", cd->window_id, false);
         delete cd;
     };
@@ -3298,6 +3299,8 @@ void WlrCompositor::launch_app(const String &command) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
+        const char *home = getenv("HOME");
+        if (home) chdir(home);
         CharString cmd = command.utf8();
         execl("/bin/sh", "sh", "-c", cmd.get_data(), (char *)nullptr);
         _exit(127);
