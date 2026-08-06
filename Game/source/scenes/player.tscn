@@ -6,6 +6,7 @@
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
+height = 2.5
 
 [sub_resource type="LabelSettings" id="LabelSettings_3vyb7"]
 font_size = 24
@@ -14,10 +15,11 @@ font_size = 24
 script = ExtResource("1_3vyb7")
 
 [node name="Camera3D" type="Camera3D" parent="." unique_id=379586654]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 0)
 current = true
 
 [node name="CollisionShape3D" type="CollisionShape3D" parent="." unique_id=1210636511]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
 shape = SubResource("CapsuleShape3D_jm82k")
 
 [node name="UI" type="CanvasLayer" parent="." unique_id=1597255441]
