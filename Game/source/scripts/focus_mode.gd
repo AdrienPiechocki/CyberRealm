@@ -1,0 +1,343 @@
+extends Node3D
+## Mode focus : affiche une fenêtre en 2D plein écran (TextureRect) et route
+## tout l'input clavier + souris vers elle, jusqu'à la sortie avec F.
+## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
+
+const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
+const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
+
+var compositor: WlrCompositor
+var player: Node3D
+var ui: CanvasLayer
+var windows: Node3D
+
+var focus_mode := false
+var focus_window_id := -1
+var focus_texture_rect: TextureRect
+var focus_surface_size := Vector2.ZERO
+var focus_content_offset := Vector2.ZERO
+var focus_content_size := Vector2.ZERO
+var focus_mouse_captured := false
+var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
+var focus_popup_rects: Dictionary = {} # popup_id (int) -> TextureRect overlay en mode focus
+
+func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
+	compositor = compositor_ref
+	player = player_ref
+	ui = ui_ref
+	windows = windows_ref
+
+	# TextureRect plein écran pour le mode focus
+	focus_texture_rect = TextureRect.new()
+	focus_texture_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	focus_texture_rect.mouse_filter = Control.MOUSE_FILTER_PASS
+	focus_texture_rect.visible = false
+	focus_texture_rect.z_index = FOCUS_Z_BASE
+	focus_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	ui.add_child(focus_texture_rect)
+
+func is_active() -> bool:
+	return focus_mode
+
+func get_focus_window_id() -> int:
+	return focus_window_id
+
+func enter_focus(id: int) -> void:
+	if not windows.quads.has(id) or not is_instance_valid(windows.quads[id]):
+		return
+	focus_mode = true
+	focus_window_id = id
+	windows.focused_window_id = id
+	focus_mouse_captured = false
+	focus_mouse_uv = Vector2(0.5, 0.5)
+
+	# Passer la fenêtre en plein écran pendant le mode focus
+	compositor.set_window_fullscreen(id, true)
+
+	# Récupérer la texture courante depuis le quad 3D
+	var info: Dictionary = windows.get_quad_info(id)
+	focus_texture_rect.texture = info.get("texture")
+	focus_surface_size = info.get("surface_size", Vector2(1, 1))
+	focus_content_offset = info.get("content_offset", Vector2.ZERO)
+	focus_content_size = info.get("content_size", focus_surface_size)
+
+	# Cacher le quad 3D, afficher le overlay 2D
+	windows.set_quad_visible(id, false)
+	focus_texture_rect.visible = true
+
+	# Libérer la souris pour interagir avec la fenêtre, centrée sur l'écran
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+
+	# Créer les overlays pour les popups déjà ouverts de cette fenêtre
+	for popup_id in windows.popup_parent_info:
+		var pinfo = windows.popup_parent_info[popup_id]
+		if pinfo.parent_window_id == focus_window_id or \
+			(pinfo.parent_popup_id != -1 and focus_popup_rects.has(pinfo.parent_popup_id)):
+			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
+				pinfo.x, pinfo.y, pinfo.width, pinfo.height)
+
+	# Bloquer le player
+	player.focus_mode_active = true
+
+func exit_focus() -> void:
+	if not focus_mode:
+		return
+
+	compositor.release_all_keys()
+
+	# Sortir la fenêtre du plein écran
+	if focus_window_id != -1:
+		compositor.set_window_fullscreen(focus_window_id, false)
+
+	# Réafficher le quad 3D
+	windows.set_quad_visible(focus_window_id, true)
+
+	# Cacher le overlay, libérer la texture
+	focus_texture_rect.visible = false
+	focus_texture_rect.texture = null
+	focus_mode = false
+	focus_window_id = -1
+	focus_mouse_captured = false
+
+	# Nettoyer les overlays popup du mode focus
+	for popup_id in focus_popup_rects:
+		if is_instance_valid(focus_popup_rects[popup_id]):
+			focus_popup_rects[popup_id].queue_free()
+	focus_popup_rects.clear()
+
+	# Restaurer la souris capturée
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+	# Débloquer le player
+	player.focus_mode_active = false
+
+func on_window_unmapped(id: int) -> void:
+	if focus_mode and focus_window_id == id:
+		exit_focus()
+
+func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
+	# Un jeu a demandé le pointer lock (zwp_pointer_constraints_v1::lock_pointer)
+	if not focus_mode or window_id != focus_window_id:
+		return
+	if locked:
+		focus_mouse_captured = true
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		focus_mouse_captured = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+
+func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	if not focus_mode or id != focus_window_id:
+		return
+	focus_texture_rect.texture = texture
+	# Utiliser la taille réelle de la texture (pas width/height qui
+	# sont la taille du contenu). Dans le path Vulkan, le VkImage est
+	# alloué plus grand que le contenu (round_up_capture_size) — le
+	# UV est calculé depuis tex.get_size(), donc la conversion
+	# UV → surface doit utiliser la même base.
+	focus_surface_size = texture.get_size()
+	var geo := compositor.get_window_geometry(id)
+	focus_content_offset = Vector2(geo["x"], geo["y"])
+	focus_content_size = Vector2(geo["width"], geo["height"])
+
+func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
+	if not focus_mode:
+		return
+	_create_popup_overlay(id, parent_window_id, parent_popup_id, x, y, width, height)
+
+func on_popup_unmapped(id: int) -> void:
+	if focus_popup_rects.has(id):
+		if is_instance_valid(focus_popup_rects[id]):
+			focus_popup_rects[id].queue_free()
+		focus_popup_rects.erase(id)
+
+func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	if not focus_popup_rects.has(id) or not is_instance_valid(focus_popup_rects[id]):
+		return
+	var popup_tex_rect: TextureRect = focus_popup_rects[id]
+	popup_tex_rect.texture = texture
+	# Recalculer la taille avec le scale du parent
+	if windows.popup_parent_info.has(id):
+		var info = windows.popup_parent_info[id]
+		var popup_scale := Vector2.ONE
+		var popup_offset := Vector2.ZERO
+		if info.parent_popup_id != -1 and focus_popup_rects.has(info.parent_popup_id):
+			var parent_rect: TextureRect = focus_popup_rects[info.parent_popup_id]
+			var parent_tex := parent_rect.texture
+			if parent_tex:
+				var pts := parent_tex.get_size()
+				var p_aspect = pts.x / max(pts.y, 1.0)
+				var pr_aspect = parent_rect.size.x / max(parent_rect.size.y, 1.0)
+				var p_displayed: Vector2
+				if p_aspect > pr_aspect:
+					p_displayed = Vector2(parent_rect.size.x, parent_rect.size.x / p_aspect)
+				else:
+					p_displayed = Vector2(parent_rect.size.y * p_aspect, parent_rect.size.y)
+				popup_scale = Vector2(p_displayed.x / max(pts.x, 1), p_displayed.y / max(pts.y, 1))
+				popup_offset = parent_rect.position + (parent_rect.size - p_displayed) / 2.0
+		elif focus_mode and focus_window_id == info.parent_window_id:
+			var fi := _compute_focus_displayed_info()
+			popup_scale = fi.scale
+			popup_offset = fi.offset
+		popup_tex_rect.size = Vector2(info.width, info.height) * popup_scale
+		popup_tex_rect.position = popup_offset + Vector2(info.x, info.y) * popup_scale
+
+func _compute_focus_displayed_info() -> Dictionary:
+	"""Calcule l'offset, la taille et le scale de la zone affichée du TextureRect focus."""
+	var tex := focus_texture_rect.texture
+	if not tex:
+		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
+	var tex_size := tex.get_size()
+	var tex_rect := focus_texture_rect.get_global_rect()
+	var aspect = tex_size.x / max(tex_size.y, 1.0)
+	var rect_aspect = tex_rect.size.x / max(tex_rect.size.y, 1.0)
+	var displayed_size: Vector2
+	if aspect > rect_aspect:
+		displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
+	else:
+		displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
+	var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
+	var scale := Vector2(displayed_size.x / max(tex_size.x, 1), displayed_size.y / max(tex_size.y, 1))
+	return {"offset": offset, "size": displayed_size, "scale": scale}
+
+func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, pw: int, ph: int) -> void:
+	"""Crée un TextureRect overlay pour un popup en mode focus."""
+	var popup_scale: Vector2
+	var popup_offset: Vector2
+
+	# Sous-menu: calculer la zone affichée du parent (STRETCH_KEEP_ASPECT_CENTERED
+	# centre la texture, donc la zone utile ≠ parent_rect.size).
+	if parent_popup_id != -1 and focus_popup_rects.has(parent_popup_id):
+		var parent_rect: TextureRect = focus_popup_rects[parent_popup_id]
+		var parent_tex := parent_rect.texture
+		if not parent_tex:
+			return
+		var pts := parent_tex.get_size()
+		var p_aspect = pts.x / max(pts.y, 1.0)
+		var pr_aspect = parent_rect.size.x / max(parent_rect.size.y, 1.0)
+		var p_displayed: Vector2
+		if p_aspect > pr_aspect:
+			p_displayed = Vector2(parent_rect.size.x, parent_rect.size.x / p_aspect)
+		else:
+			p_displayed = Vector2(parent_rect.size.y * p_aspect, parent_rect.size.y)
+		popup_scale = Vector2(p_displayed.x / max(pts.x, 1), p_displayed.y / max(pts.y, 1))
+		popup_offset = parent_rect.position + (parent_rect.size - p_displayed) / 2.0
+	elif focus_mode and parent_window_id == focus_window_id:
+		var info := _compute_focus_displayed_info()
+		popup_scale = info.scale
+		popup_offset = info.offset
+	else:
+		return
+
+	var popup_tex_rect := TextureRect.new()
+	popup_tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	popup_tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	popup_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	popup_tex_rect.size = Vector2(pw, ph) * popup_scale
+	popup_tex_rect.position = popup_offset + Vector2(x, y) * popup_scale
+	popup_tex_rect.z_index = FOCUS_POPUP_Z
+	ui.add_child(popup_tex_rect)
+	focus_popup_rects[popup_id] = popup_tex_rect
+
+	# Appliquer la texture disponible dès maintenant
+	if windows.popup_quads.has(popup_id) and is_instance_valid(windows.popup_quads[popup_id]):
+		var quad: MeshInstance3D = windows.popup_quads[popup_id]
+		var mat: ShaderMaterial = quad.material_override as ShaderMaterial
+		if mat:
+			popup_tex_rect.texture = mat.get_shader_parameter("window_texture")
+
+# Routage souris/clavier du mode focus, appelé chaque frame par
+# wayland_room.gd tant que le mode est actif.
+func handle_focus_input() -> void:
+	var surf_x: float
+	var surf_y: float
+
+	# Souris capturée: maintenir le pointer focus + forward relatif via _input
+	if focus_mouse_captured:
+		# Maintenir le pointer focus sur la surface (nécessaire pour que
+		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
+		surf_x = focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
+	else:
+		# Souris visible: position absolue, curseur custom suit la souris
+		var mouse_pos := get_viewport().get_mouse_position()
+
+		# Utiliser la zone réelle affichée par le TextureRect pour le mapping
+		# (plus précis que de recalculer avec focus_surface_size)
+		var tex := focus_texture_rect.texture
+		if tex:
+			var tex_size := tex.get_size()
+			# Rect2 global du TextureRect après layout Godot
+			var tex_rect := focus_texture_rect.get_global_rect()
+			# Taille affichée respectant l'aspect ratio
+			var aspect := tex_size.x / tex_size.y
+			var rect_aspect := tex_rect.size.x / tex_rect.size.y
+			var displayed_size: Vector2
+			if aspect > rect_aspect:
+				displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
+			else:
+				displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
+			var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
+
+			var local_pos := mouse_pos - offset
+			focus_mouse_uv = Vector2(
+				clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
+				clampf(local_pos.y / displayed_size.y, 0.0, 1.0)
+			)
+		else:
+			focus_mouse_uv = Vector2(0.5, 0.5)
+
+		surf_x = focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
+		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
+		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
+
+	if Input.is_action_just_pressed("left_click", true):
+		compositor.forward_pointer_button(focus_window_id, 0x110, true)
+	if Input.is_action_just_released("left_click", true):
+		compositor.forward_pointer_button(focus_window_id, 0x110, false)
+
+	if Input.is_action_just_pressed("right_click", true):
+		compositor.forward_pointer_button(focus_window_id, 0x111, true)
+	if Input.is_action_just_released("right_click", true):
+		compositor.forward_pointer_button(focus_window_id, 0x111, false)
+
+	if Input.is_action_just_pressed("scroll_up", true):
+		compositor.forward_pointer_axis(focus_window_id, 0, -50.0)
+	if Input.is_action_just_pressed("scroll_down", true):
+		compositor.forward_pointer_axis(focus_window_id, 0, 50.0)
+
+# Gère un InputEvent en mode focus (clavier + tracking souris capturée).
+# Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
+func handle_input_event(event: InputEvent) -> bool:
+	if not focus_mode or focus_window_id == -1:
+		return false
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		var code = key_event.physical_keycode
+		if code == 0:
+			code = key_event.keycode
+		if key_event.unicode == 60 or code == 167:
+			code = KEY_LESS
+		elif key_event.unicode == 62:
+			code = KEY_GREATER
+		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+	elif focus_mouse_captured and event is InputEventMouseMotion:
+		# Tracker la position UV + forward le mouvement relatif au client
+		var viewport_size := get_viewport().get_visible_rect().size
+		var tex_size := focus_surface_size
+		if tex_size.x <= 0 or tex_size.y <= 0:
+			tex_size = viewport_size
+		var scale := minf(viewport_size.x / tex_size.x, viewport_size.y / tex_size.y)
+		var displayed_size := tex_size * scale
+		focus_mouse_uv.x += event.relative.x / displayed_size.x
+		focus_mouse_uv.y += event.relative.y / displayed_size.y
+		focus_mouse_uv.x = clampf(focus_mouse_uv.x, 0.0, 1.0)
+		focus_mouse_uv.y = clampf(focus_mouse_uv.y, 0.0, 1.0)
+		compositor.forward_pointer_relative_motion(
+			focus_window_id,
+			event.relative.x, event.relative.y,
+			event.relative.x, event.relative.y)
+	return true
