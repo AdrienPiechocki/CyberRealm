@@ -156,6 +156,10 @@ func on_window_mapped(id: int, _title: String, _app_id: String) -> void:
 	quad.material_override = mat
 
 	var body := StaticBody3D.new()
+	
+	body.collision_layer = 2
+	body.collision_mask = 2
+	
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
 	# Épaisseur fine : la face avant du boîtier reste proche du plan visuel

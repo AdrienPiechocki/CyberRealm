@@ -56,13 +56,13 @@ func _build_ui() -> void:
 	add_child(vbox)
 
 	_title_label = Label.new()
-	_title_label.text = "CHOISIR UNE CIBLE DE CAPTURE"
+	_title_label.text = "CHOSE A WINDOW TO CAPTURE"
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_title_label.add_theme_font_size_override("font_size", 20)
 	vbox.add_child(_title_label)
 
 	_hint_label = Label.new()
-	_hint_label.text = "Une source « Screen Capture (PipeWire) » vient d'être ajoutée dans OBS. Choisissez ce qu'elle doit capturer :"
+	_hint_label.text = "Chose what to capture :"
 	_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_hint_label.add_theme_font_size_override("font_size", 13)
@@ -80,7 +80,7 @@ func _build_ui() -> void:
 	_options_container.add_theme_constant_override("separation", 6)
 	scroll.add_child(_options_container)
 
-	var cancel_btn := _make_button("ANNULER (ECHAP)")
+	var cancel_btn := _make_button("CANCEL (ESCAPE)")
 	cancel_btn.pressed.connect(func(): selector_cancelled.emit())
 	vbox.add_child(cancel_btn)
 
@@ -140,7 +140,7 @@ func _refresh_options() -> void:
 	var window_list: Array = compositor.get_window_list()
 	if window_list.is_empty():
 		var empty_label := Label.new()
-		empty_label.text = "  (aucune fenêtre ouverte)  "
+		empty_label.text = "  (no window open)  "
 		empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		empty_label.add_theme_font_size_override("font_size", 13)
 		empty_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.7))
@@ -153,12 +153,12 @@ func _refresh_options() -> void:
 		var app_id: String = entry["app_id"]
 		var label := title if title != "" else app_id
 		if label == "":
-			label = "Fenêtre #" + str(wid)
+			label = "Window #" + str(wid)
 		elif app_id != "" and title != "" and app_id != title:
 			label = "%s   (%s)" % [title, app_id]
 		var target := app_id if app_id != "" else title
 		if target == "":
-			target = "Fenêtre #" + str(wid)
+			target = "Window #" + str(wid)
 		var btn := _make_button("  " + label)
 		btn.pressed.connect(func(): target_chosen.emit(target))
 		_options_container.add_child(btn)
