@@ -302,8 +302,6 @@ func _show_startup_apps() -> void:
 
 			list.add_child(row)
 
-	container.add_child(_make_spacer())
-
 	var add_row := HBoxContainer.new()
 	add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var le := _make_line_edit()
@@ -383,8 +381,6 @@ func _show_custom_binds() -> void:
 			row.add_child(remove_btn)
 
 			list.add_child(row)
-
-	container.add_child(_make_spacer())
 
 	var add_row := HBoxContainer.new()
 	add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
