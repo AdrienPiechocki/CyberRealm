@@ -130,7 +130,7 @@ func _refresh_options() -> void:
 	for c in _options_container.get_children():
 		c.queue_free()
 
-	var screen_btn := _make_button("  🖥  ÉCRAN")
+	var screen_btn := _make_button("SCREEN")
 	screen_btn.pressed.connect(func(): target_chosen.emit("screen"))
 	_options_container.add_child(screen_btn)
 
