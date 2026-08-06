@@ -1,7 +1,10 @@
 godot-cpp/
-demo/bin/*.so
-demo/bin/*.dylib
-demo/bin/*.dll
+Game/source/bin/*.so
+Game/source/bin/*.dylib
+Game/source/bin/*.dll
+Game/build/*.so
 .sconsign.dblite
 *.os
 *.o
+# Sorties du build portal-wlr (clone dans portal-src, install dans portal)
+build/

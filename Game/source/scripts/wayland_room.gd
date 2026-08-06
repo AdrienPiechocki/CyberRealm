@@ -1,0 +1,512 @@
+extends Node3D
+## Exemple minimal: instancie un quad texturé par fenêtre Wayland mappée,
+## et route les clics/raycasts de la caméra vers le compositeur.
+## À brancher sur une scène avec un Camera3D enfant nommé "Camera3D".
+##
+## Orchestrateur : chaque sous-système vit dans un node enfant dédié —
+##   Windows3D      -> quads 3D des fenêtres/popups, déplacement, resize
+##   FocusMode      -> mode focus plein écran 2D
+##   LayerSurfaces  -> overlays waybar/rofi + session lock
+##   PinnedWindows  -> PiP des fenêtres épinglées
+##   Effects        -> X-RAY + flash d'ouverture
+
+@onready var compositor: WlrCompositor = $WlrCompositor
+@onready var player = $Player
+@onready var ui: CanvasLayer = $Player/UI
+@onready var window_menu = $Player/WindowMenuLayer/WindowMenu
+@onready var capture_selector = $Player/CaptureSelectorLayer/CaptureSelector
+@onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
+
+var win3d: Node3D
+var focus: Node3D
+var layers: Node3D
+var pins: Node3D
+var fx: Node3D
+
+var _present_frame_counter := 0 # throttling du readback viewport pour OBS
+var compositor_cursor_hidden := false # curseur composité masqué (mode caméra)
+var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
+var interact_mode_active := false
+
+# Drag-and-drop icon overlay
+var drag_icon_rect: TextureRect
+var drag_icon_size := Vector2.ZERO
+
+func _add_manager(script: Script, node_name: String) -> Node3D:
+	var node := Node3D.new()
+	node.name = node_name
+	node.set_script(script)
+	add_child(node)
+	return node
+
+func _ready() -> void:
+	# Sous-systèmes, créés avant toute connexion de signal.
+	win3d = _add_manager(preload("res://scripts/windows_3d.gd"), "Windows3D")
+	focus = _add_manager(preload("res://scripts/focus_mode.gd"), "FocusMode")
+	layers = _add_manager(preload("res://scripts/layer_surfaces.gd"), "LayerSurfaces")
+	pins = _add_manager(preload("res://scripts/pinned_windows.gd"), "PinnedWindows")
+	fx = _add_manager(preload("res://scripts/effects.gd"), "Effects")
+
+	win3d.setup(compositor, player)
+	focus.setup(compositor, player, ui, win3d)
+	layers.setup(compositor, player, ui, focus, pause_menu, window_menu)
+	pins.setup(ui)
+	fx.setup(win3d)
+
+	compositor.window_mapped.connect(win3d.on_window_mapped)
+	compositor.window_unmapped.connect(focus.on_window_unmapped)
+	compositor.window_unmapped.connect(pins.on_window_unmapped)
+	compositor.window_unmapped.connect(fx.on_window_unmapped)
+	compositor.window_unmapped.connect(win3d.on_window_unmapped)
+	compositor.window_texture_updated.connect(_on_window_texture_updated)
+	compositor.popup_mapped.connect(_on_popup_mapped)
+	compositor.popup_unmapped.connect(_on_popup_unmapped)
+	compositor.popup_texture_updated.connect(_on_popup_texture_updated)
+	compositor.pointer_lock_changed.connect(focus.on_pointer_lock_changed)
+	compositor.drag_icon_updated.connect(_on_drag_icon_updated)
+	compositor.drag_icon_removed.connect(_on_drag_icon_removed)
+	compositor.layer_surface_mapped.connect(layers.on_layer_surface_mapped)
+	compositor.layer_surface_unmapped.connect(layers.on_layer_surface_unmapped)
+	compositor.layer_surface_texture_updated.connect(layers.on_layer_surface_texture_updated)
+	compositor.layer_surface_layout_changed.connect(layers.on_layer_surface_layout_changed)
+	compositor.layer_popup_mapped.connect(layers.on_layer_popup_mapped)
+	compositor.session_lock_locked.connect(layers.on_session_lock_locked)
+	compositor.session_lock_unlocked.connect(layers.on_session_lock_unlocked)
+	compositor.session_lock_surface_texture_updated.connect(layers.on_session_lock_surface_texture_updated)
+	win3d.window_created.connect(fx.on_window_created)
+
+	compositor.start_headless()
+	# Portails de capture pour OBS : xdg-desktop-portal (backend wlr) +
+	# xdg-desktop-portal-wlr, dans la session du jeu (socket cyberrealm-0).
+	# IMPORTANT : sans set_portal_backend, XDG_CURRENT_DESKTOP hérite de
+	# "KDE" (le jeu est lancé depuis Plasma) → le xdg-desktop-portal privé
+	# route ScreenCast vers le backend kde (xdg-desktop-portal-kde), qui
+	# exige KWin sur le compositeur → échec "denied or cancelled by user".
+	# "dwl:wlr" fait matcher wlr-portals.conf → backend wlr (vérifié).
+	compositor.set_portal_backend("dwl:wlr")
+	compositor.launch_portals()
+	# Les layer surfaces sont ancrées à l'écran : le compositeur doit
+	# connaître la taille du viewport pour le layout (arrange_layer_surfaces).
+	compositor.set_output_size(int(get_viewport().get_visible_rect().size.x),
+		int(get_viewport().get_visible_rect().size.y))
+	compositor.launch_app("xwayland-satellite :1")
+	await get_tree().create_timer(0.2).timeout
+	compositor.set_x11_display(":1")
+	# Apps à lancer automatiquement au démarrage (configurées depuis le menu pause)
+	for cmd in pause_menu.get_startup_apps():
+		compositor.launch_app(cmd)
+	# Setup du menu de navigation entre fenêtres
+	window_menu.setup(compositor, _get_window_texture)
+	window_menu.action_grab.connect(_on_window_menu_grab)
+	window_menu.action_focus.connect(_on_window_menu_focus)
+	window_menu.action_toggle_hide.connect(_on_window_menu_toggle_hide)
+	window_menu.action_find.connect(_on_window_menu_find)
+	window_menu.action_pin.connect(_on_window_menu_pin)
+	window_menu.action_quit.connect(_on_window_menu_quit)
+	window_menu.menu_closed.connect(_on_window_menu_closed)
+	# Sélecteur de cible de capture OBS : ouvert quand portal-wlr signale une
+	# nouvelle source « Screen Capture (PipeWire) » (cyberrealm-capture-pending).
+	capture_selector.setup(compositor)
+	capture_selector.target_chosen.connect(_on_capture_selector_chosen)
+	capture_selector.selector_cancelled.connect(_on_capture_selector_cancelled)
+
+	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
+	pause_menu.app_launch_requested.connect(compositor.launch_app)
+	pause_menu.quit_requested.connect(_on_quit_requested)
+
+	# TextureRect pour l'icône de drag-and-drop
+	drag_icon_rect = TextureRect.new()
+	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
+	drag_icon_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	drag_icon_rect.visible = false
+	drag_icon_rect.z_index = 100
+	ui.add_child(drag_icon_rect)
+
+# ── Dispatch des signaux compositeur vers les sous-systèmes ─────────
+
+func _on_window_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	win3d.on_texture_updated(id, texture, width, height)
+	pins.on_window_texture_updated(id, texture)
+	focus.on_window_texture_updated(id, texture, width, height)
+	# Rafraîchir la preview du menu si ouvert
+	if window_menu.visible:
+		window_menu.refresh_preview()
+
+func _on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
+	win3d.on_popup_mapped(id, parent_window_id, parent_popup_id, x, y, width, height)
+	focus.on_popup_mapped(id, parent_window_id, parent_popup_id, x, y, width, height)
+
+func _on_popup_unmapped(id: int) -> void:
+	# Popup d'une layer surface: overlay 2D, pas de quad 3D.
+	if layers.on_popup_unmapped(id):
+		return
+	win3d.on_popup_unmapped(id)
+	focus.on_popup_unmapped(id)
+
+func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
+	# Popup d'une layer surface: on met simplement à jour l'overlay 2D.
+	if layers.on_popup_texture_updated(id, texture, width, height):
+		return
+	win3d.on_popup_texture_updated(id, texture, width, height)
+	focus.on_popup_texture_updated(id, texture, width, height)
+
+# ── Capture écran pour OBS ───────────────────────────────────────────
+
+# Capture écran pour OBS : lit l'image du viewport (GPU→CPU) et la présente
+# à l'output headless du compositeur, qui devient la "source écran" capturée
+# par xdg-desktop-portal-wlr (wlr-screencopy / ext_image_capture output).
+func _present_viewport_frame() -> void:
+	var vp := get_viewport()
+	var img := vp.get_texture().get_image()
+	if img == null or img.is_empty():
+		return
+	if img.get_format() != Image.FORMAT_RGBA8:
+		img.convert(Image.FORMAT_RGBA8)
+	compositor.present_viewport_frame(img.get_data(), img.get_width(), img.get_height())
+
+# ── Binds custom et helpers d'entrée ─────────────────────────────────
+
+# Vrai quand un overlay keyboard-interactive (rofi, waybar...) détient le
+# focus clavier : les touches sont routées vers lui, aucun bind du jeu ne
+# doit se déclencher.
+func _keyboard_busy() -> bool:
+	return layers.keyboard_busy()
+
+# Détecte si l'événement correspond à un custom bind et lance sa commande.
+# Renvoie true si l'événement a été consommé.
+func _try_custom_bind(event: InputEvent) -> bool:
+	if _keyboard_busy() or interact_mode_active:
+		return false
+	var binds: Array = pause_menu.get_custom_binds()
+	for bind in binds:
+		if not bind is Dictionary:
+			continue
+		var command: String = bind.get("command", "")
+		if command == "":
+			continue
+		var matched := false
+		if bind.get("type", "") == "mouse":
+			if event is InputEventMouseButton and event.pressed:
+				matched = event.button_index == int(bind.get("code", -1)) \
+					and _event_matches_mods(event, bind.get("mods", {}))
+		else:
+			if event is InputEventKey and event.pressed and not event.echo:
+				var kev := event as InputEventKey
+				var code := kev.physical_keycode
+				if code == 0:
+					code = kev.keycode
+				matched = code == int(bind.get("code", 0)) \
+					and _event_matches_mods(kev, bind.get("mods", {}))
+		if matched:
+			compositor.launch_app(command)
+			return true
+	return false
+
+# Vrai si les modificateurs de l'événement correspondent exactement à ceux du bind.
+func _event_matches_mods(event: InputEvent, mods: Dictionary) -> bool:
+	var ev := event as InputEventWithModifiers
+	if ev == null:
+		return mods.is_empty()
+	return ev.ctrl_pressed == mods.get("ctrl", false) \
+		and ev.shift_pressed == mods.get("shift", false) \
+		and ev.alt_pressed == mods.get("alt", false) \
+		and ev.meta_pressed == mods.get("super", false)
+
+# En MOUSE_MODE_CAPTURED (souris FPS), get_mouse_position() reste figée à
+# l'endroit où le curseur était au moment de la capture — pas au centre de
+# l'écran. Le viseur est au centre du viewport : c'est donc ce centre qui
+# doit guider le rayon, sinon les clics sont décalés d'autant.
+func _aim_pos() -> Vector2:
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		return get_viewport().get_visible_rect().size / 2.0
+	return get_viewport().get_mouse_position()
+
+# Cast un rayon depuis la souris et renvoie l'id de la fenêtre touchée (-1 sinon).
+func _raycast_window_id(mouse_pos: Vector2) -> int:
+	var cam: Camera3D = player.get_node("Camera3D") as Camera3D
+	var ray_origin = cam.project_ray_origin(mouse_pos)
+	var ray_dir = cam.project_ray_normal(mouse_pos)
+	var to = ray_origin + ray_dir * 1000.0
+	var space := get_world_3d().direct_space_state
+	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+	var hit := space.intersect_ray(params)
+	if not hit.is_empty():
+		var body: Node3D = hit.collider
+		if body.has_meta("window_id"):
+			return body.get_meta("window_id")
+	return -1
+
+# Pin/unpin d'une fenêtre en PiP (touche P ou menu fenêtres).
+func _toggle_pin(wid: int) -> void:
+	if pins.is_pinned(wid):
+		pins.unpin(wid)
+	else:
+		if not win3d.quads.has(wid):
+			return
+		pins.pin(wid, win3d.get_window_texture(wid))
+
+# ── Boucle principale ────────────────────────────────────────────────
+
+func _process(delta: float) -> void:
+	fx.process(delta)
+
+	# Capture écran pour OBS (xdg-desktop-portal-wlr) : présente la vue du
+	# viewport (ce que le joueur voit) à l'output headless, qu'alimente la
+	# source ext_image_capture "output". Le readback GPU→CPU coûte cher : on
+	# l'échantillonne à ~30 FPS (1 frame sur 2) — suffisant pour l'aperçu
+	# d'OBS — sans sacrifier la performance du jeu.
+	_present_frame_counter = (_present_frame_counter + 1) & 1
+
+	# Synchroniser le curseur Wayland (wlr_cursor) avec la position de la
+	# souris Godot. Le curseur est composité dans le frame screencopy par
+	# wlroots, donc il apparaîtra dans la capture OBS. En mode caméra
+	# (MOUSE_MODE_CAPTURED), le curseur est masqué côté compositeur pour ne
+	# pas apparaître dans la capture OBS.
+	var _cursor_pos := get_viewport().get_mouse_position()
+	compositor.set_cursor_position(_cursor_pos.x, _cursor_pos.y)
+	if compositor_cursor_hidden != (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED):
+		compositor_cursor_hidden = (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+		compositor.set_cursor_visible(not compositor_cursor_hidden)
+
+	if _present_frame_counter == 0:
+		_present_viewport_frame()
+
+	# Suivi de l'icône de drag-and-drop
+	if drag_icon_rect and drag_icon_rect.visible:
+		var mouse_pos := get_viewport().get_mouse_position()
+		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
+
+	# Session verrouillée : tout le pointeur part vers la surface de
+	# verrouillage (le curseur y est visible), rien ne va au jeu.
+	if layers.is_locked():
+		layers.handle_locked_input()
+		return
+
+	# Sélecteur de cible de capture OBS : quand portal-wlr écrit
+	# cyberrealm-capture-pending (une source PipeWire ajoutée dans OBS), on
+	# ouvre le sélecteur pour choisir l'écran ou une fenêtre.
+	_poll_capture_pending()
+
+	if capture_selector.visible:
+		return
+
+	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
+		window_menu.toggle_menu()
+
+	# Tab : bascule le mode "interaction layer" — libère la souris pour
+	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
+	# (sinon elle est capturée et fait tourner la caméra FPS).
+	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
+		layers.toggle_layer_interact()
+
+	if window_menu.visible or capture_selector.visible:
+		return
+
+	# Mode focus: F pour sortir, K pour fermer la fenêtre, sinon router les
+	# inputs souris/clavier
+	if focus.is_active():
+		if Input.is_action_just_pressed("focus_window"):
+			focus.exit_focus()
+			return
+		if Input.is_action_just_pressed("kill_window", true):
+			compositor.close_window(focus.get_focus_window_id())
+			return
+		focus.handle_focus_input()
+		return
+
+	# Layer surfaces (waybar/rofi): quand la souris est visible et survole
+	# une layer surface ou son popup, on forward l'input vers elle et on
+	# laisse le raycast 3D de côté (les overlays 2D passent devant la scène).
+	if not pause_menu.visible and layers.handle_layer_pointer(get_viewport().get_mouse_position()):
+		return
+
+	# Clavier occupé par un overlay keyboard-interactive (rofi, waybar...):
+	# les touches partent vers l'overlay, les binds du jeu (focus, pin,
+	# interact_mode, grab...) ne doivent pas se déclencher.
+	if layers.keyboard_busy():
+		return
+
+	# F en visant une fenêtre → entrer en mode focus
+	if Input.is_action_just_pressed("focus_window", true) and not interact_mode_active:
+		var wid := _raycast_window_id(get_viewport().get_mouse_position())
+		if wid != -1:
+			focus.enter_focus(wid)
+			return
+
+	# P en visant une fenêtre → pin/unpin PiP
+	if Input.is_action_just_pressed("pin_window", true) and not interact_mode_active:
+		var wid := _raycast_window_id(get_viewport().get_mouse_position())
+		if wid != -1:
+			_toggle_pin(wid)
+			return
+
+	# K en visant une fenêtre → demander sa fermeture (close)
+	if Input.is_action_just_pressed("kill_window", true) and not interact_mode_active:
+		var wid := _raycast_window_id(_aim_pos())
+		if wid != -1:
+			compositor.close_window(wid)
+			return
+
+	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
+	if Input.is_action_just_pressed("interact_mode", true):
+		if interact_mode_active:
+			compositor.release_all_keys()
+		interact_mode_active = not interact_mode_active
+		player.interact_mode_active = not player.interact_mode_active
+
+	var cam: Camera3D = player.get_node("Camera3D") as Camera3D
+	var mouse_pos := _aim_pos()
+	var ray_origin := cam.project_ray_origin(mouse_pos)
+	var ray_dir := cam.project_ray_normal(mouse_pos)
+	win3d.process_raycast(ray_origin, ray_dir, delta, interact_mode_active)
+
+func _input(event: InputEvent) -> void:
+	if pause_menu.visible:
+		return
+
+	# Session verrouillée : tout le clavier part vers le lockscreen (le
+	# champ password de quickshell), aucun bind du jeu ne doit répondre.
+	if layers.is_locked() and event is InputEventKey:
+		layers.forward_keyboard_event(event)
+		return
+
+	# Une layer surface keyboard-interactive (rofi, waybar menu) détient le
+	# focus clavier : forward vers elle, quel que soit le mode de la souris.
+	if event is InputEventKey and layers.keyboard_busy() and not capture_selector.visible:
+		layers.forward_keyboard_event(event)
+		return
+
+	# En mode focus, forward le clavier et tracker la souris capturée
+	if focus.is_active() and focus.get_focus_window_id() != -1 and not capture_selector.visible:
+		if focus.handle_input_event(event):
+			return
+
+	# Custom binds: une touche enregistrée lance une commande/app.
+	if not interact_mode_active and not layers.keyboard_busy() and not window_menu.visible and not capture_selector.visible:
+		if _try_custom_bind(event):
+			get_viewport().set_input_as_handled()
+			return
+
+	if win3d.focused_window_id == -1 or not interact_mode_active:
+		return
+
+	if event is InputEventKey:
+		var key_event := event as InputEventKey
+		var code = key_event.physical_keycode
+		if code == 0:
+			code = key_event.keycode
+
+		# Correction spécifique pour les chevrons sur clavier AZERTY / ISO
+		if key_event.unicode == 60 or code == 167: # '<' ou touche bizarre associée
+			code = KEY_LESS
+		elif key_event.unicode == 62: # '>'
+			code = KEY_GREATER # ou KEY_LESS selon le mapping evdev si '>' partage la même touche physique avec Shift
+
+		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+		get_viewport().set_input_as_handled()
+
+# ── Drag-and-drop ────────────────────────────────────────────────────
+
+func _on_drag_icon_updated(texture: Texture2D, width: int, height: int) -> void:
+	drag_icon_rect.texture = texture
+	drag_icon_size = Vector2(width, height)
+	drag_icon_rect.visible = true
+	drag_icon_rect.pivot_offset = drag_icon_size / 2.0
+
+func _on_drag_icon_removed() -> void:
+	drag_icon_rect.visible = false
+	drag_icon_rect.texture = null
+
+# ── Window menu helpers ──────────────────────────────────────────────
+
+func _get_window_texture(wid: int) -> Texture2D:
+	return win3d.get_window_texture(wid)
+
+func _on_window_menu_grab(wid: int) -> void:
+	# Fermer le menu, sélectionner la fenêtre et initier le grab
+	window_menu.hide_menu()
+	win3d.grab_window_from_menu(wid)
+
+func _on_window_menu_focus(wid: int) -> void:
+	window_menu.hide_menu()
+	focus.enter_focus(wid)
+
+func _on_window_menu_toggle_hide(wid: int) -> void:
+	win3d.toggle_hide(wid)
+	if window_menu.visible:
+		window_menu.refresh_preview()
+
+func _on_window_menu_find(wid: int) -> void:
+	window_menu.hide_menu()
+	fx.toggle_find(wid)
+
+func _on_window_menu_pin(wid: int) -> void:
+	_toggle_pin(wid)
+	window_menu.hide_menu()
+
+func _on_window_menu_quit(wid: int) -> void:
+	compositor.close_window(wid)
+
+func _on_window_menu_closed() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+# ── Sélecteur de capture OBS ─────────────────────────────────────────
+
+func _poll_capture_pending() -> void:
+	var rt := OS.get_environment("XDG_RUNTIME_DIR")
+	if rt.is_empty():
+		return
+	var pending := rt + "/cyberrealm-capture-pending"
+	if _selector_waiting:
+		# Un choix a été envoyé à portal-wlr : ne pas rouvrir le sélecteur
+		# tant qu'il n'a pas consommé le fichier pending.
+		if not FileAccess.file_exists(pending):
+			_selector_waiting = false
+		return
+	if FileAccess.file_exists(pending) and not capture_selector.visible:
+		capture_selector.open_selector()
+
+func _on_capture_selector_chosen(choice: String) -> void:
+	_write_capture_choice(choice)
+	_selector_waiting = true
+	capture_selector.close_selector()
+
+func _on_capture_selector_cancelled() -> void:
+	_write_capture_choice("cancel")
+	_selector_waiting = true
+	capture_selector.close_selector()
+
+# Écrit le choix du joueur pour xdg-desktop-portal-wlr : "screen", un app_id
+# ou un titre de fenêtre, ou "cancel" pour annuler (portal-wlr retombe alors
+# sur la première fenêtre, sinon l'écran).
+func _write_capture_choice(choice: String) -> void:
+	var rt := OS.get_environment("XDG_RUNTIME_DIR")
+	if rt.is_empty():
+		return
+	var f := FileAccess.open(rt + "/cyberrealm-capture-choice", FileAccess.WRITE)
+	if f:
+		f.store_string(choice + "\n")
+		f.close()
+
+# ── Cycle de vie ─────────────────────────────────────────────────────
+
+func _on_quit_requested() -> void:
+	# Ferme d'abord toutes les apps lancées dans le jeu (SIGTERM + grâce +
+	# SIGKILL) puis quitte Godot ; le destructeur de WlrCompositor termine
+	# xwayland-satellite et le bus D-Bus privé.
+	compositor.shutdown_apps()
+	get_tree().quit()
+
+func _notification(what: int) -> void:
+	# Fermeture de la fenêtre hors menu pause : même shutdown propre.
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		compositor.shutdown_apps()
+
+func _on_pause_menu_visibility_changed() -> void:
+	if pause_menu.visible:
+		if interact_mode_active:
+			compositor.release_all_keys()
+			interact_mode_active = false
+			player.interact_mode_active = false
+		if focus.is_active():
+			focus.exit_focus()
