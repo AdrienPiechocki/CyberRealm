@@ -5,8 +5,11 @@ extends Node3D
 
 @onready var compositor: WlrCompositor = $WlrCompositor
 @onready var window_menu = $Player/WindowMenuLayer/WindowMenu
+@onready var capture_selector = $Player/CaptureSelectorLayer/CaptureSelector
 @onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
 var _present_frame_counter := 0 # throttling du readback viewport pour OBS
+var compositor_cursor_hidden := false # curseur composité masqué (mode caméra)
+var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
@@ -209,6 +212,12 @@ func _ready() -> void:
 	compositor.start_headless()
 	# Portails de capture pour OBS : xdg-desktop-portal (backend wlr) +
 	# xdg-desktop-portal-wlr, dans la session du jeu (socket cyberrealm-0).
+	# IMPORTANT : sans set_portal_backend, XDG_CURRENT_DESKTOP hérite de
+	# "KDE" (le jeu est lancé depuis Plasma) → le xdg-desktop-portal privé
+	# route ScreenCast vers le backend kde (xdg-desktop-portal-kde), qui
+	# exige KWin sur le compositeur → échec "denied or cancelled by user".
+	# "dwl:wlr" fait matcher wlr-portals.conf → backend wlr (vérifié).
+	compositor.set_portal_backend("dwl:wlr")
 	compositor.launch_portals()
 	layer_shader = Shader.new()
 	layer_shader.code = LAYER_SHADER_CODE
@@ -231,9 +240,15 @@ func _ready() -> void:
 	window_menu.action_pin.connect(_on_window_menu_pin)
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
+	# Sélecteur de cible de capture OBS : ouvert quand portal-wlr signale une
+	# nouvelle source « Screen Capture (PipeWire) » (cyberrealm-capture-pending).
+	capture_selector.setup(compositor)
+	capture_selector.target_chosen.connect(_on_capture_selector_chosen)
+	capture_selector.selector_cancelled.connect(_on_capture_selector_cancelled)
 
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 	pause_menu.app_launch_requested.connect(compositor.launch_app)
+	pause_menu.quit_requested.connect(_on_quit_requested)
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -266,6 +281,8 @@ func _present_viewport_frame() -> void:
 	var img := vp.get_texture().get_image()
 	if img == null or img.is_empty():
 		return
+	if img.get_format() != Image.FORMAT_RGBA8:
+		img.convert(Image.FORMAT_RGBA8)
 	compositor.present_viewport_frame(img.get_data(), img.get_width(), img.get_height())
 
 # Position de spawn des nouvelles fenêtres : on caste un rayon de
@@ -1171,9 +1188,14 @@ func _process(delta: float) -> void:
 
 	# Synchroniser le curseur Wayland (wlr_cursor) avec la position de la
 	# souris Godot. Le curseur est composité dans le frame screencopy par
-	# wlroots, donc il apparaîtra dans la capture OBS.
+	# wlroots, donc il apparaîtra dans la capture OBS. En mode caméra
+	# (MOUSE_MODE_CAPTURED), le curseur est masqué côté compositeur pour ne
+	# pas apparaître dans la capture OBS.
 	var _cursor_pos := get_viewport().get_mouse_position()
 	compositor.set_cursor_position(_cursor_pos.x, _cursor_pos.y)
+	if compositor_cursor_hidden != (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED):
+		compositor_cursor_hidden = (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
+		compositor.set_cursor_visible(not compositor_cursor_hidden)
 
 	if _present_frame_counter == 0:
 		_present_viewport_frame()
@@ -1202,6 +1224,14 @@ func _process(delta: float) -> void:
 			compositor.forward_pointer_axis_lock(0.0, 50.0)
 		return
 
+	# Sélecteur de cible de capture OBS : quand portal-wlr écrit
+	# cyberrealm-capture-pending (une source PipeWire ajoutée dans OBS), on
+	# ouvre le sélecteur pour choisir l'écran ou une fenêtre.
+	_poll_capture_pending()
+
+	if capture_selector.visible:
+		return
+
 	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus_mode and not _keyboard_busy():
 		window_menu.toggle_menu()
 
@@ -1220,7 +1250,7 @@ func _process(delta: float) -> void:
 	#if layer_interact_active and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		#layer_interact_active = false
 
-	if window_menu.visible:
+	if window_menu.visible or capture_selector.visible:
 		return
 
 	# Mode focus: F pour sortir, sinon router les inputs souris/clavier
@@ -1667,7 +1697,8 @@ func _input(event: InputEvent) -> void:
 
 	# Une layer surface keyboard-interactive (rofi, waybar menu) détient le
 	# focus clavier : forward vers elle, quel que soit le mode de la souris.
-	if event is InputEventKey and compositor.get_keyboard_focus_layer_id() >= 0:
+	if event is InputEventKey and compositor.get_keyboard_focus_layer_id() >= 0 \
+			and not capture_selector.visible:
 		var key_event := event as InputEventKey
 		var code = key_event.physical_keycode
 		if code == 0:
@@ -1681,7 +1712,7 @@ func _input(event: InputEvent) -> void:
 		return
 
 	# En mode focus, forward le clavier et tracker la souris capturée
-	if focus_mode and focus_window_id != -1:
+	if focus_mode and focus_window_id != -1 and not capture_selector.visible:
 		if event is InputEventKey:
 			var key_event := event as InputEventKey
 			var code = key_event.physical_keycode
@@ -1712,7 +1743,7 @@ func _input(event: InputEvent) -> void:
 		return
 
 	# Custom binds: une touche enregistrée lance une commande/app.
-	if not interact_mode_active and not _keyboard_busy() and not window_menu.visible:
+	if not interact_mode_active and not _keyboard_busy() and not window_menu.visible and not capture_selector.visible:
 		if _try_custom_bind(event):
 			get_viewport().set_input_as_handled()
 			return
@@ -1825,6 +1856,42 @@ func _update_flashes(delta: float) -> void:
 			if mat:
 				mat.albedo_color.a = (1.0 - t) * 0.9
 
+func _poll_capture_pending() -> void:
+	var rt := OS.get_environment("XDG_RUNTIME_DIR")
+	if rt.is_empty():
+		return
+	var pending := rt + "/cyberrealm-capture-pending"
+	if _selector_waiting:
+		# Un choix a été envoyé à portal-wlr : ne pas rouvrir le sélecteur
+		# tant qu'il n'a pas consommé le fichier pending.
+		if not FileAccess.file_exists(pending):
+			_selector_waiting = false
+		return
+	if FileAccess.file_exists(pending) and not capture_selector.visible:
+		capture_selector.open_selector()
+
+func _on_capture_selector_chosen(choice: String) -> void:
+	_write_capture_choice(choice)
+	_selector_waiting = true
+	capture_selector.close_selector()
+
+func _on_capture_selector_cancelled() -> void:
+	_write_capture_choice("cancel")
+	_selector_waiting = true
+	capture_selector.close_selector()
+
+# Écrit le choix du joueur pour xdg-desktop-portal-wlr : "screen", un app_id
+# ou un titre de fenêtre, ou "cancel" pour annuler (portal-wlr retombe alors
+# sur la première fenêtre, sinon l'écran).
+func _write_capture_choice(choice: String) -> void:
+	var rt := OS.get_environment("XDG_RUNTIME_DIR")
+	if rt.is_empty():
+		return
+	var f := FileAccess.open(rt + "/cyberrealm-capture-choice", FileAccess.WRITE)
+	if f:
+		f.store_string(choice + "\n")
+		f.close()
+
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
 
@@ -1837,6 +1904,18 @@ func _on_window_menu_pin(wid: int) -> void:
 
 func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+func _on_quit_requested() -> void:
+	# Ferme d'abord toutes les apps lancées dans le jeu (SIGTERM + grâce +
+	# SIGKILL) puis quitte Godot ; le destructeur de WlrCompositor termine
+	# xwayland-satellite et le bus D-Bus privé.
+	compositor.shutdown_apps()
+	get_tree().quit()
+
+func _notification(what: int) -> void:
+	# Fermeture de la fenêtre hors menu pause : même shutdown propre.
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		compositor.shutdown_apps()
 
 func _on_pause_menu_visibility_changed() -> void:
 	if pause_menu.visible:

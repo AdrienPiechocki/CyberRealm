@@ -27,11 +27,13 @@
 
 extern "C" {
 #include <wlr/types/wlr_buffer.h>
+#include <wlr/interfaces/wlr_buffer.h>
 #include <wlr/render/dmabuf.h>
 #include <wlr/render/swapchain.h>
 #include <wlr/render/pass.h>
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
+#include <wlr/util/log.h>
 #include <libdrm/drm_fourcc.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
@@ -226,6 +228,7 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_pointer_axis_lock);
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
+    ClassDB::bind_method(D_METHOD("shutdown_apps"), &WlrCompositor::shutdown_apps);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
     ClassDB::bind_method(D_METHOD("set_window_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_window_fullscreen);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
@@ -251,6 +254,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("launch_portals"), &WlrCompositor::launch_portals);
 
     ClassDB::bind_method(D_METHOD("set_cursor_position", "x", "y"), &WlrCompositor::set_cursor_position);
+    ClassDB::bind_method(D_METHOD("set_cursor_visible", "visible"), &WlrCompositor::set_cursor_visible);
 
 
     ADD_SIGNAL(MethodInfo("window_mapped",
@@ -406,17 +410,9 @@ WlrCompositor::~WlrCompositor() {
         wl_display_destroy(display);
     }
 
-    // Tuer tous les processus enfants lancés par launch_app()
-    // killpg car setsid() crée un nouveau process group par shell
-    for (pid_t pid : child_pids) {
-        killpg(pid, SIGTERM);
-    }
-    // Récolter les zombies sans bloquer
-    for (pid_t pid : child_pids) {
-        int status;
-        waitpid(pid, &status, WNOHANG);
-    }
-    child_pids.clear();
+    // Tuer tous les processus enfants lancés par launch_app() : SIGTERM,
+    // période de grâce puis SIGKILL aux survivants (voir shutdown_apps()).
+    shutdown_apps();
 
     // Terminer le bus D-Bus privé de la session du jeu
     if (dbus_daemon_pid > 0) {
@@ -425,7 +421,8 @@ WlrCompositor::~WlrCompositor() {
         dbus_daemon_pid = -1;
     }
 
-    // Nettoyer le fichier d'adresse D-Bus utilisé par dwl
+    // Nettoyer le fichier d'adresse D-Bus utilisé par les apps lancées dans
+    // le jeu (cyberrealm-launch, compositors/kwin/cyberrealm-launch)
     {
         const char *rt = getenv("XDG_RUNTIME_DIR");
         if (rt) {
@@ -2387,6 +2384,18 @@ void WlrCompositor::on_session_lock_destroy(wl_listener *listener, void *data) {
 // =====================================================================
 
 void WlrCompositor::start_headless() {
+    // Journal wlroots : honorer WLR_LOGGER (debug/info/error). Par défaut on
+    // reste en WLR_ERROR (comportement historique). Sans wlr_log_init(), la
+    // variable d'environnement est ignorée et les logs DEBUG sont perdus —
+    // gênant pour diagnostiquer les captures (wlr_screencopy/ext_image_capture).
+    enum wlr_log_importance wlr_level = WLR_ERROR;
+    const char *wlr_logger = getenv("WLR_LOGGER");
+    if (wlr_logger) {
+        if (strcmp(wlr_logger, "debug") == 0) wlr_level = WLR_DEBUG;
+        else if (strcmp(wlr_logger, "info") == 0) wlr_level = WLR_INFO;
+    }
+    wlr_log_init(wlr_level, nullptr);
+
     display = wl_display_create();
     event_loop = wl_display_get_event_loop(display);
 
@@ -2479,6 +2488,15 @@ void WlrCompositor::start_headless() {
     wlr_output *fake_output = wlr_headless_add_output(backend, 1280, 720);
     if (fake_output) {
         headless_output = fake_output;
+        // Attacher renderer + allocator à l'output. Sans cela, dès qu'un
+        // client (portal-wlr/OBS, via zwlr_screencopy_v1 ou la source
+        // ext_image_capture "output") déclenche wlr_output_configure_
+        // primary_swapchain, wlroots tue le processus dans create_swapchain
+        // (assertion output->allocator != NULL, types/output/swapchain.c).
+        if (!wlr_output_init_render(fake_output, allocator, renderer)) {
+            UtilityFunctions::printerr("waylandgodot: wlr_output_init_render a échoué "
+                "(caps allocator/renderer incompatibles avec le backend headless)");
+        }
         wlr_output_state state;
         wlr_output_state_init(&state);
         wlr_output_state_set_enabled(&state, true);
@@ -2646,12 +2664,12 @@ void WlrCompositor::start_headless() {
     new_toplevel_listener.notify = WlrCompositor::on_new_toplevel;
     wl_signal_add(&xdg_shell->events.new_toplevel, &new_toplevel_listener);
 
-    // Socket à nom STABLE ("cyberrealm-0") : dwl (compositors/dwl_custom)
-    // teste son existence dans $XDG_RUNTIME_DIR pour rediriger les apps
-    // lancées depuis ses raccourcis vers le compositeur du jeu. Un socket
-    // orphelin (crash précédent) est supprimé d'abord, sinon
+    // Socket à nom STABLE ("cyberrealm-0") : les apps lancées dans le jeu
+    // (cyberrealm-launch depuis Plasma, ou launc_app in-game) utilisent ce
+    // nom de socket via WAYLAND_DISPLAY pour se connecter au compositeur du
+    // jeu. Un socket orphelin (crash précédent) est supprimé d'abord, sinon
     // wl_display_add_socket échoue. En cas de collision, repli sur un nom
-    // aléatoire (dans ce cas dwl lancera les apps sur son propre socket).
+    // aléatoire (dans ce cas les apps du bureau ne seront pas redirigées).
     const char *socket = nullptr;
     {
         const char *rt = getenv("XDG_RUNTIME_DIR");
@@ -3211,6 +3229,10 @@ void WlrCompositor::set_cursor_position(double x, double y) {
     cursor_y = y;
 }
 
+void WlrCompositor::set_cursor_visible(bool visible) {
+    cursor_visible = visible;
+}
+
 void WlrCompositor::set_polkit_agent(const String &path) {
     polkit_agent_path = path;
     if (!polkit_agent_path.is_empty()) {
@@ -3253,6 +3275,54 @@ void WlrCompositor::launch_app(const String &command) {
     }
 }
 
+// Termine proprement toutes les applications lancées dans le jeu via
+// launch_app() : SIGTERM à chaque groupe de process (setsid() crée un groupe
+// par shell), période de grâce de 2 s pour laisser un arrêt propre, puis
+// SIGKILL aux survivants. Appelé par le script Godot juste avant
+// get_tree().quit() et par le destructeur.
+void WlrCompositor::shutdown_apps() {
+    if (child_pids.empty()) {
+        return;
+    }
+
+    // 1. SIGTERM à tous les groupes de process
+    for (pid_t pid : child_pids) {
+        if (pid > 0) {
+            kill(-pid, SIGTERM);
+        }
+    }
+
+    // 2. Période de grâce : attendre la disparition des groupes (max 2 s).
+    // kill(-pid, 0) teste l'existence du groupe sans envoyer de signal.
+    for (int i = 0; i < 40; ++i) {
+        bool alive = false;
+        for (pid_t pid : child_pids) {
+            if (pid > 0 && kill(-pid, 0) == 0) {
+                alive = true;
+                break;
+            }
+        }
+        // Récolter les zombies directs sans bloquer (les autres seront
+        // réparentés à init/subreaper et reconnus d'eux-mêmes).
+        int status;
+        waitpid(-1, &status, WNOHANG);
+        if (!alive) {
+            break;
+        }
+        usleep(50 * 1000);
+    }
+
+    // 3. SIGKILL aux survivants, puis récolte des zombies directs
+    for (pid_t pid : child_pids) {
+        if (pid > 0 && kill(-pid, 0) == 0) {
+            kill(-pid, SIGKILL);
+        }
+        int status;
+        waitpid(pid, &status, WNOHANG);
+    }
+    child_pids.clear();
+}
+
 // Lance xdg-desktop-portal + xdg-desktop-portal-wlr dans la session du jeu.
 // Le daemon principal choisit son backend d'après XDG_CURRENT_DESKTOP
 // ("dwl" → wlr-portals.conf → backend wlr), et portal-wlr se connecte au
@@ -3263,12 +3333,52 @@ void WlrCompositor::launch_app(const String &command) {
 // xdg-desktop-portal du host y possède déjà le nom org.freedesktop.portal.Desktop
 // et route ScreenCast vers le backend kde (inutilisable sans kwin) — le
 // nôtre quitterait aussitôt. On démarre donc d'abord un dbus-daemon privé.
+// Écrit la config de xdg-desktop-portal-wlr dans $XDG_RUNTIME_DIR et renvoie
+// son chemin. Sans chooser_type=none, le backend lance un chooser interactif
+// (slurp, puis wmenu/wofi/rofi/bemenu...) pour choisir la source à partager :
+// dans le compositeur du jeu ça échoue aussitôt (slurp exige un pointeur et
+// une interaction ; les dmenu ne sont pas installés) → OBS reçoit
+// "Failed to select source, denied or cancelled by user". Avec
+// chooser_type=none, portal-wlr demande la cible au jeu via le sélecteur
+// (fichiers cyberrealm-capture-pending / cyberrealm-capture-choice), et en
+// dernier recours sélectionne le premier output (l'output headless 1920x1080
+// présenté par present_viewport_frame).
+String WlrCompositor::write_portal_config() const {
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (!rt || !rt[0]) {
+        return String();
+    }
+    std::string path = std::string(rt) + "/cyberrealm-portal-wlr.conf";
+    FILE *f = fopen(path.c_str(), "w");
+    if (!f) {
+        UtilityFunctions::printerr("waylandgodot: impossible d'écrire la config portal-wlr ",
+            path.c_str());
+        return String();
+    }
+    fprintf(f, "[screencast]\nchooser_type=none\n");
+    fclose(f);
+    return String(path.c_str());
+}
+
 void WlrCompositor::launch_portals() {
     start_private_dbus();
     // Les binaires portal sont dans /usr/lib/ (pas dans $PATH sur Arch) :
     // il faut les chemins absolus pour que sh -c les trouve.
+    String portal_config = write_portal_config();
     launch_app("/usr/lib/xdg-desktop-portal");
-    launch_app("/usr/lib/xdg-desktop-portal-wlr");
+    // xdg-desktop-portal-wlr local, patché pour la capture fenêtre (le chooser
+    // "none" écrit $XDG_RUNTIME_DIR/cyberrealm-capture-pending quand une source
+    // OBS est ajoutée ; le jeu ouvre alors le sélecteur et répond via
+    // cyberrealm-capture-choice). Compilé depuis compositors/portal-wlr
+    // (source xdg-desktop-portal-wlr 0.8.2 + patch).
+    // -l INFO (MAJUSCULES, niveaux de logger.c) : sans quoi le niveau par
+    // défaut (ERROR) supprime le log "window capture target" utile pour
+    // vérifier quelle fenêtre est capturée. Un niveau inconnu fait exit(1).
+    if (!portal_config.is_empty()) {
+        launch_app("/home/adrien/Projets/CyberRealm/build/portal/libexec/xdg-desktop-portal-wlr -c " + portal_config + " -l INFO");
+    } else {
+        launch_app("/home/adrien/Projets/CyberRealm/build/portal/libexec/xdg-desktop-portal-wlr -l INFO");
+    }
 }
 
 // Démarre un dbus-daemon de session privé (socket neuf dans /tmp) et bascule
@@ -3311,8 +3421,9 @@ void WlrCompositor::start_private_dbus() {
             setenv("DBUS_SESSION_BUS_ADDRESS", buf, 1);
             dbus_daemon_pid = pid;
 
-            // Écrire l'adresse du bus dans un fichier pour que dwl la
-            // Propage aux apps lancées via ses raccourcis clavier.
+            // Écrire l'adresse du bus dans un fichier pour que
+            // cyberrealm-launch (compositors/kwin/cyberrealm-launch) la
+            // propage aux apps lancées depuis Plasma.
             // Sans ça, les apps héritent du bus D-Bus système (KDE) et
             // ne trouvent pas les portails CyberRealm → OBS ne voit pas
             // les sources screencast.
@@ -3431,15 +3542,119 @@ void WlrCompositor::set_output_size(int width, int height) {
 // chaque commit. Le script Godot appelle cette méthode chaque frame avec
 // l'image du viewport racine (ce que le joueur voit réellement).
 // =====================================================================
+
+// --- Buffer shm minimaliste pour l'output headless --------------------
+// wlroots n'expose pas wlr_shm_allocator_create (header privé), et les
+// buffers GBM (wlr_allocator_create_buffer) ne supportent PAS
+// begin_data_ptr_access (impl = get_dmabuf uniquement) : present_viewport_
+// frame ne pouvait donc pas écrire ses pixels et l'output n'était JAMAIS
+// committé → grim/OBS attendaient indéfiniment. On fournit donc notre
+// propre buffer shm (memfd + mmap) conforme à wlr_buffer_impl.
+// ---------------------------------------------------------------------
+struct PresentShmBuffer {
+    struct wlr_buffer base;
+    int fd;
+    size_t size;
+    uint32_t format;
+    size_t stride;
+    void *data;
+};
+
+static void present_shm_buffer_destroy(struct wlr_buffer *wlr_buffer) {
+    struct PresentShmBuffer *buffer = wl_container_of(wlr_buffer, buffer, base);
+    wlr_buffer_finish(wlr_buffer);
+    munmap(buffer->data, buffer->size);
+    close(buffer->fd);
+    free(buffer);
+}
+
+static bool present_shm_buffer_get_shm(struct wlr_buffer *wlr_buffer,
+        struct wlr_shm_attributes *attribs) {
+    struct PresentShmBuffer *buffer = wl_container_of(wlr_buffer, buffer, base);
+    *attribs = {};
+    attribs->fd = buffer->fd;
+    attribs->format = buffer->format;
+    attribs->width = buffer->base.width;
+    attribs->height = buffer->base.height;
+    attribs->stride = (int)buffer->stride;
+    attribs->offset = 0;
+    return true;
+}
+
+static bool present_shm_buffer_begin_data_ptr_access(struct wlr_buffer *wlr_buffer,
+        uint32_t flags, void **data, uint32_t *format, size_t *stride) {
+    struct PresentShmBuffer *buffer = wl_container_of(wlr_buffer, buffer, base);
+    *data = buffer->data;
+    *format = buffer->format;
+    *stride = buffer->stride;
+    return true;
+}
+
+static void present_shm_buffer_end_data_ptr_access(struct wlr_buffer *wlr_buffer) {}
+
+static const struct wlr_buffer_impl present_shm_buffer_impl = {
+    .destroy = present_shm_buffer_destroy,
+    .get_shm = present_shm_buffer_get_shm,
+    .begin_data_ptr_access = present_shm_buffer_begin_data_ptr_access,
+    .end_data_ptr_access = present_shm_buffer_end_data_ptr_access,
+};
+
+static int present_shm_alloc_fd(size_t size) {
+    static int counter = 0;
+    char name[64];
+    snprintf(name, sizeof(name), "/cyberrealm-present-%d-%d",
+        (int)getpid(), counter++);
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd < 0) return -1;
+    shm_unlink(name);
+    if (ftruncate(fd, (off_t)size) < 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static struct wlr_buffer *present_shm_buffer_create(int width, int height, uint32_t format) {
+    size_t stride = ((size_t)width * 4 + 31) & ~(size_t)31;
+    size_t size = stride * (size_t)height;
+    int fd = present_shm_alloc_fd(size);
+    if (fd < 0) return nullptr;
+    void *data = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (data == MAP_FAILED) {
+        close(fd);
+        return nullptr;
+    }
+    struct PresentShmBuffer *buffer =
+        (struct PresentShmBuffer *)calloc(1, sizeof(*buffer));
+    if (!buffer) {
+        munmap(data, size);
+        close(fd);
+        return nullptr;
+    }
+    wlr_buffer_init(&buffer->base, &present_shm_buffer_impl, width, height);
+    buffer->fd = fd;
+    buffer->size = size;
+    buffer->format = format;
+    buffer->stride = stride;
+    buffer->data = data;
+    return &buffer->base;
+}
+
 void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int width, int height) {
     if (!renderer || !allocator || !headless_output) return;
     if (width <= 0 || height <= 0) return;
-    if (rgba.size() < (int64_t)width * height * 4) return;
+    if (rgba.size() < (int64_t)width * height * 4) {
+        wlr_log(WLR_ERROR, "waylandgodot: present: rgba.size=%lld < %dx%d*4 "
+            "(image non-RGBA8 ?)",
+            (long long)rgba.size(), width, height);
+        return;
+    }
 
-    // (Re)crée le buffer présenté si le format/taille change. On choisit un
-    // format DATA_PTR (ARGB8888) : c'est un dmabuf CPU-accessible, exactement
-    // comme le buffer offscreen du chemin pixels — compatible avec la copie
-    // via le renderer (wlr_texture_from_buffer) utilisée par la source output.
+    // (Re)crée le buffer présenté si le format/taille change. Buffer shm
+    // (memfd) : seul ce type supporte begin_data_ptr_access pour écrire les
+    // pixels en CPU. Le commit d'un buffer shm est copié via le renderer
+    // (wlr_texture_from_buffer) par wlr-screencopy et la source output —
+    // même chemin que les surfaces fenêtres shm déjà affichées.
     if (!present_buffer || present_width != width || present_height != height) {
         if (present_buffer) {
             wlr_buffer_drop(present_buffer);
@@ -3454,11 +3669,14 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
             UtilityFunctions::printerr("waylandgodot: present: ARGB8888 non supporté en DATA_PTR");
             return;
         }
-        present_buffer = wlr_allocator_create_buffer(allocator, width, height, fmt);
+        present_buffer = present_shm_buffer_create(width, height, fmt->format);
         if (!present_buffer) {
             UtilityFunctions::printerr("waylandgodot: present: échec allocation buffer");
+            wlr_log(WLR_ERROR, "waylandgodot: present: échec allocation buffer");
             return;
         }
+        wlr_log(WLR_DEBUG, "waylandgodot: present: buffer shm %dx%d créé",
+            width, height);
         present_width = width;
         present_height = height;
     }
@@ -3469,6 +3687,8 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     size_t stride = 0;
     if (!wlr_buffer_begin_data_ptr_access(present_buffer,
             WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride)) {
+        wlr_log(WLR_ERROR, "waylandgodot: present: begin_data_ptr_access a échoué "
+            "(buffer non-shm ?)");
         return;
     }
     const uint8_t *src = rgba.ptr();
@@ -3489,7 +3709,10 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     // apparaisse dans la capture screencopy (OBS). Le cursor_manager a
     // chargé le thème xcursor ; on récupère l'image "default" et on la
     // composit dans le buffer ARGB8888 à la position (cursor_x, cursor_y).
-    if (cursor_manager && cursor) {
+    // Masqué en mode caméra (Input.mouse_mode = MOUSE_MODE_CAPTURED) via
+    // set_cursor_visible(false) : le curseur ne doit pas apparaître dans la
+    // capture OBS pendant le focus caméra.
+    if (cursor_manager && cursor && cursor_visible) {
         struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(
             cursor_manager, "default", 1.0f);
         if (xcursor && xcursor->image_count > 0) {
@@ -3561,6 +3784,10 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     pixman_region32_fini(&damage);
     if (!wlr_output_commit_state(headless_output, &state)) {
         UtilityFunctions::printerr("waylandgodot: present: échec commit output");
+        wlr_log(WLR_ERROR, "waylandgodot: present: échec commit output");
+    } else {
+        wlr_log(WLR_DEBUG, "waylandgodot: present: commit %dx%d OK",
+            width, height);
     }
     wlr_output_state_finish(&state);
 }

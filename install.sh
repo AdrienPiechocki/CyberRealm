@@ -6,7 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 GAME="$SCRIPT_DIR/Game/build/CyberRealm.x86_64"
 
 sudo pacman -S --needed wlroots0.19 wayland wayland-protocols pixman libdrm xwayland-satellite \
-               libinput scons pkgconf vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr
+               libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr
 
 if [[ ! -d "$SCRIPT_DIR/godot-cpp" ]]; then
     git clone https://github.com/godotengine/godot-cpp.git
@@ -15,37 +15,84 @@ fi
 scons target=template_debug platform=linux
 scons target=template_release platform=linux
 
-if [[ ! -d "$SCRIPT_DIR/compositors/dwl" ]]; then
-    git clone https://codeberg.org/dwl/dwl.git "$SCRIPT_DIR/compositors/dwl"
+# --- xdg-desktop-portal-wlr (build customisé) ------------------------------
+# Clone le vrai xdg-desktop-portal-wlr (tag v0.8.2) puis écrase les fichiers
+# customisés par ceux de compositors/portal-wlr (capture fenêtre via
+# ext_foreign_toplevel + sélecteur interactif cyberrealm-capture-pending /
+# cyberrealm-capture-choice). Compilation meson/ninja dans build/portal-src,
+# install dans build/portal : le jeu lance ce binaire (launch_portals dans
+# wlr_compositor.cpp pointe vers build/portal/libexec/xdg-desktop-portal-wlr).
+PORTAL_SRC="$SCRIPT_DIR/build/portal-src"
+PORTAL_PREFIX="$SCRIPT_DIR/build/portal"
+if [[ ! -d "$PORTAL_SRC" ]]; then
+    git clone --branch v0.8.2 --depth 1 https://github.com/emersion/xdg-desktop-portal-wlr.git "$PORTAL_SRC"
+fi
+cp "$SCRIPT_DIR/compositors/portal-wlr/include/screencast_common.h" "$PORTAL_SRC/include/"
+cp "$SCRIPT_DIR/compositors/portal-wlr/include/wlr_screencast.h" "$PORTAL_SRC/include/"
+cp "$SCRIPT_DIR/compositors/portal-wlr/src/core/request.c" "$PORTAL_SRC/src/core/"
+cp "$SCRIPT_DIR/compositors/portal-wlr/src/core/session.c" "$PORTAL_SRC/src/core/"
+cp "$SCRIPT_DIR/compositors/portal-wlr/src/screencast/chooser.c" "$PORTAL_SRC/src/screencast/"
+cp "$SCRIPT_DIR/compositors/portal-wlr/src/screencast/screencast.c" "$PORTAL_SRC/src/screencast/"
+cp "$SCRIPT_DIR/compositors/portal-wlr/src/screencast/wlr_screencast.c" "$PORTAL_SRC/src/screencast/"
+if [[ ! -f "$PORTAL_SRC/build/build.ninja" ]]; then
+    meson setup "$PORTAL_SRC/build" "$PORTAL_SRC" --buildtype release --prefix "$PORTAL_PREFIX"
+else
+    meson configure "$PORTAL_SRC/build" --prefix "$PORTAL_PREFIX"
+fi
+ninja -C "$PORTAL_SRC/build"
+meson install -C "$PORTAL_SRC/build"
+
+# --- Export du jeu Godot ---------------------------------------------------
+# L'extension GDExtension (libwaylandgodot) est déjà compilée par scons
+# ci-dessus ; on exporte ensuite le projet (preset "Linux" de
+# export_presets.cfg) vers Game/build/CyberRealm.x86_64.
+echo "install: export du jeu (godot --headless) ..."
+godot --headless --path "$SCRIPT_DIR/Game/source" --export-release "Linux" "$GAME"
+if [[ ! -x "$GAME" ]]; then
+    echo "install: échec de l'export Godot, binaire absent : $GAME" >&2
+    exit 1
 fi
 
-# Patch CyberRealm: redirige les apps lancées depuis les raccourcis dwl vers
-# le compositeur du jeu (socket "cyberrealm-0") quand celui-ci est actif.
-if [[ -f "$SCRIPT_DIR/compositors/dwl_custom/dwl.c" ]]; then
-    cp "$SCRIPT_DIR/compositors/dwl_custom/dwl.c" "$SCRIPT_DIR/compositors/dwl/dwl.c"
+# --- Script KWin -----------------------------------------------------------
+# Remplace la session dwl : le jeu se lance depuis Plasma (menu applications
+# ou bureau). Ce script KWin passe sa fenêtre en plein écran + focus et bloque
+# les raccourcis globaux KDE tant que le jeu détient le focus.
+KWIN_SRC="$SCRIPT_DIR/compositors/kwin/cyberrealm.kwinscript"
+if command -v kpackagetool6 >/dev/null 2>&1; then
+    if ! kpackagetool6 -t KWin/Script -i "$KWIN_SRC" >/dev/null 2>&1; then
+        kpackagetool6 -t KWin/Script -u "$KWIN_SRC" >/dev/null
+    fi
+else
+    # Fallback manuel (kpackagetool6 absent)
+    KWIN_DST="$HOME/.local/share/kwin/scripts/cyberrealm"
+    mkdir -p "$KWIN_DST/contents/code"
+    install -m644 "$KWIN_SRC/metadata.json" "$KWIN_DST/metadata.json"
+    install -m644 "$KWIN_SRC/contents/code/main.js" "$KWIN_DST/contents/code/main.js"
 fi
 
-# Script de session: lance dwl puis le jeu, et termine dwl quand le jeu sort.
-# Le .desktop pointe dessus (chemin unique sans espace) car plasmalogin
-# exécute la ligne Exec via `exec $@` NON quoté dans wayland-session : une
-# commande avec des espaces/guillemets y est découpée en plusieurs argv, ce
-# qui fait planter getopt de dwl (écran gris figé, session morte).
-if [[ -f "$SCRIPT_DIR/compositors/dwl_custom/dwl-session.sh" ]]; then
-    cp "$SCRIPT_DIR/compositors/dwl_custom/dwl-session.sh" "$SCRIPT_DIR/compositors/dwl/dwl-session.sh"
-    chmod +x "$SCRIPT_DIR/compositors/dwl/dwl-session.sh"
+kwriteconfig6 --file kwinrc --group Plugins --key cyberrealmEnabled true
+# reconfigure ne recharge PAS le code du script : il faut le décharger d'abord,
+# sinon une mise à jour de main.js n'est jamais prise en compte.
+if qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded cyberrealm 2>/dev/null; then
+    qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript cyberrealm 2>/dev/null || true
+    sleep 1
 fi
+qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
 
-cd $SCRIPT_DIR/compositors/dwl
-cat > "$SCRIPT_DIR/compositors/dwl/dwl.desktop" <<EOF
+# --- Wrapper de lancement d'apps dans le jeu -------------------------------
+# cyberrealm-launch <cmd> : redirige une commande vers le compositeur du jeu
+# (socket cyberrealm-0) quand celui-ci est actif. Utilisez-le dans les .desktop
+# pour lancer des apps dans les quads 3D depuis Plasma.
+install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-launch" "$HOME/.local/bin/cyberrealm-launch"
+
+# --- Lanceur .desktop du jeu ----------------------------------------------
+mkdir -p "$HOME/.local/share/applications"
+cat > "$HOME/.local/share/applications/cyberrealm.desktop" <<EOF
 [Desktop Entry]
 Name=CyberRealm
-Comment=Launch CyberRealm via dwl
-Exec=$SCRIPT_DIR/compositors/dwl/dwl-session.sh
+Comment=Lance CyberRealm (bureau virtuel 3D)
+Exec=$GAME
 Type=Application
+Categories=Game;
+StartupNotify=false
 EOF
-
-if [[ -f "$SCRIPT_DIR/compositors/dwl/config.h" ]]; then
-    rm config.h
-fi
-
-sudo make clean install

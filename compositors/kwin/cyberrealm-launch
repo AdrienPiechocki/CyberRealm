@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# cyberrealm-launch — lance une commande DANS le bureau virtuel CyberRealm
+# quand le jeu est actif, sinon la lance normalement.
+#
+# Reprend exactement la redirection faite par cyberrealm_spawn_env() dans
+# compositors/dwl_custom/dwl.c quand le jeu tournait en session dwl : si le
+# socket wayland du jeu ($XDG_RUNTIME_DIR/cyberrealm-0) existe, on bascule
+# WAYLAND_DISPLAY / DISPLAY / toolkits / bus D-Bus vers le compositeur du jeu
+# avant l'exec. La fenêtre apparaîtra alors comme un quad 3D.
+#
+# Sous KWin, impossible de rediriger une app déjà lancée (elle choisit son
+# compositeur à son démarrage via WAYLAND_DISPLAY) : il faut donc la lancer
+# AVEC ce wrapper.
+#
+# Usage:
+#   cyberrealm-launch <commande> [args...]
+#
+# Exemple de .desktop pour lancer Firefox dans le jeu depuis Plasma :
+#   [Desktop Entry]
+#   Name=Firefox (CyberRealm)
+#   Exec=cyberrealm-launch firefox
+#   Type=Application
+
+set -eu
+
+rt="${XDG_RUNTIME_DIR:-}"
+
+if [ -n "$rt" ] && [ -e "$rt/cyberrealm-0" ]; then
+    export WAYLAND_DISPLAY=cyberrealm-0
+    export DISPLAY=:1
+    export GDK_BACKEND=wayland
+    export QT_QPA_PLATFORM=wayland
+    export MOZ_ENABLE_WAYLAND=1
+
+    # Bus D-Bus session privé du jeu (adresse écrite par le jeu dans
+    # $XDG_RUNTIME_DIR/cyberrealm-session-bus). Sans ça, les apps utilisent
+    # le bus de la session Plasma et ne trouvent pas les portails CyberRealm.
+    if [ -r "$rt/cyberrealm-session-bus" ]; then
+        addr="$(cat "$rt/cyberrealm-session-bus" 2>/dev/null || true)"
+        if [ -n "$addr" ]; then
+            export DBUS_SESSION_BUS_ADDRESS="$addr"
+        fi
+    fi
+fi
+
+exec "$@"

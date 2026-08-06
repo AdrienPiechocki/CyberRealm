@@ -59,6 +59,8 @@ func _input(event):
 		return
 	if $PauseMenuLayer/PauseMenu.visible:
 		return
+	if $CaptureSelectorLayer/CaptureSelector.visible:
+		return
 	if event.is_action_pressed("pause_menu") and not interact_mode_active:
 		if $WindowMenuLayer/WindowMenu.visible:
 			return

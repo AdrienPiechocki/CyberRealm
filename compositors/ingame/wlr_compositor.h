@@ -277,6 +277,7 @@ class WlrCompositor : public Node {
     struct wlr_xcursor_manager *cursor_manager = nullptr;
     double cursor_x = 0;
     double cursor_y = 0;
+    bool cursor_visible = true;
 
     // --- Capture (xdg-desktop-portal-wlr) -------------------------------
     // ext_image_copy_capture_v1 : sessions/frames fournies par wlroots, avec
@@ -524,6 +525,7 @@ public:
 
     String get_wayland_socket_name() const;
     void launch_app(const String &command);
+    void shutdown_apps();
     void set_portal_backend(const String &backend);
     String get_portal_backend() const;
 
@@ -532,6 +534,12 @@ public:
     // avec le pointeur de la caméra 3D — nécessaire pour que le curseur
     // soit rendu dans la capture screencopy (OBS).
     void set_cursor_position(double x, double y);
+
+    // Affiche/masque le curseur composé dans le buffer présenté (et donc dans
+    // les captures écran). Masqué quand le jeu est en mode caméra
+    // (Input.mouse_mode = MOUSE_MODE_CAPTURED) : le curseur ne doit pas
+    // apparaître dans la capture OBS pendant le focus caméra.
+    void set_cursor_visible(bool visible);
 
     void set_polkit_agent(const String &path);
     String get_polkit_agent() const;
@@ -544,6 +552,10 @@ public:
     // d'environnement DBUS_SESSION_BUS_ADDRESS dessus (héritée par les
     // enfants). Appelé automatiquement par launch_portals().
     void start_private_dbus();
+    // Écrit la config de xdg-desktop-portal-wlr (chooser_type=none : capture
+    // auto du premier output, sans slurp/dmenu interactif) et renvoie le
+    // chemin — passé à portal-wlr via -c. Renvoie "" en cas d'échec.
+    String write_portal_config() const;
 
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.

@@ -1,6 +1,7 @@
 extends PanelContainer
 
 signal app_launch_requested(command: String)
+signal quit_requested
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -156,6 +157,13 @@ func hide_menu() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	get_tree().paused = false
 
+func _quit_game() -> void:
+	# Le compositeur (wayland_room._on_quit_requested) ferme d'abord toutes
+	# les apps lancées dans le jeu, puis quitte Godot (le destructeur de
+	# WlrCompositor termine xwayland-satellite et le bus D-Bus privé).
+	get_tree().paused = false
+	quit_requested.emit()
+
 # ── Pages ────────────────────────────────────────────────────────────
 
 func _show_main() -> void:
@@ -182,6 +190,10 @@ func _show_main() -> void:
 	var back_btn := _make_btn("Back")
 	back_btn.pressed.connect(hide_menu)
 	container.add_child(back_btn)
+
+	var quit_btn := _make_btn("Quit", Color(0.3, 0.08, 0.08, 0.9))
+	quit_btn.pressed.connect(_quit_game)
+	container.add_child(quit_btn)
 
 func _show_keybinds() -> void:
 	_clear()
