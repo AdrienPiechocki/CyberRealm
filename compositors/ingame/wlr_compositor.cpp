@@ -3199,7 +3199,8 @@ void WlrCompositor::on_start_drag(wl_listener *listener, void *data) {
     self->active_drag = drag;
 
     if (drag->icon && drag->icon->surface) {
-        self->drag_icon_cache.reset();
+        RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
+        self->drag_icon_cache.reset(rd);
     }
 
     self->drag_destroy_listener.notify = WlrCompositor::on_drag_destroy;
@@ -3208,6 +3209,7 @@ void WlrCompositor::on_start_drag(wl_listener *listener, void *data) {
 
 void WlrCompositor::on_drag_destroy(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, drag_destroy_listener);
+    wl_list_remove(&self->drag_destroy_listener.link);
     self->active_drag = nullptr;
     self->drag_icon_texture = Ref<Texture2D>();
     self->drag_icon_width = 0;
