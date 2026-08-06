@@ -92,9 +92,14 @@ const ANCHOR_BOTTOM := 2
 const ANCHOR_LEFT := 4
 const ANCHOR_RIGHT := 8
 # z_index de base pour les overlays de layer surfaces. Toujours au-dessus du
-# contenu 3D et des fenêtres épinglées (PiP, z_index par défaut 0) comme dans
-# un compositeur classique ; les popups de layer passent encore au-dessus.
+# contenu 3D (quads) comme dans un compositeur classique ; les popups de
+# layer passent encore au-dessus.
 const LAYER_Z_BASE := 1000
+
+# z_index des fenêtres épinglées (PiP) : au-dessus de toutes les layer
+# surfaces (jusqu'au layer overlay LAYER_Z_BASE + 3*100, popups +500 inclus)
+# mais sous le mode focus.
+const PIN_Z_BASE := 1900
 
 # z_index du mode focus : la fenêtre focus s'affiche au-dessus des layer
 # surfaces (layers jusqu'à LAYER_Z_BASE + 800) et de leurs popups.
@@ -483,6 +488,7 @@ func _pin_window(id: int) -> void:
 	bg.corner_radius_bottom_right = 4
 	border.add_theme_stylebox_override("panel", bg)
 	border.add_child(pip)
+	border.z_index = PIN_Z_BASE
 
 	var idx := pinned_windows.size()
 	border.position = Vector2(PIN_MARGIN, PIN_MARGIN + idx * (PIN_SIZE.y + PIN_MARGIN + 4))

@@ -1610,29 +1610,24 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
     WlrCompositor *self = ws->owner;
 
     if (ws->toplevel->base->initial_commit) {
-        // Honorer l'état demandé avant le commit initial (fullscreen/maximize
-        // demandés par certains clients avant leur premier commit, ex. Firefox),
-        // sinon on les écraserait avec la taille par défaut.
+        // Taille de l'output virtuel (= viewport Godot) : base de la taille
+        // initiale des fenêtres.
+        int vw = 1920, vh = 1080;
+        if (Viewport *vp = self->get_viewport()) {
+            Rect2 vr = vp->get_visible_rect();
+            vw = (int)vr.size.x;
+            vh = (int)vr.size.y;
+        }
         if (ws->toplevel->requested.fullscreen) {
-            int fw = 1920, fh = 1080;
-            if (Viewport *vp = self->get_viewport()) {
-                Rect2 vr = vp->get_visible_rect();
-                fw = (int)vr.size.x;
-                fh = (int)vr.size.y;
-            }
+            // Honorer le plein écran demandé avant le commit initial
+            // (ex. Firefox), sinon on l'écraserait avec la taille par défaut.
             wlr_xdg_toplevel_set_fullscreen(ws->toplevel, true);
-            wlr_xdg_toplevel_set_size(ws->toplevel, fw, fh);
-        } else if (ws->toplevel->requested.maximized) {
-            int mw = 1920, mh = 1080;
-            if (Viewport *vp = self->get_viewport()) {
-                Rect2 vr = vp->get_visible_rect();
-                mw = (int)vr.size.x;
-                mh = (int)vr.size.y;
-            }
-            wlr_xdg_toplevel_set_maximized(ws->toplevel, true);
-            wlr_xdg_toplevel_set_size(ws->toplevel, mw, mh);
+            wlr_xdg_toplevel_set_size(ws->toplevel, vw, vh);
         } else {
-            wlr_xdg_toplevel_set_size(ws->toplevel, 1280, 720);
+            // Ouverture par défaut : TOUTES les fenêtres s'ouvrent maximisées
+            // (plein viewport), que le client l'ait demandé ou non.
+            wlr_xdg_toplevel_set_maximized(ws->toplevel, true);
+            wlr_xdg_toplevel_set_size(ws->toplevel, vw, vh);
         }
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
         return;
@@ -2703,6 +2698,18 @@ void WlrCompositor::start_headless() {
     // On utilise '1' pour forcer l'écrasement quoi qu'il arrive
     setenv("GTK_USE_PORTAL", "0", 1);
     setenv("GIO_USE_PORTALS", "0", 1);
+    // ----------------------------------------------------
+
+    // 3. Thème sombre : force les apps GTK (GTK3/GTK4, et Firefox qui suit la
+    // préférence GTK) à s'ouvrir en sombre, cohérent avec l'ambiance du jeu.
+    // Écrasement forcé : le thème sombre prime sur un éventuel GTK_THEME.
+    setenv("GTK_THEME", "Adwaita:dark", 1);
+    // 4. Qt/KDE : sans XDG_CURRENT_DESKTOP=KDE, Qt choisit un platformtheme
+    // générique qui ignore kdeglobals → apps KDE (Dolphin...) en clair. Forcer
+    // le platformtheme "kde" (KDEPlasmaPlatformTheme6 de plasma-integration)
+    // fait lire ~/.config/kdeglobals directement → même rendu sombre que le
+    // host. Laisse XDG_CURRENT_DESKTOP=dwl:wlr intact pour la capture OBS.
+    setenv("QT_QPA_PLATFORMTHEME", "kde", 0);
     // ----------------------------------------------------
     
 

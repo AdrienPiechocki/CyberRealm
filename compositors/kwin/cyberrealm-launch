@@ -31,6 +31,8 @@ if [ -n "$rt" ] && [ -e "$rt/cyberrealm-0" ]; then
     export GDK_BACKEND=wayland
     export QT_QPA_PLATFORM=wayland
     export MOZ_ENABLE_WAYLAND=1
+    export GTK_THEME=Adwaita:dark
+    export QT_QPA_PLATFORMTHEME=kde
 
     # Bus D-Bus session privé du jeu (adresse écrite par le jeu dans
     # $XDG_RUNTIME_DIR/cyberrealm-session-bus). Sans ça, les apps utilisent
