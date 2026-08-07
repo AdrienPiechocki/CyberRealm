@@ -679,9 +679,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		compositor.forward_pointer_button(wid, 0x111, false)
 
 	if Input.is_action_just_pressed("scroll_up", true):
-		compositor.forward_pointer_axis(wid, 0, -50.0)
+		compositor.forward_pointer_axis(wid, 0, -100.0)
 	if Input.is_action_just_pressed("scroll_down", true):
-		compositor.forward_pointer_axis(wid, 0, 50.0)
+		compositor.forward_pointer_axis(wid, 0, 100.0)
 
 # Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que
 # pour une fenêtre, mais routé vers forward_pointer_motion_popup/
