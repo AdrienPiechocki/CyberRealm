@@ -142,11 +142,11 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 6, 0.5, 2.5)
 size = Vector3(0.5, 2, 3)
 material = SubResource("StandardMaterial3D_jm82k")
 
-[node name="chair" parent="." unique_id=1352627689 instance=ExtResource("12_qv4p6")]
+[node name="chair" parent="ROOM 1" unique_id=1352627689 instance=ExtResource("12_qv4p6")]
 transform = Transform3D(2.1213202, 0, -2.1213202, 0, 3, 0, 2.1213202, 0, 2.1213202, -3.4183433, -1.3, 2.4319282)
 
-[node name="computer" parent="." unique_id=2100127467 instance=ExtResource("13_51ch2")]
+[node name="computer" parent="ROOM 1" unique_id=2100127467 instance=ExtResource("13_51ch2")]
 transform = Transform3D(-2.1213202, 0, 2.1213202, 0, 3, 0, -2.1213202, 0, -2.1213202, -4.5701623, -1.3, 3.5716178)
 
-[node name="table" parent="." unique_id=582349939 instance=ExtResource("14_mmekr")]
+[node name="table" parent="ROOM 1" unique_id=582349939 instance=ExtResource("14_mmekr")]
 transform = Transform3D(-8.742278e-08, 0, 2, 0, 2, 0, -2, 0, -8.742278e-08, 4.7, -1.3, 2.5)

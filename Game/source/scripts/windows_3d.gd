@@ -15,7 +15,7 @@ const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
 # qui crashe si on lui laisse dessiner ses barres) ne dessinent rien, c'est
 # le jeu qui affiche la barre au-dessus du contenu de chaque fenêtre.
-const TITLEBAR_RATIO = 0.06 # hauteur de la barre = 6% de la hauteur du contenu
+const TITLEBAR_RATIO = 0.03 # hauteur de la barre = 6% de la hauteur du contenu
 const TITLEBAR_BG = Color(0.13, 0.15, 0.22)
 const TITLEBAR_FG = Color(0.85, 0.88, 0.96)
 # Boutons de la barre de titre (droite) : fermer / réduire / agrandir.
@@ -97,6 +97,9 @@ var window_start_size := Vector2.ZERO # taille geometry (px) au moment du grab
 var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
 var window_start_content_offset := Vector2.ZERO # offset geometry dans la surface au moment du grab
+
+var pre_fullscreen_mesh_sizes: Dictionary = {} # wid (int) -> Vector2
+var pre_fullscreen_surface_sizes: Dictionary = {} # wid (int) -> Vector2
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D) -> void:
 	compositor = compositor_ref
@@ -225,18 +228,16 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	bar_body.add_child(bar_col)
 	bar_body.set_meta("titlebar_of", id)
 	titlebar.add_child(bar_body)
-	_make_titlebar_button(titlebar, id, "maximize", TITLEBAR_BTN_MAX)
 	_make_titlebar_button(titlebar, id, "minimize", TITLEBAR_BTN_MIN)
+	_make_titlebar_button(titlebar, id, "maximize", TITLEBAR_BTN_MAX)
 	_make_titlebar_button(titlebar, id, "close", TITLEBAR_BTN_CLOSE)
 	var bar_label := Label3D.new()
 	bar_label.name = "Label3D"
 	bar_label.text = title
-	# fixed_size=false : le texte est "peint" sur la barre et se réduit
-	# naturellement quand on s'éloigne (fixed_size le gardait constant à
-	# l'écran, donc il grossissait par rapport à la fenêtre en reculant).
 	bar_label.double_sided = true
 	bar_label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-	bar_label.font_size = 10
+	bar_label.font_size = 4
+	bar_label.outline_size = 0
 	bar_label.modulate = TITLEBAR_FG
 	bar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -279,12 +280,12 @@ func _sync_titlebar(quad: MeshInstance3D) -> void:
 	var btn_size := bar_h * TITLEBAR_BUTTON_SIZE_RATIO
 	var gap := bar_h * TITLEBAR_BUTTON_GAP_RATIO
 	var x := mesh.size.x * 0.5 - bar_h * TITLEBAR_BUTTON_MARGIN_RATIO - btn_size * 0.5
-	for btn_name in ["BtnMaximize", "BtnMinimize", "BtnClose"]:
+	for btn_name in ["BtnClose", "BtnMaximize", "BtnMinimize"]:
 		var btn: StaticBody3D = titlebar.get_node_or_null(btn_name)
 		if btn != null:
 			btn.position = Vector3(x, 0.0, 0.001)
 			var btn_col: CollisionShape3D = btn.get_child(0)
-			(btn_col.shape as BoxShape3D).size = Vector3(btn_size, btn_size, 0.02)
+			(btn_col.shape as BoxShape3D).size = Vector3(btn_size, btn_size, 0.03)
 			var visual: MeshInstance3D = btn.get_child(1)
 			(visual.mesh as QuadMesh).size = Vector2(btn_size, btn_size)
 		x -= btn_size + gap
@@ -298,7 +299,7 @@ func _make_titlebar_button(titlebar: MeshInstance3D, wid: int, action: String, c
 	btn.collision_mask = 2
 	var col := CollisionShape3D.new()
 	var shape := BoxShape3D.new()
-	shape.size = Vector3(0.05, 0.05, 0.02)
+	shape.size = Vector3(0.05, 0.05, 0.03)
 	col.shape = shape
 	btn.add_child(col)
 	var visual := MeshInstance3D.new()
@@ -715,18 +716,65 @@ func _handle_titlebar_button(body: StaticBody3D) -> void:
 	var wid: int = info["wid"]
 	var action: String = info["action"]
 	match action:
-		"close":
-			compositor.close_window(wid)
 		"minimize":
 			# xdg-shell n'a pas de minimize : on cache le quad (restauration
 			# via le menu fenêtres, bouton HIDE/SHOW).
 			toggle_hide(wid)
 		"maximize":
 			var is_fs: bool = fullscreen_windows.get(wid, false)
-			compositor.set_window_fullscreen(wid, not is_fs)
+			print(is_fs)
+			toggle_window_fullscreen(wid, not is_fs)
+		"close":
+			compositor.close_window(wid)
 
-func on_window_fullscreen_changed(id: int, fullscreen: bool) -> void:
+func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 	fullscreen_windows[id] = fullscreen
+
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+
+	var quad: MeshInstance3D = quads[id]
+	var mesh: QuadMesh = quad.mesh
+	var body: StaticBody3D = quad.get_child(0)
+
+	if fullscreen:
+		# 1. Store state prior to toggling fullscreen
+		pre_fullscreen_mesh_sizes[id] = mesh.size
+		pre_fullscreen_surface_sizes[id] = body.get_meta("surface_size", Vector2(1024, 768))
+
+		# 2. Request viewport dimensions from the Wayland surface
+		var vp_size := get_viewport().get_visible_rect().size
+		var aspect = vp_size.x / max(vp_size.y, 1.0)
+		
+		# Standardized 3D height facing camera (1.0 meter high)
+		mesh.size = Vector2(1.0 * aspect, 1.0)
+		
+		# Update collision shape to match mesh size
+		var col: CollisionShape3D = body.get_child(0)
+		var shape: BoxShape3D = col.shape
+		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
+		_sync_titlebar(quad)
+
+		# Notify Wayland client buffer of target size
+		compositor.set_window_size(id, int(vp_size.x), int(vp_size.y))
+
+	else:
+		# 1. Restore Quad Mesh Size
+		if pre_fullscreen_mesh_sizes.has(id):
+			mesh.size = pre_fullscreen_mesh_sizes[id]
+			pre_fullscreen_mesh_sizes.erase(id)
+
+		# Restore collision shape
+		var col: CollisionShape3D = body.get_child(0)
+		var shape: BoxShape3D = col.shape
+		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
+		_sync_titlebar(quad)
+
+		# 2. Restore original Wayland client surface size
+		if pre_fullscreen_surface_sizes.has(id):
+			var orig_surf: Vector2 = pre_fullscreen_surface_sizes[id]
+			compositor.set_window_size(id, int(orig_surf.x), int(orig_surf.y))
+			pre_fullscreen_surface_sizes.erase(id)
 
 # Clic sur la barre de titre du jeu -> déplacer la fenêtre sur son plan 2D
 # (même mécanique que le drag sur la tranche supérieure du contenu).
@@ -884,7 +932,7 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var surface_w := int(new_w) + int(window_start_content_offset.x) * 2
 	var surface_h := int(new_h) + int(window_start_content_offset.y) * 2
 	compositor.set_window_size(active_window_id, surface_w, surface_h)
-
+	fullscreen_windows[active_window_id] = false
 	# Met à jour la taille du mesh ET la position en même temps pour que
 	# le bord fixe reste immobile pendant le drag. Sans cette mise à jour,
 	# seul le position changeait → le bord "fixe" dérivait car le mesh

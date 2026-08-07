@@ -75,7 +75,6 @@ func _ready() -> void:
 	compositor.window_unmapped.connect(fx.on_window_unmapped)
 	compositor.window_unmapped.connect(win3d.on_window_unmapped)
 	compositor.window_decorations_changed.connect(win3d.on_window_decorations_changed)
-	compositor.window_fullscreen_changed.connect(win3d.on_window_fullscreen_changed)
 	compositor.window_texture_updated.connect(_on_window_texture_updated)
 	compositor.popup_mapped.connect(_on_popup_mapped)
 	compositor.popup_unmapped.connect(_on_popup_unmapped)
