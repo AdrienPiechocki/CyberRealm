@@ -89,6 +89,9 @@ func _ready() -> void:
 	# connaître la taille du viewport pour le layout (arrange_layer_surfaces).
 	compositor.set_output_size(int(get_viewport().get_visible_rect().size.x),
 		int(get_viewport().get_visible_rect().size.y))
+	# Layout clavier sauvegardé (menu pause) appliqué avant le lancement des apps.
+	var kl: Dictionary = pause_menu.get_keyboard_layout()
+	compositor.set_keyboard_layout(kl.get("layout", "fr"), kl.get("variant", ""))
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
@@ -113,6 +116,7 @@ func _ready() -> void:
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
 	pause_menu.app_launch_requested.connect(compositor.launch_app)
 	pause_menu.quit_requested.connect(_on_quit_requested)
+	pause_menu.keyboard_layout_changed.connect(compositor.set_keyboard_layout)
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()

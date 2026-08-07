@@ -2,8 +2,33 @@ extends PanelContainer
 
 signal app_launch_requested(command: String)
 signal quit_requested
+signal keyboard_layout_changed(layout: String, variant: String)
 
 const SETTINGS_PATH := "user://settings.json"
+
+# Layouts clavier proposés (mêmes identifiants que setxkbmap / xkbcommon).
+const KEYBOARD_LAYOUTS := [
+	{ "layout": "fr", "variant": "", "label": "Français (AZERTY)" },
+	{ "layout": "fr", "variant": "oss", "label": "Français bépo" },
+	{ "layout": "us", "variant": "", "label": "US (QWERTY)" },
+	{ "layout": "us", "variant": "intl", "label": "US International" },
+	{ "layout": "us", "variant": "colemak", "label": "US Colemak" },
+	{ "layout": "us", "variant": "dvorak", "label": "US Dvorak" },
+	{ "layout": "gb", "variant": "", "label": "UK (QWERTY)" },
+	{ "layout": "de", "variant": "", "label": "Deutsch (QWERTZ)" },
+	{ "layout": "de", "variant": "neo", "label": "Deutsch Neo" },
+	{ "layout": "be", "variant": "", "label": "Belge (AZERTY)" },
+	{ "layout": "es", "variant": "", "label": "Español (QWERTY)" },
+	{ "layout": "it", "variant": "", "label": "Italiano (QWERTY)" },
+	{ "layout": "pt", "variant": "", "label": "Português (QWERTY)" },
+	{ "layout": "br", "variant": "", "label": "Brasileiro (ABNT2)" },
+	{ "layout": "ca", "variant": "", "label": "Canadien multilingue" },
+	{ "layout": "ch", "variant": "", "label": "Suisse" },
+	{ "layout": "se", "variant": "", "label": "Svenska (QWERTY)" },
+	{ "layout": "no", "variant": "", "label": "Norsk (QWERTY)" },
+	{ "layout": "dk", "variant": "", "label": "Dansk" },
+	{ "layout": "ru", "variant": "", "label": "Русский (ЙЦУКЕН)" },
+]
 
 var container: VBoxContainer
 
@@ -184,6 +209,10 @@ func _show_main() -> void:
 	var custom_btn := _make_btn("Custom Binds")
 	custom_btn.pressed.connect(_show_custom_binds)
 	container.add_child(custom_btn)
+
+	var kb_btn := _make_btn("Keyboard Layout")
+	kb_btn.pressed.connect(_show_keyboard_layout)
+	container.add_child(kb_btn)
 	
 	container.add_child(_make_spacer())
 	
@@ -407,6 +436,63 @@ func _show_custom_binds() -> void:
 	container.add_child(add_row)
 
 	container.add_child(_make_back_btn())
+
+# ── Keyboard layout ─────────────────────────────────────────────────
+
+func _show_keyboard_layout() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "keyboard_layout"
+
+	container.add_child(_make_title("KEYBOARD LAYOUT"))
+
+	var hint := Label.new()
+	hint.text = "Layout sent to the Wayland apps in the game (same as setxkbmap)."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	var cur := _current_keyboard_layout()
+	var opt := OptionButton.new()
+	opt.custom_minimum_size = Vector2(0, 40)
+	opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	opt.add_theme_font_size_override("font_size", 14)
+	for i in KEYBOARD_LAYOUTS.size():
+		var entry: Dictionary = KEYBOARD_LAYOUTS[i]
+		opt.add_item(String(entry.get("label", "")), i)
+		if entry.get("layout", "") == cur.get("layout", "") \
+				and entry.get("variant", "") == cur.get("variant", ""):
+			opt.selected = i
+	container.add_child(opt)
+
+	var apply_btn := _make_btn("Apply")
+	apply_btn.pressed.connect(_apply_keyboard_layout.bind(opt))
+	container.add_child(apply_btn)
+
+	container.add_child(_make_spacer())
+	container.add_child(_make_back_btn())
+
+func _apply_keyboard_layout(opt: OptionButton) -> void:
+	var idx := opt.selected
+	if idx < 0 or idx >= KEYBOARD_LAYOUTS.size():
+		return
+	var entry: Dictionary = KEYBOARD_LAYOUTS[idx]
+	var layout := String(entry.get("layout", ""))
+	var variant := String(entry.get("variant", ""))
+	_settings["keyboard_layout"] = layout
+	_settings["keyboard_variant"] = variant
+	_save_settings()
+	keyboard_layout_changed.emit(layout, variant)
+
+func _current_keyboard_layout() -> Dictionary:
+	return get_keyboard_layout()
+
+func get_keyboard_layout() -> Dictionary:
+	return {
+		"layout": String(_settings.get("keyboard_layout", "fr")),
+		"variant": String(_settings.get("keyboard_variant", "")),
+	}
 
 # ── Startup apps ─────────────────────────────────────────────────────
 

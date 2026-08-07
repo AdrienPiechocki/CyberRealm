@@ -212,6 +212,10 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("forward_pointer_leave"), &WlrCompositor::forward_pointer_leave);
     ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "key_location", "pressed"),
         &WlrCompositor::forward_keyboard_key);
+    ClassDB::bind_method(D_METHOD("set_keyboard_layout", "layout", "variant"),
+        &WlrCompositor::set_keyboard_layout);
+    ClassDB::bind_method(D_METHOD("get_keyboard_layout"), &WlrCompositor::get_keyboard_layout);
+    ClassDB::bind_method(D_METHOD("get_keyboard_variant"), &WlrCompositor::get_keyboard_variant);
     ClassDB::bind_method(D_METHOD("forward_pointer_relative_motion", "window_id", "dx", "dy", "dx_unaccel", "dy_unaccel"),
         &WlrCompositor::forward_pointer_relative_motion);
     ClassDB::bind_method(D_METHOD("forward_pointer_motion_layer", "layer_id", "surface_x", "surface_y"),
@@ -2628,36 +2632,9 @@ void WlrCompositor::start_headless() {
 
     wlr_keyboard_init(&virtual_keyboard, &waylandgodot_KEYBOARD_IMPL, "waylandgodot-vkbd");
 
-    xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
-    xkb_rule_names rule_names = {
-        .rules = nullptr,
-        .model = nullptr,
-        .layout = "fr",
-        .variant = nullptr,
-        .options = nullptr,
-    };
-    xkb_keymap *keymap = xkb_keymap_new_from_names(ctx, &rule_names, XKB_KEYMAP_COMPILE_NO_FLAGS);
-    wlr_keyboard_set_keymap(&virtual_keyboard, keymap);
-    xkb_keymap_unref(keymap);
-    xkb_context_unref(ctx);
-
-    // Enable NumLock by default
-    {
-        xkb_keymap *kmap = xkb_state_get_keymap(virtual_keyboard.xkb_state);
-        xkb_mod_index_t num_mod = xkb_keymap_mod_get_index(kmap, XKB_MOD_NAME_NUM);
-        if (num_mod != XKB_MOD_INVALID) {
-            xkb_state_update_mask(virtual_keyboard.xkb_state,
-                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_DEPRESSED),
-                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LATCHED),
-                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LOCKED) | (1u << num_mod),
-                0, 0, 0);
-            wlr_keyboard_notify_modifiers(&virtual_keyboard,
-                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_DEPRESSED),
-                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LATCHED),
-                xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LOCKED),
-                xkb_state_serialize_layout(virtual_keyboard.xkb_state, XKB_STATE_LAYOUT_EFFECTIVE));
-        }
-    }
+    // Keymap xkb par défaut (layout "fr"). Configurable depuis le jeu via
+    // set_keyboard_layout (menu pause) : reload_keymap() est réappelé à chaud.
+    reload_keymap();
 
     wlr_seat_set_keyboard(seat, &virtual_keyboard);
     wlr_seat_set_capabilities(seat, WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
@@ -3143,6 +3120,64 @@ void WlrCompositor::release_all_keys() {
         ev.state = WL_KEYBOARD_KEY_STATE_RELEASED;
         wlr_keyboard_notify_key(&virtual_keyboard, &ev);
     }
+}
+
+void WlrCompositor::reload_keymap() {
+    CharString layout_utf8 = keyboard_layout.utf8();
+    CharString variant_utf8 = keyboard_variant.utf8();
+    xkb_rule_names rule_names = {
+        .rules = nullptr,
+        .model = nullptr,
+        .layout = layout_utf8.get_data(),
+        .variant = keyboard_variant.is_empty() ? nullptr : variant_utf8.get_data(),
+        .options = nullptr,
+    };
+
+    xkb_context *ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!ctx) return;
+    xkb_keymap *keymap = xkb_keymap_new_from_names(ctx, &rule_names, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    if (!keymap) {
+        UtilityFunctions::printerr("waylandgodot: impossible de compiler le keymap xkb (layout=",
+            keyboard_layout, ", variant=", keyboard_variant, ")");
+        xkb_context_unref(ctx);
+        return;
+    }
+    wlr_keyboard_set_keymap(&virtual_keyboard, keymap);
+    xkb_keymap_unref(keymap);
+    xkb_context_unref(ctx);
+
+    // Enable NumLock by default (comportement repris de l'init d'origine).
+    xkb_keymap *kmap = xkb_state_get_keymap(virtual_keyboard.xkb_state);
+    xkb_mod_index_t num_mod = xkb_keymap_mod_get_index(kmap, XKB_MOD_NAME_NUM);
+    if (num_mod != XKB_MOD_INVALID) {
+        xkb_state_update_mask(virtual_keyboard.xkb_state,
+            xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_DEPRESSED),
+            xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LATCHED),
+            xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LOCKED) | (1u << num_mod),
+            0, 0, 0);
+        wlr_keyboard_notify_modifiers(&virtual_keyboard,
+            xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_DEPRESSED),
+            xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LATCHED),
+            xkb_state_serialize_mods(virtual_keyboard.xkb_state, XKB_STATE_MODS_LOCKED),
+            xkb_state_serialize_layout(virtual_keyboard.xkb_state, XKB_STATE_LAYOUT_EFFECTIVE));
+    }
+}
+
+void WlrCompositor::set_keyboard_layout(const String &layout, const String &variant) {
+    keyboard_layout = layout;
+    keyboard_variant = variant;
+    // Aucun keymap encore appliqué (avant start_headless) : reload_keymap()
+    // sera appelé à l'init avec ces valeurs.
+    if (!virtual_keyboard.keymap) return;
+    reload_keymap();
+}
+
+String WlrCompositor::get_keyboard_layout() const {
+    return keyboard_layout;
+}
+
+String WlrCompositor::get_keyboard_variant() const {
+    return keyboard_variant;
 }
 
 void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {

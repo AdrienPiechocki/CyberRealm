@@ -51,8 +51,8 @@ Vulkan DMA-BUF import**.
 ```
             ┌───────────────────────────────  CyberRealm  ────────────────────────────────┐
             │                                                                             │
-  Godot 4.7 │   Game scripts (GDScript)                                                    │
-  + Jolt    │     wayland_room.gd  (orchestrator)                                          │
+  Godot 4.7 │   Game scripts (GDScript)                                                   │
+  + Jolt    │     wayland_room.gd  (orchestrator)                                         │
             │       ├─ Windows3D    3D quads, grab/move/resize, raycast pointer           │
             │       ├─ FocusMode    fullscreen 2D focus mode                              │
             │       ├─ LayerSurfaces  waybar/rofi overlays + session lock                 │
