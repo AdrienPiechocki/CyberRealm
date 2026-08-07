@@ -28,6 +28,19 @@ var compositor_cursor_hidden := false # curseur composité masqué (mode caméra
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
 
+# Agent d'authentification polkit : polkitd n'accepte qu'un seul agent par
+# session logind, donc le nôtre ne peut s'enregistrer que si l'agent KDE hôte
+# (plasma-polkit-agent) est arrêté. On le coupe au lancement du jeu et on le
+# relance à la sortie. L'adresse du bus D-Bus du host est capturée AVANT que
+# launch_portals() remplace DBUS_SESSION_BUS_ADDRESS par le bus privé du jeu.
+var _host_session_bus := ""
+var _host_agent_stopped := false
+
+const POLKIT_AGENT_CANDIDATES := [
+	"/usr/lib/polkit-kde-authentication-agent-1",
+	"/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1",
+]
+
 # Drag-and-drop icon overlay
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
@@ -40,6 +53,9 @@ func _add_manager(script: Script, node_name: String) -> Node3D:
 	return node
 
 func _ready() -> void:
+	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
+	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
+	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
 	# Sous-systèmes, créés avant toute connexion de signal.
 	win3d = _add_manager(preload("res://scripts/windows_3d.gd"), "Windows3D")
 	focus = _add_manager(preload("res://scripts/focus_mode.gd"), "FocusMode")
@@ -92,6 +108,14 @@ func _ready() -> void:
 	# Layout clavier sauvegardé (menu pause) appliqué avant le lancement des apps.
 	var kl: Dictionary = pause_menu.get_keyboard_layout()
 	compositor.set_keyboard_layout(kl.get("layout", "fr"), kl.get("variant", ""))
+	# Agent d'authentification polkit (menu pause) : stopper l'agent KDE hôte
+	# puis lancer le nôtre dans la session du jeu (bus D-Bus privé) pour que
+	# les demandes d'autorisation (pkexec...) affichent leur dialogue sur le
+	# compositeur du jeu.
+	var polkit_agent := _find_polkit_agent()
+	if polkit_agent != "":
+		_stop_host_polkit_agent()
+	compositor.set_polkit_agent(polkit_agent)
 	compositor.launch_app("xwayland-satellite :1")
 	await get_tree().create_timer(0.2).timeout
 	compositor.set_x11_display(":1")
@@ -117,6 +141,7 @@ func _ready() -> void:
 	pause_menu.app_launch_requested.connect(compositor.launch_app)
 	pause_menu.quit_requested.connect(_on_quit_requested)
 	pause_menu.keyboard_layout_changed.connect(compositor.set_keyboard_layout)
+	pause_menu.polkit_agent_changed.connect(_on_polkit_agent_changed)
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -492,6 +517,52 @@ func _write_capture_choice(choice: String) -> void:
 		f.store_string(choice + "\n")
 		f.close()
 
+# ── Agent polkit ────────────────────────────────────────────────────
+
+# Retourne le chemin de l'agent à lancer dans le jeu : réglage sauvegardé
+# (menu pause) s'il existe, sinon détection automatique, sinon "" (agent
+# système = dialogue sur le host).
+func _find_polkit_agent() -> String:
+	var configured: String = pause_menu.get_polkit_agent().strip_edges()
+	if configured != "" and FileAccess.file_exists(configured):
+		return configured
+	for candidate in POLKIT_AGENT_CANDIDATES:
+		if FileAccess.file_exists(candidate):
+			return candidate
+	return ""
+
+# systemctl --user ciblant le bus D-Bus du host (le jeu a remplacé
+# DBUS_SESSION_BUS_ADDRESS par son bus privé après launch_portals()).
+func _host_systemctl(args: PackedStringArray) -> int:
+	if _host_session_bus.is_empty():
+		var full_args := PackedStringArray(["--user"])
+		full_args.append_array(args)
+		return OS.execute("systemctl", full_args, [], true)
+	var cmd := "DBUS_SESSION_BUS_ADDRESS='%s' systemctl --user %s" \
+		% [_host_session_bus, " ".join(args)]
+	return OS.execute("sh", ["-c", cmd], [], true)
+
+func _stop_host_polkit_agent() -> void:
+	if _host_agent_stopped:
+		return
+	# systemctl --user stop est synchrone : à son retour l'agent KDE a quitté
+	# et polkitd a libéré l'enregistrement d'agent de la session logind.
+	if _host_systemctl(PackedStringArray(["stop", "plasma-polkit-agent.service"])) != 0:
+		# Fallback si le service n'existe pas (autre distribution).
+		OS.execute("pkill", ["-f", "polkit-kde-authentication-agent-1"], [], true)
+	_host_agent_stopped = true
+
+func _restore_host_polkit_agent() -> void:
+	if not _host_agent_stopped:
+		return
+	_host_systemctl(PackedStringArray(["start", "plasma-polkit-agent.service"]))
+	_host_agent_stopped = false
+
+func _on_polkit_agent_changed(path: String) -> void:
+	if path.strip_edges() != "":
+		_stop_host_polkit_agent()
+	compositor.set_polkit_agent(path)
+
 # ── Cycle de vie ─────────────────────────────────────────────────────
 
 func _on_quit_requested() -> void:
@@ -499,12 +570,17 @@ func _on_quit_requested() -> void:
 	# SIGKILL) puis quitte Godot ; le destructeur de WlrCompositor termine
 	# xwayland-satellite et le bus D-Bus privé.
 	compositor.shutdown_apps()
+	# L'agent polkit du jeu vient d'être tué par shutdown_apps() : relancer
+	# l'agent KDE hôte (dans le sens inverse, sa ré-inscription échouerait
+	# tant que l'agent du jeu est encore enregistré).
+	_restore_host_polkit_agent()
 	get_tree().quit()
 
 func _notification(what: int) -> void:
 	# Fermeture de la fenêtre hors menu pause : même shutdown propre.
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		compositor.shutdown_apps()
+		_restore_host_polkit_agent()
 
 func _on_pause_menu_visibility_changed() -> void:
 	if pause_menu.visible:
