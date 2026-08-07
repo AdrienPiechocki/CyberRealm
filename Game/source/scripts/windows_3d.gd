@@ -565,6 +565,11 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if hit.is_empty():
 		is_in_window = false
 		compositor.forward_pointer_leave()
+		# Relâchement du clic dans le vide (ex: drop d'un drag-and-drop hors
+		# de toute fenêtre) : window_id=-1 -> le compositeur route quand même
+		# l'événement au seat et annule un drag actif le cas échéant.
+		if Input.is_action_just_released("left_click", true):
+			compositor.forward_pointer_button(-1, 0x110, false)
 		return
 
 	var body: Node3D = hit.collider
@@ -591,6 +596,10 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if not body.has_meta("window_id"):
 		is_in_window = false
 		compositor.forward_pointer_leave()
+		# Idem : relâchement sur un collider sans fenêtre (mur, sol, etc.)
+		# doit pouvoir annuler un drag-and-drop en cours.
+		if Input.is_action_just_released("left_click", true):
+			compositor.forward_pointer_button(-1, 0x110, false)
 		return
 	else:
 		is_in_window = true

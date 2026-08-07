@@ -3029,40 +3029,49 @@ void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x,
 }
 
 void WlrCompositor::forward_pointer_button(int window_id, int button, bool pressed) {
+    if (!seat) return;
+    // ws peut être nullptr : relâchement du clic en dehors de toute fenêtre
+    // (ex: drop d'un drag-and-drop dans le vide de la scène 3D). Dans ce cas
+    // on doit quand même notifier le seat (qui route vers la surface ayant
+    // le focus pointeur) et traiter l'abandon du drag ci-dessous.
     WindowState *ws = find_window(window_id);
-    if (!ws || !seat) return;
 
     UtilityFunctions::print("waylandgodot: button id=", window_id,
         " pressed=", pressed,
-        " focus_ok=", (seat->pointer_state.focused_surface == ws->toplevel->base->surface));
+        " focus_ok=", (ws && seat->pointer_state.focused_surface == ws->toplevel->base->surface));
 
     wlr_seat_pointer_notify_button(seat, get_time_msec(), (uint32_t)button,
         pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
     wlr_seat_pointer_notify_frame(seat);
 
     if (pressed) {
-        // Dans un compositeur 3D, toutes les fenêtres sont visibles
-        // simultanément. Ne pas désactiver la fenêtre précédente :
-        // wlr_xdg_toplevel_set_activated(false) fait throttler le rendu
-        // côté client (Firefox gèle la vidéo, GTK arrête les animations).
-        // set_activated() appelle schedule_configure() en interne : l'ignorer
-        // si la surface n'est pas encore initialisée.
+        if (!ws) return; // pas de fenêtre sous le curseur, rien à activer/focaliser
+
         if (active_toplevel_id != window_id && ws->toplevel->base->initialized) {
             wlr_xdg_toplevel_set_activated(ws->toplevel, true);
             active_toplevel_id = window_id;
         }
 
-        // Un clic sur une fenêtre reprend le focus clavier à une éventuelle
-        // layer surface keyboard-interactive (rofi/waybar) qui le détenait.
         keyboard_focus_layer_id = -1;
 
         wlr_seat_keyboard_notify_enter(seat, ws->toplevel->base->surface,
             virtual_keyboard.keycodes,
             virtual_keyboard.num_keycodes,
             &virtual_keyboard.modifiers);
+    } else {
+        // Gestion de l'abandon de Drag and Drop : relâché hors de toute
+        // fenêtre (ws == nullptr) ou hors de la surface qui a le focus du
+        // drag -> on annule la source, ce qui déclenchera on_drag_destroy
+        // et donc l'émission de drag_icon_removed côté GDScript.
+        if (seat->drag != nullptr) {
+            if (seat->drag->focus == nullptr || !ws) {
+                if (seat->drag->source) {
+                    wlr_data_source_destroy(seat->drag->source);
+                }
+            }
+        }
     }
 }
-
 void WlrCompositor::forward_pointer_button_popup(int popup_id, int button, bool pressed) {
     PopupState *ps = find_popup(popup_id);
     if (!ps || !seat) return;
