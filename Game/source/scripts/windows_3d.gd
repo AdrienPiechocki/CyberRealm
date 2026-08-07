@@ -236,6 +236,17 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	var aspect := float(width) / float(max(height, 1))
 	var mesh: QuadMesh = quad.mesh
 	var current_h: float = mesh.size.y if mesh.size.y > 0.0 else 3.0
+	# Fenêtre fraîche (jamais redimensionnée à la main) : on dimensionne le
+	# quad d'après sa taille naturelle en pixels, la hauteur du viewport
+	# servant de référence (viewport_height px -> 1.0 unité monde). Sans ça,
+	# une fenêtre de 300 px de haut s'ouvrirait aussi grande qu'une fenêtre
+	# plein écran. Dès que le joueur a redimensionné la fenêtre (user_sized),
+	# la taille monde choisie est conservée, seule l'aspect suit le client.
+	if not body.get_meta("user_sized", false):
+		var vh: float = get_viewport().get_visible_rect().size.y
+		if vh > 0.0:
+			current_h = float(height) / vh
+		current_h = max(current_h, 0.05)
 	mesh.size = Vector2(current_h * aspect, current_h)
 
 	# La CollisionShape3D doit suivre la même taille que le mesh, sinon le
@@ -674,6 +685,9 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 
 	# La CollisionShape3D doit suivre la même taille que le mesh.
 	var body: StaticBody3D = quad.get_child(0)
+	# Une fenêtre redimensionnée à la main garde sa taille monde : on_texture_updated
+	# ne doit plus la recalculer d'après les pixels (voir user_sized là-bas).
+	body.set_meta("user_sized", true)
 	var col: CollisionShape3D = body.get_child(0)
 	var shape: BoxShape3D = col.shape
 	shape.size = Vector3(new_mesh_w, new_mesh_h, shape.size.z)
