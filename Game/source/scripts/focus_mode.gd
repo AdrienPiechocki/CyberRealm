@@ -232,9 +232,15 @@ func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id
 		return
 
 	var popup_tex_rect := TextureRect.new()
+	# EXPAND_IGNORE_SIZE permet d'imposer exactement la taille calculée
 	popup_tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	popup_tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# STRETCH_SCALE étire la texture exactement aux bornes du Control
+	popup_tex_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	popup_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	
+	# Force le filtre linéaire (ou mipmap) pour éviter le flou de scaling de l'UI 2D
+	popup_tex_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+	
 	popup_tex_rect.size = Vector2(pw, ph) * popup_scale
 	popup_tex_rect.position = popup_offset + Vector2(x, y) * popup_scale
 	popup_tex_rect.z_index = FOCUS_POPUP_Z
@@ -246,7 +252,13 @@ func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id
 		var quad: MeshInstance3D = windows.popup_quads[popup_id]
 		var mat: ShaderMaterial = quad.material_override as ShaderMaterial
 		if mat:
-			popup_tex_rect.texture = mat.get_shader_parameter("window_texture")
+			var tex: Texture2D = mat.get_shader_parameter("window_texture")
+			if tex:
+				popup_tex_rect.texture = tex
+				# Si le buffer réel est plus grand que pw/ph (ex: ombres/marges),
+				# ajuster la taille sur la taille réelle de la texture mise à l'échelle
+				var tex_size := tex.get_size()
+				popup_tex_rect.size = tex_size * popup_scale
 
 # Routage souris/clavier du mode focus, appelé chaque frame par
 # wayland_room.gd tant que le mode est actif.
