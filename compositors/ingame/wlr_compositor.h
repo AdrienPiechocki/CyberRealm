@@ -153,6 +153,7 @@ struct WindowState {
     struct WlrCompositorToplevelSource *image_source = nullptr;
 
     class WlrCompositor *owner = nullptr;
+    bool decoration_server_side = false;
 };
 
 // Source de capture fenêtre pour ext_image_copy_capture : permet à portal-wlr
