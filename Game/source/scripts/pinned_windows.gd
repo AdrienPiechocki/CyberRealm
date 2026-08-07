@@ -1,13 +1,7 @@
 extends Node3D
-## PiP pinning : clones 2D des fenêtres épinglées (touche P ou menu) dans le
-## coin supérieur-gauche, au-dessus des layer surfaces mais sous le mode focus.
-## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 const PIN_SIZE := Vector2(640, 360)
 const PIN_MARGIN := 8
-# z_index des fenêtres épinglées (PiP) : au-dessus de toutes les layer
-# surfaces (jusqu'au layer overlay LAYER_Z_BASE + 3*100, popups +500 inclus)
-# mais sous le mode focus.
 const PIN_Z_BASE := 1900
 
 var ui: CanvasLayer
@@ -20,8 +14,12 @@ func is_pinned(id: int) -> bool:
 	return pinned_windows.has(id)
 
 func pin(id: int, texture: Texture2D) -> void:
+	# Si la fenêtre est déjà épinglée, on ne fait rien
 	if pinned_windows.has(id):
 		return
+
+	# Si une AUTRE fenêtre est déjà épinglée, on la retire d'abord
+	unpin_all()
 
 	var pip := TextureRect.new()
 	pip.texture = texture
@@ -49,8 +47,8 @@ func pin(id: int, texture: Texture2D) -> void:
 	border.add_child(pip)
 	border.z_index = PIN_Z_BASE
 
-	var idx := pinned_windows.size()
-	border.position = Vector2(PIN_MARGIN, PIN_MARGIN + idx * (PIN_SIZE.y + PIN_MARGIN + 4))
+	# Position fixe dans le coin supérieur gauche
+	border.position = Vector2(PIN_MARGIN, PIN_MARGIN)
 	pip.set_meta("window_id", id)
 	ui.add_child(border)
 	pinned_windows[id] = border
@@ -62,6 +60,11 @@ func unpin(id: int) -> void:
 	if is_instance_valid(pip):
 		pip.queue_free()
 	pinned_windows.erase(id)
+
+## Retire toutes les fenêtres épinglées (pour garantir 1 seule fenêtre max)
+func unpin_all() -> void:
+	for current_id in pinned_windows.keys():
+		unpin(current_id)
 
 func on_window_unmapped(id: int) -> void:
 	unpin(id)

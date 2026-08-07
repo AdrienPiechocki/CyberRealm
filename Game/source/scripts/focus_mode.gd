@@ -312,6 +312,8 @@ func handle_focus_input() -> void:
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
 func handle_input_event(event: InputEvent) -> bool:
+	if Input.is_action_just_pressed("focus_window"):
+		return false
 	if not focus_mode or focus_window_id == -1:
 		return false
 	if event is InputEventKey:
