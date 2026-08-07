@@ -140,12 +140,6 @@ func get_quad_info(id: int) -> Dictionary:
 	info["content_size"] = body.get_meta("content_size", Vector2(1, 1))
 	return info
 
-func set_quad_visible(id: int, visible: bool) -> void:
-	if quads.has(id) and is_instance_valid(quads[id]):
-		var quad: MeshInstance3D = quads[id]
-		quad.visible = visible
-		_set_quad_interactive(quad, visible)
-
 # Active/désactive toutes les collisions d'un quad (corps du contenu, barre
 # de titre, boutons) : un quad invisible ne doit plus être touchable.
 func _set_quad_interactive(quad: MeshInstance3D, enabled: bool) -> void:

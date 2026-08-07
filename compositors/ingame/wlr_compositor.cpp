@@ -1434,17 +1434,13 @@ void WlrCompositor::on_toplevel_decoration_request_mode(wl_listener *listener, v
     WindowState *ws = wl_container_of(listener, ws, decoration_request_mode_listener);
     auto *decoration = static_cast<wlr_xdg_toplevel_decoration_v1 *>(data);
 
-    // On confirme toujours SERVER_SIDE : le jeu dessine lui-même la barre de
-    // titre de chaque fenêtre (uniforme), et surtout xwayland-satellite doit
-    // cesser de dessiner ses propres barres. Si on lui répond CLIENT_SIDE, il
-    // les redessine et ajoute la hauteur du titre au max_size (0,0) d'une
-    // fenêtre sans taille max → min > max → XDG_TOPLEVEL_ERROR_INVALID_SIZE →
-    // panic (crash de xwayland-satellite avec github-desktop/Electron).
-    // set_mode() assert si la surface n'est pas encore initialisée (premier
-    // commit pas reçu) : dans ce cas on répondra depuis on_surface_commit().
     if (ws->toplevel->base->initialized) {
-        wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
-            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+        enum wlr_xdg_toplevel_decoration_v1_mode mode = decoration->requested_mode;
+        if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE) {
+            mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+        }
+        wlr_xdg_toplevel_decoration_v1_set_mode(decoration, mode);
+        ws->decoration_server_side = (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
         ws->decoration_mode_pending = false;
     } else {
         ws->decoration_mode_pending = true;
@@ -1486,7 +1482,7 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
     // (donc avant le map) s'il en voulait une, et on répond toujours
     // SERVER_SIDE. server_side=false => le client dessine ses propres
     // décorations, le jeu doit cacher sa barre de titre.
-    self->emit_signal("window_decorations_changed", ws->id, ws->decoration != nullptr);
+    self->emit_signal("window_decorations_changed", ws->id, ws->decoration_server_side);
 }
 
 void WlrCompositor::on_toplevel_unmap(wl_listener *listener, void *data) {
@@ -1726,8 +1722,12 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
         // que la surface est enfin initialisée : on peut la confirmer
         // (SERVER_SIDE, cf. on_toplevel_decoration_request_mode).
         if (ws->decoration && ws->decoration_mode_pending) {
-            wlr_xdg_toplevel_decoration_v1_set_mode(ws->decoration,
-                WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+            enum wlr_xdg_toplevel_decoration_v1_mode mode = ws->decoration->requested_mode;
+            if (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_NONE) {
+                mode = WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+            }
+            wlr_xdg_toplevel_decoration_v1_set_mode(ws->decoration, mode);
+            ws->decoration_server_side = (mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
             ws->decoration_mode_pending = false;
         }
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);

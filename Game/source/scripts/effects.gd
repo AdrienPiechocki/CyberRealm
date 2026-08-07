@@ -37,7 +37,23 @@ func toggle_find(id: int) -> void:
 		if not active:
 			windows.quads[id].material_overlay = null
 		else:
+			set_quad_visible(id, true)
 			windows.quads[id].material_overlay = xray_overlay
+
+func set_quad_visible(id: int, visible: bool) -> void:
+	if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
+		var quad: MeshInstance3D = windows.quads[id]
+		quad.visible = visible
+		_set_quad_interactive(quad, visible)
+
+func _set_quad_interactive(quad: MeshInstance3D, enabled: bool) -> void:
+	for child in quad.get_children():
+		if child is StaticBody3D:
+			for shape_node in child.get_children():
+				if shape_node is CollisionShape3D:
+					shape_node.disabled = not enabled
+		elif child is MeshInstance3D:
+			_set_quad_interactive(child, enabled)
 
 func process(delta: float) -> void:
 	_update_xray(delta)
