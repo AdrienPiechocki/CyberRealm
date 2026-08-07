@@ -1643,11 +1643,17 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
             // (ex. Firefox), sinon on l'écraserait avec la taille par défaut.
             wlr_xdg_toplevel_set_fullscreen(ws->toplevel, true);
             wlr_xdg_toplevel_set_size(ws->toplevel, vw, vh);
-        } else {
-            // Ouverture par défaut : TOUTES les fenêtres s'ouvrent maximisées
-            // (plein viewport), que le client l'ait demandé ou non.
+        } else if (ws->toplevel->requested.maximized) {
+            // Le client a lui-même demandé d'ouvrir maximisé avant le commit
+            // initial (restauration d'une session) : on l'honore.
             wlr_xdg_toplevel_set_maximized(ws->toplevel, true);
             wlr_xdg_toplevel_set_size(ws->toplevel, vw, vh);
+        } else {
+            // Ouverture à la taille naturelle du client : le configure
+            // envoyé ci-dessous sans dimension laisse le client utiliser sa
+            // propre taille préférée (ex. un dialogue polkit s'ouvre petit,
+            // pas en plein viewport). Ne plus imposer maximize + taille du
+            // viewport, sinon TOUTES les fenêtres s'ouvrent plein écran.
         }
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
         return;
