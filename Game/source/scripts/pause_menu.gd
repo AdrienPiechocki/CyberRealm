@@ -3,6 +3,7 @@ extends PanelContainer
 signal app_launch_requested(command: String)
 signal quit_requested
 signal keyboard_layout_changed(layout: String, variant: String)
+signal polkit_agent_changed(path: String)
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -41,7 +42,7 @@ const REMAPPABLE_ACTIONS := [
 ]
 
 var _settings: Dictionary = {}
-var _current_view := "main" # "main" | "keybinds" | "startup" | "custom"
+var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit"
 var _waiting_action := "" # action en cours de rebind, "" = aucun
 var _keybinds_buttons: Dictionary = {} # action -> Button
 # Capture d'une touche pour un custom bind
@@ -213,6 +214,10 @@ func _show_main() -> void:
 	var kb_btn := _make_btn("Keyboard Layout")
 	kb_btn.pressed.connect(_show_keyboard_layout)
 	container.add_child(kb_btn)
+
+	var polkit_btn := _make_btn("Polkit Agent")
+	polkit_btn.pressed.connect(_show_polkit)
+	container.add_child(polkit_btn)
 	
 	container.add_child(_make_spacer())
 	
@@ -493,6 +498,47 @@ func get_keyboard_layout() -> Dictionary:
 		"layout": String(_settings.get("keyboard_layout", "fr")),
 		"variant": String(_settings.get("keyboard_variant", "")),
 	}
+
+# ── Polkit agent ────────────────────────────────────────────────────
+
+func get_polkit_agent() -> String:
+	return String(_settings.get("polkit_agent", ""))
+
+func _show_polkit() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "polkit"
+
+	container.add_child(_make_title("POLKIT AGENT"))
+
+	var hint := Label.new()
+	hint.text = "Path to the polkit authentication agent.\nEmpty: auto-detect (KDE agent).\n\nThe game stops plasma-polkit-agent while it runs\nand restores it on exit."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	var line_edit := _make_line_edit()
+	line_edit.text = get_polkit_agent()
+	line_edit.placeholder_text = "/usr/lib/polkit-kde-authentication-agent-1"
+	line_edit.text_submitted.connect(func(_t: String):
+		_apply_polkit_agent(line_edit)
+	)
+	container.add_child(line_edit)
+
+	var apply_btn := _make_btn("Apply")
+	apply_btn.pressed.connect(_apply_polkit_agent.bind(line_edit))
+	container.add_child(apply_btn)
+
+	container.add_child(_make_spacer())
+	container.add_child(_make_back_btn())
+
+func _apply_polkit_agent(line_edit: LineEdit) -> void:
+	var cmd := line_edit.text.strip_edges()
+	_settings["polkit_agent"] = cmd
+	_save_settings()
+	polkit_agent_changed.emit(cmd)
+	_show_main()
 
 # ── Startup apps ─────────────────────────────────────────────────────
 
