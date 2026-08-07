@@ -15,7 +15,8 @@ const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
 # qui crashe si on lui laisse dessiner ses barres) ne dessinent rien, c'est
 # le jeu qui affiche la barre au-dessus du contenu de chaque fenêtre.
-const TITLEBAR_RATIO = 0.03 # hauteur de la barre = 6% de la hauteur du contenu
+const TITLEBAR_HEIGHT = 0.03
+const VIRTUAL_TITLEBAR_HEIGHT = 10 # px
 const TITLEBAR_BG = Color(0.13, 0.15, 0.22)
 const TITLEBAR_FG = Color(0.85, 0.88, 0.96)
 # Boutons de la barre de titre (droite) : fermer / réduire / agrandir.
@@ -73,7 +74,7 @@ var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_p
 
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 
-var resizing_edge := "" # "left", "right", "top", "bottom", "topleft", etc.
+var resizing_edge := "" # "left", "right", "bottom", etc.
 var is_resizing := false
 var is_moving := false
 var active_window_id := -1
@@ -217,7 +218,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	bar_body.collision_mask = 2
 	var bar_col := CollisionShape3D.new()
 	var bar_shape := BoxShape3D.new()
-	bar_shape.size = Vector3(mesh.size.x, mesh.size.y * TITLEBAR_RATIO, 0.02)
+	bar_shape.size = Vector3(mesh.size.x, TITLEBAR_HEIGHT, 0.02)
 	bar_col.shape = bar_shape
 	bar_body.add_child(bar_col)
 	bar_body.set_meta("titlebar_of", id)
@@ -259,7 +260,7 @@ func _sync_titlebar(quad: MeshInstance3D) -> void:
 	if titlebar == null or not is_instance_valid(titlebar):
 		return
 	var mesh: QuadMesh = quad.mesh
-	var bar_h: float = mesh.size.y * TITLEBAR_RATIO
+	var bar_h: float = TITLEBAR_HEIGHT
 	var bar_mesh: QuadMesh = titlebar.mesh
 	if bar_mesh == null:
 		bar_mesh = QuadMesh.new()
@@ -596,7 +597,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	var quad: MeshInstance3D = body.get_parent()
 	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
 	var mesh: QuadMesh = quad.mesh
-
+	
 	# Le point de contact du raycast est sur la FACE AVANT du boîtier de
 	# collision (0.05 m d'épaisseur), pas sur le plan visuel du quad (z=0).
 	# En incidence rasant — fenêtre proche, regard levé vers la barre de
@@ -636,7 +637,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			content_size = win_size
 		var titlebar_px := uv.x * win_size.x
 		var titlebar_py := uv.y * win_size.y
-		var in_titlebar := titlebar_py >= 0 and titlebar_py < BORDER_MARGIN * BORDER_MARGIN \
+		var in_titlebar := titlebar_py >= 0 and titlebar_py < VIRTUAL_TITLEBAR_HEIGHT \
 			and titlebar_px > 75 and titlebar_px < content_size.x - 75
 
 		if edge != "":
@@ -657,7 +658,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			# Move on a 2D plane (simulation de barre de titre)
 			active_window_id = wid
 			is_moving_2d = true
-
+			
 			# On crée un plan infini basé sur l'orientation de la fenêtre (axe Z)
 			var normal = quad.global_transform.basis.z.normalized()
 			move_2d_plane = Plane(normal, quad.global_position)
@@ -833,23 +834,9 @@ func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
 	if near_bottom_wide and near_right_wide:
 		return "bottomright"
 
-	# Coins du haut: zone fine (BORDER_MARGIN), volontairement petite pour ne
-	# pas voler les clics destinés aux boutons fermer/réduire/agrandir, qui
-	# vivent dans cette même région (voir zone reservée 75px plus bas dans
-	# le handler de clic).
-	var near_top := py < BORDER_MARGIN
-	var near_left := px < BORDER_MARGIN
-	var near_right := px > content_size.x - BORDER_MARGIN
-	if near_top and near_left:
-		return "topleft"
-	if near_top and near_right:
-		return "topright"
-
 	# Bords simples: bande fine (BORDER_MARGIN), hors des zones de coin.
 	var edge := ""
-	if py < BORDER_MARGIN:
-		edge += "top"
-	elif py > content_size.y - BORDER_MARGIN:
+	if py > content_size.y - BORDER_MARGIN:
 		edge += "bottom"
 	if px < BORDER_MARGIN:
 		edge += "left"
@@ -912,9 +899,7 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 		new_w = window_start_size.x + local_dx * px_per_unit_x
 	elif "left" in resizing_edge:
 		new_w = window_start_size.x - local_dx * px_per_unit_x
-	if "top" in resizing_edge:
-		new_h = window_start_size.y + local_dy * px_per_unit_y
-	elif "bottom" in resizing_edge:
+	if "bottom" in resizing_edge:
 		new_h = window_start_size.y - local_dy * px_per_unit_y
 
 	new_w = max(new_w, MIN_SURFACE_SIZE)
