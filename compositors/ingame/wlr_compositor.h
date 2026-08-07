@@ -25,6 +25,7 @@ extern "C" {
 #include <wlr/render/drm_format_set.h>
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/types/wlr_xdg_shell.h>
+#include <wlr/types/wlr_xdg_decoration_v1.h>
 #include <wlr/types/wlr_seat.h>
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_keyboard.h>
@@ -118,6 +119,19 @@ struct WindowState {
     wl_listener request_minimize_listener{};
     wl_listener request_move_listener{};
     wl_listener request_resize_listener{};
+
+    // Décoration xdg-decoration-v1 du toplevel (demandée par
+    // xwayland-satellite et les clients natifs). Toujours confirmée en
+    // SERVER_SIDE : le jeu dessine lui-même la barre de titre de chaque
+    // fenêtre. Répondre CLIENT_SIDE à xwayland-satellite le ferait redessiner
+    // ses barres et ajouter leur hauteur au max size → min > max → protocol
+    // error → panic. Le mode ne peut être confirmé qu'après l'initialisation
+    // de la surface (set_mode() appelle schedule_configure() qui assert
+    // sinon), d'où le report au premier commit via decoration_mode_pending.
+    wlr_xdg_toplevel_decoration_v1 *decoration = nullptr;
+    wl_listener decoration_request_mode_listener{};
+    wl_listener decoration_destroy_listener{};
+    bool decoration_mode_pending = false;
 
     // Ref<Texture2D> au lieu de Ref<ImageTexture>: permet d'utiliser
     // différents types de texture selon le chemin de capture.
@@ -272,6 +286,14 @@ class WlrCompositor : public Node {
     wlr_allocator *allocator = nullptr;
     wlr_compositor *compositor = nullptr;
     wlr_xdg_shell *xdg_shell = nullptr;
+    // xdg-decoration-unstable-v1 : nécessaire pour que xwayland-satellite
+    // délègue ses décorations au lieu de les dessiner lui-même. Sans ce
+    // global il ajoute la hauteur de sa barre de titre au "max size" d'un
+    // toplevel, ce qui produit un min > max pour les fenêtres sans taille
+    // max (ICCCM max=0) → XDG_TOPLEVEL_ERROR_INVALID_SIZE → panic (crash de
+    // xwayland-satellite avec github-desktop/Electron). On confirme toujours
+    // SERVER_SIDE : le jeu dessine les barres de titre lui-même.
+    wlr_xdg_decoration_manager_v1 *xdg_decoration_manager = nullptr;
     wlr_seat *seat = nullptr;
     wlr_pointer_constraints_v1 *pointer_constraints = nullptr;
     wlr_relative_pointer_manager_v1 *relative_pointer_manager = nullptr;
@@ -318,6 +340,7 @@ class WlrCompositor : public Node {
     wlr_keyboard virtual_keyboard{};
 
     wl_listener new_toplevel_listener{};
+    wl_listener new_toplevel_decoration_listener{};
     wl_listener new_layer_surface_listener{};
     wl_listener new_constraint_listener{};
     wl_listener request_start_drag_listener{};
@@ -366,6 +389,9 @@ class WlrCompositor : public Node {
     uint64_t frame_counter = 0;
 
     static void on_new_toplevel(wl_listener *listener, void *data);
+    static void on_new_toplevel_decoration(wl_listener *listener, void *data);
+    static void on_toplevel_decoration_request_mode(wl_listener *listener, void *data);
+    static void on_toplevel_decoration_destroy(wl_listener *listener, void *data);
     static void on_new_layer_surface(wl_listener *listener, void *data);
     static void on_layer_surface_map(wl_listener *listener, void *data);
     static void on_layer_surface_unmap(wl_listener *listener, void *data);
