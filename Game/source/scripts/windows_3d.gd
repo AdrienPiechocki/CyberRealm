@@ -141,6 +141,12 @@ func get_quad_info(id: int) -> Dictionary:
 	info["content_size"] = body.get_meta("content_size", Vector2(1, 1))
 	return info
 
+func set_quad_visible(id: int, visible: bool) -> void:
+	if quads.has(id) and is_instance_valid(quads[id]):
+		var quad: MeshInstance3D = quads[id]
+		quad.visible = visible
+		_set_quad_interactive(quad, visible)
+
 # Active/désactive toutes les collisions d'un quad (corps du contenu, barre
 # de titre, boutons) : un quad invisible ne doit plus être touchable.
 func _set_quad_interactive(quad: MeshInstance3D, enabled: bool) -> void:
@@ -501,7 +507,7 @@ func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: i
 		return
 	var quad: MeshInstance3D = popup_quads[id]
 	(quad.material_override as ShaderMaterial).set_shader_parameter("window_texture", texture)
-
+	(quad.material_override as ShaderMaterial).set_shader_parameter("content_size", Vector2(width, height))
 	# popup_mapped donne la géométrie logique (xdg_surface.set_window_geometry),
 	# utilisée uniquement pour le placement relatif au parent. Le buffer
 	# réellement capturé ici peut être plus grand (marge d'ombre ajoutée par
