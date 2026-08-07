@@ -461,6 +461,12 @@ class WlrCompositor : public Node {
 
     void notify_pointer_motion_on_surface(wlr_surface *surface, double surface_x, double surface_y);
 
+    // Compile et applique le keymap xkb du clavier virtuel à partir de
+    // keyboard_layout/keyboard_variant, puis ré-active NumLock et notifie
+    // les modificateurs. Appelé à l'init de start_headless et à chaque
+    // set_keyboard_layout.
+    void reload_keymap();
+
     void set_window_size(int window_id, int width, int height);
     void set_window_fullscreen(int window_id, bool fullscreen);
 
@@ -533,6 +539,16 @@ public:
     void forward_pointer_axis_lock(double delta_x, double delta_y);
     void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
     void release_all_keys();
+
+    // Layout clavier (xkbcommon) transmis aux clients Wayland : même format
+    // que setxkbmap ("fr", "us", "de"... + variante "oss", "intl", ...).
+    // Configure le keymap du clavier virtuel à chaud (apps déjà ouvertes
+    // incluses). À appeler au démarrage avec la valeur sauvegardée.
+    void set_keyboard_layout(const String &layout, const String &variant = "");
+    String get_keyboard_layout() const;
+    String get_keyboard_variant() const;
+    String keyboard_layout = "fr";
+    String keyboard_variant = "";
 
     String get_wayland_socket_name() const;
     void launch_app(const String &command);
