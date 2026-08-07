@@ -266,6 +266,9 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::STRING, "title"),
         PropertyInfo(Variant::STRING, "app_id")));
     ADD_SIGNAL(MethodInfo("window_unmapped", PropertyInfo(Variant::INT, "id")));
+    ADD_SIGNAL(MethodInfo("window_decorations_changed",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::BOOL, "server_side")));
     ADD_SIGNAL(MethodInfo("window_texture_updated",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::OBJECT, "texture"),
@@ -390,6 +393,8 @@ WlrCompositor::~WlrCompositor() {
         // les toucher ici.
         if (!wl_list_empty(&new_toplevel_listener.link))
             wl_list_remove(&new_toplevel_listener.link);
+        if (!wl_list_empty(&new_toplevel_decoration_listener.link))
+            wl_list_remove(&new_toplevel_decoration_listener.link);
         if (!wl_list_empty(&new_layer_surface_listener.link))
             wl_list_remove(&new_layer_surface_listener.link);
         if (!wl_list_empty(&new_session_lock_listener.link))
@@ -1358,8 +1363,7 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, new_toplevel_listener);
     auto *toplevel = static_cast<wlr_xdg_toplevel *>(data);
 
-    int id = self->next_window_id++;
-    WindowState &ws = self->windows[id];
+    int id = self->next_window_id++;    WindowState &ws = self->windows[id];
     ws.id = id;
     ws.toplevel = toplevel;
     ws.owner = self;
@@ -1400,6 +1404,61 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     (void)id;
 }
 
+void WlrCompositor::on_new_toplevel_decoration(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, new_toplevel_decoration_listener);
+    auto *decoration = static_cast<wlr_xdg_toplevel_decoration_v1 *>(data);
+
+    // Associer la décoration à la WindowState du toplevel correspondant
+    // (xwayland-satellite la demande juste après avoir créé le toplevel).
+    for (auto &[id, ws] : self->windows) {
+        if (ws.toplevel == decoration->toplevel) {
+            ws.decoration = decoration;
+            ws.decoration_mode_pending = true;
+            ws.decoration_request_mode_listener.notify = WlrCompositor::on_toplevel_decoration_request_mode;
+            wl_signal_add(&decoration->events.request_mode, &ws.decoration_request_mode_listener);
+            ws.decoration_destroy_listener.notify = WlrCompositor::on_toplevel_decoration_destroy;
+            wl_signal_add(&decoration->events.destroy, &ws.decoration_destroy_listener);
+            // Ne PAS appeler set_mode() ici : à ce stade (get_toplevel_decoration)
+            // la surface n'a pas encore fait son premier commit, et set_mode()
+            // appelle schedule_configure() qui assert sur initialized → crash.
+            // La confirmation est différée au premier commit (on_surface_commit).
+            return;
+        }
+    }
+    // Toplevel pas encore enregistré (rare) : sans listener, aucun mode ne
+    // sera confirmé. Le client retombe alors sur son comportement par défaut
+    // (CSD pour GTK/Qt, pas de barre pour xwayland-satellite).
+}
+
+void WlrCompositor::on_toplevel_decoration_request_mode(wl_listener *listener, void *data) {
+    WindowState *ws = wl_container_of(listener, ws, decoration_request_mode_listener);
+    auto *decoration = static_cast<wlr_xdg_toplevel_decoration_v1 *>(data);
+
+    // On confirme toujours SERVER_SIDE : le jeu dessine lui-même la barre de
+    // titre de chaque fenêtre (uniforme), et surtout xwayland-satellite doit
+    // cesser de dessiner ses propres barres. Si on lui répond CLIENT_SIDE, il
+    // les redessine et ajoute la hauteur du titre au max_size (0,0) d'une
+    // fenêtre sans taille max → min > max → XDG_TOPLEVEL_ERROR_INVALID_SIZE →
+    // panic (crash de xwayland-satellite avec github-desktop/Electron).
+    // set_mode() assert si la surface n'est pas encore initialisée (premier
+    // commit pas reçu) : dans ce cas on répondra depuis on_surface_commit().
+    if (ws->toplevel->base->initialized) {
+        wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
+            WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+        ws->decoration_mode_pending = false;
+    } else {
+        ws->decoration_mode_pending = true;
+    }
+}
+
+void WlrCompositor::on_toplevel_decoration_destroy(wl_listener *listener, void *data) {
+    WindowState *ws = wl_container_of(listener, ws, decoration_destroy_listener);
+    ws->decoration = nullptr;
+    ws->decoration_mode_pending = false;
+    wl_list_remove(&ws->decoration_request_mode_listener.link);
+    wl_list_remove(&ws->decoration_destroy_listener.link);
+}
+
 void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, map_listener);
     WlrCompositor *self = ws->owner;
@@ -1421,6 +1480,13 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
     }
 
     self->emit_signal("window_mapped", ws->id, title, app_id);
+
+    // Annonce la présence (ou l'absence) d'une décoration gérée par le jeu :
+    // le client a créé son objet xdg-decoration avant son premier commit
+    // (donc avant le map) s'il en voulait une, et on répond toujours
+    // SERVER_SIDE. server_side=false => le client dessine ses propres
+    // décorations, le jeu doit cacher sa barre de titre.
+    self->emit_signal("window_decorations_changed", ws->id, ws->decoration != nullptr);
 }
 
 void WlrCompositor::on_toplevel_unmap(wl_listener *listener, void *data) {
@@ -1654,6 +1720,15 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
             // propre taille préférée (ex. un dialogue polkit s'ouvre petit,
             // pas en plein viewport). Ne plus imposer maximize + taille du
             // viewport, sinon TOUTES les fenêtres s'ouvrent plein écran.
+        }
+        // Si une décoration xdg-decoration-v1 attend encore sa confirmation
+        // de mode (request_mode reçu avant le premier commit), c'est ici
+        // que la surface est enfin initialisée : on peut la confirmer
+        // (SERVER_SIDE, cf. on_toplevel_decoration_request_mode).
+        if (ws->decoration && ws->decoration_mode_pending) {
+            wlr_xdg_toplevel_decoration_v1_set_mode(ws->decoration,
+                WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+            ws->decoration_mode_pending = false;
         }
         wlr_xdg_surface_schedule_configure(ws->toplevel->base);
         return;
@@ -2541,6 +2616,19 @@ void WlrCompositor::start_headless() {
     xdg_shell = wlr_xdg_shell_create(display, 3);
     wlr_viewporter_create(display);
     wlr_subcompositor_create(display);
+
+    // xdg-decoration-unstable-v1 : voir commentaire dans le header. Sans ce
+    // global, xwayland-satellite dessine ses propres décorations et produit
+    // des min/max invalides pour les fenêtres sans taille max (Electron,
+    // github-desktop) → protocol error → panic → plus aucun X11 ne marche.
+    xdg_decoration_manager = wlr_xdg_decoration_manager_v1_create(display);
+    if (!xdg_decoration_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global xdg_decoration_manager_v1");
+    } else {
+        new_toplevel_decoration_listener.notify = WlrCompositor::on_new_toplevel_decoration;
+        wl_signal_add(&xdg_decoration_manager->events.new_toplevel_decoration,
+            &new_toplevel_decoration_listener);
+    }
 
     // wlr-layer-shell-unstable-v1 (waybar, rofi, notifications...). Le
     // header de protocole est généré depuis protocols/ par le SConstruct.
