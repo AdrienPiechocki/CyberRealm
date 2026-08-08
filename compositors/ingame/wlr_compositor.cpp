@@ -414,6 +414,10 @@ WlrCompositor::~WlrCompositor() {
             wl_list_remove(&keyboard_key_listener.link);
         if (!wl_list_empty(&keyboard_modifiers_listener.link))
             wl_list_remove(&keyboard_modifiers_listener.link);
+        if (!wl_list_empty(&pointer_grab_begin_listener.link))
+            wl_list_remove(&pointer_grab_begin_listener.link);
+        if (!wl_list_empty(&pointer_grab_end_listener.link))
+            wl_list_remove(&pointer_grab_end_listener.link);
 
         // Détruire le curseur AVANT le display (wlr_cursor/wlr_cursor_manager
         // dépendent du display pour leurs ressources internes).
