@@ -186,6 +186,10 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	mat.shader = shader
 	mat.render_priority = 0
 	quad.material_override = mat
+	# Surface plane qui projette une ombre : acné d'ombrage/aliasing au bord
+	# (l'ombre "scintille" au sol/mur autour de la fenêtre). Une surface
+	# d'app n'a pas vocation à jeter une ombre dure : on la désactive.
+	quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	var body := StaticBody3D.new()
 	
@@ -218,6 +222,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	bar_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	titlebar.material_override = bar_mat
 	titlebar.set_meta("titlebar_of", id)
+	titlebar.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	var bar_body := StaticBody3D.new()
 	bar_body.name = "BarBody"
 	bar_body.collision_layer = 2
@@ -244,6 +249,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	bar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	bar_label.position = Vector3(0.0, 0.0, 0.001)
 	titlebar.add_child(bar_label)
+	bar_label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	quad.add_child(titlebar)
 	_sync_titlebar(quad)
 
@@ -323,6 +329,7 @@ func _make_titlebar_button(titlebar: MeshInstance3D, wid: int, action: String, c
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	visual.material_override = mat
 	visual.position = Vector3(0.0, 0.0, 0.001)
+	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	btn.add_child(visual)
 	btn.set_meta("titlebar_button", {"wid": wid, "action": action})
 	titlebar.add_child(btn)
@@ -480,6 +487,8 @@ func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: in
 	mat.shader = shader
 	mat.render_priority = 1 # Force l'affichage au-dessus des fenêtres
 	quad.material_override = mat
+	# Idem fenêtres : pas d'ombre (surface plate) pour éviter le scintillement.
+	quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 
 	# Les tooltips ont une région d'input vide: on les affiche mais on ne
 	# crée pas de collision body, pour que le raycast passe au travers et
