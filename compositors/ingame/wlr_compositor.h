@@ -178,6 +178,13 @@ struct PopupState {
     int parent_layer_id = -1; // popup attaché à une layer surface (>= 0), sinon -1
     wlr_xdg_popup *popup = nullptr;
 
+    // true une fois que le signal popup_mapped a été émis pour ce popup.
+    // Un popup dont la surface racine n'a jamais de buffer (sous-popups
+    // Firefox, contenu WebRender dans des sous-surfaces) ne déclenche jamais
+    // l'événement map de wlroots : le signal est alors émis depuis
+    // on_popup_commit dès que l'arbre a du contenu.
+    bool mapped_emitted = false;
+
     wl_listener map_listener{};
     wl_listener unmap_listener{};
     wl_listener destroy_listener{};
@@ -351,9 +358,13 @@ class WlrCompositor : public Node {
     wl_listener request_set_primary_selection_listener{};
     wl_listener keyboard_key_listener{};
     wl_listener keyboard_modifiers_listener{};
+    wl_listener pointer_grab_begin_listener{};
+    wl_listener pointer_grab_end_listener{};
 
     static void on_keyboard_key(wl_listener *listener, void *data);
     static void on_keyboard_modifiers(wl_listener *listener, void *data);
+    static void on_pointer_grab_begin(wl_listener *listener, void *data);
+    static void on_pointer_grab_end(wl_listener *listener, void *data);
 
     std::unordered_map<int, WindowState> windows;
     int next_window_id = 1;
@@ -439,6 +450,22 @@ class WlrCompositor : public Node {
     static void on_popup_reposition(wl_listener *listener, void *data);
 
     void wire_popup(PopupState &ps, wlr_xdg_popup *popup);
+
+    // Émet popup_mapped (ou layer_popup_mapped) une seule fois pour un popup.
+    // Peut être appelé depuis on_popup_map (surface racine avec buffer) ou
+    // depuis on_popup_commit (racine sans buffer, contenu dans des
+    // sous-surfaces).
+    void emit_popup_mapped(PopupState &ps);
+
+    // Donne le focus clavier à une surface (popup, fenêtre...). Les popups
+    // menus de GTK/Firefox font xdg_popup.grab : tant que la surface du
+    // popup n'a pas le focus clavier, le client ne considère pas le menu
+    // comme actif (pas de highlight au survol, pas de sous-menu).
+    void focus_surface(wlr_surface *surface);
+
+    // Rend le focus clavier à la fenêtre active (ou à son popup encore
+    // vivant) après la fermeture d'un popup.
+    void restore_focus_after_popup(PopupState &ps);
 
     // Recalcule la position/taille de chaque layer surface en fonction de
     // ses ancres, marges, exclusive zones et du niveau de couche, puis
@@ -553,6 +580,7 @@ public:
 
     void forward_pointer_motion(int window_id, double surface_x, double surface_y);
     void forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y);
+    void release_stale_button(uint32_t button);
     void forward_pointer_button(int window_id, int button, bool pressed);
     void forward_pointer_button_popup(int popup_id, int button, bool pressed);
     void forward_pointer_axis(int window_id, double delta_x, double delta_y);

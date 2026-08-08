@@ -34,6 +34,7 @@ extern "C" {
 #include <wlr/render/wlr_renderer.h>
 #include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
 #include <wlr/util/log.h>
+#include <wlr/util/box.h>
 #include <libdrm/drm_fourcc.h>
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
@@ -646,39 +647,66 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd) {
 //   - memcpy par ligne si format ABGR8888 (pas de swizzle par pixel)
 // =====================================================================
 
+// Boîte de recadrage pour la capture d'une surface xdg : sa géométrie
+// effective (window_geometry). On utilise xdg_surface->geometry et NON
+// xdg_surface->current.geometry :
+//   - current.geometry est la valeur brute de set_window_geometry, vide
+//     (0,0,0,0) si le client ne l'a jamais appelée ;
+//   - xdg_surface->geometry est recalculée par wlroots à CHAQUE commit
+//     (update_geometry) : intersection de la window_geometry avec les
+//     extents de la surface, ou extents seuls sinon. wlr_surface_get_extents
+//     inclut les sous-surfaces.
+// C'est exactement le cas des sous-popups de Firefox (menus en cascade) :
+// la surface racine (MozContainer) n'a jamais de buffer, tout le contenu
+// vit dans une sous-surface WebRender, donc surface->current.width == 0 et
+// root_texture == NULL. Les extents (racine + sous-surfaces) donnent alors
+// la taille réelle du contenu, même sans set_window_geometry.
+// Retourne false si la surface n'est pas une xdg_surface ou si la géométrie
+// est vide (pas encore de contenu).
+static bool capture_crop_box(wlr_surface *surface, wlr_box &out) {
+    wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+    if (!xdg) return false;
+    wlr_box geo = xdg->geometry;
+    if (geo.width <= 0 || geo.height <= 0) return false;
+    out = geo;
+    return true;
+}
+
 bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
     if (!renderer || !allocator) return false;
 
     wlr_texture *root_texture = wlr_surface_get_texture(surface);
     // Ne pas retourner false si root_texture est NULL : Firefox peut ne
-    // committer aucun buffer sur la surface racine d'un popup, tout le
-    // contenu vivant dans des sous-surfaces. wlr_surface_for_each_surface
-    // ci-dessous itérera quand même sur les sous-surfaces.
+    // committer aucun buffer sur la surface racine d'un popup (surtout les
+    // sous-popups / cascading menus), tout le contenu vivant dans des
+    // sous-surfaces. wlr_surface_for_each_surface ci-dessous itérera
+    // quand même sur les sous-surfaces.
+
+    // Recadre sur la géométrie xdg effective (window_geometry) EN PREMIER :
+    // pour les sous-popups Firefox, la surface racine n'a pas de buffer
+    // (tout vit dans des sous-surfaces), donc surface->current.width == 0 et
+    // root_texture == NULL.
+    int geo_x = 0, geo_y = 0;
+    int w = 0, h = 0;
+    wlr_box crop;
+    if (capture_crop_box(surface, crop)) {
+        geo_x = crop.x;
+        geo_y = crop.y;
+        w = crop.width;
+        h = crop.height;
+    }
 
     // Taille LOGIQUE de la surface (surface->current.width/height), pas la
     // taille brute du buffer (texture->width/height). Sur un client HiDPI
     // (buffer_scale > 1), le buffer physique est plus grand que la taille
     // affichée - mélanger les deux donne une image mal mise à l'échelle.
-    int w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
-    int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
-    if (w <= 0 || h <= 0) return false;
-
-    // Recadre sur la géométrie xdg déclarée par le client
-    // (xdg_surface.set_window_geometry). Les clients CSD (Firefox, GTK...)
-    // réservent une marge invisible autour de la fenêtre pour l'ombre
-    // portée et la zone de resize à la souris ; cette marge fait partie de
-    // la surface mais n'est jamais censée être affichée - sans ce recadrage
-    // elle apparaît comme un bandeau noir autour du contenu.
-    int geo_x = 0, geo_y = 0;
-    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface)) {
-        wlr_box geo = xdg_surface->current.geometry;
-        if (geo.width > 0 && geo.height > 0) {
-            geo_x = geo.x;
-            geo_y = geo.y;
-            w = geo.width;
-            h = geo.height;
-        }
+    // Utiliser comme fallback quand la géométrie xdg n'est pas disponible
+    // (fenêtres sans CSD, surfaces sans set_window_geometry).
+    if (w <= 0 || h <= 0) {
+        w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
+        h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     }
+    if (w <= 0 || h <= 0) return false;
 
     // ---- (Re)création du buffer offscreen + de son mapping -------------
     // Seulement si c'est le premier appel ou si la taille a changé. Le
@@ -998,21 +1026,30 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 
     wlr_texture *root_texture = wlr_surface_get_texture(surface);
 
-    int w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
-    int h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
-    if (w <= 0 || h <= 0) return false;
-
-    // Recadre sur la géométrie xdg (même logique que le path dmabuf).
+    // Géométrie effective AVANT le test de taille : la surface racine d'un
+    // sous-popup Firefox peut ne pas avoir de buffer (contenu WebRender dans
+    // des sous-surfaces), donc surface->current.width == 0 et root_texture
+    // == NULL. Le crop box (xdg_surface->geometry, extents racine +
+    // sous-surfaces) fournit alors la taille réelle du contenu.
     int geo_x = 0, geo_y = 0;
-    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface)) {
-        wlr_box geo = xdg_surface->current.geometry;
-        if (geo.width > 0 && geo.height > 0) {
-            geo_x = geo.x;
-            geo_y = geo.y;
-            w = geo.width;
-            h = geo.height;
-        }
+    int w = 0, h = 0;
+    wlr_box crop;
+    if (capture_crop_box(surface, crop)) {
+        geo_x = crop.x;
+        geo_y = crop.y;
+        w = crop.width;
+        h = crop.height;
     }
+
+    // Taille LOGIQUE de la surface (surface->current.width/height), pas la
+    // taille brute du buffer (texture->width/height). Fallback quand la
+    // géométrie xdg effective n'est pas disponible (surfaces sans
+    // window_geometry, layer surfaces, surfaces non xdg).
+    if (w <= 0 || h <= 0) {
+        w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
+        h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
+    }
+    if (w <= 0 || h <= 0) return false;
 
     // ---- (Re)création du buffer offscreen + import Vulkan -------------
     // Réallouer si le backend ne correspond pas, ou si la taille dépasse
@@ -1203,16 +1240,15 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     int h = (int)texture->height;
     if (w <= 0 || h <= 0) return false;
 
-    // Recadre sur la géométrie xdg (même logique que les paths dmabuf/vulkan).
+    // Recadre sur la géométrie xdg effective (même logique que les paths
+    // dmabuf/vulkan).
     int geo_x = 0, geo_y = 0;
-    if (wlr_xdg_surface *xdg_surface = wlr_xdg_surface_try_from_wlr_surface(surface)) {
-        wlr_box geo = xdg_surface->current.geometry;
-        if (geo.width > 0 && geo.height > 0) {
-            geo_x = geo.x;
-            geo_y = geo.y;
-            w = geo.width;
-            h = geo.height;
-        }
+    wlr_box crop;
+    if (capture_crop_box(surface, crop)) {
+        geo_x = crop.x;
+        geo_y = crop.y;
+        w = crop.width;
+        h = crop.height;
     }
 
     // Recrée le buffer offscreen si le backend ne correspond pas ou si la
@@ -1875,35 +1911,96 @@ void WlrCompositor::on_new_popup_from_popup(wl_listener *listener, void *data) {
         " parent_popup_id=", parent_ps->id);
 }
 
-void WlrCompositor::on_popup_map(wl_listener *listener, void *data) {
-    PopupState *ps = wl_container_of(listener, ps, map_listener);
-    WlrCompositor *self = ps->owner;
+void WlrCompositor::focus_surface(wlr_surface *surface) {
+    if (!seat || !surface) return;
+    // wlr_seat_keyboard_enter et NON notify_enter : pendant le grab clavier
+    // d'un popup xdg (xdg_popup.grab envoyé par GTK/Firefox), notify_enter
+    // est routé vers xdg_keyboard_grab_enter qui est un NO-OP (wlroots
+    // considère que le focus clavier doit rester sur le popup, et laisse au
+    // compositeur le soin de l'y mettre). wlr_seat_keyboard_enter ignore les
+    // grabs et envoie l'enter directement au popup.
+    wlr_seat_keyboard_enter(seat, surface,
+        virtual_keyboard.keycodes,
+        virtual_keyboard.num_keycodes,
+        &virtual_keyboard.modifiers);
+}
 
-    wlr_box geo = ps->popup->current.geometry;
+void WlrCompositor::restore_focus_after_popup(PopupState &ps) {
+    if (!seat) return;
+
+    // Re-donne le focus à un popup ancêtre encore vivant (sous-menu qui se
+    // ferme alors que le menu parent reste ouvert), sinon à la fenêtre active.
+    if (ps.parent_popup_id != -1) {
+        if (PopupState *parent_ps = find_popup(ps.parent_popup_id)) {
+            focus_surface(parent_ps->popup->base->surface);
+            return;
+        }
+    }
+    if (ps.parent_window_id != -1) {
+        if (WindowState *ws = find_window(ps.parent_window_id)) {
+            focus_surface(ws->toplevel->base->surface);
+            return;
+        }
+    }
+    if (active_toplevel_id != -1) {
+        if (WindowState *ws = find_window(active_toplevel_id)) {
+            focus_surface(ws->toplevel->base->surface);
+        }
+    }
+}
+
+void WlrCompositor::emit_popup_mapped(PopupState &ps) {
+    if (ps.mapped_emitted) return;
+    ps.mapped_emitted = true;
+
+    // Focus clavier sur le popup UNIQUEMENT s'il a un grab xdg actif
+    // (xdg_popup.grab, popup->seat est alors non NULL) : sans grab, les
+    // compositeurs de référence (mutter, sway) laissent le focus clavier sur
+    // la fenêtre parente. Forcer un enter clavier sur un popup sans grab
+    // fait fermer le menu par GTK/Firefox peu après l'ouverture (menu
+    // burger), le client voyant un focus non sollicité. Firefox n'envoie
+    // jamais xdg_popup.grab.
+    if (ps.popup->seat != nullptr) {
+        focus_surface(ps.popup->base->surface);
+    }
+
+    wlr_box geo = ps.popup->current.geometry;
 
     // Popup attaché à une layer surface (tooltip waybar, menus...) : c'est
     // un signal distinct, le script Godot le positionne par rapport à
     // l'overlay de la layer surface plutôt qu'à un quad 3D.
-    if (ps->parent_layer_id >= 0) {
-        UtilityFunctions::print("waylandgodot: layer_popup_mapped id=", ps->id,
-            " parent_layer=", ps->parent_layer_id,
+    if (ps.parent_layer_id >= 0) {
+        UtilityFunctions::print("waylandgodot: layer_popup_mapped id=", ps.id,
+            " parent_layer=", ps.parent_layer_id,
             " x=", geo.x, " y=", geo.y, " w=", geo.width, " h=", geo.height);
-        self->emit_signal("layer_popup_mapped", ps->id, ps->parent_layer_id,
+        emit_signal("layer_popup_mapped", ps.id, ps.parent_layer_id,
             geo.x, geo.y, geo.width, geo.height);
         return;
     }
 
-    UtilityFunctions::print("waylandgodot: popup_mapped id=", ps->id,
-        " parent=", ps->parent_window_id,
-        " parent_popup=", ps->parent_popup_id,
+    UtilityFunctions::print("waylandgodot: popup_mapped id=", ps.id,
+        " parent=", ps.parent_window_id,
+        " parent_popup=", ps.parent_popup_id,
         " x=", geo.x, " y=", geo.y, " w=", geo.width, " h=", geo.height);
-    self->emit_signal("popup_mapped", ps->id, ps->parent_window_id, ps->parent_popup_id,
+    emit_signal("popup_mapped", ps.id, ps.parent_window_id, ps.parent_popup_id,
         geo.x, geo.y, geo.width, geo.height);
+}
+
+void WlrCompositor::on_popup_map(wl_listener *listener, void *data) {
+    PopupState *ps = wl_container_of(listener, ps, map_listener);
+    WlrCompositor *self = ps->owner;
+    self->emit_popup_mapped(*ps);
 }
 
 void WlrCompositor::on_popup_unmap(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, unmap_listener);
     WlrCompositor *self = ps->owner;
+    ps->mapped_emitted = false;
+    UtilityFunctions::print("waylandgodot: DEBUG popup_unmap id=", ps->id,
+        " t=", self->get_time_msec(),
+        " ptr_focus=", self->seat && self->seat->pointer_state.focused_surface ?
+            self->seat->pointer_state.focused_surface->resource ? "surface" : "?": "none");
+    self->restore_focus_after_popup(*ps);
     self->emit_signal("popup_unmapped", ps->id);
 }
 
@@ -1942,6 +2039,19 @@ void WlrCompositor::on_popup_destroy(wl_listener *listener, void *data) {
     WlrCompositor *self = ps->owner;
     int id = ps->id;
 
+    UtilityFunctions::print("waylandgodot: DEBUG popup_destroy id=", id,
+        " t=", self->get_time_msec(),
+        " mapped_emitted=", ps->mapped_emitted);
+
+    // Un popup visible mais jamais "mapped" côté wlroots (racine sans
+    // buffer, contenu dans des sous-surfaces) ne reçoit jamais l'événement
+    // unmap (wlr_surface_unmap est sans effet si !mapped) : on signale
+    // l'arrêt ici pour que Godot libère le quad.
+    if (ps->mapped_emitted) {
+        self->restore_focus_after_popup(*ps);
+        self->emit_signal("popup_unmapped", id);
+    }
+
     wl_list_remove(&ps->map_listener.link);
     wl_list_remove(&ps->unmap_listener.link);
     wl_list_remove(&ps->destroy_listener.link);
@@ -1975,9 +2085,34 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
         return;
     }
 
+    // Un popup dont la surface racine n'a jamais de buffer (sous-popups
+    // Firefox, contenu WebRender dans une sous-surface) ne déclenche pas
+    // l'événement map de wlroots (wlr_surface_map exige un buffer racine) :
+    // le signal popup_mapped est émis ici dès que l'arbre a du contenu
+    // (extents non vides, sous-surfaces comprises). Pour un popup normal
+    // (racine avec buffer), on_popup_map a déjà émis le signal au premier
+    // commit et mapped_emitted est déjà vrai : no-op.
+    if (!ps->mapped_emitted) {
+        wlr_box extents;
+        wlr_surface_get_extents(ps->popup->base->surface, &extents);
+        UtilityFunctions::print("waylandgodot: DEBUG popup_commit id=", ps->id,
+            " t=", self->get_time_msec(),
+            " initial=", ps->popup->base->initial_commit,
+            " mapped=", ps->popup->base->surface->mapped,
+            " extents=", extents.x, ",", extents.y, ",", extents.width, ",", extents.height,
+            " surf=", ps->popup->base->surface->current.width, "x", ps->popup->base->surface->current.height);
+        if (!wlr_box_empty(&extents)) {
+            self->emit_popup_mapped(*ps);
+        }
+    }
+
     if (!self->capture_surface(ps->popup->base->surface, ps->texture, ps->width, ps->height, ps->capture_cache)) {
+        UtilityFunctions::print("waylandgodot: DEBUG popup_capture_fail id=", ps->id,
+            " w=", ps->width, " h=", ps->height);
         return;
     }
+    UtilityFunctions::print("waylandgodot: DEBUG popup_capture_ok id=", ps->id,
+        " w=", ps->width, " h=", ps->height);
     self->emit_signal("popup_texture_updated", ps->id, ps->texture, ps->width, ps->height);
 }
 
@@ -2738,6 +2873,13 @@ void WlrCompositor::start_headless() {
     keyboard_modifiers_listener.notify = WlrCompositor::on_keyboard_modifiers;
     wl_signal_add(&virtual_keyboard.events.modifiers, &keyboard_modifiers_listener);
 
+    // Diagnostics popups : début/fin du grab pointeur xdg-popup. La fin du
+    // grab == popup_done envoyé aux clients == menu fermé par le compositeur.
+    pointer_grab_begin_listener.notify = WlrCompositor::on_pointer_grab_begin;
+    wl_signal_add(&seat->events.pointer_grab_begin, &pointer_grab_begin_listener);
+    pointer_grab_end_listener.notify = WlrCompositor::on_pointer_grab_end;
+    wl_signal_add(&seat->events.pointer_grab_end, &pointer_grab_end_listener);
+
     new_toplevel_listener.notify = WlrCompositor::on_new_toplevel;
     wl_signal_add(&xdg_shell->events.new_toplevel, &new_toplevel_listener);
 
@@ -2830,6 +2972,18 @@ void WlrCompositor::start_headless() {
     UtilityFunctions::print("waylandgodot: compositeur headless prêt sur ", socket);
 }
 
+static void wlr_surface_send_frame_done_tree(wlr_surface *surface,
+                                             const timespec *now) {
+    if (!surface) {
+        return;
+    }
+    wlr_surface_for_each_surface(surface,
+        +[](wlr_surface *sub, int, int, void *data) {
+            wlr_surface_send_frame_done(sub, static_cast<const timespec *>(data));
+        },
+        const_cast<timespec *>(now));
+}
+
 void WlrCompositor::_process(double delta) {
     if (!event_loop) return;
 
@@ -2848,26 +3002,26 @@ void WlrCompositor::_process(double delta) {
     clock_gettime(CLOCK_MONOTONIC, &now);
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
-        wlr_surface_send_frame_done(ws.toplevel->base->surface, &now);
+        wlr_surface_send_frame_done_tree(ws.toplevel->base->surface, &now);
     }
     for (auto &pair : popups) {
         PopupState &ps = pair.second;
         if (ps.popup && ps.popup->base && ps.popup->base->surface) {
-            wlr_surface_send_frame_done(ps.popup->base->surface, &now);
+            wlr_surface_send_frame_done_tree(ps.popup->base->surface, &now);
         }
     }
     for (auto &pair : layer_surfaces) {
         LayerSurfaceState &ls = pair.second;
         wlr_surface *surf = ls.layer_surface ? ls.layer_surface->surface : nullptr;
         if (surf && surf->mapped) {
-            wlr_surface_send_frame_done(surf, &now);
+            wlr_surface_send_frame_done_tree(surf, &now);
         }
     }
     for (auto &pair : session_lock.surfaces) {
         SessionLockSurfaceState &ss = pair.second;
         wlr_surface *surf = ss.lock_surface ? ss.lock_surface->surface : nullptr;
         if (surf && surf->mapped) {
-            wlr_surface_send_frame_done(surf, &now);
+            wlr_surface_send_frame_done_tree(surf, &now);
         }
     }
 
@@ -3009,7 +3163,27 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
     if (!surface || !seat) return;
     uint32_t time = get_time_msec();
 
+    // Tant qu'un bouton est enfoncé (le clic qui vient d'ouvrir un menu,
+    // grab implicite), ne pas déplacer le focus pointeur vers un popup :
+    // entrer le popup pendant le clic est interprété par GTK/Firefox comme
+    // une violation de grab et ferme le menu à l'instant de l'enter (même
+    // bug corrigé dans mutter, "wayland: Do not force pointer focus on
+    // popups"). Le focus bougera vers le popup au mouvement suivant, une
+    // fois le bouton relâché.
+    if (seat->pointer_state.button_count > 0) {
+        wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+        if (xdg && xdg->role == WLR_XDG_SURFACE_ROLE_POPUP) {
+            return;
+        }
+    }
+
     if (seat->pointer_state.focused_surface != surface) {
+        UtilityFunctions::print("waylandgodot: DEBUG enter_surface t=", time,
+            " x=", surface_x, " y=", surface_y,
+            " new_sz=", surface->current.width, "x", surface->current.height,
+            " old=", seat->pointer_state.focused_surface ?
+                seat->pointer_state.focused_surface->resource ? "surface" : "?" : "none",
+            " new=", surface->resource ? "surface" : "?");
         wlr_seat_pointer_notify_enter(seat, surface, surface_x, surface_y);
     }
     wlr_seat_pointer_notify_motion(seat, time, surface_x, surface_y);
@@ -3028,6 +3202,27 @@ void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x,
     notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x, surface_y);
 }
 
+// Auto-guérison des boutons "perdus" : si on reçoit un appui alors que le
+// bouton est déjà marqué enfoncé (un relâchement précédent s'est perdu, par
+// ex. tombé dans le vide ou sur un popup sans gestion du clic droit),
+// wlroots incrémenterait n_pressed et AVALERAIT le relâchement suivant : le
+// client croirait le bouton enfoncé pour toujours (menu qui reste "coincé").
+// On émet donc d'abord un relâchement synthétique vers la surface focusée
+// (ce qui rétablit la cohérence côté client), puis le nouvel appui part
+// normalement.
+void WlrCompositor::release_stale_button(uint32_t button) {
+    if (!seat) return;
+    for (size_t i = 0; i < seat->pointer_state.button_count; i++) {
+        struct wlr_seat_pointer_button *b = &seat->pointer_state.buttons[i];
+        if (b->button == button && b->n_pressed > 0) {
+            wlr_seat_pointer_notify_button(seat, get_time_msec(), button,
+                WL_POINTER_BUTTON_STATE_RELEASED);
+            wlr_seat_pointer_notify_frame(seat);
+            return;
+        }
+    }
+}
+
 void WlrCompositor::forward_pointer_button(int window_id, int button, bool pressed) {
     if (!seat) return;
     // ws peut être nullptr : relâchement du clic en dehors de toute fenêtre
@@ -3038,7 +3233,12 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
 
     UtilityFunctions::print("waylandgodot: button id=", window_id,
         " pressed=", pressed,
+        " t=", get_time_msec(),
         " focus_ok=", (ws && seat->pointer_state.focused_surface == ws->toplevel->base->surface));
+
+    if (pressed) {
+        release_stale_button((uint32_t)button);
+    }
 
     wlr_seat_pointer_notify_button(seat, get_time_msec(), (uint32_t)button,
         pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
@@ -3072,9 +3272,38 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
         }
     }
 }
+// Début du grab pointeur posé par un popup xdg (xdg_popup.grab) : GTK/
+// Firefox vient de demander un popup menu et wlroots a instauré le grab.
+void WlrCompositor::on_pointer_grab_begin(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, pointer_grab_begin_listener);
+    (void)data;
+    UtilityFunctions::print("waylandgodot: DEBUG grab_begin t=", self->get_time_msec());
+}
+
+// Fin du grab pointeur xdg-popup : wlroots a appelé xdg_popup_grab_end(),
+// c'est-à-dire que popup_done a été envoyé à TOUS les popups du grab (GTK
+// ferme alors le menu). C'est LE signal qui distingue une fermeture décidée
+// par le compositeur (popup_done) d'une fermeture initiée par le client.
+void WlrCompositor::on_pointer_grab_end(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, pointer_grab_end_listener);
+    (void)data;
+    UtilityFunctions::print("waylandgodot: DEBUG grab_end t=", self->get_time_msec(),
+        " ptr_focus=", self->seat && self->seat->pointer_state.focused_surface ?
+            self->seat->pointer_state.focused_surface->resource ? "surface" : "?": "none");
+}
+
 void WlrCompositor::forward_pointer_button_popup(int popup_id, int button, bool pressed) {
     PopupState *ps = find_popup(popup_id);
     if (!ps || !seat) return;
+
+    UtilityFunctions::print("waylandgodot: DEBUG button_popup id=", popup_id,
+        " pressed=", pressed,
+        " t=", get_time_msec(),
+        " focus_popup=", seat->pointer_state.focused_surface == ps->popup->base->surface);
+
+    if (pressed) {
+        release_stale_button((uint32_t)button);
+    }
 
     wlr_seat_pointer_notify_button(seat, get_time_msec(), (uint32_t)button,
         pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
@@ -3098,6 +3327,9 @@ void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double d
 
 void WlrCompositor::forward_pointer_leave() {
     if (!seat) return;
+    UtilityFunctions::print("waylandgodot: DEBUG leave t=", get_time_msec(),
+        " ptr_focus=", seat->pointer_state.focused_surface ?
+            seat->pointer_state.focused_surface->resource ? "surface" : "?" : "none");
     wlr_seat_pointer_notify_clear_focus(seat);
 }
 
@@ -3690,7 +3922,15 @@ bool WlrCompositor::popup_accepts_input(int popup_id) {
     if (!ps || !ps->popup || !ps->popup->base || !ps->popup->base->surface) return false;
     // Les tooltips ont une région d'input vide (wl_surface_set_input_region
     // avec une region empty). Les menus/dropdowns ont une région non vide.
-    return !pixman_region32_empty(&ps->popup->base->surface->current.input);
+    bool ok = !pixman_region32_empty(&ps->popup->base->surface->current.input);
+    UtilityFunctions::print("waylandgodot: DEBUG popup_accepts_input id=", popup_id,
+        " ok=", ok,
+        " ptr_focus_same_client=", seat &&
+            seat->pointer_state.focused_surface &&
+            seat->pointer_state.focused_surface->resource &&
+            wl_resource_get_client(ps->popup->base->surface->resource) ==
+                wl_resource_get_client(seat->pointer_state.focused_surface->resource));
+    return ok;
 }
 
 void WlrCompositor::set_output_size(int width, int height) {
