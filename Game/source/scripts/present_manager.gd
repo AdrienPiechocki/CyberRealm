@@ -20,9 +20,6 @@ var _cursor_hidden := false # curseur composité masqué (mode caméra)
 func setup(compositor_ref: WlrCompositor) -> void:
 	compositor = compositor_ref
 
-func _ready() -> void:
-	process_mode = PROCESS_MODE_ALWAYS
-
 func _process(_delta: float) -> void:
 	# Synchroniser le curseur Wayland (wlr_cursor) avec la position de la
 	# souris Godot. Le curseur est composité dans le frame screencopy par
