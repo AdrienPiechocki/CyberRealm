@@ -29,8 +29,6 @@ Vulkan DMA-BUF import**.
 - **Layer surfaces** — waybar, rofi and friends are rendered as screen-anchored
   2D overlays inside the 3D view, with proper keyboard-interactive focus
   (a modifier key hands the pointer to the overlay).
-- **Session lock** — the compositor's session-lock surfaces are shown and
-  interacted with in-game.
 - **X11 support** — X applications run through
   [xwayland-satellite](https://gitlab.freedesktop.org/xwayland-satellite/xwayland-satellite),
   forwarded as XWayland surfaces.
@@ -69,8 +67,8 @@ Vulkan DMA-BUF import**.
             └───────────────────────────┬─────────────────────────────────────────────────┘
                                         │  Wayland socket (e.g. XDG_RUNTIME_DIR/cyberrealm-0)
              ┌──────────────────────────▼──────────────────────────────┐
-             │  Real apps: Plasma, Firefox, terminals, games, rofi…   │
-             │  xdg-desktop-portal(-wlr) for OBS capture (PipeWire)   │
+             │  Real apps: Dolphin, Firefox, terminals, games, rofi…   │
+             │  xdg-desktop-portal(-wlr) for OBS capture (PipeWire)    │
              └─────────────────────────────────────────────────────────┘
 ```
 
@@ -115,7 +113,7 @@ frames to avoid re-exporting/re-mapping buffers every frame.
 ## Build & install
 
 ```bash
-git clone --recurse-submodules https://github.com/you/CyberRealm.git
+git clone https://github.com/you/CyberRealm.git
 cd CyberRealm
 ./install.sh
 ```
@@ -155,19 +153,19 @@ cyberrealm-launch firefox
 
 ## Controls
 
-| Input                | Action                                        |
-| -------------------- | --------------------------------------------- |
-| `W` `A` `S` `D`/`Z` `Q` `S` `D` | Move in the room                |
-| `Space`              | Jump                                          |
-| Mouse                | Look around / point at windows                |
-| Middle-click (hold)  | Interact mode (grab, move, resize windows)    |
-| Left / right click   | Click into a window / pass to the compositor  |
-| `G`                  | Grab a window (drag it around)                |
-| `F`                  | Focus a window (fullscreen 2D mode)           |
-| `P`                  | Pin / unpin a window (picture-in-picture)     |
-| `K`                  | Close the focused window                      |
-| `B`                  | Window navigation menu                        |
-| `Shift` (hold)       | Hand the pointer to a layer overlay (waybar/rofi) |
+| Input                | Action                                            |
+| -------------------- | ------------------------------------------------- |
+| `W` `A` `S` `D`      | Move in the room                                  |
+| `Space`              | Jump                                              |
+| Mouse                | Look around / point at windows                    |
+| Middle-click (hold)  | Interact mode (grab, move, resize windows)        |
+| Left / right click   | Click into a window / pass to the compositor      |
+| `G`                  | Grab a window (drag it around)                    |
+| `F`                  | Focus a window (fullscreen 2D mode)               |
+| `P`                  | Pin / unpin a window (picture-in-picture)         |
+| `K`                  | Close the focused window                          |
+| `B`                  | Window navigation menu                            |
+| `tab`                | Hand the pointer to a layer overlay (waybar/rofi) |
 | `Esc`                | Pause menu (keybinds, startup apps, custom binds) |
 
 All keybinds can be remapped from the pause menu.
