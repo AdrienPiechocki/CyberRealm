@@ -321,30 +321,36 @@ func handle_focus_input() -> void:
 		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
 		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
 
-	if Input.is_action_just_pressed("left_click", true):
+	if Input.is_action_just_pressed("left_click"):
 		compositor.forward_pointer_button(focus_window_id, 0x110, true)
-	if Input.is_action_just_released("left_click", true):
+	if Input.is_action_just_released("left_click"):
 		compositor.forward_pointer_button(focus_window_id, 0x110, false)
 
-	if Input.is_action_just_pressed("right_click", true):
+	if Input.is_action_just_pressed("right_click"):
 		compositor.forward_pointer_button(focus_window_id, 0x111, true)
-	if Input.is_action_just_released("right_click", true):
+	if Input.is_action_just_released("right_click"):
 		compositor.forward_pointer_button(focus_window_id, 0x111, false)
 
-	if Input.is_action_just_pressed("scroll_up", true):
+	if Input.is_action_just_pressed("scroll_up"):
 		compositor.forward_pointer_axis(focus_window_id, 0, -100.0)
-	if Input.is_action_just_pressed("scroll_down", true):
+	if Input.is_action_just_pressed("scroll_down"):
 		compositor.forward_pointer_axis(focus_window_id, 0, 100.0)
 
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
 func handle_input_event(event: InputEvent) -> bool:
-	if Input.is_action_just_pressed("focus_window"):
-		return false
 	if not focus_mode or focus_window_id == -1:
 		return false
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
+		# Raccourcis clavier gérés par le jeu lui-même (SUPER+F = sortir du
+		# focus, la touche de fermeture de la fenêtre) : les consommer SANS
+		# les forwarder au client. Sinon la touche est tapée dans la fenêtre
+		# avant que l'action (exit_focus / close_window) ne s'exécute dans
+		# _process. event_is_action couvre l'appui ET le relâchement (et les
+		# echoes) avec les modifieurs exacts du raccourci.
+		if _is_compositor_shortcut(key_event):
+			return true
 		var code = key_event.physical_keycode
 		if code == 0:
 			code = key_event.keycode
@@ -370,3 +376,13 @@ func handle_input_event(event: InputEvent) -> bool:
 			event.relative.x, event.relative.y,
 			event.relative.x, event.relative.y)
 	return true
+
+# True si l'événement clavier correspond à un raccourci géré par le jeu
+# (et non par le client) pendant le mode focus : la touche ne doit pas
+# être forwardée. Les actions sont celles vérifiées dans _process de
+# wayland_room.gd (sortie de focus, fermeture de la fenêtre).
+func _is_compositor_shortcut(event: InputEventKey) -> bool:
+	for action in ["focus_window", "kill_window"]:
+		if InputMap.event_is_action(event, action, false):
+			return true
+	return false

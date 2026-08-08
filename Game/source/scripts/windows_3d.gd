@@ -568,9 +568,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
-		if Input.is_action_just_pressed("scroll_up", true):
+		if Input.is_action_just_pressed("scroll_up", false):
 			move_depth += 0.25
-		if Input.is_action_just_pressed("scroll_down", true):
+		if Input.is_action_just_pressed("scroll_down", false):
 			move_depth -= 0.25
 		_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab", true):
@@ -579,14 +579,14 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		return
 	if is_resizing:
 		_update_resize(ray_origin, ray_dir)
-		if Input.is_action_just_released("left_click", true):
+		if Input.is_action_just_released("left_click", false):
 			is_resizing = false
 			resizing_edge = ""
 			active_window_id = -1
 		return
 	if is_moving_2d:
 		_update_move_2d(ray_origin, ray_dir, delta)
-		if Input.is_action_just_released("left_click", true):
+		if Input.is_action_just_released("left_click", false):
 			is_moving_2d = false
 			active_window_id = -1
 		return
@@ -602,9 +602,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		# Relâchement du clic dans le vide (ex: drop d'un drag-and-drop hors
 		# de toute fenêtre) : window_id=-1 -> le compositeur route quand même
 		# l'événement au seat et annule un drag actif le cas échéant.
-		if Input.is_action_just_released("left_click", true):
+		if Input.is_action_just_released("left_click", false):
 			compositor.forward_pointer_button(-1, 0x110, false)
-		if Input.is_action_just_released("right_click", true):
+		if Input.is_action_just_released("right_click", false):
 			compositor.forward_pointer_button(-1, 0x111, false)
 		return
 
@@ -634,9 +634,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		compositor.forward_pointer_leave()
 		# Idem : relâchement sur un collider sans fenêtre (mur, sol, etc.)
 		# doit pouvoir annuler un drag-and-drop en cours.
-		if Input.is_action_just_released("left_click", true):
+		if Input.is_action_just_released("left_click", false):
 			compositor.forward_pointer_button(-1, 0x110, false)
-		if Input.is_action_just_released("right_click", true):
+		if Input.is_action_just_released("right_click", false):
 			compositor.forward_pointer_button(-1, 0x111, false)
 		return
 	else:
@@ -676,7 +676,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		active_window_id = wid
 		is_moving = false
 		move_depth = 0.0
-	if Input.is_action_just_pressed("left_click", true):
+	if Input.is_action_just_pressed("left_click", false):
 		focused_window_id = wid
 		var edge := _border_edge(uv, win_size, body)
 		# UV * win_size donne directement les coordonnées dans le repère
@@ -722,18 +722,18 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 
 		else:
 			compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
-	if Input.is_action_just_released("left_click", true):
+	if Input.is_action_just_released("left_click", false):
 		compositor.forward_pointer_button(wid, 0x110, false)
 
-	if Input.is_action_just_pressed("right_click", true):
+	if Input.is_action_just_pressed("right_click", false):
 		focused_window_id = wid
 		compositor.forward_pointer_button(wid, 0x111, true)
-	if Input.is_action_just_released("right_click", true):
+	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button(wid, 0x111, false)
 
-	if Input.is_action_just_pressed("scroll_up", true):
+	if Input.is_action_just_pressed("scroll_up", false):
 		compositor.forward_pointer_axis(wid, 0, -100.0)
-	if Input.is_action_just_pressed("scroll_down", true):
+	if Input.is_action_just_pressed("scroll_down", false):
 		compositor.forward_pointer_axis(wid, 0, 100.0)
 
 # Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que
@@ -780,9 +780,9 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vect
 		" mesh_size=", mesh.size)
 	compositor.forward_pointer_motion_popup(pid, px, py)
 
-	if Input.is_action_just_pressed("left_click", true):
+	if Input.is_action_just_pressed("left_click", false):
 		compositor.forward_pointer_button_popup(pid, 0x110, true)
-	if Input.is_action_just_released("left_click", true):
+	if Input.is_action_just_released("left_click", false):
 		compositor.forward_pointer_button_popup(pid, 0x110, false)
 
 	# Le clic droit doit aussi être relayé quand le curseur est au-dessus
@@ -790,14 +790,14 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vect
 	# wlroots et le compositeur ne peut plus entrer le popup (hover/clic
 	# impossibles). wlroots route les boutons vers la surface focusée, donc
 	# le relâchement d'un clic parti sur la fenêtre y retombe correctement.
-	if Input.is_action_just_pressed("right_click", true):
+	if Input.is_action_just_pressed("right_click", false):
 		compositor.forward_pointer_button_popup(pid, 0x111, true)
-	if Input.is_action_just_released("right_click", true):
+	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button_popup(pid, 0x111, false)
 
 # Clic sur un bouton de la barre de titre.
 func _handle_titlebar_button(body: StaticBody3D) -> void:
-	if not Input.is_action_just_pressed("left_click", true):
+	if not Input.is_action_just_pressed("left_click", false):
 		return
 	var info: Dictionary = body.get_meta("titlebar_button")
 	var wid: int = info["wid"]
@@ -869,7 +869,7 @@ func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3)
 	var titlebar: MeshInstance3D = body.get_parent()
 	var quad: MeshInstance3D = titlebar.get_parent()
 	var wid: int = body.get_meta("titlebar_of")
-	if Input.is_action_just_pressed("left_click", true):
+	if Input.is_action_just_pressed("left_click", false):
 		focused_window_id = wid
 		active_window_id = wid
 		is_moving_2d = true
@@ -878,7 +878,7 @@ func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3)
 		var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
 		if _hit != null:
 			move_2d_offset = quad.global_position - _hit
-	if Input.is_action_just_released("left_click", true):
+	if Input.is_action_just_released("left_click", false):
 		active_window_id = -1
 		is_moving_2d = false
 		move_2d_offset = Vector3.ZERO
