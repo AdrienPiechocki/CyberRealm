@@ -259,6 +259,16 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 
 	window_created.emit(id, quad)
 
+# Le client peut changer son titre à tout moment (xdg-shell set_title) :
+# met à jour l'étiquette de la barre de titre du jeu.
+func on_window_title_changed(id: int, title: String) -> void:
+	window_titles[id] = title
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+	var bar_label: Label3D = quads[id].get_node_or_null("Titlebar/Label3D")
+	if bar_label != null:
+		bar_label.text = title
+
 # Recalcule la barre de titre après un changement de taille du contenu : la
 # barre reste collée au bord supérieur du contenu et suit sa largeur.
 func _sync_titlebar(quad: MeshInstance3D) -> void:
