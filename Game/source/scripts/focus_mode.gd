@@ -332,9 +332,9 @@ func handle_focus_input() -> void:
 		compositor.forward_pointer_button(focus_window_id, 0x111, false)
 
 	if Input.is_action_just_pressed("scroll_up", true):
-		compositor.forward_pointer_axis(focus_window_id, 0, -50.0)
+		compositor.forward_pointer_axis(focus_window_id, 0, -100.0)
 	if Input.is_action_just_pressed("scroll_down", true):
-		compositor.forward_pointer_axis(focus_window_id, 0, 50.0)
+		compositor.forward_pointer_axis(focus_window_id, 0, 100.0)
 
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
