@@ -22,9 +22,8 @@ var focus: Node3D
 var layers: Node3D
 var pins: Node3D
 var fx: Node3D
+var presenter: Node3D # présente le viewport à l'output headless pour OBS
 
-var _present_frame_counter := 0 # throttling du readback viewport pour OBS
-var compositor_cursor_hidden := false # curseur composité masqué (mode caméra)
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
 
@@ -62,12 +61,14 @@ func _ready() -> void:
 	layers = _add_manager(preload("res://scripts/layer_surfaces.gd"), "LayerSurfaces")
 	pins = _add_manager(preload("res://scripts/pinned_windows.gd"), "PinnedWindows")
 	fx = _add_manager(preload("res://scripts/effects.gd"), "Effects")
+	presenter = _add_manager(preload("res://scripts/present_manager.gd"), "PresentManager")
 
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d)
 	layers.setup(compositor, player, ui, focus, pause_menu, window_menu)
 	pins.setup(ui)
 	fx.setup(win3d)
+	presenter.setup(compositor)
 
 	compositor.window_mapped.connect(win3d.on_window_mapped)
 	compositor.window_unmapped.connect(focus.on_window_unmapped)
@@ -180,20 +181,6 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	win3d.on_popup_texture_updated(id, texture, width, height)
 	focus.on_popup_texture_updated(id, texture, width, height)
 
-# ── Capture écran pour OBS ───────────────────────────────────────────
-
-# Capture écran pour OBS : lit l'image du viewport (GPU→CPU) et la présente
-# à l'output headless du compositeur, qui devient la "source écran" capturée
-# par xdg-desktop-portal-wlr (wlr-screencopy / ext_image_capture output).
-func _present_viewport_frame() -> void:
-	var vp := get_viewport()
-	var img := vp.get_texture().get_image()
-	if img == null or img.is_empty():
-		return
-	if img.get_format() != Image.FORMAT_RGBA8:
-		img.convert(Image.FORMAT_RGBA8)
-	compositor.present_viewport_frame(img.get_data(), img.get_width(), img.get_height())
-
 # ── Binds custom et helpers d'entrée ─────────────────────────────────
 
 # Vrai quand un overlay keyboard-interactive (rofi, waybar...) détient le
@@ -280,26 +267,10 @@ func _toggle_pin(wid: int) -> void:
 func _process(delta: float) -> void:
 	fx.process(delta)
 
-	# Capture écran pour OBS (xdg-desktop-portal-wlr) : présente la vue du
-	# viewport (ce que le joueur voit) à l'output headless, qu'alimente la
-	# source ext_image_capture "output". Le readback GPU→CPU coûte cher : on
-	# l'échantillonne à ~30 FPS (1 frame sur 2) — suffisant pour l'aperçu
-	# d'OBS — sans sacrifier la performance du jeu.
-	_present_frame_counter = (_present_frame_counter + 1) & 1
-
-	# Synchroniser le curseur Wayland (wlr_cursor) avec la position de la
-	# souris Godot. Le curseur est composité dans le frame screencopy par
-	# wlroots, donc il apparaîtra dans la capture OBS. En mode caméra
-	# (MOUSE_MODE_CAPTURED), le curseur est masqué côté compositeur pour ne
-	# pas apparaître dans la capture OBS.
-	var _cursor_pos := get_viewport().get_mouse_position()
-	compositor.set_cursor_position(_cursor_pos.x, _cursor_pos.y)
-	if compositor_cursor_hidden != (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED):
-		compositor_cursor_hidden = (Input.mouse_mode == Input.MOUSE_MODE_CAPTURED)
-		compositor.set_cursor_visible(not compositor_cursor_hidden)
-
-	if _present_frame_counter == 0:
-		_present_viewport_frame()
+	# La présentation du viewport vers l'output headless (capture OBS) et la
+	# synchro du curseur sont gérées par PresentManager (PROCESS_MODE_ALWAYS) :
+	# elles doivent continuer de tourner pendant que le menu pause gèle
+	# l'arbre, sinon la capture se figerait sur la dernière frame.
 
 	# Suivi de l'icône de drag-and-drop
 	if drag_icon_rect and drag_icon_rect.visible:

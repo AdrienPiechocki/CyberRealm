@@ -104,6 +104,24 @@ struct CaptureCache {
     ~CaptureCache();
 };
 
+// Suit les commits de chaque surface (sous-surfaces comprises) de l'arbre
+// d'une fenêtre. Le signal commit de la surface RACINE est déjà capté par
+// WindowState::commit_listener, mais les sous-surfaces (vidéo DMABUF,
+// overlays Firefox…) commitent indépendamment : sans écoute, un contenu
+// purement sous-surface resterait figé. Un tracker est attaché par
+// sync_window_subsurfaces et se supprime lui-même quand sa surface meurt.
+struct WindowState; // forward
+
+struct SurfaceCommitTracker {
+    wl_listener commit{};
+    wl_listener destroy{};
+    wlr_surface *surface = nullptr;
+    WindowState *ws = nullptr;
+
+    static void on_commit(wl_listener *listener, void *data);
+    static void on_destroy(wl_listener *listener, void *data);
+};
+
 // Un toplevel XDG mappé = une "fenêtre" côté Godot.
 struct WindowState {
     int id = -1;
@@ -138,6 +156,23 @@ struct WindowState {
     Ref<Texture2D> texture;
     int width = 0;
     int height = 0;
+
+    // true = un commit (racine ou sous-surface) a changé le contenu depuis
+    // la dernière capture. Posé par on_surface_commit et les trackers de
+    // sous-surfaces, consommé par _process : une fenêtre n'est recapturée
+    // QUE si son contenu a réellement changé, et jamais pour une surface
+    // statique. Sans ça, TOUTES les fenêtres étaient re-rendues (render
+    // pass GL + synchronisation DMA-BUF bloquante + import Vulkan) à
+    // chaque frame, même celles qui n'affichent rien de nouveau : le coût
+    // total grossissait linéairement avec le nombre de fenêtres ouvertes.
+    bool dirty = true;
+
+    // Trackers de commits attachés à chaque sous-surface de l'arbre (voir
+    // SurfaceCommitTracker). Indexés par surface ; retirés par leur propre
+    // handler de destroy ou par clear_sub_surface_trackers() à la
+    // destruction de la fenêtre.
+    std::unordered_map<wlr_surface*, SurfaceCommitTracker> sub_surface_trackers;
+    void clear_sub_surface_trackers();
 
     // Buffer/mapping/tampon CPU réutilisés d'une frame à l'autre pour la
     // capture (voir CaptureCache).
@@ -508,6 +543,13 @@ class WlrCompositor : public Node {
     // et `cache.bytes` d'une frame à l'autre.
     bool capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
+    // Attache un SurfaceCommitTracker à chaque sous-surface de l'arbre de
+    // la fenêtre qui n'en a pas encore (les trackers existants sont
+    // conservés). À appeler une fois par frame pour rattraper les
+    // sous-surfaces créées entre-temps ; un commit de n'importe quelle
+    // surface marque alors la fenêtre dirty.
+    void sync_window_subsurfaces(WindowState &ws);
+
     WindowState *find_window(int id);
     int find_window_id_by_surface(wlr_surface *surface);
     PopupState *find_popup(int id);
@@ -652,6 +694,17 @@ public:
     // "capture écran" de portal-wlr. Appelé par le script Godot avec l'image
     // du viewport (ce que le joueur voit).
     void present_viewport_frame(const PackedByteArray &rgba, int width, int height);
+
+    // Vrai si un client capture réellement l'output headless
+    // (xdg-desktop-portal-wlr via ext_image_copy_capture — verrou posé pour
+    // toute la durée de la session — ou screencopy/export_dmabuf — verrou
+    // posé tant qu'une frame est en vol). Basé sur
+    // wlr_output->attach_render_locks > 0, pas sur needs_frame : ce dernier
+    // n'est vrai qu'après un capture avec damage en attente et retomberait
+    // sinon en dépendance circulaire (présenter ← needs_frame ← damage ←
+    // commit ← présenter). Permet au script Godot de ne faire le coûteux
+    // readback GPU→CPU du viewport que quand une capture est active.
+    bool has_active_capture() const;
 
     // Infos complètes d'une layer surface pour le positionnement côté Godot:
     // Dictionary { namespace, layer, anchor, keyboard_interactive,
