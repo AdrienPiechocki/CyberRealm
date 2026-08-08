@@ -21,6 +21,7 @@ func setup(windows_ref: Node3D) -> void:
 	xray_overlay.albedo_color = Color(1.0, 0.15, 0.15, 0.6)
 	xray_overlay.no_depth_test = true
 	xray_overlay.render_priority = 10
+	xray_overlay.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 func on_window_created(id: int, quad: MeshInstance3D) -> void:
 	_start_flash(id, quad)
@@ -73,6 +74,7 @@ func _start_flash(id: int, quad: MeshInstance3D) -> void:
 	mat.albedo_color = Color(0.4, 0.4, .4)
 	mat.no_depth_test = true
 	mat.render_priority = 10
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	quad.material_overlay = mat
 	flash_windows[id] = {"mat": mat, "elapsed": 0.0}
 
