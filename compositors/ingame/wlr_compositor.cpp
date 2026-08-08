@@ -2000,10 +2000,6 @@ void WlrCompositor::on_popup_unmap(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, unmap_listener);
     WlrCompositor *self = ps->owner;
     ps->mapped_emitted = false;
-    UtilityFunctions::print("waylandgodot: DEBUG popup_unmap id=", ps->id,
-        " t=", self->get_time_msec(),
-        " ptr_focus=", self->seat && self->seat->pointer_state.focused_surface ?
-            self->seat->pointer_state.focused_surface->resource ? "surface" : "?": "none");
     self->restore_focus_after_popup(*ps);
     self->emit_signal("popup_unmapped", ps->id);
 }
@@ -2042,10 +2038,6 @@ void WlrCompositor::on_popup_destroy(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, destroy_listener);
     WlrCompositor *self = ps->owner;
     int id = ps->id;
-
-    UtilityFunctions::print("waylandgodot: DEBUG popup_destroy id=", id,
-        " t=", self->get_time_msec(),
-        " mapped_emitted=", ps->mapped_emitted);
 
     // Un popup visible mais jamais "mapped" côté wlroots (racine sans
     // buffer, contenu dans des sous-surfaces) ne reçoit jamais l'événement
@@ -2099,24 +2091,14 @@ void WlrCompositor::on_popup_commit(wl_listener *listener, void *data) {
     if (!ps->mapped_emitted) {
         wlr_box extents;
         wlr_surface_get_extents(ps->popup->base->surface, &extents);
-        UtilityFunctions::print("waylandgodot: DEBUG popup_commit id=", ps->id,
-            " t=", self->get_time_msec(),
-            " initial=", ps->popup->base->initial_commit,
-            " mapped=", ps->popup->base->surface->mapped,
-            " extents=", extents.x, ",", extents.y, ",", extents.width, ",", extents.height,
-            " surf=", ps->popup->base->surface->current.width, "x", ps->popup->base->surface->current.height);
         if (!wlr_box_empty(&extents)) {
             self->emit_popup_mapped(*ps);
         }
     }
 
     if (!self->capture_surface(ps->popup->base->surface, ps->texture, ps->width, ps->height, ps->capture_cache)) {
-        UtilityFunctions::print("waylandgodot: DEBUG popup_capture_fail id=", ps->id,
-            " w=", ps->width, " h=", ps->height);
         return;
     }
-    UtilityFunctions::print("waylandgodot: DEBUG popup_capture_ok id=", ps->id,
-        " w=", ps->width, " h=", ps->height);
     self->emit_signal("popup_texture_updated", ps->id, ps->texture, ps->width, ps->height);
 }
 
@@ -3182,12 +3164,6 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
     }
 
     if (seat->pointer_state.focused_surface != surface) {
-        UtilityFunctions::print("waylandgodot: DEBUG enter_surface t=", time,
-            " x=", surface_x, " y=", surface_y,
-            " new_sz=", surface->current.width, "x", surface->current.height,
-            " old=", seat->pointer_state.focused_surface ?
-                seat->pointer_state.focused_surface->resource ? "surface" : "?" : "none",
-            " new=", surface->resource ? "surface" : "?");
         wlr_seat_pointer_notify_enter(seat, surface, surface_x, surface_y);
     }
     wlr_seat_pointer_notify_motion(seat, time, surface_x, surface_y);
@@ -3281,7 +3257,6 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
 void WlrCompositor::on_pointer_grab_begin(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, pointer_grab_begin_listener);
     (void)data;
-    UtilityFunctions::print("waylandgodot: DEBUG grab_begin t=", self->get_time_msec());
 }
 
 // Fin du grab pointeur xdg-popup : wlroots a appelé xdg_popup_grab_end(),
@@ -3291,19 +3266,11 @@ void WlrCompositor::on_pointer_grab_begin(wl_listener *listener, void *data) {
 void WlrCompositor::on_pointer_grab_end(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, pointer_grab_end_listener);
     (void)data;
-    UtilityFunctions::print("waylandgodot: DEBUG grab_end t=", self->get_time_msec(),
-        " ptr_focus=", self->seat && self->seat->pointer_state.focused_surface ?
-            self->seat->pointer_state.focused_surface->resource ? "surface" : "?": "none");
 }
 
 void WlrCompositor::forward_pointer_button_popup(int popup_id, int button, bool pressed) {
     PopupState *ps = find_popup(popup_id);
     if (!ps || !seat) return;
-
-    UtilityFunctions::print("waylandgodot: DEBUG button_popup id=", popup_id,
-        " pressed=", pressed,
-        " t=", get_time_msec(),
-        " focus_popup=", seat->pointer_state.focused_surface == ps->popup->base->surface);
 
     if (pressed) {
         release_stale_button((uint32_t)button);
@@ -3331,9 +3298,6 @@ void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double d
 
 void WlrCompositor::forward_pointer_leave() {
     if (!seat) return;
-    UtilityFunctions::print("waylandgodot: DEBUG leave t=", get_time_msec(),
-        " ptr_focus=", seat->pointer_state.focused_surface ?
-            seat->pointer_state.focused_surface->resource ? "surface" : "?" : "none");
     wlr_seat_pointer_notify_clear_focus(seat);
 }
 
@@ -3927,13 +3891,6 @@ bool WlrCompositor::popup_accepts_input(int popup_id) {
     // Les tooltips ont une région d'input vide (wl_surface_set_input_region
     // avec une region empty). Les menus/dropdowns ont une région non vide.
     bool ok = !pixman_region32_empty(&ps->popup->base->surface->current.input);
-    UtilityFunctions::print("waylandgodot: DEBUG popup_accepts_input id=", popup_id,
-        " ok=", ok,
-        " ptr_focus_same_client=", seat &&
-            seat->pointer_state.focused_surface &&
-            seat->pointer_state.focused_surface->resource &&
-            wl_resource_get_client(ps->popup->base->surface->resource) ==
-                wl_resource_get_client(seat->pointer_state.focused_surface->resource));
     return ok;
 }
 
