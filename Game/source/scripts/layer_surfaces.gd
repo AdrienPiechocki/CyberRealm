@@ -134,17 +134,17 @@ func forward_keyboard_event(event: InputEvent) -> bool:
 func handle_locked_input() -> void:
 	var mp := get_viewport().get_mouse_position()
 	compositor.forward_pointer_motion_lock(mp.x, mp.y)
-	if Input.is_action_just_pressed("left_click", true):
+	if Input.is_action_just_pressed("left_click", false):
 		compositor.forward_pointer_button_lock(0x110, true)
-	if Input.is_action_just_released("left_click", true):
+	if Input.is_action_just_released("left_click", false):
 		compositor.forward_pointer_button_lock(0x110, false)
-	if Input.is_action_just_pressed("right_click", true):
+	if Input.is_action_just_pressed("right_click", false):
 		compositor.forward_pointer_button_lock(0x111, true)
-	if Input.is_action_just_released("right_click", true):
+	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button_lock(0x111, false)
-	if Input.is_action_just_pressed("scroll_up", true):
+	if Input.is_action_just_pressed("scroll_up", false):
 		compositor.forward_pointer_axis_lock(0.0, -50.0)
-	if Input.is_action_just_pressed("scroll_down", true):
+	if Input.is_action_just_pressed("scroll_down", false):
 		compositor.forward_pointer_axis_lock(0.0, 50.0)
 
 # Retour à la capture FPS après la fermeture d'un overlay interactif ou le
@@ -418,27 +418,27 @@ func _handle_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
 	var uv := _layer_uv(hit, mouse_pos)
 	if hit.kind == "layer_popup":
 		compositor.forward_pointer_motion_popup(hit.id, uv.x, uv.y)
-		if Input.is_action_just_pressed("left_click", true):
+		if Input.is_action_just_pressed("left_click", false):
 			compositor.forward_pointer_button_popup(hit.id, 0x110, true)
-		if Input.is_action_just_released("left_click", true):
+		if Input.is_action_just_released("left_click", false):
 			compositor.forward_pointer_button_popup(hit.id, 0x110, false)
-		if Input.is_action_just_pressed("right_click", true):
+		if Input.is_action_just_pressed("right_click", false):
 			compositor.forward_pointer_button_popup(hit.id, 0x111, true)
-		if Input.is_action_just_released("right_click", true):
+		if Input.is_action_just_released("right_click", false):
 			compositor.forward_pointer_button_popup(hit.id, 0x111, false)
 		return
 	compositor.forward_pointer_motion_layer(hit.id, uv.x, uv.y)
-	if Input.is_action_just_pressed("left_click", true):
+	if Input.is_action_just_pressed("left_click", false):
 		compositor.forward_pointer_button_layer(hit.id, 0x110, true)
-	if Input.is_action_just_released("left_click", true):
+	if Input.is_action_just_released("left_click", false):
 		compositor.forward_pointer_button_layer(hit.id, 0x110, false)
-	if Input.is_action_just_pressed("right_click", true):
+	if Input.is_action_just_pressed("right_click", false):
 		compositor.forward_pointer_button_layer(hit.id, 0x111, true)
-	if Input.is_action_just_released("right_click", true):
+	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button_layer(hit.id, 0x111, false)
-	if Input.is_action_just_pressed("scroll_up", true):
+	if Input.is_action_just_pressed("scroll_up", false):
 		compositor.forward_pointer_axis_layer(hit.id, 0, -50.0)
-	if Input.is_action_just_pressed("scroll_down", true):
+	if Input.is_action_just_pressed("scroll_down", false):
 		compositor.forward_pointer_axis_layer(hit.id, 0, 50.0)
 
 # Routage du pointeur vers les overlays de layer surfaces, appelé chaque
