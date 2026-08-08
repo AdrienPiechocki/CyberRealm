@@ -15,8 +15,11 @@ var layer_pointer_active := false
 # détient le focus clavier (rofi, menu waybar...).
 var _compositor: WlrCompositor = null
 
+var spawn_pos: Vector3 = Vector3.ZERO
+
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	spawn_pos = position
 
 func _get_compositor() -> WlrCompositor:
 	if _compositor == null or not is_instance_valid(_compositor):
@@ -31,7 +34,7 @@ func _keyboard_busy() -> bool:
 
 func _physics_process(delta):
 	if position.y <= -50:
-		position = Vector3.ZERO
+		position = spawn_pos
 	velocity.y += -gravity * delta
 	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy():
 		velocity.x = 0
