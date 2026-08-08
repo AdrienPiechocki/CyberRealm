@@ -271,6 +271,9 @@ void WlrCompositor::_bind_methods() {
     ADD_SIGNAL(MethodInfo("window_decorations_changed",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::BOOL, "server_side")));
+    ADD_SIGNAL(MethodInfo("window_title_changed",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::STRING, "title")));
     ADD_SIGNAL(MethodInfo("window_texture_updated",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::OBJECT, "texture"),
@@ -1447,6 +1450,9 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     ws.request_resize_listener.notify = WlrCompositor::on_request_resize;
     wl_signal_add(&toplevel->events.request_resize, &ws.request_resize_listener);
 
+    ws.set_title_listener.notify = WlrCompositor::on_toplevel_set_title;
+    wl_signal_add(&toplevel->events.set_title, &ws.set_title_listener);
+
     UtilityFunctions::print("waylandgodot: new_toplevel reçu, id=", id,
         " app_id=", toplevel->app_id ? String::utf8(toplevel->app_id) : String("(pas encore fixé)"));
 
@@ -1540,6 +1546,26 @@ void WlrCompositor::on_toplevel_unmap(wl_listener *listener, void *data) {
     self->emit_signal("window_unmapped", ws->id);
 }
 
+void WlrCompositor::on_toplevel_set_title(wl_listener *listener, void *data) {
+    WindowState *ws = wl_container_of(listener, ws, set_title_listener);
+    WlrCompositor *self = ws->owner;
+
+    // Synchronise le handle ext-foreign-toplevel-list-v1 (titre affiché par
+    // portal-wlr dans le chooser de capture OBS).
+    if (ws->foreign_handle) {
+        wlr_ext_foreign_toplevel_handle_v1_state state = {
+            .title = ws->toplevel->title ? ws->toplevel->title : "",
+            .app_id = ws->toplevel->app_id ? ws->toplevel->app_id : "",
+        };
+        wlr_ext_foreign_toplevel_handle_v1_update_state(ws->foreign_handle, &state);
+    }
+
+    // Le titre peut changer à tout moment (xdg-shell set_title, avant OU
+    // après le map) : le jeu met à jour l'étiquette de sa barre de titre.
+    self->emit_signal("window_title_changed", ws->id,
+        ws->toplevel->title ? String::utf8(ws->toplevel->title) : String());
+}
+
 void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, destroy_listener);
     WlrCompositor *self = ws->owner;
@@ -1571,6 +1597,7 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
     wl_list_remove(&ws->request_minimize_listener.link);
     wl_list_remove(&ws->request_move_listener.link);
     wl_list_remove(&ws->request_resize_listener.link);
+    wl_list_remove(&ws->set_title_listener.link);
 
     self->windows.erase(id);
 }

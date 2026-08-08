@@ -137,6 +137,7 @@ struct WindowState {
     wl_listener request_minimize_listener{};
     wl_listener request_move_listener{};
     wl_listener request_resize_listener{};
+    wl_listener set_title_listener{};
 
     // Décoration xdg-decoration-v1 du toplevel (demandée par
     // xwayland-satellite et les clients natifs). Toujours confirmée en
@@ -469,6 +470,7 @@ class WlrCompositor : public Node {
     static void on_toplevel_map(wl_listener *listener, void *data);
     static void on_toplevel_unmap(wl_listener *listener, void *data);
     static void on_toplevel_destroy(wl_listener *listener, void *data);
+    static void on_toplevel_set_title(wl_listener *listener, void *data);
     static void on_surface_commit(wl_listener *listener, void *data);
     static void on_request_fullscreen(wl_listener *listener, void *data);
     static void on_request_maximize(wl_listener *listener, void *data);
