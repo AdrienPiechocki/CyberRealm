@@ -3576,6 +3576,18 @@ void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
     if (window_id == -1) return;
 
     wlr_pointer_constraint_v1_send_activated(constraint);
+
+    // Un confinement (zwp_pointer_constraints_v1::confine_pointer) laisse le
+    // curseur visible : le client continue de recevoir du mouvement absolu
+    // (borné à la région) et gère lui-même son curseur. Ne pas le traiter
+    // comme un lock — SDL notamment, quand il relâche le mode relatif d'un
+    // jeu, détruit le locked_pointer puis crée immédiatement un confine pour
+    // garder le pointeur dans la fenêtre (menu ouvert). Traiter ce confine
+    // comme un lock recapturait la souris → curseur invisible dans le menu.
+    if (constraint->type == WLR_POINTER_CONSTRAINT_V1_CONFINED) {
+        return;
+    }
+
     self->emit_signal("pointer_lock_changed", window_id, true);
 
     // Écouter la destruction du constraint (client déverrouille ou surface détruite)
