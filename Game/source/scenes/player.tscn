@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://dl5med4hn5t14"]
 
 [ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player.gd" id="1_3vyb7"]
+[ext_resource type="Script" uid="uid://ce843jf4p7swo" path="res://scripts/fps.gd" id="2_qlg0r"]
 [ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/window_menu.gd" id="4_window_menu"]
 [ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
@@ -10,6 +11,9 @@ height = 2.5
 
 [sub_resource type="LabelSettings" id="LabelSettings_3vyb7"]
 font_size = 24
+
+[sub_resource type="LabelSettings" id="LabelSettings_jm82k"]
+font_size = 32
 
 [node name="Player" type="CharacterBody3D" unique_id=1446411886]
 script = ExtResource("1_3vyb7")
@@ -40,6 +44,20 @@ text = "+"
 label_settings = SubResource("LabelSettings_3vyb7")
 horizontal_alignment = 1
 vertical_alignment = 1
+
+[node name="FPS" type="Label" parent="UI" unique_id=2130405931]
+visible = false
+anchors_preset = 3
+anchor_left = 1.0
+anchor_top = 1.0
+anchor_right = 1.0
+anchor_bottom = 1.0
+offset_left = -40.0
+offset_top = -34.0
+grow_horizontal = 0
+grow_vertical = 0
+label_settings = SubResource("LabelSettings_jm82k")
+script = ExtResource("2_qlg0r")
 
 [node name="WindowMenuLayer" type="CanvasLayer" parent="." unique_id=1834194966]
 
