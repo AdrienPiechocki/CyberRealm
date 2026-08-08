@@ -7,6 +7,9 @@ signal polkit_agent_changed(path: String)
 
 const SETTINGS_PATH := "user://settings.json"
 
+# Le bouton Quit ne devient actif qu'après ce temps de jeu (secondes).
+const QUIT_GAMEPLAY_DELAY := 3.0
+
 # Layouts clavier proposés (mêmes identifiants que setxkbmap / xkbcommon).
 const KEYBOARD_LAYOUTS := [
 	{ "layout": "fr", "variant": "", "label": "Français (AZERTY)" },
@@ -52,6 +55,14 @@ var _custom_is_mouse := false
 var _custom_mods: Dictionary = {} # {"ctrl": bool, "shift": bool, "alt": bool, "super": bool}
 var _custom_key_btn: Button = null
 var _custom_cmd_edit: LineEdit = null
+var _quit_btn: Button = null
+var _play_time := 0.0
+
+func _process(delta: float) -> void:
+	if not get_tree().paused:
+		_play_time += delta
+	if _quit_btn:
+		_quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
 
 func _ready() -> void:
 	process_mode = PROCESS_MODE_ALWAYS
@@ -89,6 +100,7 @@ func _apply_styling() -> void:
 	offset_bottom = 230
 
 func _clear() -> void:
+	_quit_btn = null
 	for c in container.get_children():
 		c.queue_free()
 
@@ -227,7 +239,9 @@ func _show_main() -> void:
 
 	var quit_btn := _make_btn("Quit", Color(0.3, 0.08, 0.08, 0.9))
 	quit_btn.pressed.connect(_quit_game)
+	quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
 	container.add_child(quit_btn)
+	_quit_btn = quit_btn
 
 func _show_keybinds() -> void:
 	_clear()
