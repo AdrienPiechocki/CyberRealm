@@ -461,6 +461,8 @@ func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: in
 		local_top - mesh.size.y / 2.0,
 		0.02 # léger décalage devant le parent pour éviter le z-fighting
 	)
+	print("popup_layout: id=", id, " x=", x, " y=", y, " w=", width, " h=", height,
+		" scale=", _scale, " quad_pos=", quad.position, " mesh_size=", mesh.size)
 
 	var shader := Shader.new()
 	shader.code = WAYLAND_SHADER_CODE
@@ -471,17 +473,12 @@ func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: in
 
 	# Les tooltips ont une région d'input vide: on les affiche mais on ne
 	# crée pas de collision body, pour que le raycast passe au travers et
-	# atteigne la fenêtre/le popup en dessous.
+	# atteigne la fenêtre/le popup en dessous. Attention: Firefox committe
+	# parfois l'input region dans le MÊME commit que le buffer (hamburger
+	# menu) - au moment de popup_mapped elle est encore vide, donc on
+	# re-vérifiera dans _on_popup_texture_updated quand le buffer arrive.
 	if compositor.popup_accepts_input(id):
-		var body := StaticBody3D.new()
-		var col := CollisionShape3D.new()
-		var shape := BoxShape3D.new()
-		shape.size = Vector3(mesh.size.x, mesh.size.y, 0.01)
-		col.shape = shape
-		body.add_child(col)
-		body.set_meta("popup_id", id)
-		body.set_meta("surface_size", Vector2(width, height))
-		quad.add_child(body)
+		_add_popup_collider(quad, id, width, height)
 	else:
 		quad.set_meta("tooltip", true)
 
@@ -494,6 +491,20 @@ func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: in
 		"parent_popup_id": parent_popup_id,
 		"x": x, "y": y, "width": width, "height": height
 	}
+
+# Crée le collider du popup (raycast → hover/clic vers le client).
+func _add_popup_collider(quad: MeshInstance3D, id: int, width: int, height: int) -> void:
+	if quad.get_child_count() > 0:
+		return
+	var body := StaticBody3D.new()
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3((quad.mesh as QuadMesh).size.x, (quad.mesh as QuadMesh).size.y, 0.01)
+	col.shape = shape
+	body.add_child(col)
+	body.set_meta("popup_id", id)
+	body.set_meta("surface_size", Vector2(width, height))
+	quad.add_child(body)
 
 func on_popup_unmapped(id: int) -> void:
 	if popup_quads.has(id):
@@ -521,8 +532,15 @@ func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: i
 
 	quad.set_meta("surface_size", Vector2(width, height)) # utilisé par un éventuel sous-menu
 
-	# Les tooltips n'ont pas de collision body (pas d'input region).
-	if quad.get_child_count() > 0:
+	# Les tooltips n'ont pas de collision body (pas d'input region). Si le
+	# popup a été marqué tooltip au map mais que l'input region a été
+	# committée avec le buffer (Firefox hamburger menu), on crée le collider
+	# tardivement ici. Sinon on resynchronise sa taille sur le buffer.
+	if quad.get_child_count() == 0 and quad.has_meta("tooltip") and compositor.popup_accepts_input(id):
+		_add_popup_collider(quad, id, width, height)
+		quad.remove_meta("tooltip")
+		print("popup_collider_late: id=", id, " w=", width, " h=", height)
+	elif quad.get_child_count() > 0:
 		var body: StaticBody3D = quad.get_child(0)
 		body.set_meta("surface_size", Vector2(width, height))
 		var col: CollisionShape3D = body.get_child(0)
@@ -576,6 +594,8 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		# l'événement au seat et annule un drag actif le cas échéant.
 		if Input.is_action_just_released("left_click", true):
 			compositor.forward_pointer_button(-1, 0x110, false)
+		if Input.is_action_just_released("right_click", true):
+			compositor.forward_pointer_button(-1, 0x111, false)
 		return
 
 	var body: Node3D = hit.collider
@@ -606,6 +626,8 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		# doit pouvoir annuler un drag-and-drop en cours.
 		if Input.is_action_just_released("left_click", true):
 			compositor.forward_pointer_button(-1, 0x110, false)
+		if Input.is_action_just_released("right_click", true):
+			compositor.forward_pointer_button(-1, 0x111, false)
 		return
 	else:
 		is_in_window = true
@@ -627,6 +649,11 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# attend des coordonnées dans le repère surface (incluant les ombres),
 	# d'où l'ajout de content_offset.
 	var content_offset_fwd: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	if not popup_quads.is_empty():
+		print("raycast: WINDOW wid=", wid, " uv=", uv, " px=",
+			uv.x * win_size.x + content_offset_fwd.x, " py=",
+			uv.y * win_size.y + content_offset_fwd.y,
+			" content_offset=", content_offset_fwd, " surf_size=", win_size)
 	compositor.forward_pointer_motion(wid,
 		uv.x * win_size.x + content_offset_fwd.x,
 		uv.y * win_size.y + content_offset_fwd.y)
@@ -704,19 +731,59 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 # forward_pointer_button_popup puisqu'un popup n'a pas de window_id.
 func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var quad: MeshInstance3D = body.get_parent()
-	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
 	var mesh: QuadMesh = quad.mesh
-
-	# Même correction que pour une fenêtre : l'UV se calcule sur le plan
-	# visuel du quad, pas sur la face avant du boîtier de collision.
-	var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
 	var pid: int = body.get_meta("popup_id")
-	compositor.forward_pointer_motion_popup(pid, uv.x * win_size.x, uv.y * win_size.y)
+	var info: Dictionary = popup_parent_info.get(pid, {})
+	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
+
+	var px: float
+	var py: float
+	if info.get("parent_popup_id", -1) == -1 and quads.has(info.get("parent_window_id", -1)):
+		# Popup directement parenté à une fenêtre : les coordonnées envoyées
+		# au client doivent être celles du plan de la FENÊTRE, pas du plan 3D
+		# du popup. Le popup est avancé de z=0.02 devant la fenêtre (anti
+		# z-fighting) : le rayon coupe les deux plans à des points différents
+		# selon l'angle de la caméra (parallaxe), ce qui décalait les
+		# coordonnées de ~7-9 px (suffisant pour que Firefox ferme le menu).
+		# On réintersecte donc le rayon avec le plan de la fenêtre pour avoir
+		# la position réelle du curseur, puis on retranche l'origine du popup
+		# (géométrie xdg-shell = coordonnées surface du parent).
+		var window_quad: MeshInstance3D = quads[info.parent_window_id]
+		var window_body: StaticBody3D = window_quad.get_child(0)
+		var window_mesh: QuadMesh = window_quad.mesh
+		var window_surface_size: Vector2 = window_body.get_meta("surface_size", Vector2(1, 1))
+		var window_content_offset: Vector2 = window_body.get_meta("content_offset", Vector2.ZERO)
+		var window_uv := _uv_at_plane(window_quad, window_mesh, ray_origin, ray_dir, hit.position)
+		var surface_pos := Vector2(
+			window_uv.x * window_surface_size.x + window_content_offset.x,
+			window_uv.y * window_surface_size.y + window_content_offset.y)
+		px = surface_pos.x - float(info.x)
+		py = surface_pos.y - float(info.y)
+	else:
+		# Sous-menu (parenté à un autre popup) : calcul direct sur le plan du
+		# popup, même convention que précédemment.
+		var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
+		px = uv.x * win_size.x
+		py = uv.y * win_size.y
+	print("raycast: POPUP pid=", pid, " px=", px, " py=", py,
+		" surf_size=", win_size, " quad_pos=", quad.global_position,
+		" mesh_size=", mesh.size)
+	compositor.forward_pointer_motion_popup(pid, px, py)
 
 	if Input.is_action_just_pressed("left_click", true):
 		compositor.forward_pointer_button_popup(pid, 0x110, true)
 	if Input.is_action_just_released("left_click", true):
 		compositor.forward_pointer_button_popup(pid, 0x110, false)
+
+	# Le clic droit doit aussi être relayé quand le curseur est au-dessus
+	# d'un popup : sans relâchement, button_count reste bloqué à 1 dans
+	# wlroots et le compositeur ne peut plus entrer le popup (hover/clic
+	# impossibles). wlroots route les boutons vers la surface focusée, donc
+	# le relâchement d'un clic parti sur la fenêtre y retombe correctement.
+	if Input.is_action_just_pressed("right_click", true):
+		compositor.forward_pointer_button_popup(pid, 0x111, true)
+	if Input.is_action_just_released("right_click", true):
+		compositor.forward_pointer_button_popup(pid, 0x111, false)
 
 # Clic sur un bouton de la barre de titre.
 func _handle_titlebar_button(body: StaticBody3D) -> void:
