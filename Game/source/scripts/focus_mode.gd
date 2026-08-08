@@ -6,6 +6,27 @@ extends Node3D
 const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
 const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
 
+# Recadre la texture de capture sur la zone de contenu réelle. Le buffer
+# d'allocation (VkImage / offscreen) est arrondi au palier supérieur
+# (round_up_capture_size, multiple de 64) alors que le signal ne reporte
+# que la taille du contenu : sans recadrage, le UV [0,1] couvre la totalité
+# de la texture (zone transparente incluse) et STRETCH_SCALE écrase l'image.
+# TEXTURE = le TextureRect.texture (le contrôle ne dessine que s'il est
+# renseigné) ; la texture de capture est réutilisée telle quelle.
+const POPUP_CROP_SHADER_CODE = """
+shader_type canvas_item;
+uniform vec2 content_size = vec2(0.0, 0.0);
+
+void fragment() {
+	vec2 ts = vec2(textureSize(TEXTURE, 0));
+	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
+		? UV * content_size / ts : UV;
+	COLOR = texture(TEXTURE, mapped_uv);
+}
+"""
+
+var popup_crop_shader: Shader
+
 var compositor: WlrCompositor
 var player: Node3D
 var ui: CanvasLayer
@@ -26,6 +47,9 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	player = player_ref
 	ui = ui_ref
 	windows = windows_ref
+
+	popup_crop_shader = Shader.new()
+	popup_crop_shader.code = POPUP_CROP_SHADER_CODE
 
 	# TextureRect plein écran pour le mode focus
 	focus_texture_rect = TextureRect.new()
@@ -157,32 +181,40 @@ func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: i
 	if not focus_popup_rects.has(id) or not is_instance_valid(focus_popup_rects[id]):
 		return
 	var popup_tex_rect: TextureRect = focus_popup_rects[id]
+	# texture = propriété du TextureRect : sans elle le contrôle ne dessine
+	# pas ; le shader échantillonne ce TEXTURE avec le recadrage.
 	popup_tex_rect.texture = texture
+	var mat: ShaderMaterial = popup_tex_rect.material as ShaderMaterial
+	if mat:
+		mat.set_shader_parameter("content_size", Vector2(width, height))
+	popup_tex_rect.set_meta("content_size", Vector2(width, height))
 	# Recalculer la taille avec le scale du parent
 	if windows.popup_parent_info.has(id):
 		var info = windows.popup_parent_info[id]
-		var popup_scale := Vector2.ONE
-		var popup_offset := Vector2.ZERO
-		if info.parent_popup_id != -1 and focus_popup_rects.has(info.parent_popup_id):
-			var parent_rect: TextureRect = focus_popup_rects[info.parent_popup_id]
-			var parent_tex := parent_rect.texture
-			if parent_tex:
-				var pts := parent_tex.get_size()
-				var p_aspect = pts.x / max(pts.y, 1.0)
-				var pr_aspect = parent_rect.size.x / max(parent_rect.size.y, 1.0)
-				var p_displayed: Vector2
-				if p_aspect > pr_aspect:
-					p_displayed = Vector2(parent_rect.size.x, parent_rect.size.x / p_aspect)
-				else:
-					p_displayed = Vector2(parent_rect.size.y * p_aspect, parent_rect.size.y)
-				popup_scale = Vector2(p_displayed.x / max(pts.x, 1), p_displayed.y / max(pts.y, 1))
-				popup_offset = parent_rect.position + (parent_rect.size - p_displayed) / 2.0
-		elif focus_mode and focus_window_id == info.parent_window_id:
-			var fi := _compute_focus_displayed_info()
-			popup_scale = fi.scale
-			popup_offset = fi.offset
-		popup_tex_rect.size = Vector2(info.width, info.height) * popup_scale
+		var layout := _compute_popup_layout(info.parent_window_id, info.parent_popup_id)
+		if layout.is_empty():
+			return
+		var popup_scale: Vector2 = layout["scale"]
+		var popup_offset: Vector2 = layout["offset"]
+		# width/height (signal) = taille du contenu réel, à la différence de
+		# info.width/height qui vient de popup_mapped (géométrie logique).
+		popup_tex_rect.size = Vector2(width, height) * popup_scale
 		popup_tex_rect.position = popup_offset + Vector2(info.x, info.y) * popup_scale
+
+func _compute_popup_layout(parent_window_id: int, parent_popup_id: int) -> Dictionary:
+	"""Scale/offset du popup dans l'espace écran du mode focus."""
+	if parent_popup_id != -1 and focus_popup_rects.has(parent_popup_id):
+		var parent_rect: TextureRect = focus_popup_rects[parent_popup_id]
+		var p_content: Vector2 = parent_rect.get_meta("content_size", parent_rect.size)
+		return {
+			"scale": Vector2(
+				parent_rect.size.x / max(p_content.x, 1.0),
+				parent_rect.size.y / max(p_content.y, 1.0)),
+			"offset": parent_rect.position,
+		}
+	elif focus_mode and parent_window_id == focus_window_id:
+		return _compute_focus_displayed_info()
+	return {}
 
 func _compute_focus_displayed_info() -> Dictionary:
 	"""Calcule l'offset, la taille et le scale de la zone affichée du TextureRect focus."""
@@ -204,61 +236,44 @@ func _compute_focus_displayed_info() -> Dictionary:
 
 func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, pw: int, ph: int) -> void:
 	"""Crée un TextureRect overlay pour un popup en mode focus."""
-	var popup_scale: Vector2
-	var popup_offset: Vector2
-
-	# Sous-menu: calculer la zone affichée du parent (STRETCH_KEEP_ASPECT_CENTERED
-	# centre la texture, donc la zone utile ≠ parent_rect.size).
-	if parent_popup_id != -1 and focus_popup_rects.has(parent_popup_id):
-		var parent_rect: TextureRect = focus_popup_rects[parent_popup_id]
-		var parent_tex := parent_rect.texture
-		if not parent_tex:
-			return
-		var pts := parent_tex.get_size()
-		var p_aspect = pts.x / max(pts.y, 1.0)
-		var pr_aspect = parent_rect.size.x / max(parent_rect.size.y, 1.0)
-		var p_displayed: Vector2
-		if p_aspect > pr_aspect:
-			p_displayed = Vector2(parent_rect.size.x, parent_rect.size.x / p_aspect)
-		else:
-			p_displayed = Vector2(parent_rect.size.y * p_aspect, parent_rect.size.y)
-		popup_scale = Vector2(p_displayed.x / max(pts.x, 1), p_displayed.y / max(pts.y, 1))
-		popup_offset = parent_rect.position + (parent_rect.size - p_displayed) / 2.0
-	elif focus_mode and parent_window_id == focus_window_id:
-		var info := _compute_focus_displayed_info()
-		popup_scale = info.scale
-		popup_offset = info.offset
-	else:
+	var layout := _compute_popup_layout(parent_window_id, parent_popup_id)
+	if layout.is_empty():
 		return
+	var popup_scale: Vector2 = layout["scale"]
+	var popup_offset: Vector2 = layout["offset"]
 
 	var popup_tex_rect := TextureRect.new()
 	# EXPAND_IGNORE_SIZE permet d'imposer exactement la taille calculée
 	popup_tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	# STRETCH_SCALE étire la texture exactement aux bornes du Control
+	# STRETCH_SCALE étire la texture exactement aux bornes du Control ; le
+	# shader de recadrage garantit que seul le contenu (pas la zone de
+	# padding du buffer arrondi) est étiré.
 	popup_tex_rect.stretch_mode = TextureRect.STRETCH_SCALE
 	popup_tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	
-	# Force le filtre linéaire (ou mipmap) pour éviter le flou de scaling de l'UI 2D
-	popup_tex_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-	
+
+	# Force le filtre linéaire pour éviter le flou de scaling de l'UI 2D
+	popup_tex_rect.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+
+	var mat := ShaderMaterial.new()
+	mat.shader = popup_crop_shader
+	mat.set_shader_parameter("content_size", Vector2(pw, ph))
+	popup_tex_rect.material = mat
+
 	popup_tex_rect.size = Vector2(pw, ph) * popup_scale
 	popup_tex_rect.position = popup_offset + Vector2(x, y) * popup_scale
 	popup_tex_rect.z_index = FOCUS_POPUP_Z
+	popup_tex_rect.set_meta("content_size", Vector2(pw, ph))
 	ui.add_child(popup_tex_rect)
 	focus_popup_rects[popup_id] = popup_tex_rect
 
 	# Appliquer la texture disponible dès maintenant
 	if windows.popup_quads.has(popup_id) and is_instance_valid(windows.popup_quads[popup_id]):
 		var quad: MeshInstance3D = windows.popup_quads[popup_id]
-		var mat: ShaderMaterial = quad.material_override as ShaderMaterial
-		if mat:
-			var tex: Texture2D = mat.get_shader_parameter("window_texture")
+		var qmat: ShaderMaterial = quad.material_override as ShaderMaterial
+		if qmat:
+			var tex: Texture2D = qmat.get_shader_parameter("window_texture")
 			if tex:
 				popup_tex_rect.texture = tex
-				# Si le buffer réel est plus grand que pw/ph (ex: ombres/marges),
-				# ajuster la taille sur la taille réelle de la texture mise à l'échelle
-				var tex_size := tex.get_size()
-				popup_tex_rect.size = tex_size * popup_scale
 
 # Routage souris/clavier du mode focus, appelé chaque frame par
 # wayland_room.gd tant que le mode est actif.
