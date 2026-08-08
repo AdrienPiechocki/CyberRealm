@@ -242,6 +242,7 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
     ClassDB::bind_method(D_METHOD("present_viewport_frame", "rgba", "width", "height"), &WlrCompositor::present_viewport_frame);
+    ClassDB::bind_method(D_METHOD("has_active_capture"), &WlrCompositor::has_active_capture);
     ClassDB::bind_method(D_METHOD("get_layer_surface_info", "layer_id"), &WlrCompositor::get_layer_surface_info);
     ClassDB::bind_method(D_METHOD("get_keyboard_focus_layer_id"), &WlrCompositor::get_keyboard_focus_layer_id);
     ClassDB::bind_method(D_METHOD("close_layer_surface", "layer_id"), &WlrCompositor::close_layer_surface);
@@ -569,6 +570,14 @@ static inline int round_up_capture_size(int v) {
 // avec son propre wl_surface...). On re-capture alors périodiquement les
 // surfaces non-dirty. 20 ≈ une fois par seconde à 60 FPS.
 static constexpr int LAYER_SAFETY_RECAPTURE_INTERVAL = 20;
+
+// Filet de sécurité pour la recapture des fenêtres. En temps normal une
+// fenêtre n'est recapturée QUE si une de ses surfaces a committé
+// (on_surface_commit + trackers de sous-surfaces). Ce filet très lent
+// (60 ≈ une fois par seconde à 60 FPS) couvre les cas où une sous-surface
+// apparaît et committe entre deux sync_window_subsurfaces : à défaut son
+// contenu resterait figé jusqu'au prochain commit racine.
+static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 
 CaptureCache::~CaptureCache() {
     reset();
@@ -1548,6 +1557,10 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
         ws->foreign_handle = nullptr;
     }
 
+    // Retire les trackers de sous-surfaces (et leurs listeners des signaux
+    // des surfaces, qui peuvent survivre à la fenêtre).
+    ws->clear_sub_surface_trackers();
+
     wl_list_remove(&ws->map_listener.link);
     wl_list_remove(&ws->unmap_listener.link);
     wl_list_remove(&ws->destroy_listener.link);
@@ -1774,17 +1787,78 @@ void WlrCompositor::on_surface_commit(wl_listener *listener, void *data) {
         return;
     }
 
-    if (!self->capture_surface(ws->toplevel->base->surface, ws->texture, ws->width, ws->height, ws->capture_cache)) {
-        return;
+    // Un commit = nouveau contenu. On marque la fenêtre dirty et on laisse
+    // _process faire la capture (une seule fois par frame et par fenêtre,
+    // même si le client commite plusieurs fois). Capturer ici ET dans
+    // _process faisait rendre chaque fenêtre active deux fois par frame.
+    ws->dirty = true;
+}
+
+// =====================================================================
+// SurfaceCommitTracker — détection des commits de sous-surfaces
+// =====================================================================
+// La surface racine commit (on_surface_commit) ne suffit pas : une
+// sous-surface (vidéo DMABUF, overlay WebRender…) commite indépendamment.
+// Un tracker par sous-surface marque alors la fenêtre dirty, pour que
+// _process la recapture à la prochaine frame.
+
+void SurfaceCommitTracker::on_commit(wl_listener *listener, void *data) {
+    SurfaceCommitTracker *tracker = wl_container_of(listener, tracker, commit);
+    if (tracker->ws) {
+        tracker->ws->dirty = true;
     }
-    self->emit_signal("window_texture_updated", ws->id, ws->texture, ws->width, ws->height);
+}
+
+void SurfaceCommitTracker::on_destroy(wl_listener *listener, void *data) {
+    SurfaceCommitTracker *tracker = wl_container_of(listener, tracker, destroy);
+    WindowState *ws = tracker->ws;
+    auto *surface = static_cast<wlr_surface *>(data);
+
+    // Retirer les listeners AVANT de supprimer le tracker : la surface est
+    // en cours de destruction et wlroots va la libérer juste après (sinon
+    // la liste de signaux garderait un pointeur vers de la mémoire libre).
+    wl_list_remove(&tracker->commit.link);
+    wl_list_remove(&tracker->destroy.link);
+
+    auto it = ws->sub_surface_trackers.find(surface);
+    if (it != ws->sub_surface_trackers.end()) {
+        ws->sub_surface_trackers.erase(it);
+    }
+}
+
+void WindowState::clear_sub_surface_trackers() {
+    for (auto &[surface, tracker] : sub_surface_trackers) {
+        wl_list_remove(&tracker.commit.link);
+        wl_list_remove(&tracker.destroy.link);
+    }
+    sub_surface_trackers.clear();
+}
+
+void WlrCompositor::sync_window_subsurfaces(WindowState &ws) {
+    if (!ws.toplevel || !ws.toplevel->base || !ws.toplevel->base->surface) return;
+    wlr_surface *root = ws.toplevel->base->surface;
+
+    wlr_surface_for_each_surface(root,
+        +[](wlr_surface *surface, int, int, void *data) {
+            auto *window = static_cast<WindowState *>(data);
+            // La racine est déjà écoutée par WindowState::commit_listener.
+            if (surface == window->toplevel->base->surface) return;
+            auto [it, inserted] = window->sub_surface_trackers.try_emplace(surface);
+            if (!inserted) return;
+            SurfaceCommitTracker &tracker = it->second;
+            tracker.surface = surface;
+            tracker.ws = window;
+            tracker.commit.notify = SurfaceCommitTracker::on_commit;
+            tracker.destroy.notify = SurfaceCommitTracker::on_destroy;
+            wl_signal_add(&surface->events.commit, &tracker.commit);
+            wl_signal_add(&surface->events.destroy, &tracker.destroy);
+        }, &ws);
 }
 
 // --- XDG toplevel requests ------------------------------------------------
 // Le protocole xdg-shell exige que le compositeur réponde à chaque
 // demande (fullscreen, maximize, etc.) par un configure, même s'il
 // ignore la demande. Ne pas le faire est une violation de protocole.
-
 void WlrCompositor::on_request_fullscreen(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, request_fullscreen_listener);
     wlr_xdg_toplevel *toplevel = ws->toplevel;
@@ -3011,23 +3085,32 @@ void WlrCompositor::_process(double delta) {
         }
     }
 
-    // Recapture TOUTES les fenêtres mappées à chaque frame. Dans un
-    // compositeur 3D toutes les fenêtres sont visibles simultanément —
-    // seules recapturer l'active laisserait les autres figées sur leur
-    // dernier commit. Le commit_listener ne suffit pas : certains clients
-    // (Firefox) throttilent leur rendu sans focus clavier, et le contenu
-    // réel vit dans des sous-surfaces qui commitent indépendamment.
+    // Recapture des fenêtres : uniquement celles dont le contenu a changé.
+    // Un commit (racine via on_surface_commit, ou n'importe quelle
+    // sous-surface via les SurfaceCommitTracker) pose ws.dirty. Dans un
+    // compositeur 3D toutes les fenêtres sont visibles simultanément, mais
+    // une fenêtre statique ne doit PAS être re-rendue à chaque frame : le
+    // render pass GL + la synchronisation DMA-BUF bloquante + l'import
+    // Vulkan coûtent chacun plusieurs ms, et le total grossissait
+    // linéairement avec le nombre de fenêtres ouvertes. Le filet de
+    // sécurité périodique (WINDOW_SAFETY_RECAPTURE_INTERVAL) rattrape les
+    // sous-surfaces apparues entre deux sync.
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
         if (ws.toplevel && ws.toplevel->base && ws.toplevel->base->surface) {
-            if (capture_surface(ws.toplevel->base->surface,
-                    ws.texture, ws.width, ws.height, ws.capture_cache)) {
-                emit_signal("window_texture_updated", ws.id, ws.texture,
-                    ws.width, ws.height);
+            sync_window_subsurfaces(ws);
+            if (ws.dirty || (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0) {
+                if (capture_surface(ws.toplevel->base->surface,
+                        ws.texture, ws.width, ws.height, ws.capture_cache)) {
+                    ws.dirty = false;
+                    emit_signal("window_texture_updated", ws.id, ws.texture,
+                        ws.width, ws.height);
+                }
             }
         }
-        // Capture fenêtre OBS : copier l'offscreen fraîchement rendu vers le
-        // buffer exact-size de la source (s'il y a une session active).
+        // Capture fenêtre OBS : copier l'offscreen (toujours valide, même
+        // sans recapture à cette frame) vers le buffer exact-size de la
+        // source (s'il y a une session active).
         if (ws.image_source) {
             WlrCompositorToplevelSource *src = ws.image_source;
             if (src->num_started > 0 || src->needs_frame) {
@@ -4015,6 +4098,16 @@ static struct wlr_buffer *present_shm_buffer_create(int width, int height, uint3
     buffer->stride = stride;
     buffer->data = data;
     return &buffer->base;
+}
+
+bool WlrCompositor::has_active_capture() const {
+    // attach_render_locks > 0 ⟺ au moins un consommateur capture l'output :
+    // la session ext_image_copy_capture (portal-wlr) pose le verrou via
+    // wlr_output_lock_attach_render pour toute sa durée, et screencopy /
+    // export_dmabuf tant qu'une frame est en vol. Contrairement à
+    // needs_frame, ce signal ne dépend pas d'un damage déjà présent, donc
+    // pas de dépendance circulaire avec notre propre présent.
+    return headless_output && headless_output->attach_render_locks > 0;
 }
 
 void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int width, int height) {
