@@ -268,7 +268,7 @@ func _process(delta: float) -> void:
 	fx.process(delta)
 
 	# La présentation du viewport vers l'output headless (capture OBS) et la
-	# synchro du curseur sont gérées par PresentManager (PROCESS_MODE_ALWAYS) :
+	# synchro du curseur sont gérées par PresentManager :
 	# elles doivent continuer de tourner pendant que le menu pause gèle
 	# l'arbre, sinon la capture se figerait sur la dernière frame.
 

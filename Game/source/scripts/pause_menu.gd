@@ -59,13 +59,12 @@ var _quit_btn: Button = null
 var _play_time := 0.0
 
 func _process(delta: float) -> void:
-	if not get_tree().paused:
+	if _play_time < QUIT_GAMEPLAY_DELAY:
 		_play_time += delta
 	if _quit_btn:
 		_quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
 
 func _ready() -> void:
-	process_mode = PROCESS_MODE_ALWAYS
 	visible = false
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
 	container = VBoxContainer.new()
@@ -187,19 +186,16 @@ func show_menu() -> void:
 	visible = true
 	_show_main()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	get_tree().paused = true
 
 func hide_menu() -> void:
 	_waiting_action = ""
 	visible = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	get_tree().paused = false
 
 func _quit_game() -> void:
 	# Le compositeur (wayland_room._on_quit_requested) ferme d'abord toutes
 	# les apps lancées dans le jeu, puis quitte Godot (le destructeur de
 	# WlrCompositor termine xwayland-satellite et le bus D-Bus privé).
-	get_tree().paused = false
 	quit_requested.emit()
 
 # ── Pages ────────────────────────────────────────────────────────────
