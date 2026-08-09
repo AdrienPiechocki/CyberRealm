@@ -118,6 +118,10 @@ func forward_keyboard_event(event: InputEvent) -> bool:
 	if not (event is InputEventKey):
 		return false
 	var key_event := event as InputEventKey
+	# Échos de répétition Godot : les consommer sans les forwarder, sinon
+	# xkbcommon reçoit des DOWN non appariés → modificateur "coincé".
+	if key_event.echo:
+		return true
 	var code = key_event.physical_keycode
 	if code == 0:
 		code = key_event.keycode
