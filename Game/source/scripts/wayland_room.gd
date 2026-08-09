@@ -394,6 +394,11 @@ func _input(event: InputEvent) -> void:
 
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
+		# Ignorer les échos de répétition clavier Godot : chaque DOWN/UP doit
+		# arriver apparié à xkbcommon, sinon un modificateur peut rester
+		# "coincé" (état xkb désynchronisé tant qu'on ne recharge pas le keymap).
+		if key_event.echo:
+			return
 		var code = key_event.physical_keycode
 		if code == 0:
 			code = key_event.keycode
@@ -557,8 +562,12 @@ func _notification(what: int) -> void:
 
 func _on_pause_menu_visibility_changed() -> void:
 	if pause_menu.visible:
+		# Toujours libérer les touches enfoncées à l'ouverture du menu : le
+		# relâchement réel serait ignoré par _input (retour tôt) et laisserait
+		# une touche coincée côté xkbcommon. Inconditionnel : des touches
+		# peuvent être enfoncées en mode focus ou via une layer surface aussi.
+		compositor.release_all_keys()
 		if interact_mode_active:
-			compositor.release_all_keys()
 			interact_mode_active = false
 			player.interact_mode_active = false
 		if focus.is_active():

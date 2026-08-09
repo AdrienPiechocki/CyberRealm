@@ -10,6 +10,7 @@
 
 #include <unordered_map>
 
+#include <set>
 #include <string>
 
 #include "vulkan_dmauf.h"
@@ -382,6 +383,13 @@ class WlrCompositor : public Node {
     void destroy_toplevel_image_source(WlrCompositorToplevelSource *source);
 
     wlr_keyboard virtual_keyboard{};
+
+    // Codes evdev des touches dont on a forwardé l'appui vers wlr_keyboard
+    // (uniquement via forward_keyboard_key). Garantit que chaque DOWN est
+    // apparié à un UP pour l'état xkbcommon : les échos clavier et les
+    // relâchements non appariés sont ignorés, sinon un modificateur peut
+    // rester "coincé" tant qu'on ne recharge pas le keymap.
+    std::set<uint32_t> pressed_keys;
 
     wl_listener new_toplevel_listener{};
     wl_listener new_toplevel_decoration_listener{};

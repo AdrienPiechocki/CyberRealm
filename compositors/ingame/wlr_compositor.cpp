@@ -3507,6 +3507,20 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
         evdev_code = it->second;
     }
 
+    // Garde-fou : ne forwarder que des DOWN/UP appariés. wlroots keycodes est
+    // un ensemble (déjà protégé des doublons), mais xkb_state_update_key, lui,
+    // compte chaque DOWN/UP : un DOWN répété (écho) sans UP ou un UP orphelin
+    // désynchronise l'état xkb (modificateur "coincé" jusqu'au reload keymap).
+    if (pressed) {
+        if (!pressed_keys.insert(evdev_code).second) {
+            return;
+        }
+    } else {
+        if (pressed_keys.erase(evdev_code) == 0) {
+            return;
+        }
+    }
+
     wlr_keyboard_key_event event = {};
     event.time_msec = get_time_msec();
     event.keycode = evdev_code;
@@ -3533,6 +3547,10 @@ void WlrCompositor::release_all_keys() {
         ev.state = WL_KEYBOARD_KEY_STATE_RELEASED;
         wlr_keyboard_notify_key(&virtual_keyboard, &ev);
     }
+    // Ces touches ne sont plus considérées comme enfoncées : un éventuel
+    // relâchement forwardé plus tard (touche libérée pendant que le menu
+    // pause était ouvert, par ex.) sera ignoré au lieu de casser l'état xkb.
+    pressed_keys.clear();
 }
 
 void WlrCompositor::reload_keymap() {

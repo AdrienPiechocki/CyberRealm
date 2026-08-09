@@ -347,6 +347,10 @@ func handle_input_event(event: InputEvent) -> bool:
 		return false
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
+		# Échos de répétition Godot : les consommer sans les forwarder, sinon
+		# xkbcommon reçoit des DOWN non appariés → modificateur "coincé".
+		if key_event.echo:
+			return true
 		# Raccourcis clavier gérés par le jeu lui-même (SUPER+F = sortir du
 		# focus, la touche de fermeture de la fenêtre) : les consommer SANS
 		# les forwarder au client. Sinon la touche est tapée dans la fenêtre
