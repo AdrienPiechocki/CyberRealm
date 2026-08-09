@@ -8,3 +8,6 @@ Game/build/*.so
 *.o
 # Sorties du build portal-wlr (clone dans portal-src, install dans portal)
 build/
+# Niveaux/assets personnalisés par utilisateur (importés via l'éditeur Godot)
+Game/source/user/*
+!Game/source/user/README.md

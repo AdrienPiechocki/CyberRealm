@@ -11,11 +11,11 @@ extends Node3D
 ##   Effects        -> X-RAY + flash d'ouverture
 
 @onready var compositor: WlrCompositor = $WlrCompositor
-@onready var player = $Player
-@onready var ui: CanvasLayer = $Player/UI
-@onready var window_menu = $Player/WindowMenuLayer/WindowMenu
-@onready var capture_selector = $Player/CaptureSelectorLayer/CaptureSelector
-@onready var pause_menu = $Player/PauseMenuLayer/PauseMenu
+@onready var player = $Level/Player
+@onready var ui: CanvasLayer = $Level/Player/UI
+@onready var window_menu = $Level/Player/WindowMenuLayer/WindowMenu
+@onready var capture_selector = $Level/Player/CaptureSelectorLayer/CaptureSelector
+@onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
 
 var win3d: Node3D
 var focus: Node3D
@@ -35,6 +35,11 @@ var interact_mode_active := false
 var _host_session_bus := ""
 var _host_agent_stopped := false
 
+# Niveaux : on charge d'abord le level custom de l'utilisateur s'il existe
+# (res://user/level.tscn), sinon on retombe sur le level par défaut.
+const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
+const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
+
 const POLKIT_AGENT_CANDIDATES := [
 	"/usr/lib/polkit-kde-authentication-agent-1",
 	"/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1",
@@ -44,6 +49,21 @@ const POLKIT_AGENT_CANDIDATES := [
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
 
+func _load_level() -> void:
+	# Chargement du niveau custom (res://user/level.tscn) si présent, sinon le
+	# niveau par défaut. Les assets du niveau custom doivent avoir été importés
+	# par l'éditeur Godot (dossier res://user/) pour être chargés au runtime.
+	var level_path := DEFAULT_LEVEL_PATH
+	if ResourceLoader.exists(CUSTOM_LEVEL_PATH):
+		level_path = CUSTOM_LEVEL_PATH
+	var scene: PackedScene = load(level_path)
+	if scene == null:
+		push_error("Impossible de charger le niveau '%s'" % level_path)
+		return
+	var level := scene.instantiate()
+	level.name = "Level"
+	add_child(level)
+
 func _add_manager(script: Script, node_name: String) -> Node3D:
 	var node := Node3D.new()
 	node.name = node_name
@@ -51,10 +71,16 @@ func _add_manager(script: Script, node_name: String) -> Node3D:
 	add_child(node)
 	return node
 
+func _init() -> void:
+	# Le niveau (level custom de l'utilisateur, sinon level par défaut) est
+	# instancié en premier, avant les sous-systèmes.
+	_load_level()
+
 func _ready() -> void:
 	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
 	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
 	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
+
 	# Sous-systèmes, créés avant toute connexion de signal.
 	win3d = _add_manager(preload("res://scripts/windows_3d.gd"), "Windows3D")
 	focus = _add_manager(preload("res://scripts/focus_mode.gd"), "FocusMode")
