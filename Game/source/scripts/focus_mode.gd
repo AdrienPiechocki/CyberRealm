@@ -42,6 +42,8 @@ var focus_mouse_captured := false
 var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
 var focus_popup_rects: Dictionary = {} # popup_id (int) -> TextureRect overlay en mode focus
 
+var original_size: Vector2 = Vector2.ONE
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -74,7 +76,8 @@ func enter_focus(id: int) -> void:
 	windows.focused_window_id = id
 	focus_mouse_captured = false
 	focus_mouse_uv = Vector2(0.5, 0.5)
-
+	original_size = windows.get_quad_info(focus_window_id)["surface_size"]
+	
 	# Passer la fenêtre en plein écran pendant le mode focus
 	compositor.set_window_fullscreen(id, true)
 
@@ -113,6 +116,7 @@ func exit_focus() -> void:
 	# Sortir la fenêtre du plein écran
 	if focus_window_id != -1:
 		compositor.set_window_fullscreen(focus_window_id, false)
+		compositor.set_window_size(focus_window_id, int(original_size.x), int(original_size.y))
 
 	# Réafficher le quad 3D
 	windows.set_quad_visible(focus_window_id, true)
