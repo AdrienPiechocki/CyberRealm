@@ -3,7 +3,7 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://betq2rbp4ppq5"
-path.s3tc="res://.godot/imported/xo3d_equirectangular.png-a96bafddc0878c1dcc504243b863b0a6.s3tc.ctex"
+path.s3tc="res://.godot/imported/sky.png-5f245714f6a8ddd8d2d452ade02334b8.s3tc.ctex"
 metadata={
 "imported_formats": ["s3tc_bptc"],
 "vram_texture": true
@@ -11,8 +11,8 @@ metadata={
 
 [deps]
 
-source_file="res://assets/xo3d_equirectangular.png"
-dest_files=["res://.godot/imported/xo3d_equirectangular.png-a96bafddc0878c1dcc504243b863b0a6.s3tc.ctex"]
+source_file="res://assets/sky.png"
+dest_files=["res://.godot/imported/sky.png-5f245714f6a8ddd8d2d452ade02334b8.s3tc.ctex"]
 
 [params]
 

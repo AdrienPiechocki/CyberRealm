@@ -3,13 +3,13 @@
 importer="scene"
 importer_version=1
 type="PackedScene"
-uid="uid://ddsk412by1352"
-path="res://.godot/imported/computer.fbx-40952390d97a77126f520e82f9e32742.scn"
+uid="uid://brdv1bfld6o2"
+path="res://.godot/imported/computer-wide.fbx-3b1749d69e148f4b1fa295464f6b60e8.scn"
 
 [deps]
 
-source_file="res://assets/Space Station/computer.fbx"
-dest_files=["res://.godot/imported/computer.fbx-40952390d97a77126f520e82f9e32742.scn"]
+source_file="res://assets/Space Station/computer-wide.fbx"
+dest_files=["res://.godot/imported/computer-wide.fbx-3b1749d69e148f4b1fa295464f6b60e8.scn"]
 
 [params]
 
@@ -41,7 +41,7 @@ materials/extract_format=0
 materials/extract_path=""
 _subresources={
 "nodes": {
-"PATH:computer": {
+"PATH:computer-wide": {
 "generate/physics": true
 }
 }
