@@ -43,11 +43,6 @@ transform = Transform3D(-0.35836795, 0, -0.93358046, 0, 1, 0, 0.93358046, 0, -0.
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=286179122]
 environment = SubResource("Environment_h6wmr")
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=539029683]
-transform = Transform3D(0.49999997, -0.43301272, -0.75000006, -1.2904785e-08, 0.8660254, -0.50000006, 0.86602545, 0.24999999, 0.43301263, 0, 10, 0)
-shadow_enabled = true
-shadow_bias = 0.0
-
 [node name="ROOM" type="Node3D" parent="." unique_id=974722084]
 
 [node name="wall" parent="ROOM" unique_id=732682125 instance=ExtResource("1_ax7ne")]
