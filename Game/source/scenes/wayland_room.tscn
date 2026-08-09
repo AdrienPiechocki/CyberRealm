@@ -28,8 +28,6 @@ background_mode = 2
 sky = SubResource("Sky_0eyvr")
 ssr_enabled = true
 ssao_enabled = true
-sdfgi_enabled = false
-sdfgi_use_occlusion = false
 adjustment_enabled = true
 
 [sub_resource type="StandardMaterial3D" id="StandardMaterial3D_jm82k"]
