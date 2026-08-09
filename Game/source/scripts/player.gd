@@ -1,5 +1,7 @@
 extends CharacterBody3D
 
+@export var MaxDepth := 50
+
 var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 var speed = 5
 var jump_speed = 3
@@ -33,7 +35,7 @@ func _keyboard_busy() -> bool:
 	return comp != null and comp.get_keyboard_focus_layer_id() >= 0
 
 func _physics_process(delta):
-	if position.y <= -50:
+	if position.y <= -MaxDepth:
 		position = spawn_pos
 	velocity.y += -gravity * delta
 	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy():
