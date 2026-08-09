@@ -43,12 +43,6 @@ _subresources={
 "nodes": {
 "PATH:table-display-planet": {
 "generate/physics": true
-},
-"PATH:table-display-planet/planet": {
-"generate/physics": true
-},
-"PATH:table-display-planet/planet-ring": {
-"generate/physics": true
 }
 }
 }
