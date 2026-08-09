@@ -818,7 +818,6 @@ func _handle_titlebar_button(body: StaticBody3D) -> void:
 			toggle_hide(wid)
 		"maximize":
 			var is_fs: bool = fullscreen_windows.get(wid, false)
-			print(is_fs)
 			toggle_window_fullscreen(wid, not is_fs)
 		"close":
 			compositor.close_window(wid)
