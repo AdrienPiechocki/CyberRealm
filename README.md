@@ -23,7 +23,7 @@ Vulkan DMA-BUF import**.
 - **3D windows** — each mapped window becomes a raycastable quad in the scene.
   Grab (`G`), move, resize from any edge, or point and click into it.
 - **Focus mode** (`F`) — pull any window to the front as a fullscreen 2D overlay
-  for real work; release it back into the 3D world.
+  for real work; press the same key again to release it back into the 3D world.
 - **Picture-in-picture** (`P`) — pin windows as small overlays that stay on top
   while you keep interacting with the world.
 - **Layer surfaces** — waybar, rofi and friends are rendered as screen-anchored

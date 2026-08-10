@@ -330,10 +330,12 @@ func _process(delta: float) -> void:
 	if window_menu.visible or capture_selector.visible:
 		return
 
-	# Mode focus: F pour sortir, K pour fermer la fenêtre, sinon router les
-	# inputs souris/clavier
+	# Mode focus: le raccourci focus (ex. Super+F) pour sortir, kill_window
+	# pour fermer la fenêtre, sinon router les inputs souris/clavier.
+	# is_action_just_pressed(exact=true) : seul le bind exact (modifieurs
+	# compris) déclenche la sortie — F seul, Ctrl+F... vont à la fenêtre.
 	if focus.is_active():
-		if Input.is_action_just_pressed("focus_window"):
+		if Input.is_action_just_pressed("focus_window", true):
 			focus.exit_focus()
 			return
 		if Input.is_action_just_pressed("kill_window", true):

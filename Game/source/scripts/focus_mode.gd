@@ -1,6 +1,7 @@
 extends Node3D
 ## Mode focus : affiche une fenêtre en 2D plein écran (TextureRect) et route
-## tout l'input clavier + souris vers elle, jusqu'à la sortie avec F.
+## tout l'input clavier + souris vers elle, jusqu'à la sortie (même raccourci
+## que l'entrée, ex. Super+F).
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
@@ -351,12 +352,14 @@ func handle_input_event(event: InputEvent) -> bool:
 		# xkbcommon reçoit des DOWN non appariés → modificateur "coincé".
 		if key_event.echo:
 			return true
-		# Raccourcis clavier gérés par le jeu lui-même (SUPER+F = sortir du
-		# focus, la touche de fermeture de la fenêtre) : les consommer SANS
-		# les forwarder au client. Sinon la touche est tapée dans la fenêtre
-		# avant que l'action (exit_focus / close_window) ne s'exécute dans
-		# _process. event_is_action couvre l'appui ET le relâchement (et les
-		# echoes) avec les modifieurs exacts du raccourci.
+		# Raccourcis clavier gérés par le jeu lui-même (le raccourci focus
+		# pour sortir, la touche de fermeture de la fenêtre) : les consommer
+		# SANS les forwarder au client. Sinon la touche est tapée dans la
+		# fenêtre avant que l'action (exit_focus / close_window) ne s'exécute
+		# dans _process. _is_compositor_shortcut ne matche que le bind exact
+		# (modifieurs compris) ET uniquement l'appui : le relâchement est
+		# forwardé (dropé comme orphelin par le garde-fou du compositeur si
+		# nécessaire), pour ne jamais laisser une touche enfoncée côté client.
 		if _is_compositor_shortcut(key_event):
 			return true
 		var code = key_event.physical_keycode
@@ -389,8 +392,18 @@ func handle_input_event(event: InputEvent) -> bool:
 # (et non par le client) pendant le mode focus : la touche ne doit pas
 # être forwardée. Les actions sont celles vérifiées dans _process de
 # wayland_room.gd (sortie de focus, fermeture de la fenêtre).
+# On utilise exact_match=true : seules les touches correspondant au bind
+# exact (modifieurs compris, ex. Super+F) sont consommées. F seul — et
+# ses combinaisons Ctrl/Shift/Alt+F — partent donc normalement vers le
+# client, même si le raccourci focus utilise le modifieur Super.
+# Seul l'APPUI est consommé : le relâchement est toujours forwardé. Si on
+# avalait aussi le keyup, un F dont l'appui a déjà été forwardé (tapé dans
+# la fenêtre) et qui est relâché pendant que Super est encore enfoncé serait
+# perdu → la touche resterait enfoncée côté client (auto-repeat en boucle).
 func _is_compositor_shortcut(event: InputEventKey) -> bool:
+	if not event.pressed:
+		return false
 	for action in ["focus_window", "kill_window"]:
-		if InputMap.event_is_action(event, action, false):
+		if InputMap.event_is_action(event, action, true):
 			return true
 	return false
