@@ -391,6 +391,17 @@ func _process(delta: float) -> void:
 	win3d.process_raycast(ray_origin, ray_dir, delta, interact_mode_active)
 
 func _input(event: InputEvent) -> void:
+	# Tout input (même celui du joueur qui ne vise aucune surface : WASD,
+	# caméra) réarme le timer d'inactivité du compositeur — sans ça, les
+	# clients abonnés à ext-idle-notify-v1 verraient la session passer idle
+	# pendant que le joueur se balade dans la pièce.
+	# Les events de souris "warped" (Input.warp_mouse / changement de mode de
+	# capture) sont synthétiques : générés par notre propre gestion de souris
+	# (ex. l'overlay fade-to-lock). Ils ne représentent pas une activité
+	# utilisateur réelle et annuleraient le lock d'inactivité.
+	if not (event is InputEventMouseMotion and event.warped):
+		compositor.notify_activity()
+
 	if pause_menu.visible:
 		return
 

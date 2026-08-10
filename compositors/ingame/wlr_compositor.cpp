@@ -213,6 +213,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("forward_pointer_leave"), &WlrCompositor::forward_pointer_leave);
     ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "key_location", "pressed"),
         &WlrCompositor::forward_keyboard_key);
+    ClassDB::bind_method(D_METHOD("notify_activity"), &WlrCompositor::notify_activity);
     ClassDB::bind_method(D_METHOD("set_keyboard_layout", "layout", "variant"),
         &WlrCompositor::set_keyboard_layout);
     ClassDB::bind_method(D_METHOD("get_keyboard_layout"), &WlrCompositor::get_keyboard_layout);
@@ -404,6 +405,8 @@ WlrCompositor::~WlrCompositor() {
             wl_list_remove(&new_layer_surface_listener.link);
         if (!wl_list_empty(&new_session_lock_listener.link))
             wl_list_remove(&new_session_lock_listener.link);
+        if (!wl_list_empty(&new_idle_inhibitor_listener.link))
+            wl_list_remove(&new_idle_inhibitor_listener.link);
         if (!wl_list_empty(&request_start_drag_listener.link))
             wl_list_remove(&request_start_drag_listener.link);
         if (!wl_list_empty(&start_drag_listener.link))
@@ -2874,6 +2877,24 @@ void WlrCompositor::start_headless() {
         wl_signal_add(&session_lock_manager->events.new_lock, &new_session_lock_listener);
     }
 
+    // Session idle : ext_idle_notifier_v1 (les clients s'abonnent pour être
+    // notifiés quand la session devient idle) + zwp_idle_inhibit_v1 (les
+    // clients comme les lecteurs vidéo inhibent l'idle). wlroots gère le
+    // comptage des timeouts ; le compositeur notifie chaque activité via
+    // notify_activity() (voir les forward d'input) et bascule l'inhibition
+    // via update_idle_inhibited().
+    idle_notifier = wlr_idle_notifier_v1_create(display);
+    if (!idle_notifier) {
+        UtilityFunctions::printerr("waylandgodot: échec création global ext_idle_notifier_v1");
+    }
+    idle_inhibit_manager = wlr_idle_inhibit_v1_create(display);
+    if (!idle_inhibit_manager) {
+        UtilityFunctions::printerr("waylandgodot: échec création global zwp_idle_inhibit_manager_v1");
+    } else {
+        new_idle_inhibitor_listener.notify = WlrCompositor::on_new_idle_inhibitor;
+        wl_signal_add(&idle_inhibit_manager->events.new_inhibitor, &new_idle_inhibitor_listener);
+    }
+
     // Capture pour xdg-desktop-portal-wlr (OBS). wlroots fournit le manager
     // ext_image_copy_capture_v1 (sessions/frames), les sources "output"
     // (capture écran, alimentées par les commits de headless_output — voir
@@ -3255,6 +3276,85 @@ void WlrCompositor::_process(double delta) {
 
 // --- Input ---------------------------------------------------------------
 
+// =====================================================================
+// Session idle (ext-idle-notify-v1 + zwp_idle_inhibit-v1)
+// =====================================================================
+
+// Signale une activité utilisateur (input) au notifier idle : wlroots
+// réarme ses timers et reporte les notifications idle aux clients abonnés.
+// Appelé par toutes les fonctions de forward d'input ci-dessous, et exposé
+// à Godot pour couvrir l'input du joueur qui ne vise aucune surface.
+void WlrCompositor::notify_activity() {
+    UtilityFunctions::print("[idle] notify_activity called");
+    if (idle_notifier && seat) {
+        wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
+    }
+}
+
+// Recalcule l'état inhibé : vrai si au moins un inhibiteur zwp_idle_inhibit_v1
+// a sa surface visible (mapped). Un inhibiteur posé sur une fenêtre masquée
+// ou un popup fermé ne doit pas bloquer l'idle.
+void WlrCompositor::update_idle_inhibited() {
+    bool inhibited = false;
+    for (auto &pair : idle_inhibitors) {
+        IdleInhibitorState &state = pair.second;
+        if (state.inhibitor && state.inhibitor->surface &&
+            state.inhibitor->surface->mapped) {
+            inhibited = true;
+            break;
+        }
+    }
+    if (idle_notifier) {
+        wlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
+    }
+}
+
+void WlrCompositor::on_new_idle_inhibitor(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, new_idle_inhibitor_listener);
+    auto *inhibitor = static_cast<wlr_idle_inhibitor_v1 *>(data);
+    UtilityFunctions::print("[idle] NEW inhibitor, surface mapped=", inhibitor->surface->mapped);
+
+    IdleInhibitorState &state = self->idle_inhibitors[inhibitor];
+    state.inhibitor = inhibitor;
+    state.owner = self;
+
+    state.destroy_listener.notify = WlrCompositor::on_idle_inhibitor_destroy;
+    wl_signal_add(&inhibitor->events.destroy, &state.destroy_listener);
+
+    state.surface_map_listener.notify = WlrCompositor::on_idle_inhibitor_surface_map;
+    wl_signal_add(&inhibitor->surface->events.map, &state.surface_map_listener);
+
+    state.surface_unmap_listener.notify = WlrCompositor::on_idle_inhibitor_surface_unmap;
+    wl_signal_add(&inhibitor->surface->events.unmap, &state.surface_unmap_listener);
+
+    self->update_idle_inhibited();
+}
+
+void WlrCompositor::on_idle_inhibitor_destroy(wl_listener *listener, void *data) {
+    IdleInhibitorState *state = wl_container_of(listener, state, destroy_listener);
+    WlrCompositor *self = state->owner;
+    UtilityFunctions::print("[idle] inhibitor DESTROYED, remaining=", self->idle_inhibitors.size() - 1);
+
+    wl_list_remove(&state->destroy_listener.link);
+    wl_list_remove(&state->surface_map_listener.link);
+    wl_list_remove(&state->surface_unmap_listener.link);
+
+    self->idle_inhibitors.erase(state->inhibitor);
+    self->update_idle_inhibited();
+}
+
+void WlrCompositor::on_idle_inhibitor_surface_map(wl_listener *listener, void *data) {
+    IdleInhibitorState *state = wl_container_of(listener, state, surface_map_listener);
+    (void)data;
+    state->owner->update_idle_inhibited();
+}
+
+void WlrCompositor::on_idle_inhibitor_surface_unmap(wl_listener *listener, void *data) {
+    IdleInhibitorState *state = wl_container_of(listener, state, surface_unmap_listener);
+    (void)data;
+    state->owner->update_idle_inhibited();
+}
+
 void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, double surface_x, double surface_y) {
     if (!surface || !seat) return;
     uint32_t time = get_time_msec();
@@ -3281,12 +3381,14 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
 }
 
 void WlrCompositor::forward_pointer_motion(int window_id, double surface_x, double surface_y) {
+    notify_activity();
     WindowState *ws = find_window(window_id);
     if (!ws) return;
     notify_pointer_motion_on_surface(ws->toplevel->base->surface, surface_x, surface_y);
 }
 
 void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y) {
+    notify_activity();
     PopupState *ps = find_popup(popup_id);
     if (!ps) return;
     notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x, surface_y);
@@ -3314,6 +3416,7 @@ void WlrCompositor::release_stale_button(uint32_t button) {
 }
 
 void WlrCompositor::forward_pointer_button(int window_id, int button, bool pressed) {
+    notify_activity();
     if (!seat) return;
     // ws peut être nullptr : relâchement du clic en dehors de toute fenêtre
     // (ex: drop d'un drag-and-drop dans le vide de la scène 3D). Dans ce cas
@@ -3379,6 +3482,7 @@ void WlrCompositor::on_pointer_grab_end(wl_listener *listener, void *data) {
 }
 
 void WlrCompositor::forward_pointer_button_popup(int popup_id, int button, bool pressed) {
+    notify_activity();
     PopupState *ps = find_popup(popup_id);
     if (!ps || !seat) return;
 
@@ -3392,6 +3496,7 @@ void WlrCompositor::forward_pointer_button_popup(int popup_id, int button, bool 
 }
 
 void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double delta_y) {
+    notify_activity();
     WindowState *ws = find_window(window_id);
     if (!ws || !seat) return;
     uint32_t time = get_time_msec();
@@ -3412,12 +3517,14 @@ void WlrCompositor::forward_pointer_leave() {
 }
 
 void WlrCompositor::forward_pointer_motion_layer(int layer_id, double surface_x, double surface_y) {
+    notify_activity();
     LayerSurfaceState *ls = find_layer_surface(layer_id);
     if (!ls || !ls->layer_surface) return;
     notify_pointer_motion_on_surface(ls->layer_surface->surface, surface_x, surface_y);
 }
 
 void WlrCompositor::forward_pointer_button_layer(int layer_id, int button, bool pressed) {
+    notify_activity();
     LayerSurfaceState *ls = find_layer_surface(layer_id);
     if (!ls || !ls->layer_surface || !seat) return;
 
@@ -3437,6 +3544,7 @@ void WlrCompositor::forward_pointer_button_layer(int layer_id, int button, bool 
 }
 
 void WlrCompositor::forward_pointer_axis_layer(int layer_id, double delta_x, double delta_y) {
+    notify_activity();
     LayerSurfaceState *ls = find_layer_surface(layer_id);
     if (!ls || !ls->layer_surface || !seat) return;
     uint32_t time = get_time_msec();
@@ -3452,12 +3560,14 @@ void WlrCompositor::forward_pointer_axis_layer(int layer_id, double delta_x, dou
 }
 
 void WlrCompositor::forward_pointer_motion_lock(double surface_x, double surface_y) {
+    notify_activity();
     SessionLockSurfaceState *ss = get_active_lock_surface();
     if (!ss || !ss->lock_surface || !ss->lock_surface->surface) return;
     notify_pointer_motion_on_surface(ss->lock_surface->surface, surface_x, surface_y);
 }
 
 void WlrCompositor::forward_pointer_button_lock(int button, bool pressed) {
+    notify_activity();
     SessionLockSurfaceState *ss = get_active_lock_surface();
     if (!ss || !ss->lock_surface || !seat) return;
 
@@ -3467,6 +3577,7 @@ void WlrCompositor::forward_pointer_button_lock(int button, bool pressed) {
 }
 
 void WlrCompositor::forward_pointer_axis_lock(double delta_x, double delta_y) {
+    notify_activity();
     SessionLockSurfaceState *ss = get_active_lock_surface();
     if (!ss || !ss->lock_surface || !seat) return;
     uint32_t time = get_time_msec();
@@ -3482,6 +3593,7 @@ void WlrCompositor::forward_pointer_axis_lock(double delta_x, double delta_y) {
 }
 
 void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed) {
+    notify_activity();
     if (!seat) return;
 
     uint32_t evdev_code;
@@ -3725,6 +3837,7 @@ bool WlrCompositor::is_drag_active() const {
 }
 
 void WlrCompositor::forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel) {
+    notify_activity();
     if (!relative_pointer_manager || !seat) return;
     uint64_t time_usec = get_time_msec() * 1000;
     wlr_relative_pointer_manager_v1_send_relative_motion(

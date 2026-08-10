@@ -54,6 +54,8 @@ extern "C" {
 #include <wlr/types/wlr_screencopy_v1.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_idle_notify_v1.h>
+#include <wlr/types/wlr_idle_inhibit_v1.h>
 }
 
 namespace godot {
@@ -321,6 +323,21 @@ struct SessionLockState {
     int next_surface_id = 1;
 };
 
+// Suivi d'un inhibiteur zwp_idle_inhibit_v1. Tant qu'au moins un inhibiteur
+// a sa surface visible (mapped), le compositeur ne doit pas considérer la
+// session comme idle (lecteur vidéo, présentation...). L'état est recalculé
+// au create/destroy de l'inhibiteur ET au map/unmap de sa surface : un
+// inhibiteur posé sur une fenêtre masquée ne doit pas inhiber l'idle.
+struct IdleInhibitorState {
+    wlr_idle_inhibitor_v1 *inhibitor = nullptr;
+
+    wl_listener destroy_listener{};
+    wl_listener surface_map_listener{};
+    wl_listener surface_unmap_listener{};
+
+    class WlrCompositor *owner = nullptr;
+};
+
 class WlrCompositor : public Node {
     GDCLASS(WlrCompositor, Node)
 
@@ -429,6 +446,33 @@ class WlrCompositor : public Node {
 
     bool session_lock_active() const;
     SessionLockSurfaceState *get_active_lock_surface();
+
+    // --- Session idle (ext-idle-notify-v1 + zwp_idle_inhibit-v1) ------
+    // ext_idle_notifier_v1 : les clients s'abonnent et sont notifiés quand la
+    // session devient idle après N ms sans input. Le comptage des timeouts est
+    // géré par wlroots ; le compositeur n'a qu'à notifier chaque activité
+    // (wlr_idle_notifier_v1_notify_activity) et inhiber l'idle quand un
+    // client le demande (zwp_idle_inhibit_v1).
+    wlr_idle_notifier_v1 *idle_notifier = nullptr;
+    wlr_idle_inhibit_manager_v1 *idle_inhibit_manager = nullptr;
+    wl_listener new_idle_inhibitor_listener{};
+    std::unordered_map<wlr_idle_inhibitor_v1 *, IdleInhibitorState> idle_inhibitors;
+
+    static void on_new_idle_inhibitor(wl_listener *listener, void *data);
+    static void on_idle_inhibitor_destroy(wl_listener *listener, void *data);
+    static void on_idle_inhibitor_surface_map(wl_listener *listener, void *data);
+    static void on_idle_inhibitor_surface_unmap(wl_listener *listener, void *data);
+
+    // Signale une activité utilisateur (input) au notifier idle. Appelé par
+    // toutes les fonctions de forward d'input, et exposé à Godot pour que
+    // l'input du joueur qui ne vise aucune surface (WASD, caméra) réarme
+    // aussi l'idle.
+    void notify_activity();
+
+    // Recalcule l'état inhibé : vrai si au moins un inhibiteur a sa surface
+    // visible. Appelé au create/destroy d'un inhibiteur et au map/unmap de
+    // sa surface.
+    void update_idle_inhibited();
 
     // "Output" virtuel utilisé pour le layout des layer surfaces. Par
     // défaut la résolution du fake output headless; le script Godot le
