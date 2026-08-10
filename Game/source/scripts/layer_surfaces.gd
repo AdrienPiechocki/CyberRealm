@@ -225,8 +225,15 @@ func on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: in
 	rect.material = mat
 	rect.set_meta("layer_id", id)
 	layer_overlay.add_child(rect)
-	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb}
-	if kb != 0:
+	# Overlay de fondu vers le verrouillage (dms:fade-to-lock) : écran noir
+	# transitoire déclenché par l'inactivité. Il ne doit NI libérer la souris /
+	# warper le curseur (→ events synthétiques), NI recevoir le pointeur chaque
+	# frame (→ forward_pointer_motion_layer → notify_activity → l'idle est
+	# ré-armé et le fondu annulé en boucle). On le marque no_pointer pour que
+	# _layer_at l'ignore et on saute le bloc interactif ci-dessous.
+	var no_pointer: bool = "fade-to-lock" in ns
+	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb, "no_pointer": no_pointer}
+	if kb != 0 and not no_pointer:
 		# App interactive en overlay (rofi, launcher...): libérer la souris
 		# pour qu'elle soit utilisable sur l'overlay au lieu de tourner la
 		# caméra FPS. La recapture se fait au unmapped (voir plus bas).
@@ -397,6 +404,8 @@ func _layer_at(pos: Vector2) -> Dictionary:
 				best = {"kind": "layer_popup", "id": pid, "rect": entry.rect}
 	for lid in layer_rects:
 		var entry = layer_rects[lid]
+		if entry.get("no_pointer", false):
+			continue
 		if is_instance_valid(entry.rect) and entry.rect.get_global_rect().has_point(pos):
 			var z: int = entry.rect.z_index
 			var interactive: bool = int(entry.get("kb", 0)) != 0
