@@ -3531,7 +3531,16 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
 }
 
 void WlrCompositor::release_all_keys() {
-    if (!seat || virtual_keyboard.num_keycodes == 0) return;
+    if (!seat) return;
+    if (virtual_keyboard.num_keycodes == 0) {
+        // Rien à relâcher, mais il faut quand même vider pressed_keys : sinon
+        // une entrée obsolète (désync avec wlroots keycodes, ex. après un
+        // wlr_seat_keyboard_enter qui resynchronise le client) rendrait le
+        // DOWN suivant "dupliqué" (ignoré) et son UP "orphelin" (ignoré) —
+        // la touche resterait enfoncée côté client (auto-repeat en boucle).
+        pressed_keys.clear();
+        return;
+    }
     uint32_t time = get_time_msec();
     // Copie car wlr_keyboard_notify_key modifie le tableau
     uint32_t saved[WLR_KEYBOARD_KEYS_CAP];
