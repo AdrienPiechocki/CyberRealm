@@ -17,7 +17,7 @@ const FOCUS_MAX_SCREEN_FILL := 0.85
 # Écart (m) entre les fenêtres de la pile à la sortie du mode focus : chacune
 # est posée STACK_Z_OFFSET devant la précédente, vers la caméra.
 const STACK_Z_OFFSET := -0.1
-s
+
 # Recadre la texture de capture sur la zone de contenu réelle. Le buffer
 # d'allocation (VkImage / offscreen) est arrondi au palier supérieur
 # (round_up_capture_size, multiple de 64) alors que le signal ne reporte
