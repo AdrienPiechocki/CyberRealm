@@ -4,6 +4,7 @@ signal app_launch_requested(command: String)
 signal quit_requested
 signal keyboard_layout_changed(layout: String, variant: String)
 signal polkit_agent_changed(path: String)
+signal pins_layer_changed(above: bool)
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -226,6 +227,10 @@ func _show_main() -> void:
 	var polkit_btn := _make_btn("Polkit Agent")
 	polkit_btn.pressed.connect(_show_polkit)
 	container.add_child(polkit_btn)
+
+	var pins_btn := _make_btn("Pinned Windows")
+	pins_btn.pressed.connect(_show_pins)
+	container.add_child(pins_btn)
 	
 	container.add_child(_make_spacer())
 	
@@ -548,6 +553,48 @@ func _apply_polkit_agent(line_edit: LineEdit) -> void:
 	_settings["polkit_agent"] = cmd
 	_save_settings()
 	polkit_agent_changed.emit(cmd)
+	_show_main()
+
+# ── Pinned windows layer ─────────────────────────────────────────────
+
+func get_pins_above_focus() -> bool:
+	return bool(_settings.get("pins_above_focus", false))
+
+func _show_pins() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "pins"
+
+	container.add_child(_make_title("PINNED WINDOWS"))
+
+	var hint := Label.new()
+	hint.text = "Layer on which the pinned (PiP) window is drawn relative to the focus mode overlay."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	var opt := OptionButton.new()
+	opt.custom_minimum_size = Vector2(0, 40)
+	opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	opt.add_theme_font_size_override("font_size", 14)
+	opt.add_item("Below the focus layer")
+	opt.add_item("Above the focus layer")
+	opt.selected = 1 if get_pins_above_focus() else 0
+	container.add_child(opt)
+
+	var apply_btn := _make_btn("Apply")
+	apply_btn.pressed.connect(_apply_pins_layer.bind(opt))
+	container.add_child(apply_btn)
+
+	container.add_child(_make_spacer())
+	container.add_child(_make_back_btn())
+
+func _apply_pins_layer(opt: OptionButton) -> void:
+	var above := opt.selected == 1
+	_settings["pins_above_focus"] = above
+	_save_settings()
+	pins_layer_changed.emit(above)
 	_show_main()
 
 # ── Startup apps ─────────────────────────────────────────────────────
