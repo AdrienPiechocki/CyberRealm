@@ -27,12 +27,13 @@ const TITLEBAR_BUTTON_SIZE_RATIO := 0.55 # taille d'un bouton = 55% de la hauteu
 const TITLEBAR_BUTTON_GAP_RATIO := 0.22 # espace entre boutons = 22% de la hauteur de barre
 const TITLEBAR_BUTTON_MARGIN_RATIO := 0.35 # marge du bord droit de la barre
 
-# Position de spawn des nouvelles fenêtres : on caste un rayon de
-# SPAWN_RAY_DISTANCE m depuis la caméra ; s'il touche une fenêtre, la
-# nouvelle fenêtre apparaît juste devant celle-ci (sur l'axe caméra ->
-# fenêtre) au lieu de 1 m devant la caméra.
-const SPAWN_RAY_DISTANCE := 1.0 # m, longueur du raycast de spawn
-const SPAWN_IN_FRONT_DISTANCE := 0.1 # m devant la fenêtre touchée
+# Position de spawn des nouvelles fenêtres : toujours 1 m devant la caméra,
+# mais décalée de STACK_Z_OFFSET derrière la précédente pour chaque fenêtre
+# déjà présente à cet endroit, pour que deux fenêtres ouvertes coup sur coup
+# ne s'empilent pas au même endroit. Même empilement qu'à la sortie du mode
+# focus (voir focus_mode.gd).
+const STACK_Z_OFFSET := 0.1 # m entre deux fenêtres empilées
+const SPAWN_STACK_RADIUS := 0.5 # m, portée de détection des fenêtres déjà empilées au point de spawn
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
@@ -113,16 +114,19 @@ func next_spawn_pos() -> Vector3:
 	var camera: Camera3D = _camera()
 	var cam_pos: Vector3 = camera.global_position
 	var cam_forward: Vector3 = -camera.global_basis.z
-	var space := get_world_3d().direct_space_state
-	var params := PhysicsRayQueryParameters3D.create(
-		cam_pos, cam_pos + cam_forward * SPAWN_RAY_DISTANCE)
-	var hit := space.intersect_ray(params)
-	if not hit.is_empty():
-		var body: Node3D = hit.collider
-		if body.has_meta("window_id"):
-			var hit_dist: float = cam_pos.distance_to(hit.position)
-			return cam_pos + cam_forward * (hit_dist - SPAWN_IN_FRONT_DISTANCE)
-	return cam_pos + cam_forward
+	# Position de base : 1 m devant la caméra.
+	var base_pos := cam_pos + cam_forward
+	# Compter les fenêtres visibles déjà à cet endroit : chaque fenêtre dans
+	# le rayon SPAWN_STACK_RADIUS du point de spawn décale la nouvelle de
+	# STACK_Z_OFFSET derrière la précédente.
+	var offset := 0.0
+	for wid in quads:
+		var quad: MeshInstance3D = quads[wid]
+		if not is_instance_valid(quad) or not quad.visible:
+			continue
+		if quad.global_position.distance_to(base_pos) < SPAWN_STACK_RADIUS:
+			offset += STACK_Z_OFFSET
+	return base_pos - cam_forward * offset
 
 func get_window_texture(wid: int) -> Texture2D:
 	return window_textures.get(wid, null)
