@@ -2,11 +2,22 @@ extends Node3D
 ## Mode focus : affiche une fenêtre en 2D plein écran (TextureRect) et route
 ## tout l'input clavier + souris vers elle, jusqu'à la sortie (même raccourci
 ## que l'entrée, ex. Super+F).
+## Gère une PILE de fenêtres : une nouvelle fenêtre ouverte pendant le mode
+## focus s'ajoute par-dessus la fenêtre active (auto via window_mapped, voir
+## wayland_room.gd) ; la fermeture de la fenêtre active (kill) fait retomber
+## le focus sur la précédente. Chaque fenêtre conserve son propre état (taille
+## d'origine, position du curseur, pointer lock, popups).
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
 const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
-
+# Taille max (fraction de l'écran) des fenêtres non plein écran de la pile :
+# elles ne doivent jamais remplir l'écran (seule la première est plein écran).
+const FOCUS_MAX_SCREEN_FILL := 0.85
+# Écart (m) entre les fenêtres de la pile à la sortie du mode focus : chacune
+# est posée STACK_Z_OFFSET devant la précédente, vers la caméra.
+const STACK_Z_OFFSET := -0.1
+s
 # Recadre la texture de capture sur la zone de contenu réelle. Le buffer
 # d'allocation (VkImage / offscreen) est arrondi au palier supérieur
 # (round_up_capture_size, multiple de 64) alors que le signal ne reporte
@@ -34,16 +45,21 @@ var ui: CanvasLayer
 var windows: Node3D
 
 var focus_mode := false
-var focus_window_id := -1
-var focus_texture_rect: TextureRect
-var focus_surface_size := Vector2.ZERO
-var focus_content_offset := Vector2.ZERO
-var focus_content_size := Vector2.ZERO
-var focus_mouse_captured := false
-var focus_mouse_uv := Vector2(0.5, 0.5) # position tracking en mode capturé
-var focus_popup_rects: Dictionary = {} # popup_id (int) -> TextureRect overlay en mode focus
-
-var original_size: Vector2 = Vector2.ONE
+# Pile des fenêtres focalisées : le DERNIER élément est la fenêtre active
+# (celle qui reçoit l'input et dont l'overlay est au-dessus des autres).
+var focus_stack: Array = []
+# window_id (int) -> TextureRect plein écran affichant la fenêtre en overlay 2D.
+var focus_rects: Dictionary = {}
+# window_id (int) -> état propre à la fenêtre : original_size, mouse_captured,
+# mouse_uv, surface_size, content_offset, content_size.
+var focus_states: Dictionary = {}
+# La seule fenêtre de la pile passée en plein écran côté compositeur (la
+# première entrée en focus). Les suivantes conservent leur taille d'origine.
+var focus_fullscreen_id := -1
+# popup_id (int) -> TextureRect overlay en mode focus. Seuls les popups de la
+# fenêtre ACTIVE sont overlayés : les fenêtres du dessous sont couvertes par
+# l'overlay actif et leurs popups sont recréés à la réactivation.
+var focus_popup_rects: Dictionary = {}
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
@@ -54,59 +70,79 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	popup_crop_shader = Shader.new()
 	popup_crop_shader.code = POPUP_CROP_SHADER_CODE
 
-	# TextureRect plein écran pour le mode focus
-	focus_texture_rect = TextureRect.new()
-	focus_texture_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	focus_texture_rect.mouse_filter = Control.MOUSE_FILTER_PASS
-	focus_texture_rect.visible = false
-	focus_texture_rect.z_index = FOCUS_Z_BASE
-	focus_texture_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-	ui.add_child(focus_texture_rect)
-
 func is_active() -> bool:
 	return focus_mode
 
 func get_focus_window_id() -> int:
-	return focus_window_id
+	return _active_id()
+
+func _active_id() -> int:
+	return focus_stack[-1] if not focus_stack.is_empty() else -1
+
+func _state(id: int) -> Dictionary:
+	if not focus_states.has(id):
+		focus_states[id] = {
+			"original_size": Vector2.ONE,
+			"mouse_captured": false,
+			"mouse_uv": Vector2(0.5, 0.5),
+			"surface_size": Vector2(1, 1),
+			"content_offset": Vector2.ZERO,
+			"content_size": Vector2(1, 1),
+		}
+	return focus_states[id]
 
 func enter_focus(id: int) -> void:
 	if not windows.quads.has(id) or not is_instance_valid(windows.quads[id]):
 		return
+	if focus_stack.has(id):
+		return
+	var entering := not focus_mode
 	focus_mode = true
-	focus_window_id = id
-	windows.focused_window_id = id
-	focus_mouse_captured = false
-	focus_mouse_uv = Vector2(0.5, 0.5)
-	original_size = windows.get_quad_info(focus_window_id)["surface_size"]
-	
-	# Passer la fenêtre en plein écran pendant le mode focus
-	compositor.set_window_fullscreen(id, true)
+	focus_stack.append(id)
+
+	var info: Dictionary = windows.get_quad_info(id)
+	var st := _state(id)
+	st["mouse_captured"] = false
+	st["mouse_uv"] = Vector2(0.5, 0.5)
+	st["original_size"] = info.get("surface_size", Vector2(1, 1))
+
+	# Passer en plein écran côté compositeur : seule la première fenêtre de la
+	# pile l'est ; les suivantes conservent leur taille (leur overlay 2D plein
+	# écran les affiche quand même à l'écran).
+	if focus_fullscreen_id == -1:
+		compositor.set_window_fullscreen(id, true)
+		focus_fullscreen_id = id
+
+	# TextureRect dédié à cette fenêtre : la première (plein écran) couvre
+	# tout l'écran, les suivantes sont centrées à taille naturelle (la
+	# fenêtre plein écran reste visible autour). L'overlay de la fenêtre
+	# active porte le z le plus haut (FOCUS_Z_BASE + position dans la pile).
+	var is_fullscreen := focus_fullscreen_id == id
+	var rect := TextureRect.new()
+	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	rect.mouse_filter = Control.MOUSE_FILTER_PASS
+	rect.visible = true
+	if is_fullscreen:
+		rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.z_index = FOCUS_Z_BASE + focus_stack.size()
+	ui.add_child(rect)
+	focus_rects[id] = rect
 
 	# Récupérer la texture courante depuis le quad 3D
-	var info: Dictionary = windows.get_quad_info(id)
-	focus_texture_rect.texture = info.get("texture")
-	focus_surface_size = info.get("surface_size", Vector2(1, 1))
-	focus_content_offset = info.get("content_offset", Vector2.ZERO)
-	focus_content_size = info.get("content_size", focus_surface_size)
+	rect.texture = info.get("texture")
+	st["surface_size"] = info.get("surface_size", Vector2(1, 1))
+	st["content_offset"] = info.get("content_offset", Vector2.ZERO)
+	st["content_size"] = info.get("content_size", st["surface_size"])
+	_refresh_rect_layout(id)
 
-	# Cacher le quad 3D, afficher le overlay 2D
+	# Cacher le quad 3D, l'overlay 2D prend le relais
 	windows.set_quad_visible(id, false)
-	focus_texture_rect.visible = true
 
-	# Libérer la souris pour interagir avec la fenêtre, centrée sur l'écran
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-	Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+	# Bloquer le player à la première entrée en mode focus
+	if entering:
+		player.focus_mode_active = true
 
-	# Créer les overlays pour les popups déjà ouverts de cette fenêtre
-	for popup_id in windows.popup_parent_info:
-		var pinfo = windows.popup_parent_info[popup_id]
-		if pinfo.parent_window_id == focus_window_id or \
-			(pinfo.parent_popup_id != -1 and focus_popup_rects.has(pinfo.parent_popup_id)):
-			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
-				pinfo.x, pinfo.y, pinfo.width, pinfo.height)
-
-	# Bloquer le player
-	player.focus_mode_active = true
+	_activate_window(id)
 
 func exit_focus() -> void:
 	if not focus_mode:
@@ -114,62 +150,110 @@ func exit_focus() -> void:
 
 	compositor.release_all_keys()
 
-	# Sortir la fenêtre du plein écran
-	if focus_window_id != -1:
-		compositor.set_window_fullscreen(focus_window_id, false)
-		compositor.set_window_size(focus_window_id, int(original_size.x), int(original_size.y))
+	# Restaurer la fenêtre passée en plein écran (seule la première de la pile
+	# l'était) et réafficher les quads 3D de toute la pile. Les fenêtres déjà
+	# fermées (kill) ne sont plus dans quads et sont ignorées.
+	if focus_fullscreen_id != -1 and windows.quads.has(focus_fullscreen_id) \
+		and is_instance_valid(windows.quads[focus_fullscreen_id]):
+		compositor.set_window_fullscreen(focus_fullscreen_id, false)
+		var st := _state(focus_fullscreen_id)
+		compositor.set_window_size(focus_fullscreen_id, int(st["original_size"].x), int(st["original_size"].y))
+	# Réafficher les quads 3D en les empilant l'un devant l'autre : la
+	# première fenêtre garde sa position, chacune des suivantes est posée
+	# STACK_Z_OFFSET devant la précédente (le long de la normale du quad,
+	# vers la caméra). Les fenêtres déjà fermées (kill) ne sont plus dans
+	# quads et sont ignorées.
+	var stack_index := 0
+	var first_quad: MeshInstance3D = null
+	for id in focus_stack:
+		if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
+			var quad: MeshInstance3D = windows.quads[id]
+			if first_quad != null:
+				quad.global_basis = first_quad.global_basis
+				quad.global_position = first_quad.global_position \
+					- first_quad.global_basis.z.normalized() * STACK_Z_OFFSET * stack_index
+			else:
+				first_quad = quad
+			windows.set_quad_visible(id, true)
+			stack_index += 1
 
-	# Réafficher le quad 3D
-	windows.set_quad_visible(focus_window_id, true)
-
-	# Cacher le overlay, libérer la texture
-	focus_texture_rect.visible = false
-	focus_texture_rect.texture = null
-	focus_mode = false
-	focus_window_id = -1
-	focus_mouse_captured = false
-
-	# Nettoyer les overlays popup du mode focus
-	for popup_id in focus_popup_rects:
-		if is_instance_valid(focus_popup_rects[popup_id]):
-			focus_popup_rects[popup_id].queue_free()
-	focus_popup_rects.clear()
-
-	# Restaurer la souris capturée
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-
-	# Débloquer le player
-	player.focus_mode_active = false
+	_reset_focus_ui()
 
 func on_window_unmapped(id: int) -> void:
-	if focus_mode and focus_window_id == id:
-		exit_focus()
+	if not focus_mode or not focus_stack.has(id):
+		return
+	var was_active := id == _active_id()
+	focus_stack.erase(id)
+	if focus_rects.has(id):
+		if is_instance_valid(focus_rects[id]):
+			focus_rects[id].queue_free()
+		focus_rects.erase(id)
+	focus_states.erase(id)
+	# Si la fenêtre plein écran quitte la pile, promouvoir la nouvelle
+	# première fenêtre : le mode focus garde toujours exactement une fenêtre
+	# plein écran côté compositeur.
+	if focus_fullscreen_id == id and not focus_stack.is_empty():
+		compositor.set_window_fullscreen(focus_stack[0], true)
+		focus_fullscreen_id = focus_stack[0]
+	if focus_stack.is_empty():
+		# Plus aucune fenêtre dans la pile : sortir du mode focus
+		compositor.release_all_keys()
+		_reset_focus_ui()
+	elif was_active:
+		# La fenêtre active s'est fermée : retomber sur la précédente
+		_activate_window(_active_id())
 
 func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
 	# Un jeu a demandé le pointer lock (zwp_pointer_constraints_v1::lock_pointer)
-	if not focus_mode or window_id != focus_window_id:
+	if not focus_mode or window_id != _active_id():
 		return
+	var st := _state(window_id)
 	if locked:
-		focus_mouse_captured = true
+		st["mouse_captured"] = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
-		focus_mouse_captured = false
+		st["mouse_captured"] = false
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 
 func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
-	if not focus_mode or id != focus_window_id:
+	if not focus_mode or not focus_rects.has(id):
 		return
-	focus_texture_rect.texture = texture
+	focus_rects[id].texture = texture
 	# Utiliser la taille réelle de la texture (pas width/height qui
 	# sont la taille du contenu). Dans le path Vulkan, le VkImage est
 	# alloué plus grand que le contenu (round_up_capture_size) — le
 	# UV est calculé depuis tex.get_size(), donc la conversion
 	# UV → surface doit utiliser la même base.
-	focus_surface_size = texture.get_size()
+	var st := _state(id)
+	st["surface_size"] = texture.get_size()
 	var geo := compositor.get_window_geometry(id)
-	focus_content_offset = Vector2(geo["x"], geo["y"])
-	focus_content_size = Vector2(geo["width"], geo["height"])
+	st["content_offset"] = Vector2(geo["x"], geo["y"])
+	st["content_size"] = Vector2(geo["width"], geo["height"])
+	# Nouvelle fenêtre / resize : ajuster la taille de l'overlay des fenêtres
+	# non plein écran à la nouvelle taille de surface.
+	_refresh_rect_layout(id)
+
+func _nonfullscreen_display_size(surface_size: Vector2, viewport_size: Vector2) -> Vector2:
+	# Taille naturelle (pixels réels), plafonnée pour ne jamais dépasser
+	# FOCUS_MAX_SCREEN_FILL de l'écran ; on ne grossit jamais une fenêtre
+	# plus petite que l'écran.
+	if surface_size.x <= 0.0 or surface_size.y <= 0.0:
+		return Vector2.ZERO
+	var scale := minf(
+		viewport_size.x * FOCUS_MAX_SCREEN_FILL / surface_size.x,
+		viewport_size.y * FOCUS_MAX_SCREEN_FILL / surface_size.y)
+	scale = minf(scale, 1.0)
+	return surface_size * scale
+
+func _refresh_rect_layout(id: int) -> void:
+	var rect: TextureRect = focus_rects.get(id)
+	if not rect or id == focus_fullscreen_id:
+		return
+	var viewport_size := get_viewport().get_visible_rect().size
+	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], viewport_size)
+	rect.size = display_size
+	rect.position = (viewport_size - display_size) / 2.0
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
 	if not focus_mode:
@@ -217,17 +301,22 @@ func _compute_popup_layout(parent_window_id: int, parent_popup_id: int) -> Dicti
 				parent_rect.size.y / max(p_content.y, 1.0)),
 			"offset": parent_rect.position,
 		}
-	elif focus_mode and parent_window_id == focus_window_id:
+	elif focus_mode and parent_window_id == _active_id():
 		return _compute_focus_displayed_info()
 	return {}
 
 func _compute_focus_displayed_info() -> Dictionary:
-	"""Calcule l'offset, la taille et le scale de la zone affichée du TextureRect focus."""
-	var tex := focus_texture_rect.texture
+	"""Calcule l'offset, la taille et le scale de la zone affichée du TextureRect
+	de la fenêtre ACTIVE."""
+	var active_id := _active_id()
+	if active_id == -1 or not focus_rects.has(active_id):
+		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
+	var rect: TextureRect = focus_rects[active_id]
+	var tex := rect.texture
 	if not tex:
 		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
 	var tex_size := tex.get_size()
-	var tex_rect := focus_texture_rect.get_global_rect()
+	var tex_rect := rect.get_global_rect()
 	var aspect = tex_size.x / max(tex_size.y, 1.0)
 	var rect_aspect = tex_rect.size.x / max(tex_rect.size.y, 1.0)
 	var displayed_size: Vector2
@@ -280,30 +369,75 @@ func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id
 			if tex:
 				popup_tex_rect.texture = tex
 
+# Rend la fenêtre courante de la pile la fenêtre active : met à jour le focus
+# clavier 3D, l'état de la souris et les popups overlayés (seuls ceux de la
+# fenêtre active sont affichés).
+func _activate_window(id: int) -> void:
+	windows.focused_window_id = id
+	var st := _state(id)
+	# Restaurer l'état souris de la fenêtre redevenue active
+	if st["mouse_captured"]:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+	# Rafraîchir les popups overlayés
+	_clear_popup_overlays()
+	for popup_id in windows.popup_parent_info:
+		var pinfo = windows.popup_parent_info[popup_id]
+		if pinfo.parent_window_id == id or \
+			(pinfo.parent_popup_id != -1 and focus_popup_rects.has(pinfo.parent_popup_id)):
+			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
+				pinfo.x, pinfo.y, pinfo.width, pinfo.height)
+
+func _clear_popup_overlays() -> void:
+	for popup_id in focus_popup_rects:
+		if is_instance_valid(focus_popup_rects[popup_id]):
+			focus_popup_rects[popup_id].queue_free()
+	focus_popup_rects.clear()
+
+func _reset_focus_ui() -> void:
+	_clear_popup_overlays()
+	for id in focus_rects:
+		if is_instance_valid(focus_rects[id]):
+			focus_rects[id].queue_free()
+	focus_rects.clear()
+	focus_states.clear()
+	focus_stack.clear()
+	focus_fullscreen_id = -1
+	focus_mode = false
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	player.focus_mode_active = false
+
 # Routage souris/clavier du mode focus, appelé chaque frame par
-# wayland_room.gd tant que le mode est actif.
+# wayland_room.gd tant que le mode est actif. L'input va à la fenêtre active.
 func handle_focus_input() -> void:
+	var active_id := _active_id()
+	if active_id == -1 or not focus_rects.has(active_id):
+		return
+	var st := _state(active_id)
+	var rect: TextureRect = focus_rects[active_id]
 	var surf_x: float
 	var surf_y: float
 
 	# Souris capturée: maintenir le pointer focus + forward relatif via _input
-	if focus_mouse_captured:
+	if st["mouse_captured"]:
 		# Maintenir le pointer focus sur la surface (nécessaire pour que
 		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
-		surf_x = focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
-		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
-		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
+		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
+		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
+		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
 	else:
 		# Souris visible: position absolue, curseur custom suit la souris
 		var mouse_pos := get_viewport().get_mouse_position()
 
 		# Utiliser la zone réelle affichée par le TextureRect pour le mapping
-		# (plus précis que de recalculer avec focus_surface_size)
-		var tex := focus_texture_rect.texture
+		# (plus précis que de recalculer avec surface_size)
+		var tex := rect.texture
 		if tex:
 			var tex_size := tex.get_size()
 			# Rect2 global du TextureRect après layout Godot
-			var tex_rect := focus_texture_rect.get_global_rect()
+			var tex_rect := rect.get_global_rect()
 			# Taille affichée respectant l'aspect ratio
 			var aspect := tex_size.x / tex_size.y
 			var rect_aspect := tex_rect.size.x / tex_rect.size.y
@@ -315,37 +449,39 @@ func handle_focus_input() -> void:
 			var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
 
 			var local_pos := mouse_pos - offset
-			focus_mouse_uv = Vector2(
+			st["mouse_uv"] = Vector2(
 				clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
 				clampf(local_pos.y / displayed_size.y, 0.0, 1.0)
 			)
 		else:
-			focus_mouse_uv = Vector2(0.5, 0.5)
+			st["mouse_uv"] = Vector2(0.5, 0.5)
 
-		surf_x = focus_mouse_uv.x * focus_surface_size.x + focus_content_offset.x
-		surf_y = focus_mouse_uv.y * focus_surface_size.y + focus_content_offset.y
-		compositor.forward_pointer_motion(focus_window_id, surf_x, surf_y)
+		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
+		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
+		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
 
 	if Input.is_action_just_pressed("left_click"):
-		compositor.forward_pointer_button(focus_window_id, 0x110, true)
+		compositor.forward_pointer_button(active_id, 0x110, true)
 	if Input.is_action_just_released("left_click"):
-		compositor.forward_pointer_button(focus_window_id, 0x110, false)
+		compositor.forward_pointer_button(active_id, 0x110, false)
 
 	if Input.is_action_just_pressed("right_click"):
-		compositor.forward_pointer_button(focus_window_id, 0x111, true)
+		compositor.forward_pointer_button(active_id, 0x111, true)
 	if Input.is_action_just_released("right_click"):
-		compositor.forward_pointer_button(focus_window_id, 0x111, false)
+		compositor.forward_pointer_button(active_id, 0x111, false)
 
 	if Input.is_action_just_pressed("scroll_up"):
-		compositor.forward_pointer_axis(focus_window_id, 0, -100.0)
+		compositor.forward_pointer_axis(active_id, 0, -100.0)
 	if Input.is_action_just_pressed("scroll_down"):
-		compositor.forward_pointer_axis(focus_window_id, 0, 100.0)
+		compositor.forward_pointer_axis(active_id, 0, 100.0)
 
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
 func handle_input_event(event: InputEvent) -> bool:
-	if not focus_mode or focus_window_id == -1:
+	if not focus_mode or focus_stack.is_empty():
 		return false
+	var active_id := _active_id()
+	var st := _state(active_id)
 	if event is InputEventKey:
 		var key_event := event as InputEventKey
 		# Échos de répétition Godot : les consommer sans les forwarder, sinon
@@ -370,20 +506,20 @@ func handle_input_event(event: InputEvent) -> bool:
 		elif key_event.unicode == 62:
 			code = KEY_GREATER
 		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
-	elif focus_mouse_captured and event is InputEventMouseMotion:
+	elif st["mouse_captured"] and event is InputEventMouseMotion:
 		# Tracker la position UV + forward le mouvement relatif au client
 		var viewport_size := get_viewport().get_visible_rect().size
-		var tex_size := focus_surface_size
+		var tex_size: Vector2 = st["surface_size"]
 		if tex_size.x <= 0 or tex_size.y <= 0:
 			tex_size = viewport_size
 		var scale := minf(viewport_size.x / tex_size.x, viewport_size.y / tex_size.y)
 		var displayed_size := tex_size * scale
-		focus_mouse_uv.x += event.relative.x / displayed_size.x
-		focus_mouse_uv.y += event.relative.y / displayed_size.y
-		focus_mouse_uv.x = clampf(focus_mouse_uv.x, 0.0, 1.0)
-		focus_mouse_uv.y = clampf(focus_mouse_uv.y, 0.0, 1.0)
+		st["mouse_uv"].x += event.relative.x / displayed_size.x
+		st["mouse_uv"].y += event.relative.y / displayed_size.y
+		st["mouse_uv"].x = clampf(st["mouse_uv"].x, 0.0, 1.0)
+		st["mouse_uv"].y = clampf(st["mouse_uv"].y, 0.0, 1.0)
 		compositor.forward_pointer_relative_motion(
-			focus_window_id,
+			active_id,
 			event.relative.x, event.relative.y,
 			event.relative.x, event.relative.y)
 	return true
