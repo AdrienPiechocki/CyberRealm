@@ -22,6 +22,8 @@
 #endif
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/prctl.h>
+#include <dirent.h>
 #include <poll.h>
 #include <linux/dma-buf.h>
 
@@ -359,6 +361,12 @@ WlrCompositor::WlrCompositor() {
     if (env) {
         portal_backend = String(env);
     }
+    // Adopte les orphelins de nos descendants : sans quoi les apps lancées par
+    // un script (ex. `dms run`) qui se détachent (setsid / double fork) sont
+    // réparées vers init et échappent à shutdown_apps(). Avec ce subreaper,
+    // tout ce qui descend du jeu reste dans son arbre /proc tant que le jeu
+    // vit, et shutdown_apps() peut le tuer.
+    prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0);
 }
 
 WlrCompositor::~WlrCompositor() {
@@ -3913,51 +3921,177 @@ void WlrCompositor::launch_app(const String &command) {
     }
 }
 
+// Liste tous les descendants directs ou indirects de `root` en parcourant
+// /proc (chaîne PPID). Utilisé par shutdown_apps() pour atteindre aussi les
+// processus qui ont quitté le groupe de leur parent via setsid()/setpgid()
+// (apps lancées par un script de démarrage comme `dms run`) et qui
+// échapperaient à un kill(-pid) de groupe. Vrai car le jeu est
+// PR_SET_CHILD_SUBREAPER : les orphelins redeviennent ses enfants et la
+// chaîne PPID reste fiable.
+static void collect_descendants(pid_t root, std::vector<pid_t> &out) {
+    std::unordered_map<pid_t, pid_t> ppid;
+    DIR *dir = opendir("/proc");
+    if (!dir) {
+        return;
+    }
+    dirent *ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') {
+            continue;
+        }
+        pid_t pid = (pid_t)atoi(ent->d_name);
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        char buf[1024];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        if (n == 0) {
+            continue;
+        }
+        buf[n] = '\0';
+        // Format : "pid (comm) state ppid ..." — comm peut contenir des
+        // parenthèses, on cherche donc la DERNIÈRE ')'.
+        char *rp = strrchr(buf, ')');
+        if (!rp) {
+            continue;
+        }
+        char state;
+        pid_t parent = -1;
+        if (sscanf(rp + 1, " %c %d", &state, &parent) == 2 && parent > 0) {
+            ppid[pid] = parent;
+        }
+    }
+    closedir(dir);
+
+    // Parcours en largeur depuis la racine : un processus est un descendant
+    // si son parent est la racine ou est lui-même déjà un descendant.
+    std::set<pid_t> descendants;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const auto &kv : ppid) {
+            if (descendants.count(kv.first)) {
+                continue;
+            }
+            if (kv.second == root || descendants.count(kv.second)) {
+                descendants.insert(kv.first);
+                changed = true;
+            }
+        }
+    }
+    out.assign(descendants.begin(), descendants.end());
+}
+
+// True si `pid` est un processus réellement vivant (un zombie compte comme
+// "existant" pour kill(pid, 0) mais disparaît dès qu'il est récolté : il ne
+// doit pas retarder la période de grâce).
+static bool process_is_alive(pid_t pid) {
+    if (pid <= 0 || kill(pid, 0) != 0) {
+        return false;
+    }
+    char path[64];
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return true; // /proc indisponible ou PID réapparu : conservateur
+    }
+    char buf[256];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) {
+        return true;
+    }
+    buf[n] = '\0';
+    char *rp = strrchr(buf, ')');
+    if (!rp || rp[1] == '\0') {
+        return true;
+    }
+    return rp[1] != 'Z';
+}
+
+static bool any_alive(const std::vector<pid_t> &pids) {
+    for (pid_t pid : pids) {
+        if (process_is_alive(pid)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void reap_zombies() {
+    int status;
+    while (waitpid(-1, &status, WNOHANG) > 0) {
+    }
+}
+
 // Termine proprement toutes les applications lancées dans le jeu via
-// launch_app() : SIGTERM à chaque groupe de process (setsid() crée un groupe
-// par shell), période de grâce de 2 s pour laisser un arrêt propre, puis
-// SIGKILL aux survivants. Appelé par le script Godot juste avant
-// get_tree().quit() et par le destructeur.
+// launch_app() : SIGTERM à TOUT l'arbre des descendants du jeu (pas seulement
+// aux groupes des enfants directs — des daemons lancés par un script comme
+// `dms run` font setsid()/setpgid() et échappent à leur groupe), période de
+// grâce de 2 s pour laisser un arrêt propre, puis SIGKILL aux survivants.
+// Appelé par le script Godot juste avant get_tree().quit() et par le
+// destructeur.
 void WlrCompositor::shutdown_apps() {
-    if (child_pids.empty()) {
+    if (child_pids.empty() && dbus_daemon_pid <= 0) {
         return;
     }
 
-    // 1. SIGTERM à tous les groupes de process
-    for (pid_t pid : child_pids) {
-        if (pid > 0) {
-            kill(-pid, SIGTERM);
-        }
+    // 1. SIGTERM à tous les descendants (via la chaîne PPID dans /proc).
+    std::vector<pid_t> descendants;
+    collect_descendants(getpid(), descendants);
+    for (pid_t pid : descendants) {
+        kill(pid, SIGTERM);
     }
-
-    // 2. Période de grâce : attendre la disparition des groupes (max 2 s).
-    // kill(-pid, 0) teste l'existence du groupe sans envoyer de signal.
-    for (int i = 0; i < 40; ++i) {
-        bool alive = false;
+    // Repli si /proc est indisponible : SIGTERM aux groupes connus.
+    if (descendants.empty() && !child_pids.empty()) {
         for (pid_t pid : child_pids) {
-            if (pid > 0 && kill(-pid, 0) == 0) {
-                alive = true;
-                break;
+            if (pid > 0) {
+                kill(-pid, SIGTERM);
             }
         }
-        // Récolter les zombies directs sans bloquer (les autres seront
-        // réparentés à init/subreaper et reconnus d'eux-mêmes).
-        int status;
-        waitpid(-1, &status, WNOHANG);
-        if (!alive) {
+    }
+    if (dbus_daemon_pid > 0) {
+        kill(dbus_daemon_pid, SIGTERM);
+        dbus_daemon_pid = -1;
+    }
+
+    // 2. Période de grâce : attendre la disparition de tout l'arbre (max 2 s).
+    // L'arbre est re-scanné à chaque itération pour rattraper les processus
+    // respawnés par un superviseur (script de démarrage, systemd user...).
+    for (int i = 0; i < 40; ++i) {
+        reap_zombies();
+        descendants.clear();
+        collect_descendants(getpid(), descendants);
+        if (!any_alive(descendants)) {
             break;
         }
         usleep(50 * 1000);
     }
 
-    // 3. SIGKILL aux survivants, puis récolte des zombies directs
-    for (pid_t pid : child_pids) {
-        if (pid > 0 && kill(-pid, 0) == 0) {
-            kill(-pid, SIGKILL);
+    // 3. SIGKILL aux survivants (arbre re-scanné : inclut les respawns et les
+    // orphelins réparés vers le jeu pendant la grâce).
+    descendants.clear();
+    collect_descendants(getpid(), descendants);
+    for (pid_t pid : descendants) {
+        if (process_is_alive(pid)) {
+            kill(pid, SIGKILL);
         }
-        int status;
-        waitpid(pid, &status, WNOHANG);
     }
+    if (descendants.empty() && !child_pids.empty()) {
+        for (pid_t pid : child_pids) {
+            if (pid > 0 && kill(-pid, 0) == 0) {
+                kill(-pid, SIGKILL);
+            }
+        }
+    }
+
+    // 4. Récolter les zombies (les orphelins restants sont réparés à init à
+    // la sortie du jeu, qui les récolte).
+    reap_zombies();
     child_pids.clear();
 }
 
