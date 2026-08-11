@@ -96,7 +96,7 @@ func _ready() -> void:
 	fx.setup(win3d)
 	presenter.setup(compositor)
 
-	compositor.window_mapped.connect(win3d.on_window_mapped)
+	compositor.window_mapped.connect(_on_window_mapped)
 	compositor.window_unmapped.connect(focus.on_window_unmapped)
 	compositor.window_unmapped.connect(pins.on_window_unmapped)
 	compositor.window_unmapped.connect(fx.on_window_unmapped)
@@ -181,6 +181,13 @@ func _ready() -> void:
 	ui.add_child(drag_icon_rect)
 
 # ── Dispatch des signaux compositeur vers les sous-systèmes ─────────
+
+func _on_window_mapped(id: int, title: String, app_id: String) -> void:
+	win3d.on_window_mapped(id, title, app_id)
+	# Une nouvelle fenêtre ouverte pendant le mode focus s'ouvre aussi en
+	# focus, par-dessus la/les fenêtre(s) précédente(s).
+	if focus.is_active():
+		focus.enter_focus(id)
 
 func _on_window_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	win3d.on_texture_updated(id, texture, width, height)
