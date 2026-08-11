@@ -470,6 +470,12 @@ func handle_focus_input() -> void:
 	if Input.is_action_just_released("right_click"):
 		compositor.forward_pointer_button(active_id, 0x111, false)
 
+	# Clic molette (BTN_MIDDLE) : forwardé comme les clics gauche/droit.
+	if Input.is_action_just_pressed("middle_click"):
+		compositor.forward_pointer_button(active_id, 0x112, true)
+	if Input.is_action_just_released("middle_click"):
+		compositor.forward_pointer_button(active_id, 0x112, false)
+
 	if Input.is_action_just_pressed("scroll_up"):
 		compositor.forward_pointer_axis(active_id, 0, -100.0)
 	if Input.is_action_just_pressed("scroll_down"):

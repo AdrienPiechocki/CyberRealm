@@ -388,7 +388,8 @@ func _process(delta: float) -> void:
 			return
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
-	if Input.is_action_just_pressed("interact_mode", true):
+	# (le clic molette sert au client en mode focus, pas au toggle du mode interaction).
+	if Input.is_action_just_pressed("interact_mode", true) and not focus.is_active():
 		if interact_mode_active:
 			compositor.release_all_keys()
 		interact_mode_active = not interact_mode_active
