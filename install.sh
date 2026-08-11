@@ -37,7 +37,7 @@ cp "$SCRIPT_DIR/compositors/portal-wlr/src/screencast/wlr_screencast.c" "$PORTAL
 if [[ ! -f "$PORTAL_SRC/build/build.ninja" ]]; then
     meson setup "$PORTAL_SRC/build" "$PORTAL_SRC" --buildtype release --prefix "$PORTAL_PREFIX"
 else
-    meson configure "$PORTAL_SRC/build" --prefix "$PORTAL_PREFIX"
+    meson setup --reconfigure "$PORTAL_SRC/build" "$PORTAL_SRC" --buildtype release --prefix "$PORTAL_PREFIX"
 fi
 ninja -C "$PORTAL_SRC/build"
 meson install -C "$PORTAL_SRC/build"

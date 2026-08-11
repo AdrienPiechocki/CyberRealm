@@ -7,7 +7,6 @@
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
-height = 2.5
 
 [sub_resource type="LabelSettings" id="LabelSettings_3vyb7"]
 font_size = 24
