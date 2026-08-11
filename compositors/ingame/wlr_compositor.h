@@ -690,6 +690,10 @@ public:
     void forward_pointer_axis_lock(double delta_x, double delta_y);
     void forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed);
     void release_all_keys();
+    // Donne le focus clavier (wlr_seat_keyboard_enter, ignore les grabs de
+    // popup) à la surface d'une fenêtre : utilisé par le mode focus quand une
+    // nouvelle fenêtre devient active.
+    void set_window_keyboard_focus(int window_id);
 
     // Layout clavier (xkbcommon) transmis aux clients Wayland : même format
     // que setxkbmap ("fr", "us", "de"... + variante "oss", "intl", ...).

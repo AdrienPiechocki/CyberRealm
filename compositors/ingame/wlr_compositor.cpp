@@ -215,6 +215,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("forward_pointer_leave"), &WlrCompositor::forward_pointer_leave);
     ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "key_location", "pressed"),
         &WlrCompositor::forward_keyboard_key);
+    ClassDB::bind_method(D_METHOD("set_window_keyboard_focus", "window_id"),
+        &WlrCompositor::set_window_keyboard_focus);
     ClassDB::bind_method(D_METHOD("notify_activity"), &WlrCompositor::notify_activity);
     ClassDB::bind_method(D_METHOD("set_keyboard_layout", "layout", "variant"),
         &WlrCompositor::set_keyboard_layout);
@@ -3680,6 +3682,18 @@ void WlrCompositor::release_all_keys() {
     // relâchement forwardé plus tard (touche libérée pendant que le menu
     // pause était ouvert, par ex.) sera ignoré au lieu de casser l'état xkb.
     pressed_keys.clear();
+}
+
+// Donne le focus clavier à une fenêtre (mode focus) : les touches forwardées
+// par forward_keyboard_key partent vers la surface qui détient le focus
+// clavier du seat, pas vers un window_id. Quand une nouvelle fenêtre devient
+// active dans la pile, il faut donc lui rendre l'enter clavier.
+void WlrCompositor::set_window_keyboard_focus(int window_id) {
+    if (!seat) return;
+    WindowState *ws = find_window(window_id);
+    if (!ws) return;
+    keyboard_focus_layer_id = -1;
+    focus_surface(ws->toplevel->base->surface);
 }
 
 void WlrCompositor::reload_keymap() {

@@ -11,9 +11,7 @@ extends Node3D
 
 const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
 const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
-# Taille max (fraction de l'écran) des fenêtres non plein écran de la pile :
-# elles ne doivent jamais remplir l'écran (seule la première est plein écran).
-const FOCUS_MAX_SCREEN_FILL := 0.85
+
 # Écart (m) entre les fenêtres de la pile à la sortie du mode focus : chacune
 # est posée STACK_Z_OFFSET devant la précédente, vers la caméra.
 const STACK_Z_OFFSET := -0.1
@@ -235,14 +233,11 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	_refresh_rect_layout(id)
 
 func _nonfullscreen_display_size(surface_size: Vector2, viewport_size: Vector2) -> Vector2:
-	# Taille naturelle (pixels réels), plafonnée pour ne jamais dépasser
-	# FOCUS_MAX_SCREEN_FILL de l'écran ; on ne grossit jamais une fenêtre
-	# plus petite que l'écran.
 	if surface_size.x <= 0.0 or surface_size.y <= 0.0:
 		return Vector2.ZERO
 	var scale := minf(
-		viewport_size.x * FOCUS_MAX_SCREEN_FILL / surface_size.x,
-		viewport_size.y * FOCUS_MAX_SCREEN_FILL / surface_size.y)
+		viewport_size.x / surface_size.x,
+		viewport_size.y / surface_size.y)
 	scale = minf(scale, 1.0)
 	return surface_size * scale
 
@@ -374,6 +369,12 @@ func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id
 # fenêtre active sont affichés).
 func _activate_window(id: int) -> void:
 	windows.focused_window_id = id
+	# Donner le focus clavier du seat à la fenêtre : les touches forwardées
+	# par forward_keyboard_key partent vers la surface qui détient le focus
+	# clavier (pas vers un window_id). Sans ça, une nouvelle fenêtre active de
+	# la pile recevrait la souris mais pas le clavier (l'enter clavier du
+	# compositeur reste sur l'ancienne fenêtre).
+	compositor.set_window_keyboard_focus(id)
 	var st := _state(id)
 	# Restaurer l'état souris de la fenêtre redevenue active
 	if st["mouse_captured"]:
