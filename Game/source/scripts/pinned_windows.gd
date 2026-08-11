@@ -2,13 +2,23 @@ extends Node3D
 
 const PIN_SIZE := Vector2(640, 360)
 const PIN_MARGIN := 8
+# En dessous du layer focus (FOCUS_Z_BASE = 2000) : le PiP est caché quand
+# une fenêtre est en mode focus.
 const PIN_Z_BASE := 1900
+# Au-dessus du layer focus (y compris ses popups, FOCUS_POPUP_Z = 2050) : le
+# PiP reste visible pendant le mode focus. Choix via le menu pause.
+const PIN_Z_ABOVE_FOCUS := 2100
 
 var ui: CanvasLayer
 var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
+# True : la fenêtre épinglée s'affiche au-dessus du layer focus.
+var pins_above_focus := false
 
 func setup(ui_ref: CanvasLayer) -> void:
 	ui = ui_ref
+
+func _pin_z_index() -> int:
+	return PIN_Z_ABOVE_FOCUS if pins_above_focus else PIN_Z_BASE
 
 func is_pinned(id: int) -> bool:
 	return pinned_windows.has(id)
@@ -33,19 +43,10 @@ func pin(id: int, texture: Texture2D) -> void:
 	border.size = PIN_SIZE + Vector2(4, 4)
 	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.05, 0.05, 0.08, 0.9)
-	bg.border_color = Color(0.4, 0.6, 1.0, 0.8)
-	bg.border_width_top = 2
-	bg.border_width_bottom = 2
-	bg.border_width_left = 2
-	bg.border_width_right = 2
-	bg.corner_radius_top_left = 4
-	bg.corner_radius_top_right = 4
-	bg.corner_radius_bottom_left = 4
-	bg.corner_radius_bottom_right = 4
+	bg.bg_color = Color.TRANSPARENT
 	border.add_theme_stylebox_override("panel", bg)
 	border.add_child(pip)
-	border.z_index = PIN_Z_BASE
+	border.z_index = _pin_z_index()
 
 	# Position fixe dans le coin supérieur gauche
 	border.position = Vector2(PIN_MARGIN, PIN_MARGIN)
@@ -68,6 +69,17 @@ func unpin_all() -> void:
 
 func on_window_unmapped(id: int) -> void:
 	unpin(id)
+
+# Met à jour la couche d'affichage des fenêtres épinglées par rapport au layer
+# focus (réglage du menu pause) : s'applique immédiatement aux PiP existants.
+func set_pins_above_focus(above: bool) -> void:
+	if pins_above_focus == above:
+		return
+	pins_above_focus = above
+	for current_id in pinned_windows:
+		var pip: Control = pinned_windows[current_id]
+		if is_instance_valid(pip):
+			pip.z_index = _pin_z_index()
 
 func on_window_texture_updated(id: int, texture: Texture2D) -> void:
 	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):

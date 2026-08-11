@@ -171,6 +171,9 @@ func _ready() -> void:
 	pause_menu.quit_requested.connect(_on_quit_requested)
 	pause_menu.keyboard_layout_changed.connect(compositor.set_keyboard_layout)
 	pause_menu.polkit_agent_changed.connect(_on_polkit_agent_changed)
+	pause_menu.pins_layer_changed.connect(_on_pins_layer_changed)
+	# Appliquer la couche des fenêtres épinglées sauvegardée dans les réglages
+	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -586,6 +589,9 @@ func _on_polkit_agent_changed(path: String) -> void:
 	if path.strip_edges() != "":
 		_stop_host_polkit_agent()
 	compositor.set_polkit_agent(path)
+
+func _on_pins_layer_changed(above: bool) -> void:
+	pins.set_pins_above_focus(above)
 
 # ── Cycle de vie ─────────────────────────────────────────────────────
 
