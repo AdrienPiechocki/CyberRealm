@@ -158,6 +158,13 @@ func enter_focus(id: int) -> void:
 	# Bloquer le player à la première entrée en mode focus
 	if entering:
 		player.focus_mode_active = true
+		# Warp du curseur au centre UNIQUEMENT à l'entrée : la souris était
+		# capturée (3D) et get_mouse_position() reste figée au point de
+		# capture ; on la pose au centre de l'overlay. Quand la fenêtre
+		# active change EN COURS de focus (ex: une fenêtre s'ouvre depuis le
+		# mode focus), PAS de warp : le curseur reste où l'utilisateur l'a
+		# laissé.
+		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 
 	_activate_window(id)
 
@@ -384,6 +391,46 @@ func _create_popup_overlay(popup_id: int, parent_window_id: int, parent_popup_id
 			if tex:
 				popup_tex_rect.texture = tex
 
+# Renvoie le popup overlayé (de la fenêtre active) le plus au-dessus sous la
+# position souris en mode focus, sinon un dictionnaire vide. Les popups créés
+# en dernier (sous-menus) sont dessinés au-dessus des autres à z égal : on
+# retient le dernier trouvé parmi ceux dont le rect contient le point.
+func _popup_at(pos: Vector2) -> Dictionary:
+	var top: Dictionary = {}
+	for popup_id in focus_popup_rects:
+		var popup_rect: TextureRect = focus_popup_rects[popup_id]
+		if is_instance_valid(popup_rect) and popup_rect.get_global_rect().has_point(pos):
+			top = {"id": popup_id, "rect": popup_rect}
+	return top
+
+# Route le mouvement + les clics vers la surface du popup sous le curseur.
+# Les coordonnées envoyées sont relatives au CONTENU du popup (la zone
+# réellement affichée par l'overlay) : le point écran dans le TextureRect est
+# reconverti en pixels de surface via la taille de contenu et la taille
+# d'affichage du rect — cohérent avec le rendu et avec les popups parentés en
+# cascade (sous-menus), dont l'échelle d'affichage est la même partout.
+func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
+	var popup_rect: TextureRect = hit.rect
+	var popup_id: int = hit.id
+	var content_size: Vector2 = popup_rect.get_meta("content_size", popup_rect.size)
+	if content_size.x <= 0.0 or content_size.y <= 0.0:
+		return
+	var global_rect := popup_rect.get_global_rect()
+	var px := 0.0
+	var py := 0.0
+	if global_rect.size.x > 0.0 and global_rect.size.y > 0.0:
+		px = (mouse_pos.x - global_rect.position.x) / global_rect.size.x * content_size.x
+		py = (mouse_pos.y - global_rect.position.y) / global_rect.size.y * content_size.y
+	compositor.forward_pointer_motion_popup(popup_id, px, py)
+	if Input.is_action_just_pressed("left_click"):
+		compositor.forward_pointer_button_popup(popup_id, 0x110, true)
+	if Input.is_action_just_released("left_click"):
+		compositor.forward_pointer_button_popup(popup_id, 0x110, false)
+	if Input.is_action_just_pressed("right_click"):
+		compositor.forward_pointer_button_popup(popup_id, 0x111, true)
+	if Input.is_action_just_released("right_click"):
+		compositor.forward_pointer_button_popup(popup_id, 0x111, false)
+
 # Rend la fenêtre courante de la pile la fenêtre active : met à jour le focus
 # clavier 3D, l'état de la souris et les popups overlayés (seuls ceux de la
 # fenêtre active sont affichés).
@@ -396,13 +443,15 @@ func _activate_window(id: int) -> void:
 	# compositeur reste sur l'ancienne fenêtre).
 	compositor.set_window_keyboard_focus(id)
 	var st := _state(id)
-	# Restaurer l'état souris de la fenêtre redevenue active
+	# Restaurer l'état souris de la fenêtre redevenue active. Pas de warp :
+	# le curseur reste là où l'utilisateur l'a laissé quand la fenêtre active
+	# change (la souris était déjà visible, seul l'état du pointeur du client
+	# est restauré ci-dessous).
 	_hide_cursor_overlay()
 	if st["mouse_captured"]:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 	# Rafraîchir les popups overlayés
 	_clear_popup_overlays()
 	for popup_id in windows.popup_parent_info:
@@ -541,6 +590,18 @@ func handle_focus_input() -> void:
 		if displayed_size.x > 0.0 and st["surface_size"].x > 0.0:
 			display_scale = displayed_size / st["surface_size"]
 		_update_cursor_overlay(active_id, mouse_pos, display_scale)
+
+		# Popup de la fenêtre active sous le curseur (menus, dropdowns...) :
+		# router mouvement + clics vers la SURFACE du popup (forward_*_popup),
+		# pas vers la fenêtre. En mode focus seuls les popups de la fenêtre
+		# active sont overlayés ; sans ce routage, tout l'input partait vers la
+		# fenêtre aux coordonnées du popup et le menu ne recevait ni hover ni
+		# clic (inutilisable dans GIMP par exemple, alors que ça marche en 3D).
+		var popup_hit := _popup_at(mouse_pos)
+		if not popup_hit.is_empty():
+			_forward_to_popup(popup_hit, mouse_pos)
+			compositor.set_window_pointer(active_id, 0, 0, false)
+			return
 
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
