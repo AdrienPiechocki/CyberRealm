@@ -159,6 +159,7 @@ bool setup_target(struct xdpw_screencast_context *ctx, struct xdpw_session *sess
 		return false;
 	}
 	target->with_cursor = sess->screencast_data.cursor_mode == EMBEDDED;
+	target->with_cursor_meta = sess->screencast_data.cursor_mode == METADATA;
 	if (data) {
 		target_initialized = xdpw_wlr_target_from_data(ctx, target, data);
 	}
@@ -352,15 +353,24 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
 	logprint(INFO, "dbus: session_handle: %s", session_handle);
 	logprint(INFO, "dbus: app_id: %s", app_id);
 
+	// wl_list_for_each_*_safe() termine sur la sentinelle de la liste (jamais
+	// NULL) : sans break, sess pointe sur l'en-tête de liste et tout
+	// déréférencement est un SIGSEGV (vu quand une SelectSources arrive après
+	// la fermeture de la session correspondante). On garde un drapeau et on
+	// n'utilise que session_handle (copie de l'argument) dans le log.
 	sess = NULL;
-	wl_list_for_each_reverse_safe(sess, tmp_s, &state->xdpw_sessions, link) {
-		if (strcmp(sess->session_handle, session_handle) == 0) {
-				logprint(DEBUG, "dbus: select sources: found matching session %s", sess->session_handle);
-				break;
+	struct xdpw_session *iter;
+	bool found = false;
+	wl_list_for_each_reverse_safe(iter, tmp_s, &state->xdpw_sessions, link) {
+		if (strcmp(iter->session_handle, session_handle) == 0) {
+			sess = iter;
+			logprint(DEBUG, "dbus: select sources: found matching session %s", sess->session_handle);
+			found = true;
+			break;
 		}
 	}
-	if (!sess) {
-		logprint(WARN, "dbus: select sources: no matching session %s found", sess->session_handle);
+	if (!found) {
+		logprint(WARN, "dbus: select sources: no matching session %s found", session_handle);
 		goto error;
 	}
 
@@ -392,10 +402,6 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
 			logprint(INFO, "dbus: option types: %x", type_mask);
 		} else if (strcmp(key, "cursor_mode") == 0) {
 			sd_bus_message_read(msg, "v", "u", &sess->screencast_data.cursor_mode);
-			if (sess->screencast_data.cursor_mode & METADATA) {
-				logprint(ERROR, "dbus: unsupported cursor mode requested, cancelling");
-				goto error;
-			}
 			logprint(INFO, "dbus: option cursor_mode:%x", sess->screencast_data.cursor_mode);
 		} else if (strcmp(key, "restore_data") == 0) {
 			logprint(INFO, "dbus: restore data available");
