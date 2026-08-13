@@ -483,6 +483,16 @@ class WlrCompositor : public Node {
     int next_window_id = 1;
     int active_toplevel_id = -1;
 
+    // État courant du pointer lock (zwp_pointer_constraints_v1::lock_pointer)
+    // par fenêtre. Alimenté à la création/destruction d'un constraint LOCKED
+    // et consulté par le script Godot (is_window_pointer_locked) quand une
+    // fenêtre entre en mode focus. Le signal pointer_lock_changed seul ne
+    // suffit pas : les jeux FPS (SDL) demandent souvent le lock à leur
+    // démarrage, avant que le joueur n'entre en mode focus — le signal est
+    // alors raté côté Godot et le mode relatif du jeu ne serait jamais
+    // forwardé (caméra figée).
+    std::unordered_map<int, bool> window_pointer_locked;
+
     std::unordered_map<int, PopupState> popups;
     int next_popup_id = 1;
 
@@ -796,6 +806,21 @@ public:
     // auto du premier output, sans slurp/dmenu interactif) et renvoie le
     // chemin — passé à portal-wlr via -c. Renvoie "" en cas d'échec.
     String write_portal_config() const;
+
+    // Renvoie true si la fenêtre a actuellement un pointer lock (LOCKED)
+    // actif. Utilisé par le mode focus pour resynchroniser l'état de capture
+    // de la souris d'une fenêtre qui devient active (un jeu qui a demandé le
+    // lock avant l'entrée en focus).
+    bool is_window_pointer_locked(int window_id) const;
+
+    // Renvoie true si la fenêtre appartient au client xwayland-satellite
+    // (identifié par le PID du client de la surface toplevel). Ces clients
+    // n'utilisent QUE du mouvement absolu (xwayland-satellite ignore
+    // zwp_relative_pointer_v1) : le mode focus doit leur fournir la position
+    // réelle du curseur (chemin "souris visible") plutôt que le tracking
+    // relatif LOCKED, sinon la position absolue diverge du curseur réel et
+    // revient sauter à chaque changement de grab (caméra FPS qui "snap-back").
+    bool is_window_xwayland(int window_id);
 
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.

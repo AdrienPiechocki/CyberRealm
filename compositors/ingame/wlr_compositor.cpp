@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <algorithm>
 #include <vector>
 #include <unistd.h>
@@ -320,6 +321,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_window_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_window_fullscreen);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
+    ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
+    ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
@@ -3978,6 +3981,7 @@ void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
         return;
     }
 
+    self->window_pointer_locked[window_id] = true;
     self->emit_signal("pointer_lock_changed", window_id, true);
 
     // Écouter la destruction du constraint (client déverrouille ou surface détruite)
@@ -3990,10 +3994,36 @@ void WlrCompositor::on_new_constraint(wl_listener *listener, void *data) {
     cdata->listener.notify = [](wl_listener *l, void *) {
         ConstraintDestroyData *cd = wl_container_of(l, cd, listener);
         wl_list_remove(&cd->listener.link);
+        cd->self->window_pointer_locked[cd->window_id] = false;
         cd->self->emit_signal("pointer_lock_changed", cd->window_id, false);
         delete cd;
     };
     wl_signal_add(&constraint->events.destroy, &cdata->listener);
+}
+
+bool WlrCompositor::is_window_pointer_locked(int window_id) const {
+    auto it = window_pointer_locked.find(window_id);
+    return it != window_pointer_locked.end() && it->second;
+}
+
+bool WlrCompositor::is_window_xwayland(int window_id) {
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel || !ws->toplevel->base || !ws->toplevel->base->surface) {
+        return false;
+    }
+    wl_client *client = wl_resource_get_client(ws->toplevel->base->surface->resource);
+    if (!client) return false;
+    pid_t pid = 0;
+    uid_t uid = 0;
+    gid_t gid = 0;
+    wl_client_get_credentials(client, &pid, &uid, &gid);
+    if (pid <= 0) return false;
+    std::string comm_path = "/proc/" + std::to_string((long)pid) + "/comm";
+    std::ifstream comm_file(comm_path);
+    if (!comm_file.is_open()) return false;
+    std::string comm;
+    std::getline(comm_file, comm);
+    return comm == "xwayland-satellite";
 }
 
 void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {
