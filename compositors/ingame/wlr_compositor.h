@@ -382,6 +382,11 @@ struct WindowCursorState {
     int32_t hotspot_x = 0;
     int32_t hotspot_y = 0;
     uint64_t serial = 0;              // incrémenté à chaque changement d'image
+    // true si le client a explicitement masqué son curseur (set_cursor NULL,
+    // ex. jeux Unity qui dessinent leur propre curseur). Sans image capturée,
+    // l'overlay doit alors se masquer au lieu de retomber sur le curseur
+    // système (sinon double curseur : celui du jeu + la flèche KDE).
+    bool hidden = false;
     godot::Ref<godot::Image> image;   // dernière image RGBA8 capturée (ou null)
 
     class WlrCompositor *owner = nullptr;

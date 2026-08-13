@@ -4247,6 +4247,10 @@ void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
     wlr_seat_pointer_request_set_cursor_event *event =
         (wlr_seat_pointer_request_set_cursor_event *)data;
     bool dbg = cursor_debug_enabled();
+    fprintf(stderr, "waylandgodot: [set_cursor] dbg=%d surface=%p serial=%u seat_client=%p focused_client=%p focused_surf=%p\n",
+        (int)dbg, (void *)event->surface, event->serial,
+        (void *)event->seat_client, (void *)(self->seat ? self->seat->pointer_state.focused_client : nullptr),
+        (void *)(self->seat && self->seat->pointer_state.focused_surface ? (void *)self->seat->pointer_state.focused_surface : nullptr));
     if (!self->seat) {
         if (dbg) fprintf(stderr, "waylandgodot: set_cursor ignored (no seat)\n");
         return;
@@ -4272,6 +4276,7 @@ void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
     if (event->surface) {
         WindowCursorState &cs = self->window_cursor[window_id];
         cs.window_id = window_id;
+        cs.hidden = false;
         if (cs.surface != event->surface) {
             if (cs.surface) {
                 wl_list_remove(&cs.commit_listener.link);
@@ -4308,11 +4313,14 @@ void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
         // rétention le curseur disparaît définitivement (l'overlay du mode
         // focus retomberait sur la flèche système). Pendant la souris capturée
         // l'overlay est masqué de toute façon.
-        auto it = self->window_cursor.find(window_id);
-        if (it == self->window_cursor.end()) {
-            return;
-        }
-        WindowCursorState &cs = it->second;
+        // set_cursor(NULL) : le client demande l'absence de curseur OS. On
+        // crée l'état s'il n'existe pas encore (jeux qui ne posent jamais de
+        // surface curseur mais masquent simplement le curseur système, ex.
+        // Papers Please/Unity) pour que l'overlay se masque au lieu de
+        // retomber sur la flèche système.
+        WindowCursorState &cs = self->window_cursor[window_id];
+        cs.window_id = window_id;
+        cs.hidden = true;
         if (cs.surface) {
             wl_list_remove(&cs.commit_listener.link);
             wl_list_remove(&cs.client_commit_listener.link);
@@ -4415,13 +4423,21 @@ bool WlrCompositor::capture_window_cursor(WindowCursorState &cs, wlr_buffer *buf
 Dictionary WlrCompositor::get_window_cursor(int window_id) {
     Dictionary result;
     auto it = window_cursor.find(window_id);
-    if (it == window_cursor.end() || !it->second.image.is_valid()) {
+    if (it == window_cursor.end()) {
         return result;
     }
     WindowCursorState &cs = it->second;
+    if (!cs.image.is_valid()) {
+        // Aucune image capturée : signaler seulement si le client a
+        // explicitement masqué son curseur (set_cursor NULL) pour que
+        // l'overlay se cache au lieu de retomber sur le curseur système.
+        result["hidden"] = cs.hidden;
+        return result;
+    }
     int32_t scale = cs.surface ? cs.surface->current.scale : 1;
     result["serial"] = (uint64_t)cs.serial;
     result["image"] = cs.image;
+    result["hidden"] = cs.hidden;
     result["hotspot_x"] = (double)cs.hotspot_x * scale;
     result["hotspot_y"] = (double)cs.hotspot_y * scale;
     result["width"] = cs.image->get_width();
