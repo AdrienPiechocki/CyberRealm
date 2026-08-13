@@ -515,6 +515,13 @@ static void wlr_registry_handle_add(void *data, struct wl_registry *reg,
 		ctx->shm = wl_registry_bind(reg, id, &wl_shm_interface, WL_SHM_VERSION);
 	}
 
+	if (strcmp(interface, wl_seat_interface.name) == 0 && ctx->seat == NULL) {
+		// Requis pour create_pointer_cursor_session (mode curseur METADATA)
+		logprint(DEBUG, "wlroots: |-- registered to interface %s (Version %u)", interface, ver);
+		ctx->seat = wl_registry_bind(reg, id, &wl_seat_interface, 1);
+		ctx->pointer = wl_seat_get_pointer(ctx->seat);
+	}
+
 	if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0) {
 		uint32_t version = ver;
 		if (LINUX_DMABUF_VERSION < ver) {
@@ -665,6 +672,14 @@ void xdpw_wlr_screencopy_finish(struct xdpw_screencast_context *ctx) {
 	}
 	if (ctx->shm) {
 		wl_shm_destroy(ctx->shm);
+	}
+	if (ctx->pointer) {
+		wl_pointer_destroy(ctx->pointer);
+		ctx->pointer = NULL;
+	}
+	if (ctx->seat) {
+		wl_seat_destroy(ctx->seat);
+		ctx->seat = NULL;
 	}
 	if (ctx->gbm) {
 		int fd = gbm_device_get_fd(ctx->gbm);

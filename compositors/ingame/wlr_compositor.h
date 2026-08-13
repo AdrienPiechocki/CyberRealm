@@ -191,6 +191,15 @@ struct WindowState {
     // personne ne la capture.
     struct WlrCompositorToplevelSource *image_source = nullptr;
 
+    // Position du pointeur du jeu DANS cette fenêtre (coordonnées surface,
+    // y vers le bas) et fait qu'il pointe actuellement sur elle. Alimenté
+    // chaque frame par le script Godot (set_window_pointer) pendant le
+    // raycast ; utilisé pour composer le curseur dans la capture fenêtre OBS
+    // quand la source l'a demandé (case « afficher le curseur »).
+    bool pointer_inside = false;
+    double pointer_x = 0;
+    double pointer_y = 0;
+
     class WlrCompositor *owner = nullptr;
     bool decoration_server_side = false;
 };
@@ -203,11 +212,30 @@ struct WlrCompositorToplevelSource {
     WindowState *window = nullptr;
     size_t num_started = 0;
     bool needs_frame = false;
+    // Recopié depuis l'option PAINT_CURSORS de la session (passée à
+    // toplevel_source_start) : seules les sessions dont OBS a coché
+    // « afficher le curseur » voient le curseur composité dans la capture
+    // de fenêtre.
+    bool with_cursors = false;
     // Buffer à la taille EXACTE de la fenêtre (w×h), recopié chaque frame
     // depuis capture_cache.offscreen (padded à 64px). wlr_ext_image_copy_
     // capture_frame_v1_copy_buffer exige src->width == dst->width, donc on
     // ne peut pas passer offscreen (padded) directement.
     wlr_buffer *capture_buffer = nullptr;
+
+    // --- Curseur METADATA (ext_image_copy_capture_cursor_session) --------
+    // Source de curseur fournie à portal-wlr pour les captures de fenêtre en
+    // mode METADATA (case « afficher le curseur » d'OBS en mode metadata).
+    // Créée paresseusement par get_pointer_cursor quand portal-wlr demande
+    // une session curseur ; pilotée chaque frame dans _process depuis l'état
+    // du pointeur du jeu (pointer_inside/pointer_x/pointer_y). L'image
+    // véhiculée est le buffer shm partagé compositor->cursor_image_buffer.
+    struct ToplevelCursorSource {
+        wlr_ext_image_capture_source_v1_cursor base;
+        bool initialized = false;
+        size_t num_started = 0; // sessions curseur actives (get_capture_session)
+        bool image_ready = false;
+    } cursor;
 };
 
 struct PopupState {
@@ -373,6 +401,30 @@ class WlrCompositor : public Node {
     double cursor_x = 0;
     double cursor_y = 0;
     bool cursor_visible = true;
+
+    // Curseur de l'output headless (wlr_output_cursor) : alimente la source
+    // de curseur METADATA de la capture écran. wlroots la nourrit depuis
+    // output->cursor_front_buffer, produit par le chemin "matériel"
+    // (output_cursor_attempt_hardware), qui n'opère QUE si aucun verrou
+    // logiciel n'est posé sur l'output (i.e. aucune session EMBEDDED active
+    // — dans ce cas le curseur est baken dans present_buffer, voir
+    // present_viewport_frame). Piloté à chaque frame présentée.
+    wlr_output_cursor *output_cursor = nullptr;
+    bool output_cursor_buffer_set = false;
+
+    // Buffer shm partagé contenant l'image xcursor "default" courante
+    // (DRM_FORMAT_ARGB8888 en mémoire BGRA) + sa géométrie/hotspot. Rempli à
+    // la demande par ensure_cursor_image_buffer (réutilisé sans re-copie tant
+    // que l'image ne change pas), et consommé par l'output cursor et par la
+    // source de curseur des captures de fenêtre.
+    wlr_buffer *cursor_image_buffer = nullptr;
+    int cursor_image_width = 0;
+    int cursor_image_height = 0;
+    int cursor_image_hotspot_x = 0;
+    int cursor_image_hotspot_y = 0;
+    // Garantit que cursor_image_buffer contient l'image xcursor courante.
+    // Retourne false si aucun thème/image n'est disponible.
+    bool ensure_cursor_image_buffer();
 
     // --- Capture (xdg-desktop-portal-wlr) -------------------------------
     // ext_image_copy_capture_v1 : sessions/frames fournies par wlroots, avec
@@ -723,6 +775,12 @@ public:
     // apparaître dans la capture OBS pendant le focus caméra.
     void set_cursor_visible(bool visible);
 
+    // Positionne le pointeur du jeu dans une fenêtre (coordonnées surface) et
+    // indique si le pointeur survole actuellement cette fenêtre. window_id = -1
+    // (inside = false) efface l'état de toutes les fenêtres. Utilisé pour
+    // composer le curseur dans les captures de fenêtre OBS.
+    void set_window_pointer(int window_id, double x, double y, bool inside);
+
     void set_polkit_agent(const String &path);
     String get_polkit_agent() const;
 
@@ -806,6 +864,19 @@ public:
         wlr_ext_image_capture_source_v1_frame_event *event);
     static wlr_ext_image_capture_source_v1_cursor *toplevel_source_get_pointer_cursor(
         wlr_ext_image_capture_source_v1 *base, wlr_seat *seat);
+
+    // Pilote la source de curseur d'une capture de fenêtre (entered/
+    // position/hotspot + frame event) depuis l'état courant du pointeur du
+    // jeu. Appelé chaque frame dans _process pour les sources qui ont une
+    // source de curseur initialisée.
+    void update_toplevel_cursor(WlrCompositorToplevelSource *source);
+
+    static void toplevel_cursor_start(wlr_ext_image_capture_source_v1 *base, bool with_cursors);
+    static void toplevel_cursor_stop(wlr_ext_image_capture_source_v1 *base);
+    static void toplevel_cursor_schedule_frame(wlr_ext_image_capture_source_v1 *base);
+    static void toplevel_cursor_copy_frame(wlr_ext_image_capture_source_v1 *base,
+        wlr_ext_image_copy_capture_frame_v1 *frame,
+        wlr_ext_image_capture_source_v1_frame_event *event);
 
 
 };

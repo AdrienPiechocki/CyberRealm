@@ -574,6 +574,11 @@ func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: i
 # Gère hover/clic/scroll vers les fenêtres et popups, ainsi que les grabs
 # de déplacement (G) et de redimensionnement (bords/coins).
 func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, interact_active: bool) -> void:
+	# Efface le pointeur wayland de toutes les fenêtres : il n'est re-posé
+	# que si le raycast atteint une fenêtre ci-dessous. Les branches de
+	# retour (drag, raycast dans le vide) laissent ainsi les captures de
+	# fenêtre OBS sans curseur.
+	compositor.set_window_pointer(-1, 0, 0, false)
 	# Une prise en cours (déplacement/redimensionnement) continue d'être mise
 	# à jour même si le viseur ne pointe plus sur la fenêtre: en
 	# MOUSE_MODE_CAPTURED (souris FPS), get_viewport().get_mouse_position()
@@ -680,6 +685,12 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	compositor.forward_pointer_motion(wid,
 		uv.x * win_size.x + content_offset_fwd.x,
 		uv.y * win_size.y + content_offset_fwd.y)
+	# Position du pointeur dans la fenêtre (coordonnées surface, y vers le
+	# bas) : servira à composer le curseur dans la capture fenêtre OBS quand
+	# la source a coché « afficher le curseur ».
+	compositor.set_window_pointer(wid,
+		uv.x * win_size.x + content_offset_fwd.x,
+		uv.y * win_size.y + content_offset_fwd.y, true)
 
 	if Input.is_action_just_pressed("grab", true) and not interact_active:
 		active_window_id = wid

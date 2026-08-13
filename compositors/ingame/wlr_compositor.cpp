@@ -44,6 +44,7 @@ extern "C" {
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/types/wlr_output.h>
 }
 
 #include "ext-image-capture-source-v1-protocol.h"
@@ -59,6 +60,11 @@ using namespace godot;
 void WlrCompositor::toplevel_source_start(wlr_ext_image_capture_source_v1 *base, bool with_cursors) {
     WlrCompositorToplevelSource *source = wl_container_of(base, source, base);
     source->num_started++;
+    // with_cursors == PAINT_CURSORS demandé par la session (case « afficher
+    // le curseur » d'OBS) : mémorisé pour composer le curseur dans la
+    // capture de fenêtre, comme le fait la source output via
+    // wlr_output_lock_software_cursors pour la capture écran.
+    source->with_cursors = with_cursors;
 }
 
 void WlrCompositor::toplevel_source_stop(wlr_ext_image_capture_source_v1 *base) {
@@ -97,9 +103,80 @@ void WlrCompositor::toplevel_source_copy_frame(wlr_ext_image_capture_source_v1 *
     wlr_ext_image_copy_capture_frame_v1_ready(frame, WL_OUTPUT_TRANSFORM_NORMAL, &now);
 }
 
+static const wlr_ext_image_capture_source_v1_interface toplevel_cursor_impl = {
+    .start = WlrCompositor::toplevel_cursor_start,
+    .stop = WlrCompositor::toplevel_cursor_stop,
+    .schedule_frame = WlrCompositor::toplevel_cursor_schedule_frame,
+    .copy_frame = WlrCompositor::toplevel_cursor_copy_frame,
+};
+
 wlr_ext_image_capture_source_v1_cursor *WlrCompositor::toplevel_source_get_pointer_cursor(
         wlr_ext_image_capture_source_v1 *base, wlr_seat *seat) {
-    return nullptr;
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, base);
+    WlrCompositorToplevelSource::ToplevelCursorSource &tc = source->cursor;
+    WlrCompositor *compositor = source->compositor;
+    (void)seat;
+    if (!tc.initialized) {
+        wlr_ext_image_capture_source_v1_cursor_init(&tc.base, &toplevel_cursor_impl);
+        tc.initialized = true;
+        // Contraintes (taille + formats shm) fixées depuis l'image xcursor
+        // courante : portal-wlr les lit à la création de sa session curseur
+        // (session_send_constraints) pour allouer un buffer de frame adapté.
+        // L'image xcursor est chargée à l'init du compositeur, donc déjà
+        // disponible ici. dmabuf_formats laissé vide : portal-wlr allouera
+        // un buffer shm, copié via copy_shm par wlroots.
+        if (compositor && compositor->ensure_cursor_image_buffer()) {
+            tc.base.base.width = (uint32_t)compositor->cursor_image_width;
+            tc.base.base.height = (uint32_t)compositor->cursor_image_height;
+            tc.base.base.shm_formats_len = 1;
+            tc.base.base.shm_formats = (uint32_t *)malloc(sizeof(uint32_t));
+            if (tc.base.base.shm_formats) {
+                tc.base.base.shm_formats[0] = DRM_FORMAT_ARGB8888;
+            } else {
+                tc.base.base.shm_formats_len = 0;
+            }
+        }
+    }
+    return &tc.base;
+}
+
+void WlrCompositor::toplevel_cursor_start(wlr_ext_image_capture_source_v1 *base,
+        bool with_cursors) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, cursor.base.base);
+    (void)with_cursors; // METADATA : le curseur n'est jamais composité dans la capture
+    source->cursor.num_started++;
+}
+
+void WlrCompositor::toplevel_cursor_stop(wlr_ext_image_capture_source_v1 *base) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, cursor.base.base);
+    if (source->cursor.num_started > 0) {
+        source->cursor.num_started--;
+    }
+}
+
+void WlrCompositor::toplevel_cursor_schedule_frame(wlr_ext_image_capture_source_v1 *base) {
+    // Le pilote _process émet déjà un frame event à chaque frame tant qu'au
+    // moins une session curseur est active : rien à faire ici.
+    (void)base;
+}
+
+void WlrCompositor::toplevel_cursor_copy_frame(wlr_ext_image_capture_source_v1 *base,
+        wlr_ext_image_copy_capture_frame_v1 *frame,
+        wlr_ext_image_capture_source_v1_frame_event *event) {
+    WlrCompositorToplevelSource *source = wl_container_of(base, source, cursor.base.base);
+    (void)event;
+    wlr_buffer *image = source->compositor ? source->compositor->cursor_image_buffer : nullptr;
+    if (image) {
+        if (wlr_ext_image_copy_capture_frame_v1_copy_buffer(frame, image,
+                source->compositor->renderer)) {
+            timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            wlr_ext_image_copy_capture_frame_v1_ready(frame, WL_OUTPUT_TRANSFORM_NORMAL, &now);
+            return;
+        }
+    }
+    wlr_ext_image_copy_capture_frame_v1_fail(frame,
+        EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
 }
 
 static const wlr_ext_image_capture_source_v1_interface toplevel_source_impl = {
@@ -266,6 +343,7 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_cursor_position", "x", "y"), &WlrCompositor::set_cursor_position);
     ClassDB::bind_method(D_METHOD("set_cursor_visible", "visible"), &WlrCompositor::set_cursor_visible);
+    ClassDB::bind_method(D_METHOD("set_window_pointer", "window_id", "x", "y", "inside"), &WlrCompositor::set_window_pointer);
 
 
     ADD_SIGNAL(MethodInfo("window_mapped",
@@ -395,6 +473,10 @@ WlrCompositor::~WlrCompositor() {
     if (present_buffer) {
         wlr_buffer_drop(present_buffer);
         present_buffer = nullptr;
+    }
+    if (cursor_image_buffer) {
+        wlr_buffer_drop(cursor_image_buffer);
+        cursor_image_buffer = nullptr;
     }
 
     if (display) {
@@ -1763,7 +1845,102 @@ void WlrCompositor::blit_toplevel_capture(WlrCompositorToplevelSource *source) {
         wlr_render_pass_add_texture(pass, &opts);
         wlr_texture_destroy(tex);
     }
+
+    // Curseur dans la capture de fenêtre : composé uniquement si la session
+    // l'a demandé (PAINT_CURSORS — case « afficher le curseur » d'OBS),
+    // comme la source output le fait via wlr_output_lock_software_cursors
+    // pour la capture écran. Positionné à la position du pointeur du jeu
+    // dans la fenêtre (coordonnées surface, y vers le bas), fournie par le
+    // script Godot via set_window_pointer. Masqué si le jeu est en mode
+    // caméra (cursor_visible = false) — cohérent avec la capture écran.
+    if (source->with_cursors && cursor_manager && cursor && cursor_visible
+            && ws->pointer_inside) {
+        struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(
+            cursor_manager, "default", 1.0f);
+        if (xcursor && xcursor->image_count > 0) {
+            int frame = wlr_xcursor_frame(xcursor, 0);
+            if (frame >= 0 && frame < (int)xcursor->image_count) {
+                struct wlr_xcursor_image *img = xcursor->images[frame];
+                if (img && img->buffer) {
+                    // L'image xcursor est en DRM_FORMAT_ARGB8888 non
+                    // pré-multiplié ; le blend par défaut
+                    // (WLR_RENDER_BLEND_MODE_PREMULTIPLIED) est le même que
+                    // celui utilisé par wlroots pour dessiner ses propres
+                    // curseurs logiciels.
+                    wlr_texture *curtex = wlr_texture_from_pixels(renderer,
+                        DRM_FORMAT_ARGB8888, (uint32_t)((size_t)img->width * 4),
+                        (uint32_t)img->width, (uint32_t)img->height, img->buffer);
+                    if (curtex) {
+                        wlr_render_texture_options copts = {};
+                        copts.texture = curtex;
+                        copts.dst_box.x = (int)ws->pointer_x - (int)img->hotspot_x;
+                        copts.dst_box.y = (int)ws->pointer_y - (int)img->hotspot_y;
+                        copts.dst_box.width = img->width;
+                        copts.dst_box.height = img->height;
+                        copts.transform = WL_OUTPUT_TRANSFORM_NORMAL;
+                        copts.filter_mode = WLR_SCALE_FILTER_NEAREST;
+                        wlr_render_pass_add_texture(pass, &copts);
+                        wlr_texture_destroy(curtex);
+                    }
+                }
+            }
+        }
+    }
     wlr_render_pass_submit(pass);
+}
+
+// Pilote la source de curseur d'une capture de fenêtre (mode METADATA) :
+// synchronise entered/position/hotspot et réarme le damage de la session
+// curseur. Appelé chaque frame dans _process pour les sources qui ont une
+// source de curseur initialisée (portal-wlr a demandé create_pointer_cursor_
+// session). Position en coordonnées de la capture (géométrie de contenu) :
+// les coordonnées surface du pointeur moins l'origine de la géométrie
+// (offset des ombres CSD).
+void WlrCompositor::update_toplevel_cursor(WlrCompositorToplevelSource *source) {
+    WlrCompositorToplevelSource::ToplevelCursorSource &tc = source->cursor;
+    if (!tc.initialized) return;
+    WindowState *ws = source->window;
+    if (!ws || !ws->toplevel || !ws->toplevel->base) return;
+
+    // Image du curseur : buffer shm partagé avec l'output cursor. Une fois
+    // disponible, les sessions curseur peuvent être servies en frames.
+    if (ensure_cursor_image_buffer()) {
+        tc.image_ready = true;
+    }
+
+    bool entered = cursor_visible && ws->pointer_inside;
+    int x = 0;
+    int y = 0;
+    if (entered) {
+        wlr_box geo = ws->toplevel->base->current.geometry;
+        x = (int)ws->pointer_x - geo.x;
+        y = (int)ws->pointer_y - geo.y;
+    }
+
+    if (entered != tc.base.entered || x != tc.base.x || y != tc.base.y ||
+            cursor_image_hotspot_x != tc.base.hotspot.x ||
+            cursor_image_hotspot_y != tc.base.hotspot.y) {
+        tc.base.entered = entered;
+        tc.base.x = x;
+        tc.base.y = y;
+        tc.base.hotspot.x = cursor_image_hotspot_x;
+        tc.base.hotspot.y = cursor_image_hotspot_y;
+        wl_signal_emit_mutable(&tc.base.events.update, NULL);
+    }
+
+    // Réarme le damage de la session curseur à chaque frame tant qu'au moins
+    // une session est active (même mécanisme que la capture fenêtre :
+    // ready() vide le damage de session, sans réémission le prochain capture
+    // de portal-wlr ne serait jamais servi).
+    if (tc.num_started > 0 && tc.image_ready && cursor_image_width > 0 &&
+            cursor_image_height > 0) {
+        pixman_region32_t damage;
+        pixman_region32_init_rect(&damage, 0, 0,
+            cursor_image_width, cursor_image_height);
+        wlr_ext_image_capture_source_v1_frame_event event = { .damage = &damage };
+        wl_signal_emit_mutable(&tc.base.base.events.frame, &event);
+        pixman_region32_fini(&damage);
+    }
 }
 
 void WlrCompositor::destroy_toplevel_image_source(WlrCompositorToplevelSource *source) {
@@ -1771,6 +1948,14 @@ void WlrCompositor::destroy_toplevel_image_source(WlrCompositorToplevelSource *s
     WindowState *ws = source->window;
     if (ws && ws->image_source == source) {
         ws->image_source = nullptr;
+    }
+    if (source->cursor.initialized) {
+        // La fin (events.destroy) détruit les sessions curseur attachées
+        // (leurs listeners update/frame sont retirés dans session_destroy),
+        // ce qui satisfait les asserts de wlr_ext_image_capture_source_v1_
+        // cursor_finish.
+        wlr_ext_image_capture_source_v1_cursor_finish(&source->cursor.base);
+        source->cursor.initialized = false;
     }
     if (source->capture_buffer) {
         wlr_buffer_drop(source->capture_buffer);
@@ -3173,14 +3358,34 @@ void WlrCompositor::_process(double delta) {
             WlrCompositorToplevelSource *src = ws.image_source;
             if (src->num_started > 0 || src->needs_frame) {
                 blit_toplevel_capture(src);
+                // Émettre le frame event après chaque blit tant qu'une
+                // session capture est active. wlroots ne rappelle
+                // schedule_frame que si le damage de la session est non vide
+                // — or wlr_ext_image_copy_capture_frame_v1_ready() le vide à
+                // chaque frame — donc sans cette émission continue la capture
+                // fenêtre restait figée après la première image (le capture
+                // suivant ne déclenchait plus rien). La source output de
+                // wlroots émet de même à chaque commit ; ici on émet à
+                // chaque frame présentée, ce qui réarme le damage de la
+                // session. Sans frame en vol copy_frame n'est pas appelé
+                // (seule l'union de damage coûte) et le prochain capture de
+                // la session est servi immédiatement.
+                if (ws.width > 0 && ws.height > 0) {
+                    pixman_region32_t damage;
+                    pixman_region32_init_rect(&damage, 0, 0, ws.width, ws.height);
+                    wlr_ext_image_capture_source_v1_frame_event event = { .damage = &damage };
+                    wl_signal_emit_mutable(&src->base.events.frame, &event);
+                    pixman_region32_fini(&damage);
+                }
+                src->needs_frame = false;
             }
         }
     }
 
-    // Capture de fenêtres pour OBS (xdg-desktop-portal-wlr) : produire les
-    // frames demandées par les sessions ext_image_copy_capture actives.
-    // Le buffer offscreen vient d'être re-rendu juste au-dessus ; les
-    // contraintes (taille) suivent la géométrie courante de la fenêtre.
+    // Capture de fenêtres pour OBS (xdg-desktop-portal-wlr) : suivre les
+    // contraintes (taille) de chaque source sur la géométrie courante de la
+    // fenêtre. Les frame events, eux, sont émis dans la boucle de blit
+    // ci-dessus.
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
         if (!ws.image_source) continue;
@@ -3189,13 +3394,10 @@ void WlrCompositor::_process(double delta) {
                 (ws.width != (int)src->base.width || ws.height != (int)src->base.height)) {
             update_toplevel_source_constraints(src);
         }
-        if (src->needs_frame && ws.width > 0 && ws.height > 0) {
-            pixman_region32_t damage;
-            pixman_region32_init_rect(&damage, 0, 0, ws.width, ws.height);
-            wlr_ext_image_capture_source_v1_frame_event event = { .damage = &damage };
-            wl_signal_emit_mutable(&src->base.events.frame, &event);
-            pixman_region32_fini(&damage);
-            src->needs_frame = false;
+        // Source de curseur METADATA : synchroniser entered/position/
+        // hotspot + frames avec l'état courant du pointeur du jeu.
+        if (src->cursor.initialized) {
+            update_toplevel_cursor(src);
         }
     }
 
@@ -3891,6 +4093,24 @@ void WlrCompositor::set_cursor_visible(bool visible) {
     cursor_visible = visible;
 }
 
+void WlrCompositor::set_window_pointer(int window_id, double x, double y, bool inside) {
+    if (window_id < 0 || !inside) {
+        // Le pointeur ne survole aucune fenêtre : efface l'état de toutes
+        // pour qu'aucune capture de fenêtre ne conserve un curseur périmé.
+        for (auto &pair : windows) {
+            pair.second.pointer_inside = false;
+        }
+        return;
+    }
+    WindowState *ws = find_window(window_id);
+    if (!ws) {
+        return;
+    }
+    ws->pointer_inside = true;
+    ws->pointer_x = x;
+    ws->pointer_y = y;
+}
+
 void WlrCompositor::set_polkit_agent(const String &path) {
     polkit_agent_path = path;
     if (!polkit_agent_path.is_empty()) {
@@ -4437,6 +4657,65 @@ bool WlrCompositor::has_active_capture() const {
     return headless_output && headless_output->attach_render_locks > 0;
 }
 
+bool WlrCompositor::ensure_cursor_image_buffer() {
+    struct wlr_xcursor *xcursor = cursor_manager
+        ? wlr_xcursor_manager_get_xcursor(cursor_manager, "default", 1.0f)
+        : nullptr;
+    if (!xcursor || xcursor->image_count <= 0) {
+        return false;
+    }
+    int frame = wlr_xcursor_frame(xcursor, 0);
+    if (frame < 0 || frame >= (int)xcursor->image_count) {
+        return false;
+    }
+    struct wlr_xcursor_image *img = xcursor->images[frame];
+    if (!img || !img->buffer || img->width <= 0 || img->height <= 0) {
+        return false;
+    }
+
+    cursor_image_hotspot_x = (int)img->hotspot_x;
+    cursor_image_hotspot_y = (int)img->hotspot_y;
+
+    // Recréer le buffer uniquement si la taille change (l'image xcursor ne
+    // change pas à chaud) : les textures dérivées (output cursor, copies)
+    // restent valides tant que le contenu ne bouge pas.
+    if (!cursor_image_buffer ||
+            cursor_image_width != (int)img->width ||
+            cursor_image_height != (int)img->height) {
+        if (cursor_image_buffer) {
+            wlr_buffer_drop(cursor_image_buffer);
+            cursor_image_buffer = nullptr;
+        }
+        cursor_image_buffer = present_shm_buffer_create(
+            (int)img->width, (int)img->height, DRM_FORMAT_ARGB8888);
+        if (!cursor_image_buffer) {
+            cursor_image_width = 0;
+            cursor_image_height = 0;
+            return false;
+        }
+        cursor_image_width = (int)img->width;
+        cursor_image_height = (int)img->height;
+
+        // Recopie de l'image xcursor (ARGB8888 mémoire BGRA, pas de padding
+        // de ligne) vers le buffer shm (stride aligné à 32).
+        void *data = nullptr;
+        uint32_t format = 0;
+        size_t stride = 0;
+        if (!wlr_buffer_begin_data_ptr_access(cursor_image_buffer,
+                WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride)) {
+            return false;
+        }
+        const uint8_t *src = img->buffer;
+        uint8_t *dst = static_cast<uint8_t *>(data);
+        for (uint32_t y = 0; y < img->height; y++) {
+            memcpy(dst + (size_t)y * stride, src + (size_t)y * img->width * 4,
+                (size_t)img->width * 4);
+        }
+        wlr_buffer_end_data_ptr_access(cursor_image_buffer);
+    }
+    return true;
+}
+
 void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int width, int height) {
     if (!renderer || !allocator || !headless_output) return;
     if (width <= 0 || height <= 0) return;
@@ -4509,7 +4788,17 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     // Masqué en mode caméra (Input.mouse_mode = MOUSE_MODE_CAPTURED) via
     // set_cursor_visible(false) : le curseur ne doit pas apparaître dans la
     // capture OBS pendant le focus caméra.
-    if (cursor_manager && cursor && cursor_visible) {
+    //
+    // Le curseur n'est composité que si au moins une session de capture
+    // active l'a demandé (options PAINT_CURSORS). wlroots pose ce verrou
+    // sur l'output via wlr_output_lock_software_cursors (source output
+    // ext_image_capture, et wlr-screencopy avec overlay_cursor) ; sans ce
+    // garde, le curseur reste baken dans le buffer même quand OBS décoche
+    // "capturer le curseur" — la session recréée sans PAINT_CURSORS copie
+    // pourtant ce buffer tel quel (wlr_ext_image_copy_capture_frame_v1_
+    // copy_buffer copie le buffer committé, curseur compris).
+    if (cursor_manager && cursor && cursor_visible &&
+            headless_output && headless_output->software_cursor_locks > 0) {
         struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(
             cursor_manager, "default", 1.0f);
         if (xcursor && xcursor->image_count > 0) {
@@ -4562,6 +4851,35 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
                         wlr_buffer_end_data_ptr_access(present_buffer);
                     }
                 }
+            }
+        }
+    }
+
+    // Curseur de l'output headless pour le mode METADATA de la capture écran.
+    // wlroots alimente la source de curseur ext_image_capture depuis
+    // output->cursor_front_buffer, produit par le chemin "matériel"
+    // (output_cursor_attempt_hardware) qui n'opère QUE si aucun verrou
+    // logiciel n'est posé (software_cursor_locks == 0, i.e. aucune session
+    // EMBEDDED active — dans ce cas c'est le bake ci-dessus qui fournit le
+    // curseur à la capture). L'output cursor est piloté AVANT le commit ci-
+    // dessous pour que l'événement de commit synchronise la position/image.
+    // Masqué quand le jeu est en mode caméra (cursor_visible = false).
+    if (headless_output) {
+        if (!output_cursor) {
+            output_cursor = wlr_output_cursor_create(headless_output);
+        }
+        if (output_cursor) {
+            bool want_visible = cursor_visible && ensure_cursor_image_buffer();
+            if (want_visible) {
+                if (!output_cursor_buffer_set) {
+                    wlr_output_cursor_set_buffer(output_cursor, cursor_image_buffer,
+                        cursor_image_hotspot_x, cursor_image_hotspot_y);
+                    output_cursor_buffer_set = true;
+                }
+                wlr_output_cursor_move(output_cursor, cursor_x, cursor_y);
+            } else if (output_cursor_buffer_set) {
+                wlr_output_cursor_set_buffer(output_cursor, nullptr, 0, 0);
+                output_cursor_buffer_set = false;
             }
         }
     }

@@ -461,6 +461,8 @@ func handle_focus_input() -> void:
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
 		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
 
+	compositor.set_window_pointer(active_id, surf_x, surf_y, true)
+
 	if Input.is_action_just_pressed("left_click"):
 		compositor.forward_pointer_button(active_id, 0x110, true)
 	if Input.is_action_just_released("left_click"):

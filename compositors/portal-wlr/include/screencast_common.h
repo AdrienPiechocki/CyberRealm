@@ -102,6 +102,40 @@ struct xdpw_toplevel {
 	char *identifier;
 };
 
+// Curseur METADATA (mode 4 d'OBS) : état de la session curseur
+// ext_image_copy_capture_cursor_session + capture de l'image du curseur.
+// Alloué dans ext_image_copy.c quand target->with_cursor_meta est vrai.
+struct xdpw_cursor_state {
+	// wayland
+	struct ext_image_copy_capture_cursor_session_v1 *cursor_session;
+	struct ext_image_copy_capture_session_v1 *image_session;
+	struct ext_image_copy_capture_frame_v1 *frame;
+
+	// événements enter/leave/position/hotspot de la session curseur
+	bool entered;
+	int32_t x;
+	int32_t y;
+	int32_t hotspot_x;
+	int32_t hotspot_y;
+
+	// buffer shm recevant l'image du curseur (copiée par le compositeur via
+	// ext_image_copy_capture_frame_v1.copy_buffer) — image xcursor en
+	// DRM_FORMAT_ARGB8888, soit BGRA en mémoire.
+	struct wl_buffer *buffer;
+	int fd;
+	void *data;
+	size_t size;
+	uint32_t width;
+	uint32_t height;
+	uint32_t stride;
+	bool buffer_allocated;
+
+	// cliché des pixels de la dernière frame valide (recopié dans le meta
+	// SPA_META_Cursor du buffer pipewire à l'enqueue)
+	void *pixels;
+	bool image_valid;
+};
+
 struct xdpw_screencast_context {
 	// xdpw
 	struct xdpw_state *state;
@@ -119,6 +153,8 @@ struct xdpw_screencast_context {
 	struct ext_image_copy_capture_manager_v1 *ext_image_copy_capture_manager;
 	struct ext_foreign_toplevel_list_v1 *ext_foreign_toplevel_list;
 	struct wl_shm *shm;
+	struct wl_seat *seat;
+	struct wl_pointer *pointer;
 	struct zwp_linux_dmabuf_v1 *linux_dmabuf;
 	struct zwp_linux_dmabuf_feedback_v1 *linux_dmabuf_feedback;
 	struct zxdg_output_manager_v1 *xdg_output_manager;
@@ -138,6 +174,9 @@ struct xdpw_screencast_context {
 struct xdpw_screencast_target {
 	enum source_types type;
 	bool with_cursor;
+	// mode METADATA : le curseur n'est pas composité dans la capture, il est
+	// fourni séparément via SPA_META_Cursor (cf. xdpw_cursor_state)
+	bool with_cursor_meta;
 
 	// only for MONITOR
 	struct xdpw_wlr_output *output;
@@ -170,6 +209,7 @@ struct xdpw_buffer_constraints {
 };
 
 struct xdpw_screencast_ext_session {
+	struct ext_image_capture_source_v1 *source;
 	struct ext_image_copy_capture_session_v1 *capture_session;
 	struct ext_image_copy_capture_frame_v1 *frame;
 };
@@ -204,6 +244,9 @@ struct xdpw_screencast_instance {
 		struct xdpw_screencast_wlr_session wlr_session;
 		struct xdpw_screencast_ext_session ext_session;
 	};
+
+	// curseur METADATA (non-NULL uniquement en mode METADATA)
+	struct xdpw_cursor_state *cursor;
 
 	struct xdpw_buffer_constraints current_constraints;
 	struct xdpw_buffer_constraints pending_constraints;
