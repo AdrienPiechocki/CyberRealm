@@ -519,6 +519,14 @@ func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: V
 	if cursor_info.is_empty():
 		_show_system_cursor()
 		return
+	# L'application a masqué son curseur OS (set_cursor NULL) et ne fournit
+	# aucune image custom (ex. jeux Unity type Papers Please qui dessinent
+	# leur propre curseur) : on masque l'overlay, sinon on afficherait la
+	# flèche système PAR-DESSUS le curseur du jeu (double curseur).
+	if cursor_info.get("hidden", false):
+		_hide_cursor_overlay()
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		return
 	var serial: int = cursor_info["serial"]
 	if serial != cursor_overlay_serial:
 		var img: Image = cursor_info["image"]
