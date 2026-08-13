@@ -430,6 +430,11 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 		compositor.forward_pointer_button_popup(popup_id, 0x111, true)
 	if Input.is_action_just_released("right_click"):
 		compositor.forward_pointer_button_popup(popup_id, 0x111, false)
+	if Input.is_action_just_pressed("middle_click"):
+		compositor.forward_pointer_button_popup(popup_id, 0x112, true)
+	if Input.is_action_just_released("middle_click"):
+		compositor.forward_pointer_button_popup(popup_id, 0x112, false)
+
 
 # Rend la fenêtre courante de la pile la fenêtre active : met à jour le focus
 # clavier 3D, l'état de la souris et les popups overlayés (seuls ceux de la
