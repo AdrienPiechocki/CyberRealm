@@ -59,6 +59,15 @@ var focus_fullscreen_id := -1
 # l'overlay actif et leurs popups sont recréés à la réactivation.
 var focus_popup_rects: Dictionary = {}
 
+# DEBUG temporaire (CYBERREALM_INPUT_DEBUG=1) : log des transitions de lock et
+# de ce qui est forwardé. CYBERREALM_FORCE_VISIBLE=1 : ignore le pointer lock et
+# reste sur le chemin "souris visible" (pour tester l'hypothèse du chemin LOCKED).
+var input_debug := false
+var force_visible := false
+var _dbg_rel_sum := Vector2.ZERO
+var _dbg_rel_count := 0
+var _dbg_last_log := 0.0
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -67,6 +76,8 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 
 	popup_crop_shader = Shader.new()
 	popup_crop_shader.code = POPUP_CROP_SHADER_CODE
+	input_debug = OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1"
+	force_visible = OS.get_environment("CYBERREALM_FORCE_VISIBLE") == "1"
 
 func is_active() -> bool:
 	return focus_mode
@@ -206,13 +217,62 @@ func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
 	if not focus_mode or window_id != _active_id():
 		return
 	var st := _state(window_id)
+	if input_debug:
+		print("[focus:dbg] lock_changed id=", window_id, " locked=", locked,
+			" force_visible=", force_visible, " was_captured=", st["mouse_captured"],
+			" uv=", st["mouse_uv"])
+	if force_visible:
+		st["mouse_captured"] = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		return
+	# xwayland-satellite ignore le mouvement relatif (il ne voit que du
+	# mouvement absolu) : garder la position réelle du curseur (chemin
+	# VISIBLE) même quand le client X11 demande un pointer lock, sinon la
+	# position absolue forwardée diverge du curseur réel puis saute
+	# (caméra FPS qui "snap-back").
+	if compositor.is_window_xwayland(window_id):
+		st["mouse_captured"] = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		return
 	if locked:
 		st["mouse_captured"] = true
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
 		st["mouse_captured"] = false
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		# Warper le curseur réel sur la position virtuelle courante (mouse_uv)
+		# et non au centre : si le client relâche puis re-grab la souris
+		# (flap de lock), la position absolue forwardée ne doit pas sauter.
+		var rect: TextureRect = focus_rects.get(window_id)
+		if rect and is_instance_valid(rect):
+			var geometry := _visible_geometry(rect, rect.texture)
+			var displayed_size: Vector2 = geometry["displayed_size"]
+			if displayed_size.x > 0.0 and displayed_size.y > 0.0:
+				Input.warp_mouse(
+					geometry["offset"] + Vector2(st["mouse_uv"].x, st["mouse_uv"].y) * displayed_size)
+				return
 		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+
+# Géométrie de la zone réellement affichée par un TextureRect plein écran
+# (displayed_size respectant l'aspect ratio + offset de centrage). Utilisée
+# à la fois pour mapper le curseur réel -> UV (branche "souris visible") et
+# pour l'inverse UV -> position viewport (warp de continuité au unlock).
+func _visible_geometry(rect: TextureRect, tex: Texture2D) -> Dictionary:
+	var geometry := {"displayed_size": Vector2.ZERO, "offset": Vector2.ZERO}
+	if not tex or not is_instance_valid(rect):
+		return geometry
+	var tex_size := tex.get_size()
+	var tex_rect := rect.get_global_rect()
+	var aspect := tex_size.x / tex_size.y
+	var rect_aspect := tex_rect.size.x / tex_rect.size.y
+	var displayed_size: Vector2
+	if aspect > rect_aspect:
+		displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
+	else:
+		displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
+	geometry["displayed_size"] = displayed_size
+	geometry["offset"] = tex_rect.position + (tex_rect.size - displayed_size) / 2.0
+	return geometry
 
 func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	if not focus_mode or not focus_rects.has(id):
@@ -376,6 +436,22 @@ func _activate_window(id: int) -> void:
 	# compositeur reste sur l'ancienne fenêtre).
 	compositor.set_window_keyboard_focus(id)
 	var st := _state(id)
+	# Resynchroniser l'état de pointer lock : le signal pointer_lock_changed
+	# n'est émis qu'à la création/destruction du constraint, et ignoré s'il
+	# arrive avant l'entrée en mode focus. Un jeu qui a demandé le lock à son
+	# démarrage (SDL/FPS) est donc déjà en mode relatif côté client sans que
+	# mouse_captured soit vrai — sans ça la caméra FPS reste figée car le
+	# mouvement relatif n'est jamais forwardé. Le compositeur garde l'état
+	# réel (is_window_pointer_locked) comme source de vérité.
+	st["mouse_captured"] = compositor.is_window_pointer_locked(id)
+	if force_visible or compositor.is_window_xwayland(id):
+		st["mouse_captured"] = false
+	if input_debug:
+		print("[focus:dbg] activate_window id=", id,
+			" locked=", compositor.is_window_pointer_locked(id),
+			" force_visible=", force_visible,
+			" xwayland=", compositor.is_window_xwayland(id),
+			" mouse_captured=", st["mouse_captured"])
 	# Restaurer l'état souris de la fenêtre redevenue active
 	if st["mouse_captured"]:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -428,6 +504,14 @@ func handle_focus_input() -> void:
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
 		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
+		if input_debug and Time.get_ticks_msec() - _dbg_last_log > 500:
+			_dbg_last_log = Time.get_ticks_msec()
+			print("[focus:dbg] LOCKED uv=", st["mouse_uv"],
+				" surf=", Vector2(surf_x, surf_y),
+				" surf_size=", st["surface_size"],
+				" rel_sum=", _dbg_rel_sum, " n=", _dbg_rel_count)
+			_dbg_rel_sum = Vector2.ZERO
+			_dbg_rel_count = 0
 	else:
 		# Souris visible: position absolue, curseur custom suit la souris
 		var mouse_pos := get_viewport().get_mouse_position()
@@ -435,20 +519,10 @@ func handle_focus_input() -> void:
 		# Utiliser la zone réelle affichée par le TextureRect pour le mapping
 		# (plus précis que de recalculer avec surface_size)
 		var tex := rect.texture
-		if tex:
-			var tex_size := tex.get_size()
-			# Rect2 global du TextureRect après layout Godot
-			var tex_rect := rect.get_global_rect()
-			# Taille affichée respectant l'aspect ratio
-			var aspect := tex_size.x / tex_size.y
-			var rect_aspect := tex_rect.size.x / tex_rect.size.y
-			var displayed_size: Vector2
-			if aspect > rect_aspect:
-				displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
-			else:
-				displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
-			var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
-
+		var geometry := _visible_geometry(rect, tex)
+		var displayed_size: Vector2 = geometry["displayed_size"]
+		var offset: Vector2 = geometry["offset"]
+		if displayed_size.x > 0.0 and displayed_size.y > 0.0:
 			var local_pos := mouse_pos - offset
 			st["mouse_uv"] = Vector2(
 				clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
@@ -460,6 +534,11 @@ func handle_focus_input() -> void:
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
 		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
+		if input_debug and Time.get_ticks_msec() - _dbg_last_log > 500:
+			_dbg_last_log = Time.get_ticks_msec()
+			print("[focus:dbg] VISIBLE mouse_pos=", get_viewport().get_mouse_position(),
+				" uv=", st["mouse_uv"], " surf=", Vector2(surf_x, surf_y),
+				" displayed=", displayed_size, " offset=", offset)
 
 	compositor.set_window_pointer(active_id, surf_x, surf_y, true)
 
@@ -531,6 +610,14 @@ func handle_input_event(event: InputEvent) -> bool:
 			active_id,
 			event.relative.x, event.relative.y,
 			event.relative.x, event.relative.y)
+		if input_debug:
+			_dbg_rel_sum += event.relative
+			_dbg_rel_count += 1
+			if Time.get_ticks_msec() - _dbg_last_log > 500:
+				_dbg_last_log = Time.get_ticks_msec()
+				print("[focus:dbg] motion event relative=", event.relative,
+					" warped=", event.warped,
+					" uv_after=", st["mouse_uv"])
 	return true
 
 # True si l'événement clavier correspond à un raccourci géré par le jeu
