@@ -323,6 +323,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
+    ClassDB::bind_method(D_METHOD("get_window_cursor", "window_id"), &WlrCompositor::get_window_cursor);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
@@ -520,6 +521,8 @@ WlrCompositor::~WlrCompositor() {
             wl_list_remove(&pointer_grab_begin_listener.link);
         if (!wl_list_empty(&pointer_grab_end_listener.link))
             wl_list_remove(&pointer_grab_end_listener.link);
+        if (!wl_list_empty(&request_set_cursor_listener.link))
+            wl_list_remove(&request_set_cursor_listener.link);
 
         // Détruire le curseur AVANT le display (wlr_cursor/wlr_cursor_manager
         // dépendent du display pour leurs ressources internes).
@@ -1698,6 +1701,7 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
     wl_list_remove(&ws->set_title_listener.link);
 
     self->windows.erase(id);
+    self->clear_window_cursor(id);
 }
 
 // --- Capture fenêtre (ext_foreign_toplevel_image_capture_source_manager) --
@@ -3186,6 +3190,12 @@ void WlrCompositor::start_headless() {
     pointer_grab_end_listener.notify = WlrCompositor::on_pointer_grab_end;
     wl_signal_add(&seat->events.pointer_grab_end, &pointer_grab_end_listener);
 
+    // Curseur custom des clients : wl_pointer.set_cursor → surface curseur
+    // capturée par fenêtre pour que le mode focus adopte l'apparence du
+    // curseur de l'application en focus.
+    request_set_cursor_listener.notify = WlrCompositor::on_request_set_cursor;
+    wl_signal_add(&seat->events.request_set_cursor, &request_set_cursor_listener);
+
     new_toplevel_listener.notify = WlrCompositor::on_new_toplevel;
     wl_signal_add(&xdg_shell->events.new_toplevel, &new_toplevel_listener);
 
@@ -4023,7 +4033,9 @@ bool WlrCompositor::is_window_xwayland(int window_id) {
     if (!comm_file.is_open()) return false;
     std::string comm;
     std::getline(comm_file, comm);
-    return comm == "xwayland-satellite";
+    // /proc/<pid>/comm est limité à TASK_COMM_LEN (15 caractères + NUL) :
+    // "xwayland-satellite" (18) apparaît donc comme "xwayland-satell".
+    return comm == "xwayland-satell";
 }
 
 void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {
@@ -4139,6 +4151,282 @@ void WlrCompositor::set_window_pointer(int window_id, double x, double y, bool i
     ws->pointer_inside = true;
     ws->pointer_x = x;
     ws->pointer_y = y;
+}
+
+static bool cursor_debug_enabled() {
+    const char *e = getenv("CYBERREALM_INPUT_DEBUG");
+    return e && e[0] == '1';
+}
+
+// Le buffer d'une surface curseur est lu au signal client_commit, PAS à
+// events.commit : surface_commit_state appelle surface_apply_damage AVANT
+// d'émettre events.commit, et pour un ré-upload de même taille
+// wlr_client_buffer_apply_damage → wlr_texture_update_from_buffer réussit
+// (texture existante mise à jour) puis unlock + NULLe surface->current.buffer.
+// Notre handler de commit verrait donc "no buffer" sur tous les ré-uploads de
+// même taille. Au signal client_commit (émis avant surface_commit_state),
+// surface_finalize_pending a déjà placé le buffer verrouillé dans
+// surface->pending.buffer, que rien n'a encore consommé.
+void WlrCompositor::on_cursor_surface_client_commit(wl_listener *listener, void *data) {
+    WindowCursorState *cs = wl_container_of(listener, cs, client_commit_listener);
+    (void)data;
+    WlrCompositor *self = cs->owner;
+    if (!self || !cs->surface) {
+        return;
+    }
+    wlr_buffer *buffer = cs->surface->pending.buffer;
+    if (!buffer) {
+        return;
+    }
+    int prev = cs->serial;
+    bool ok = self->capture_window_cursor(*cs, buffer);
+    if (cursor_debug_enabled()) {
+        // fprintf (pas UtilityFunctions::print) : ces logs partent du
+        // thread Wayland, où la construction de Variant/String Godot
+        // n'est pas sûre (crash constaté).
+        int w = -1, h = -1;
+        if (cs->image.is_valid()) { w = cs->image->get_width(); h = cs->image->get_height(); }
+        uint32_t committed = cs->surface->pending.committed;
+        bool frame_in_commit = (committed & WLR_SURFACE_STATE_FRAME_CALLBACK_LIST) != 0;
+        bool attach_in_commit = (committed & WLR_SURFACE_STATE_BUFFER) != 0;
+        fprintf(stderr, "waylandgodot: cursor commit surface=%p window=%d serial %llu -> %llu captured=%s w=%d h=%d committed=%u attach=%d frame_cb=%d cb_pending=%d\n",
+            (void *)cs->surface, cs->window_id,
+            (unsigned long long)prev, (unsigned long long)cs->serial, ok ? "yes" : "no", w, h,
+            (unsigned)committed, attach_in_commit ? 1 : 0, frame_in_commit ? 1 : 0,
+            wl_list_empty(&cs->surface->current.frame_callback_list) ? 0 : 1);
+    }
+}
+
+void WlrCompositor::on_cursor_surface_commit(wl_listener *listener, void *data) {
+    WindowCursorState *cs = wl_container_of(listener, cs, commit_listener);
+    (void)data;
+    WlrCompositor *self = cs->owner;
+    if (!self || !cs->surface) {
+        return;
+    }
+    // Xwayland ne (ré)uploade son curseur que lorsqu'il a reçu le frame
+    // callback de l'upload précédent (voir xwl_seat_set_cursor dans
+    // xwayland-cursor.c : "if (xwl_cursor->frame_cb) { needs_update =
+    // TRUE; return; }"). Comme on ne rend jamais cette surface sur un
+    // output, wlroots n'enverrait pas de frame done → le callback
+    // resterait pendant indéfiniment et Xwayland avalerait silencieusement
+    // TOUT changement de curseur après le premier upload. On simule donc
+    // l'affichage : dès qu'on a consommé l'image (au client_commit), on
+    // libère Xwayland.
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    wlr_surface_send_frame_done(cs->surface, &now);
+}
+
+void WlrCompositor::on_cursor_surface_destroy(wl_listener *listener, void *data) {
+    WindowCursorState *cs = wl_container_of(listener, cs, destroy_listener);
+    (void)data;
+    // Le client a détruit sa surface curseur : on conserve la dernière image
+    // capturée (l'overlay du mode focus continue de l'afficher), on se
+    // contente de détacher le suivi de la surface.
+    if (cursor_debug_enabled()) {
+        fprintf(stderr, "waylandgodot: cursor surface destroyed surface=%p window=%d serial=%llu kept_image=%s\n",
+            (void *)cs->surface, cs->window_id, (unsigned long long)cs->serial,
+            cs->image.is_valid() ? "yes" : "no");
+    }
+    cs->surface = nullptr;
+    wl_list_remove(&cs->commit_listener.link);
+    wl_list_remove(&cs->client_commit_listener.link);
+    wl_list_remove(&cs->destroy_listener.link);
+    wl_list_init(&cs->commit_listener.link);
+    wl_list_init(&cs->client_commit_listener.link);
+    wl_list_init(&cs->destroy_listener.link);
+}
+
+// Validation standard de wl_pointer.set_cursor : seul le client qui a le
+// focus pointeur peut poser son curseur (sinon une fenêtre en arrière-plan
+// pourrait écraser le curseur de la fenêtre active). wlroots n'impose pas
+// cette règle lui-même : il livre l'événement tel quel.
+void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
+    WlrCompositor *self = wl_container_of(listener, self, request_set_cursor_listener);
+    wlr_seat_pointer_request_set_cursor_event *event =
+        (wlr_seat_pointer_request_set_cursor_event *)data;
+    bool dbg = cursor_debug_enabled();
+    if (!self->seat) {
+        if (dbg) fprintf(stderr, "waylandgodot: set_cursor ignored (no seat)\n");
+        return;
+    }
+    if (!event->seat_client || event->seat_client != self->seat->pointer_state.focused_client) {
+        if (dbg) fprintf(stderr, "waylandgodot: set_cursor ignored (wrong seat client)\n");
+        return;
+    }
+
+    // Fenêtre du client : le curseur est posé depuis la surface qui a le
+    // focus pointeur (le toplevel actif), pas depuis la surface curseur.
+    int window_id = -1;
+    if (self->seat->pointer_state.focused_surface) {
+        wlr_surface *root = wlr_surface_get_root_surface(
+            self->seat->pointer_state.focused_surface);
+        window_id = root ? self->find_window_id_by_surface(root) : -1;
+    }
+    if (window_id == -1) {
+        if (dbg) fprintf(stderr, "waylandgodot: set_cursor ignored (no focused window)\n");
+        return;
+    }
+
+    if (event->surface) {
+        WindowCursorState &cs = self->window_cursor[window_id];
+        cs.window_id = window_id;
+        if (cs.surface != event->surface) {
+            if (cs.surface) {
+                wl_list_remove(&cs.commit_listener.link);
+                wl_list_remove(&cs.client_commit_listener.link);
+                wl_list_remove(&cs.destroy_listener.link);
+                wl_list_init(&cs.commit_listener.link);
+                wl_list_init(&cs.client_commit_listener.link);
+                wl_list_init(&cs.destroy_listener.link);
+            }
+            cs.surface = event->surface;
+            cs.owner = self;
+            cs.commit_listener.notify = WlrCompositor::on_cursor_surface_commit;
+            cs.client_commit_listener.notify = WlrCompositor::on_cursor_surface_client_commit;
+            cs.destroy_listener.notify = WlrCompositor::on_cursor_surface_destroy;
+            wl_signal_add(&cs.surface->events.commit, &cs.commit_listener);
+            wl_signal_add(&cs.surface->events.client_commit, &cs.client_commit_listener);
+            wl_signal_add(&cs.surface->events.destroy, &cs.destroy_listener);
+        }
+        cs.hotspot_x = event->hotspot_x;
+        cs.hotspot_y = event->hotspot_y;
+        // Le buffer peut déjà être committé au moment du set_cursor (wlroots
+        // appelle aussi pointer_cursor_surface_handle_commit avant l'émission).
+        bool ok = self->capture_window_cursor(cs, cs.surface ? cs.surface->current.buffer : nullptr);
+        if (dbg) {
+            wlr_buffer *buf = cs.surface && cs.surface->current.buffer ? cs.surface->current.buffer : nullptr;
+            fprintf(stderr, "waylandgodot: set_cursor window=%d surface=%p buf=%p captured=%s serial=%llu\n",
+                window_id, (void *)cs.surface, (void *)buf, ok ? "yes" : "no", (unsigned long long)cs.serial);
+        }
+    } else {
+        // set_cursor(NULL) : le client masque son curseur. On CONSERVE la
+        // dernière image capturée : certains clients (ex. OpenMW via SDL, qui
+        // masque son curseur pendant le grab du pointer lock) ne renvoient
+        // pas toujours un set_cursor après le relâchement du grab → sans cette
+        // rétention le curseur disparaît définitivement (l'overlay du mode
+        // focus retomberait sur la flèche système). Pendant la souris capturée
+        // l'overlay est masqué de toute façon.
+        auto it = self->window_cursor.find(window_id);
+        if (it == self->window_cursor.end()) {
+            return;
+        }
+        WindowCursorState &cs = it->second;
+        if (cs.surface) {
+            wl_list_remove(&cs.commit_listener.link);
+            wl_list_remove(&cs.client_commit_listener.link);
+            wl_list_remove(&cs.destroy_listener.link);
+            wl_list_init(&cs.commit_listener.link);
+            wl_list_init(&cs.client_commit_listener.link);
+            wl_list_init(&cs.destroy_listener.link);
+        }
+        cs.surface = nullptr;
+        if (dbg) fprintf(stderr, "waylandgodot: set_cursor NULL window=%d kept_image=%s serial=%llu\n",
+            window_id, cs.image.is_valid() ? "yes" : "no", (unsigned long long)cs.serial);
+    }
+}
+
+void WlrCompositor::clear_window_cursor(int window_id) {
+    auto it = window_cursor.find(window_id);
+    if (it == window_cursor.end()) {
+        return;
+    }
+    WindowCursorState &cs = it->second;
+    if (cursor_debug_enabled()) {
+        fprintf(stderr, "waylandgodot: clear_window_cursor window=%d surface=%p serial=%llu\n",
+            window_id, (void *)cs.surface, (unsigned long long)cs.serial);
+    }
+    if (cs.surface) {
+        wl_list_remove(&cs.commit_listener.link);
+        wl_list_remove(&cs.client_commit_listener.link);
+        wl_list_remove(&cs.destroy_listener.link);
+        wl_list_init(&cs.commit_listener.link);
+        wl_list_init(&cs.client_commit_listener.link);
+        wl_list_init(&cs.destroy_listener.link);
+        cs.surface = nullptr;
+    }
+    cs.image = godot::Ref<godot::Image>();
+    cs.serial++;
+    window_cursor.erase(it);
+}
+
+bool WlrCompositor::capture_window_cursor(WindowCursorState &cs, wlr_buffer *buffer) {
+    bool dbg = cursor_debug_enabled();
+    if (!buffer) {
+        if (dbg) fprintf(stderr, "waylandgodot: capture cursor skipped (no buffer)\n");
+        return false;
+    }
+    void *data = nullptr;
+    uint32_t format = 0;
+    size_t stride = 0;
+    if (!wlr_buffer_begin_data_ptr_access(buffer, WLR_BUFFER_DATA_PTR_ACCESS_READ,
+            &data, &format, &stride)) {
+        if (dbg) fprintf(stderr, "waylandgodot: capture cursor failed (data ptr access, fmt=%x)\n", (unsigned)format);
+        return false;
+    }
+    if (format != DRM_FORMAT_ARGB8888) {
+        if (dbg) fprintf(stderr, "waylandgodot: capture cursor skipped (fmt=%x not ARGB8888)\n", (unsigned)format);
+        wlr_buffer_end_data_ptr_access(buffer);
+        return false;
+    }
+    int w = buffer->width;
+    int h = buffer->height;
+    if (w <= 0 || h <= 0) {
+        if (dbg) fprintf(stderr, "waylandgodot: capture cursor skipped (bad size %dx%d)\n", w, h);
+        wlr_buffer_end_data_ptr_access(buffer);
+        return false;
+    }
+    // ARGB8888 (DRM) = BGRA little-endian, alpha prémultipliée.
+    // Conversion en RGBA8 Godot (alpha straight).
+    PackedByteArray px;
+    px.resize((int64_t)w * h * 4);
+    uint8_t *dst = px.ptrw();
+    const uint8_t *src = static_cast<const uint8_t *>(data);
+    for (int y = 0; y < h; y++) {
+        const uint8_t *srow = src + (size_t)y * stride;
+        uint8_t *drow = dst + (size_t)y * w * 4;
+        for (int x = 0; x < w; x++) {
+            uint8_t b = srow[x * 4 + 0];
+            uint8_t g = srow[x * 4 + 1];
+            uint8_t r = srow[x * 4 + 2];
+            uint8_t a = srow[x * 4 + 3];
+            if (a == 0) {
+                r = g = b = 0;
+            } else if (a != 255) {
+                r = (uint8_t)(((int)r * 255) / a);
+                g = (uint8_t)(((int)g * 255) / a);
+                b = (uint8_t)(((int)b * 255) / a);
+            }
+            drow[x * 4 + 0] = r;
+            drow[x * 4 + 1] = g;
+            drow[x * 4 + 2] = b;
+            drow[x * 4 + 3] = a;
+        }
+    }
+    wlr_buffer_end_data_ptr_access(buffer);
+    godot::Ref<godot::Image> img = godot::Image::create_from_data(
+        w, h, false, godot::Image::FORMAT_RGBA8, px);
+    cs.image = img;
+    cs.serial++;
+    return true;
+}
+
+Dictionary WlrCompositor::get_window_cursor(int window_id) {
+    Dictionary result;
+    auto it = window_cursor.find(window_id);
+    if (it == window_cursor.end() || !it->second.image.is_valid()) {
+        return result;
+    }
+    WindowCursorState &cs = it->second;
+    int32_t scale = cs.surface ? cs.surface->current.scale : 1;
+    result["serial"] = (uint64_t)cs.serial;
+    result["image"] = cs.image;
+    result["hotspot_x"] = (double)cs.hotspot_x * scale;
+    result["hotspot_y"] = (double)cs.hotspot_y * scale;
+    result["width"] = cs.image->get_width();
+    result["height"] = cs.image->get_height();
+    return result;
 }
 
 void WlrCompositor::set_polkit_agent(const String &path) {

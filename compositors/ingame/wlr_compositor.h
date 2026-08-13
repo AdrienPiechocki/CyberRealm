@@ -366,6 +366,27 @@ struct IdleInhibitorState {
     class WlrCompositor *owner = nullptr;
 };
 
+// Curseur custom posé par un client via wl_pointer.set_cursor. Le curseur
+// réel Wayland est une surface dédiée (buffer + hotspot) que le client met à
+// jour par des commits ; le mode focus la convertit en Image Godot
+// (get_window_cursor) pour que le curseur visible du jeu adopte l'apparence
+// demandée par l'application en focus.
+struct WindowCursorState {
+    wlr_surface *surface = nullptr;
+    int32_t window_id = -1;           // fenêtre propriétaire (pour le debug)
+
+    wl_listener commit_listener{};
+    wl_listener client_commit_listener{};
+    wl_listener destroy_listener{};
+
+    int32_t hotspot_x = 0;
+    int32_t hotspot_y = 0;
+    uint64_t serial = 0;              // incrémenté à chaque changement d'image
+    godot::Ref<godot::Image> image;   // dernière image RGBA8 capturée (ou null)
+
+    class WlrCompositor *owner = nullptr;
+};
+
 class WlrCompositor : public Node {
     GDCLASS(WlrCompositor, Node)
 
@@ -473,11 +494,22 @@ class WlrCompositor : public Node {
     wl_listener keyboard_modifiers_listener{};
     wl_listener pointer_grab_begin_listener{};
     wl_listener pointer_grab_end_listener{};
+    wl_listener request_set_cursor_listener{};
 
     static void on_keyboard_key(wl_listener *listener, void *data);
     static void on_keyboard_modifiers(wl_listener *listener, void *data);
     static void on_pointer_grab_begin(wl_listener *listener, void *data);
     static void on_pointer_grab_end(wl_listener *listener, void *data);
+    static void on_request_set_cursor(wl_listener *listener, void *data);
+    static void on_cursor_surface_client_commit(wl_listener *listener, void *data);
+    static void on_cursor_surface_commit(wl_listener *listener, void *data);
+    static void on_cursor_surface_destroy(wl_listener *listener, void *data);
+
+    // Capture le buffer passé (ARGB8888) vers cs.image (RGBA8 Godot) et
+    // incrémente cs.serial. No-op si buffer == nullptr.
+    bool capture_window_cursor(WindowCursorState &cs, wlr_buffer *buffer);
+    // Détache listeners + surface + image d'un état curseur de fenêtre.
+    void clear_window_cursor(int window_id);
 
     std::unordered_map<int, WindowState> windows;
     int next_window_id = 1;
@@ -492,6 +524,9 @@ class WlrCompositor : public Node {
     // alors raté côté Godot et le mode relatif du jeu ne serait jamais
     // forwardé (caméra figée).
     std::unordered_map<int, bool> window_pointer_locked;
+
+    // Curseur custom wl_pointer.set_cursor par fenêtre (voir WindowCursorState).
+    std::unordered_map<int, WindowCursorState> window_cursor;
 
     std::unordered_map<int, PopupState> popups;
     int next_popup_id = 1;
@@ -821,6 +856,14 @@ public:
     // relatif LOCKED, sinon la position absolue diverge du curseur réel et
     // revient sauter à chaque changement de grab (caméra FPS qui "snap-back").
     bool is_window_xwayland(int window_id);
+
+    // Curseur custom (wl_pointer.set_cursor) posé par le client de la fenêtre.
+    // Renvoie un Dictionary { serial, image (Ref<Image> RGBA8), hotspot_x,
+    // hotspot_y, width, height } ou un Dictionary vide si le client n'a pas
+    // posé de curseur. Le mode focus applique image/hotspot au curseur Godot
+    // et ne réapplique que quand serial change. Rappel : seul le client qui a
+    // le focus pointeur peut poser son curseur (validation du compositeur).
+    Dictionary get_window_cursor(int window_id);
 
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.

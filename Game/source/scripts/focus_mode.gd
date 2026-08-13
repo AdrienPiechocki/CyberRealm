@@ -68,6 +68,17 @@ var _dbg_rel_sum := Vector2.ZERO
 var _dbg_rel_count := 0
 var _dbg_last_log := 0.0
 
+# Curseur custom de la fenêtre active dessiné en overlay 2D (TextureRect
+# positionné sur le pointeur). Contrairement à Input.set_custom_mouse_cursor
+# (curseur KWin, qui peut se réinitialiser et laisser la flèche système
+# réapparaître), l'overlay est composité dans le viewport : il reste affiché
+# tant que le compositeur conserve l'image capturée. cursor_overlay_serial =
+# serial de la dernière image appliquée (-1 si aucune) ; on ne re-crée la
+# texture que quand le client en pose une nouvelle (commits de la surface).
+var cursor_overlay: TextureRect
+var cursor_overlay_tex: ImageTexture
+var cursor_overlay_serial := -1
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -78,6 +89,13 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	popup_crop_shader.code = POPUP_CROP_SHADER_CODE
 	input_debug = OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1"
 	force_visible = OS.get_environment("CYBERREALM_FORCE_VISIBLE") == "1"
+
+	cursor_overlay = TextureRect.new()
+	cursor_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	cursor_overlay.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	cursor_overlay.z_index = FOCUS_POPUP_Z + 50
+	cursor_overlay.visible = false
+	ui.add_child(cursor_overlay)
 
 func is_active() -> bool:
 	return focus_mode
@@ -236,6 +254,7 @@ func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
 		return
 	if locked:
 		st["mouse_captured"] = true
+		_hide_cursor_overlay()
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
 		st["mouse_captured"] = false
@@ -453,6 +472,7 @@ func _activate_window(id: int) -> void:
 			" xwayland=", compositor.is_window_xwayland(id),
 			" mouse_captured=", st["mouse_captured"])
 	# Restaurer l'état souris de la fenêtre redevenue active
+	_hide_cursor_overlay()
 	if st["mouse_captured"]:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
@@ -483,8 +503,57 @@ func _reset_focus_ui() -> void:
 	focus_stack.clear()
 	focus_fullscreen_id = -1
 	focus_mode = false
+	# Restaurer le curseur système (l'overlay custom de la fenêtre focalisée
+	# ne doit pas survivre à la sortie du mode focus).
+	_hide_cursor_overlay()
+	Input.set_custom_mouse_cursor(null)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	player.focus_mode_active = false
+
+# Dessine en overlay 2D le curseur posé par l'application en focus
+# (wl_pointer.set_cursor, remonté via xwayland-satellite pour les fenêtres
+# X11). Le curseur KWin est masqué (MOUSE_MODE_HIDDEN) pour éviter un double
+# curseur ; sans image custom capturée, on retombe sur le curseur système.
+func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: Vector2) -> void:
+	var cursor_info := compositor.get_window_cursor(window_id)
+	if cursor_info.is_empty():
+		_show_system_cursor()
+		return
+	var serial: int = cursor_info["serial"]
+	if serial != cursor_overlay_serial:
+		var img: Image = cursor_info["image"]
+		if not img or img.is_empty():
+			_show_system_cursor()
+			return
+		cursor_overlay_tex = ImageTexture.create_from_image(img)
+		cursor_overlay.texture = cursor_overlay_tex
+		cursor_overlay_serial = serial
+		if input_debug:
+			print("[focus:dbg] custom cursor serial=", serial, " size=", img.get_size(),
+				" hotspot=", Vector2(cursor_info["hotspot_x"], cursor_info["hotspot_y"]),
+				" xwayland=", compositor.is_window_xwayland(window_id))
+	var hotspot := Vector2(cursor_info["hotspot_x"], cursor_info["hotspot_y"])
+	var img_size := cursor_overlay_tex.get_size()
+	if img_size.x <= 0.0 or img_size.y <= 0.0:
+		_show_system_cursor()
+		return
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	cursor_overlay.size = img_size * display_scale
+	cursor_overlay.position = mouse_pos - hotspot * display_scale
+	cursor_overlay.visible = true
+
+func _show_system_cursor() -> void:
+	if cursor_overlay and cursor_overlay.visible:
+		cursor_overlay.visible = false
+		cursor_overlay_serial = -1
+		if input_debug:
+			print("[focus:dbg] system cursor")
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+func _hide_cursor_overlay() -> void:
+	if cursor_overlay:
+		cursor_overlay.visible = false
+	cursor_overlay_serial = -1
 
 # Routage souris/clavier du mode focus, appelé chaque frame par
 # wayland_room.gd tant que le mode est actif. L'input va à la fenêtre active.
@@ -530,6 +599,14 @@ func handle_focus_input() -> void:
 			)
 		else:
 			st["mouse_uv"] = Vector2(0.5, 0.5)
+
+		# Adopter le curseur custom posé par l'application en focus
+		# (wl_pointer.set_cursor) : dessiné en overlay 2D sur le pointeur,
+		# sinon flèche système par défaut.
+		var display_scale := Vector2.ONE
+		if displayed_size.x > 0.0 and st["surface_size"].x > 0.0:
+			display_scale = displayed_size / st["surface_size"]
+		_update_cursor_overlay(active_id, mouse_pos, display_scale)
 
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
