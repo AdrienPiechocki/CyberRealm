@@ -4247,10 +4247,6 @@ void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
     wlr_seat_pointer_request_set_cursor_event *event =
         (wlr_seat_pointer_request_set_cursor_event *)data;
     bool dbg = cursor_debug_enabled();
-    fprintf(stderr, "waylandgodot: [set_cursor] dbg=%d surface=%p serial=%u seat_client=%p focused_client=%p focused_surf=%p\n",
-        (int)dbg, (void *)event->surface, event->serial,
-        (void *)event->seat_client, (void *)(self->seat ? self->seat->pointer_state.focused_client : nullptr),
-        (void *)(self->seat && self->seat->pointer_state.focused_surface ? (void *)self->seat->pointer_state.focused_surface : nullptr));
     if (!self->seat) {
         if (dbg) fprintf(stderr, "waylandgodot: set_cursor ignored (no seat)\n");
         return;
@@ -4428,10 +4424,16 @@ Dictionary WlrCompositor::get_window_cursor(int window_id) {
     }
     WindowCursorState &cs = it->second;
     if (!cs.image.is_valid()) {
-        // Aucune image capturée : signaler seulement si le client a
-        // explicitement masqué son curseur (set_cursor NULL) pour que
+        // Aucune image capturée : ne signaler quelque chose que si le client
+        // a explicitement masqué son curseur (set_cursor NULL, ex. jeux Unity
+        // type Papers Please qui dessinent leur propre curseur), pour que
         // l'overlay se cache au lieu de retomber sur le curseur système.
-        result["hidden"] = cs.hidden;
+        // Sinon (entrée sans image ET non masquée) on renvoie le dictionnaire
+        // vide comme avant, pour ne pas changer le comportement des autres
+        // fenêtres (et ne pas casser le serial dans focus_mode.gd).
+        if (cs.hidden) {
+            result["hidden"] = true;
+        }
         return result;
     }
     int32_t scale = cs.surface ? cs.surface->current.scale : 1;
