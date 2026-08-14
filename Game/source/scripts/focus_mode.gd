@@ -59,6 +59,14 @@ var focus_fullscreen_id := -1
 # l'overlay actif et leurs popups sont recréés à la réactivation.
 var focus_popup_rects: Dictionary = {}
 
+# Grab pointeur sur un popup (drag-and-drop) : tant qu'un bouton est enfoncé
+# sur un popup, TOUS les événements (motion + boutons) partent vers CE popup,
+# même si le curseur le quitte. Sans ça, un drag qui sort des bords d'un popup
+# (menus/dropdowns petits) perd ses événements (relâchement inclus, qui part
+# vers la fenêtre principale) → le drag-and-drop ne fonctionne pas.
+var popup_drag_id: int = -1
+var popup_buttons_down: int = 0
+
 # Curseur custom de la fenêtre active dessiné en overlay 2D (TextureRect
 # positionné sur le pointeur) : réplique le wl_pointer.set_cursor de
 # l'application en focus pour les fenêtres X11 remontées via
@@ -283,6 +291,9 @@ func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: in
 	_create_popup_overlay(id, parent_window_id, parent_popup_id, x, y, width, height)
 
 func on_popup_unmapped(id: int) -> void:
+	if popup_drag_id == id:
+		popup_drag_id = -1
+		popup_buttons_down = 0
 	if focus_popup_rects.has(id):
 		if is_instance_valid(focus_popup_rects[id]):
 			focus_popup_rects[id].queue_free()
@@ -422,17 +433,33 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 		px = (mouse_pos.x - global_rect.position.x) / global_rect.size.x * content_size.x
 		py = (mouse_pos.y - global_rect.position.y) / global_rect.size.y * content_size.y
 	compositor.forward_pointer_motion_popup(popup_id, px, py)
-	if Input.is_action_just_pressed("left_click"):
+	# Grab bouton pour le drag-and-drop : mémoriser le popup qui reçoit un
+	# appui et compter les boutons enfoncés, pour router vers lui tant que le
+	# drag est actif même hors de ses bords (voir handle_focus_input).
+	var press_left := Input.is_action_just_pressed("left_click")
+	var release_left := Input.is_action_just_released("left_click")
+	var press_right := Input.is_action_just_pressed("right_click")
+	var release_right := Input.is_action_just_released("right_click")
+	var press_middle := Input.is_action_just_pressed("middle_click")
+	var release_middle := Input.is_action_just_released("middle_click")
+	if press_left or press_right or press_middle:
+		popup_buttons_down += 1
+		popup_drag_id = popup_id
+	if release_left or release_right or release_middle:
+		popup_buttons_down = maxi(popup_buttons_down - 1, 0)
+		if popup_buttons_down == 0:
+			popup_drag_id = -1
+	if press_left:
 		compositor.forward_pointer_button_popup(popup_id, 0x110, true)
-	if Input.is_action_just_released("left_click"):
+	if release_left:
 		compositor.forward_pointer_button_popup(popup_id, 0x110, false)
-	if Input.is_action_just_pressed("right_click"):
+	if press_right:
 		compositor.forward_pointer_button_popup(popup_id, 0x111, true)
-	if Input.is_action_just_released("right_click"):
+	if release_right:
 		compositor.forward_pointer_button_popup(popup_id, 0x111, false)
-	if Input.is_action_just_pressed("middle_click"):
+	if press_middle:
 		compositor.forward_pointer_button_popup(popup_id, 0x112, true)
-	if Input.is_action_just_released("middle_click"):
+	if release_middle:
 		compositor.forward_pointer_button_popup(popup_id, 0x112, false)
 
 
@@ -474,6 +501,8 @@ func _clear_popup_overlays() -> void:
 
 func _reset_focus_ui() -> void:
 	_clear_popup_overlays()
+	popup_drag_id = -1
+	popup_buttons_down = 0
 	for id in focus_rects:
 		if is_instance_valid(focus_rects[id]):
 			focus_rects[id].queue_free()
@@ -609,9 +638,27 @@ func handle_focus_input() -> void:
 		# active sont overlayés ; sans ce routage, tout l'input partait vers la
 		# fenêtre aux coordonnées du popup et le menu ne recevait ni hover ni
 		# clic (inutilisable dans GIMP par exemple, alors que ça marche en 3D).
+		# Pendant un drag-and-drop (bouton enfoncé sur un popup), on continue
+		# de router vers LE popup qui a reçu l'appui, même quand le curseur le
+		# quitte : sinon le relâchement partirait vers la fenêtre et le drag
+		# serait abandonné par l'application.
+		# MAIS dès qu'un drag est ACTIF au niveau wlroots (wl_data_device), le
+		# grab popup n'existe plus : wlroots route tout par la surface sous le
+		# curseur (wl_data_device.enter) pour mettre à jour la cible de drop.
+		# Router vers le popup figerait la cible sur le popup → DnD cassé.
 		var popup_hit := _popup_at(mouse_pos)
-		if not popup_hit.is_empty():
-			_forward_to_popup(popup_hit, mouse_pos)
+		var popup_target: Dictionary
+		var drag_active := compositor.is_drag_active()
+		if drag_active:
+			popup_drag_id = -1
+			popup_buttons_down = 0
+		if not drag_active and popup_drag_id != -1 and popup_buttons_down > 0 \
+				and focus_popup_rects.has(popup_drag_id):
+			popup_target = {"id": popup_drag_id, "rect": focus_popup_rects[popup_drag_id]}
+		else:
+			popup_target = popup_hit
+		if not popup_target.is_empty():
+			_forward_to_popup(popup_target, mouse_pos)
 			compositor.set_window_pointer(active_id, 0, 0, false)
 			return
 
@@ -642,6 +689,147 @@ func handle_focus_input() -> void:
 	if Input.is_action_just_pressed("scroll_down"):
 		compositor.forward_pointer_axis(active_id, 0, 100.0)
 
+# Touches mortes AZERTY (^ et ¨) : Godot compose lui-même la séquence dans sa
+# couche X11 et avale l'appui de la touche morte PUIS le relâchement de la
+# lettre — seul l'appui "composé" arrive (ex. ê, phys=KEY_E). Le client ne
+# reçoit donc ni le dead key (→ pas d'accent) ni le relâchement (→ lettre
+# "coincée", auto-repeat en boucle). On reconstruit la séquence complète côté
+# client : ^ down (evdev 26), lettre down, lettre up, ^ up. Le client (keymap
+# fr) compose alors l'accent et son état clavier reste sain.
+# Le dead key ^ (evdev 26) est dead_circumflex sans Shift, dead_diaeresis avec
+# Shift : le résultat composé dépend du Shift tenu AU moment de l'appui de ^.
+# Le flag shift_pressed de l'événement composé reflète, lui, l'état de la
+# touche de base (e) : il peut être false pour un ë (Shift relâché avant e).
+# On pilote donc l'état Shift du client en 3 phases : (1) Shift = celui du
+# dead key, (2) Shift = celui de la lettre, (3) état réel (celui de la lettre)
+# maintenu à la fin — ce qui restaure aussi le relâchement avalé par l'IM.
+const COMPOSED_CIRCUMFLEX := {
+	0xE2: true, 0xE4: true, 0xC2: true, 0xC4: true, # â ä Â Ä
+	0xEA: true, 0xEB: true, 0xCA: true, 0xCB: true, # ê ë Ê Ë
+	0xEE: true, 0xEF: true, 0xCE: true, 0xCF: true, # î ï Î Ï
+	0xF4: true, 0xF6: true, 0xD4: true, 0xD6: true, # ô ö Ô Ö
+	0xFB: true, 0xFC: true, 0xDB: true, 0xDC: true, # û ü Û Ü
+	0xFF: true, 0x9F: true,                         # ÿ Ÿ
+}
+
+# Compositions qui proviennent de dead_diaeresis (¨) : nécessitent Shift sur la
+# touche morte ^. Les autres proviennent de dead_circumflex (^, sans Shift).
+const COMPOSED_DIAERESIS := {
+	0xE4: true, 0xC4: true, # ä Ä
+	0xEB: true, 0xCB: true, # ë Ë
+	0xEF: true, 0xCF: true, # ï Ï
+	0xF6: true, 0xD6: true, # ö Ö
+	0xFC: true, 0xDC: true, # ü Ü
+	0xFF: true, 0x9F: true, # ÿ Ÿ
+}
+
+# Double-appui de la touche morte (^^ -> ^, ¨¨ -> ¨) : X11 compose l'accent
+# seul. Il faut forwarder la touche morte DEUX fois pour que l'IM du client
+# (qui compose déjà les lettres accentuées) produise le caractère littéral —
+# un seul forward laisserait le dead key en attente côté client et l'INJURE à
+# la lettre suivante. Valeur : true si le double-appui nécessite Shift
+# (dead_diaeresis pour ¨), false sinon (dead_circumflex pour ^).
+const COMPOSED_DEADKEY := {
+	0x5E: false, # ^ (asciicircum)
+	0xA8: true,  # ¨ (diaeresis)
+}
+
+# État Shift côté client (ce que le compositeur a forwardé). L'IM (XIM /
+# XFilterEvent) avale le relâchement du Shift tenu pendant une touche morte :
+# Godot ne l'émet jamais → on doit corriger (heal) l'état du client dès qu'un
+# événement non-shifté arrive. (Les deux Shift physiques sont reportés comme
+# KEY_SHIFT, seule la location diffère ; le client ne voit que le modifieur.)
+var _client_shift := false
+
+func _is_shift_key(code: int) -> bool:
+	return code == KEY_SHIFT
+
+# Aligne l'état Shift du client sur p_down (envoie DOWN/UP seulement si l'état
+# diffère, pour ne pas désynchroniser xkbcommon côté client).
+func _set_client_shift(down: bool) -> void:
+	if _client_shift == down:
+		return
+	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		print("key client_shift -> down=", down)
+	compositor.forward_keyboard_key(KEY_SHIFT, 0, down)
+	_client_shift = down
+
+# À appeler avant chaque forward_keyboard_key : si le client croit encore que
+# Shift est enfoncé alors que l'événement courant n'est pas shifté, c'est que
+# le relâchement a été avalé par l'IM lors d'une touche morte → le rétablir
+# (sinon Shift reste "coincé" côté client, majuscules/raccourcis cassés). Deux
+# cas de heal :
+#   - un événement NON shifté arrive (lettre, Super…) → Shift coincé relâché ;
+#   - un NOUVEL appui de Shift arrive alors que le client croit déjà Shift
+#     enfoncé → le Shift précédent est coincé, il faut le relâcher AVANT de
+#     forwarder le nouvel appui (sinon les deux s'empilent et Shift reste
+#     bloqué pour les séquences ¨ suivantes).
+# Le relâchement normal de Shift (l'événement lui-même) n'est pas healé : il
+# est forwardé et met à jour l'état. L'état est ensuite répercuté sur ce
+# forward.
+func _prepare_key_forward(key_event: InputEventKey, code: int) -> void:
+	if _client_shift and code == KEY_SHIFT and key_event.pressed:
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("key heal shift-up (re-appui Shift)")
+		compositor.forward_keyboard_key(KEY_SHIFT, 0, false)
+		_client_shift = false
+	if _client_shift and not key_event.shift_pressed and code != KEY_SHIFT:
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("key heal shift-up (release avalé par l'IM)")
+		compositor.forward_keyboard_key(KEY_SHIFT, 0, false)
+		_client_shift = false
+	# Cas miroir : l'événement est shifté mais le client n'a pas Shift enfoncé.
+	# Après une touche morte, l'appui de Shift suivant est avalé par l'IM (le
+	# relâchement l'a déjà été via les heals ci-dessus) → Shift semble "bloqué"
+	# côté client pour la lettre suivante. On re-presse Shift AVANT le forward.
+	if not _client_shift and key_event.shift_pressed and code != KEY_SHIFT:
+		_set_client_shift(true)
+	if code == KEY_SHIFT:
+		_client_shift = key_event.pressed
+
+# Reconstruit la séquence touche morte + lettre pour un événement composé par
+# Godot (touche morte avalée). Retourne true si l'événement a été géré.
+func _try_reconstruct_composed_key(event: InputEventKey) -> bool:
+	if not event.pressed:
+		return false
+	# Double-tap de la touche morte : l'accent seul a été composé (^^ -> ^,
+	# ¨¨ -> ¨). On rejoue la touche morte deux fois pour que l'IM du client
+	# compose le caractère littéral (aucun keycode ne produit ^/¨ directement
+	# sur la keymap fr : 26 est toujours un dead key).
+	if COMPOSED_DEADKEY.has(event.unicode):
+		var needs_shift: bool = COMPOSED_DEADKEY[event.unicode]
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("key deadkey: unicode=", event.unicode, " needs_shift=", needs_shift,
+				" shift_pressed=", event.shift_pressed)
+		_set_client_shift(needs_shift)
+		compositor.forward_keyboard_key(KEY_BRACKETLEFT, 0, true)
+		compositor.forward_keyboard_key(KEY_BRACKETLEFT, 0, false)
+		compositor.forward_keyboard_key(KEY_BRACKETLEFT, 0, true)
+		compositor.forward_keyboard_key(KEY_BRACKETLEFT, 0, false)
+		_set_client_shift(event.shift_pressed)
+		return true
+	if not COMPOSED_CIRCUMFLEX.has(event.unicode):
+		return false
+	var phys := event.physical_keycode
+	if phys == 0:
+		return false
+	var needs_shift := COMPOSED_DIAERESIS.has(event.unicode)
+	var letter_shift := event.shift_pressed
+	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		print("key reconstruct: unicode=", event.unicode, " phys=", phys,
+			" needs_shift=", needs_shift, " letter_shift=", letter_shift)
+	# Phase 1 : Shift du dead key (determine dead_circumflex vs dead_diaeresis).
+	_set_client_shift(needs_shift)
+	# KEY_BRACKETLEFT (91) → evdev 26 (touche AZERTY '^'), cf. GODOT_TO_EVDEV.
+	compositor.forward_keyboard_key(KEY_BRACKETLEFT, 0, true)
+	# Phase 2 : Shift réel de la lettre (bas-de-casse vs majuscule), qui reste
+	# l'état final (il correspond à la réalité physique après la séquence).
+	_set_client_shift(letter_shift)
+	compositor.forward_keyboard_key(phys, 0, true)
+	compositor.forward_keyboard_key(phys, 0, false)
+	compositor.forward_keyboard_key(KEY_BRACKETLEFT, 0, false)
+	return true
+
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
 func handle_input_event(event: InputEvent) -> bool:
@@ -668,6 +856,21 @@ func handle_input_event(event: InputEvent) -> bool:
 		var code = key_event.physical_keycode
 		if code == 0:
 			code = key_event.keycode
+		# Touches mortes : Godot a composé l'accent lui-même (voir
+		# _try_reconstruct_composed_key) — reconstruire la séquence pour le
+		# client (incluant la gestion du Shift, cf. _set_client_shift) et ne
+		# pas forwarder l'événement composé tel quel. Doit précéder le heal :
+		# le flag shift_pressed d'un événement composé reflète la lettre, pas
+		# la touche morte.
+		if _try_reconstruct_composed_key(key_event):
+			return true
+		# Heal : rétablit l'état Shift du client si son relâchement a été avalé
+		# par l'IM lors d'une touche morte.
+		_prepare_key_forward(key_event, code)
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("key focus_mode: phys=", key_event.physical_keycode,
+				" code=", key_event.keycode, " unicode=", key_event.unicode,
+				" loc=", key_event.location, " pressed=", key_event.pressed)
 		# Chevrons AZERTY : la touche ISO (physique KEY_QUOTELEFT/96) donne '<'
 		# non-shifté et '>' shifté — même touche evdev 86, le Shift est forwardé
 		# à part. Remap par code physique (pas par unicode, nul au relâchement)

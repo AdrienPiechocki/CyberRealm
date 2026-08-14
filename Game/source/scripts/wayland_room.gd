@@ -424,6 +424,9 @@ func _input(event: InputEvent) -> void:
 	# utilisateur réelle et annuleraient le lock d'inactivité.
 	if not OS.has_feature("editor") and not (event is InputEventMouseMotion and event.warped):
 		compositor.notify_activity()
+	if event is InputEventKey and OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		print("key _input: code=", event.physical_keycode, " unicode=", event.unicode,
+			" shift=", event.shift_pressed, " pressed=", event.pressed)
 
 	if pause_menu.visible:
 		return
@@ -483,6 +486,19 @@ func _input(event: InputEvent) -> void:
 		var code = key_event.physical_keycode
 		if code == 0:
 			code = key_event.keycode
+		# Touches mortes AZERTY : Godot compose l'accent et avale la touche
+		# morte + le relâchement de la lettre — reconstruire la séquence pour
+		# le client (voir focus_mode._try_reconstruct_composed_key).
+		if focus._try_reconstruct_composed_key(key_event):
+			get_viewport().set_input_as_handled()
+			return
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("key interact: code=", code, " unicode=", key_event.unicode,
+				" shift=", key_event.shift_pressed, " pressed=", key_event.pressed,
+				" client_shift=", focus._client_shift)
+		# Heal : rétablit l'état Shift du client si son relâchement a été avalé
+		# par l'IM lors d'une touche morte.
+		focus._prepare_key_forward(key_event, code)
 
 		# Chevrons AZERTY : la touche ISO (physique KEY_QUOTELEFT/96) donne '<'
 		# non-shifté et '>' shifté — même touche evdev 86, le Shift est forwardé
