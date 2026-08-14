@@ -852,6 +852,11 @@ public:
     // jeu (backend wlr grâce à XDG_CURRENT_DESKTOP=dwl). À appeler une fois
     // le compositeur démarré (socket prêt).
     void launch_portals();
+    // Lance le secret service (org.freedesktop.secrets) dans le bus privé via
+    // un gnome-keyring-daemon isolé (control dir dédié) : sans lui, l'activation
+    // D-Bus détecte le daemon de la session hôte et expire. Désactivable via
+    // WAYLANDGODOT_SECRETS=0. Appelé par launch_portals().
+    void launch_secrets_daemon();
     // Démarre un dbus-daemon de session privé et bascule la variable
     // d'environnement DBUS_SESSION_BUS_ADDRESS dessus (héritée par les
     // enfants). Appelé automatiquement par launch_portals().
