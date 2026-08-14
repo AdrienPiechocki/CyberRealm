@@ -550,13 +550,20 @@ func handle_focus_input() -> void:
 	var surf_x: float
 	var surf_y: float
 
-	# Souris capturée: maintenir le pointer focus + forward relatif via _input
+	# Souris capturée (lock): forward UNIQUEMENT le relatif (via _input).
+	# Ne PAS envoyer de wl_pointer.motion (absolu) ici : un client locké ne doit
+	# recevoir que du relatif (contrat zwp_pointer_constraints_v1). L'absolu
+	# par frame accumule mouse_uv, qui sature sur le clamp [0,1] : dès qu'elle
+	# est saturée, chaque frame envoie un absolu avec un delta négatif (xrel =
+	# P_max - last_x) que SDL3 (OpenMW) traduit en mouvement caméra → la caméra
+	# "snap-back" constamment vers sa position d'origine. GLFW (Minecraft)
+	# ignore l'absolu quand le pointeur est locké → insensible à ce bug.
+	# Le focus pointeur est maintenu par le seat (enter persistant) et le
+	# relatif est livré immédiatement par wlr_relative_pointer_manager_v1,
+	# suivi d'un frame (cf. forward_pointer_relative_motion).
 	if st["mouse_captured"]:
-		# Maintenir le pointer focus sur la surface (nécessaire pour que
-		# wlr_relative_pointer_manager_v1_send_relative_motion livre les events)
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
-		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
 	else:
 		# Souris visible: position absolue, curseur custom suit la souris
 		var mouse_pos := get_viewport().get_mouse_position()
