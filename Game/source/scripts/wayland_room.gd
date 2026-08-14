@@ -182,8 +182,10 @@ func _ready() -> void:
 	pause_menu.keyboard_layout_changed.connect(compositor.set_keyboard_layout)
 	pause_menu.polkit_agent_changed.connect(_on_polkit_agent_changed)
 	pause_menu.pins_layer_changed.connect(_on_pins_layer_changed)
-	# Appliquer la couche des fenêtres épinglées sauvegardée dans les réglages
+	pause_menu.pins_opacity_changed.connect(_on_pins_opacity_changed)
+	# Appliquer la couche et la transparence des fenêtres épinglées sauvegardées
 	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
+	pins.set_pins_opacity(pause_menu.get_pins_opacity())
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -625,6 +627,9 @@ func _on_polkit_agent_changed(path: String) -> void:
 
 func _on_pins_layer_changed(above: bool) -> void:
 	pins.set_pins_above_focus(above)
+
+func _on_pins_opacity_changed(percent: int) -> void:
+	pins.set_pins_opacity(percent)
 
 # ── Cycle de vie ─────────────────────────────────────────────────────
 

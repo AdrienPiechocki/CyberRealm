@@ -5,6 +5,7 @@ signal quit_requested
 signal keyboard_layout_changed(layout: String, variant: String)
 signal polkit_agent_changed(path: String)
 signal pins_layer_changed(above: bool)
+signal pins_opacity_changed(percent: int)
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -560,6 +561,10 @@ func _apply_polkit_agent(line_edit: LineEdit) -> void:
 func get_pins_above_focus() -> bool:
 	return bool(_settings.get("pins_above_focus", false))
 
+# Pourcentage de transparence de la fenêtre épinglée (0 = opaque, 100 = invisible).
+func get_pins_opacity() -> int:
+	return clampi(int(_settings.get("pins_opacity", 0)), 0, 100)
+
 func _show_pins() -> void:
 	_clear()
 	_waiting_action = ""
@@ -568,11 +573,18 @@ func _show_pins() -> void:
 	container.add_child(_make_title("PINNED WINDOWS"))
 
 	var hint := Label.new()
-	hint.text = "Layer on which the pinned (PiP) window is drawn relative to the focus mode overlay."
+	hint.text = "Settings for the pinned (PiP) window."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
 	container.add_child(hint)
+
+	var layer_label := Label.new()
+	layer_label.text = "Layer (relative to the focus mode overlay)"
+	layer_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	layer_label.add_theme_font_size_override("font_size", 13)
+	layer_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(layer_label)
 
 	var opt := OptionButton.new()
 	opt.custom_minimum_size = Vector2(0, 40)
@@ -583,18 +595,48 @@ func _show_pins() -> void:
 	opt.selected = 1 if get_pins_above_focus() else 0
 	container.add_child(opt)
 
+	var transp_label := Label.new()
+	transp_label.text = "Transparency"
+	transp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	transp_label.add_theme_font_size_override("font_size", 13)
+	transp_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(transp_label)
+
+	var slider := HSlider.new()
+	slider.min_value = 0
+	slider.max_value = 100
+	slider.step = 1
+	slider.value = get_pins_opacity()
+	slider.custom_minimum_size = Vector2(0, 30)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(slider)
+
+	var slider_val := Label.new()
+	slider_val.text = "%d%%" % get_pins_opacity()
+	slider_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	slider_val.add_theme_font_size_override("font_size", 13)
+	slider_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(slider_val)
+
+	slider.value_changed.connect(func(value: float):
+		slider_val.text = "%d%%" % int(value)
+	)
+
 	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_pins_layer.bind(opt))
+	apply_btn.pressed.connect(_apply_pins_settings.bind(opt, slider))
 	container.add_child(apply_btn)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
-func _apply_pins_layer(opt: OptionButton) -> void:
+func _apply_pins_settings(opt: OptionButton, slider: HSlider) -> void:
 	var above := opt.selected == 1
+	var percent: int = clampi(int(slider.value), 0, 100)
 	_settings["pins_above_focus"] = above
+	_settings["pins_opacity"] = percent
 	_save_settings()
 	pins_layer_changed.emit(above)
+	pins_opacity_changed.emit(percent)
 	_show_main()
 
 # ── Startup apps ─────────────────────────────────────────────────────

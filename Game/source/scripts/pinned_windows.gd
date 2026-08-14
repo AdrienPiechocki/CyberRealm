@@ -13,12 +13,17 @@ var ui: CanvasLayer
 var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
 # True : la fenêtre épinglée s'affiche au-dessus du layer focus.
 var pins_above_focus := false
+# Pourcentage de transparence de la fenêtre épinglée (0 = opaque, 100 = invisible).
+var pins_opacity := 0
 
 func setup(ui_ref: CanvasLayer) -> void:
 	ui = ui_ref
 
 func _pin_z_index() -> int:
 	return PIN_Z_ABOVE_FOCUS if pins_above_focus else PIN_Z_BASE
+
+func _pin_alpha() -> float:
+	return 1.0 - float(pins_opacity) / 100.0
 
 func is_pinned(id: int) -> bool:
 	return pinned_windows.has(id)
@@ -47,6 +52,7 @@ func pin(id: int, texture: Texture2D) -> void:
 	border.add_theme_stylebox_override("panel", bg)
 	border.add_child(pip)
 	border.z_index = _pin_z_index()
+	border.modulate.a = _pin_alpha()
 
 	# Position fixe dans le coin supérieur gauche
 	border.position = Vector2(PIN_MARGIN, PIN_MARGIN)
@@ -80,6 +86,18 @@ func set_pins_above_focus(above: bool) -> void:
 		var pip: Control = pinned_windows[current_id]
 		if is_instance_valid(pip):
 			pip.z_index = _pin_z_index()
+
+# Applique la transparence (0-100 %) aux PiP existants.
+func set_pins_opacity(percent: int) -> void:
+	percent = clampi(percent, 0, 100)
+	if pins_opacity == percent:
+		return
+	pins_opacity = percent
+	var alpha := _pin_alpha()
+	for current_id in pinned_windows:
+		var pip: Control = pinned_windows[current_id]
+		if is_instance_valid(pip):
+			pip.modulate.a = alpha
 
 func on_window_texture_updated(id: int, texture: Texture2D) -> void:
 	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):
