@@ -314,6 +314,10 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_pointer_button_lock);
     ClassDB::bind_method(D_METHOD("forward_pointer_axis_lock", "delta_x", "delta_y"),
         &WlrCompositor::forward_pointer_axis_lock);
+    ClassDB::bind_method(D_METHOD("forward_pointer_pinch", "factor", "dx", "dy"),
+        &WlrCompositor::forward_pointer_pinch);
+    ClassDB::bind_method(D_METHOD("forward_pointer_pinch_end", "cancelled"),
+        &WlrCompositor::forward_pointer_pinch_end);
     ClassDB::bind_method(D_METHOD("get_wayland_socket_name"), &WlrCompositor::get_wayland_socket_name);
     ClassDB::bind_method(D_METHOD("launch_app", "command"), &WlrCompositor::launch_app);
     ClassDB::bind_method(D_METHOD("shutdown_apps"), &WlrCompositor::shutdown_apps);
@@ -682,6 +686,11 @@ static constexpr int LAYER_SAFETY_RECAPTURE_INTERVAL = 20;
 // apparaît et committe entre deux sync_window_subsurfaces : à défaut son
 // contenu resterait figé jusqu'au prochain commit racine.
 static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
+
+// Timeout (en frames) sans update pour clôturer un geste pinch : Godot
+// n'émet pas d'événement de fin de magnify, donc le compositeur envoie
+// pinch_end si aucun update n'arrive pendant cette durée.
+static constexpr int PINCH_END_TIMEOUT_MS = 250;
 
 CaptureCache::~CaptureCache() {
     reset();
@@ -3166,6 +3175,19 @@ void WlrCompositor::start_headless() {
     pointer_constraints = wlr_pointer_constraints_v1_create(display);
     relative_pointer_manager = wlr_relative_pointer_manager_v1_create(display);
 
+    // zwp_pointer_gestures_v1 : les clients (Gwenview, Firefox, Qt/KDE…)
+    // créent des objets de geste (pinch/swipe/hold) depuis le pointeur du
+    // seat. Sans ce global, Qt annonce l'extension en version 0 : les
+    // proxies restent NULL, et Gwenview appelle release() sur un proxy NULL
+    // dans le destructeur de WaylandGestures → wl_proxy_get_version(NULL) →
+    // segfault à chaque navigation d'image. Annoncer le protocole suffit à
+    // désamorcer le crash ; les événements de geste (touchpad) restent à
+    // implémenter via wlr_pointer_gestures_v1_send_*_*.
+    pointer_gestures = wlr_pointer_gestures_v1_create(display);
+    if (!pointer_gestures) {
+        UtilityFunctions::printerr("waylandgodot: échec création global zwp_pointer_gestures_v1");
+    }
+
     new_constraint_listener.notify = WlrCompositor::on_new_constraint;
     wl_signal_add(&pointer_constraints->events.new_constraint, &new_constraint_listener);
 
@@ -3311,6 +3333,14 @@ void WlrCompositor::_process(double delta) {
 
     wl_event_loop_dispatch(event_loop, 0);
     if (display) wl_display_flush_clients(display);
+
+    // Clôturer un geste pinch resté sans update depuis trop longtemps.
+    if (pinch_active && pointer_gestures && seat &&
+        (get_time_msec() - pinch_last_update_ms) > PINCH_END_TIMEOUT_MS) {
+        wlr_pointer_gestures_v1_send_pinch_end(pointer_gestures, seat,
+            get_time_msec(), false);
+        pinch_active = false;
+    }
 
 
 
@@ -3815,6 +3845,39 @@ void WlrCompositor::forward_pointer_axis_lock(double delta_x, double delta_y) {
             delta_x, (int32_t)delta_x, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     wlr_seat_pointer_notify_frame(seat);
+}
+
+void WlrCompositor::forward_pointer_pinch(double factor, double dx, double dy) {
+    notify_activity();
+    if (!pointer_gestures || !seat) return;
+    if (factor <= 0.0) return;
+    uint32_t time = get_time_msec();
+    if (!pinch_active) {
+        // Godot ne génère des gestes magnify que pour 2 doigts, et les
+        // clients ciblés (Gwenview…) n'écoutent que le pinch.
+        wlr_pointer_gestures_v1_send_pinch_begin(pointer_gestures, seat, time, 2);
+        pinch_scale = 1.0;
+        pinch_active = true;
+    }
+    pinch_scale *= factor;
+    if (pinch_scale < 0.0001) pinch_scale = 0.0001;
+    wlr_pointer_gestures_v1_send_pinch_update(pointer_gestures, seat, time,
+        dx, dy, pinch_scale, 0.0);
+    pinch_last_update_ms = time;
+    UtilityFunctions::print("[gesture] forward_pinch factor=", factor, " scale=", pinch_scale,
+        " focus=", (seat && seat->pointer_state.focused_surface) ? "oui" : "non");
+}
+
+void WlrCompositor::forward_pointer_pinch_end(bool cancelled) {
+    notify_activity();
+    if (!pointer_gestures || !seat || !pinch_active) {
+        pinch_active = false;
+        return;
+    }
+    UtilityFunctions::print("[gesture] pinch_end cancelled=", cancelled);
+    wlr_pointer_gestures_v1_send_pinch_end(pointer_gestures, seat,
+        get_time_msec(), cancelled);
+    pinch_active = false;
 }
 
 void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_location, bool pressed) {
