@@ -24,6 +24,7 @@
 #endif
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/prctl.h>
 #include <dirent.h>
 #include <poll.h>
@@ -4874,6 +4875,43 @@ void WlrCompositor::launch_portals() {
         child_pids.push_back(pid);
     } else {
         UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_portals");
+    }
+    launch_secrets_daemon();
+}
+
+// Lance le secret service (org.freedesktop.secrets) dans le bus privé du jeu.
+// Un gnome-keyring-daemon isolé est indispensable : activé via D-Bus, le
+// daemon hôte de la session Plasma est détecté par --start via le socket de
+// contrôle partagé ($XDG_RUNTIME_DIR/keyring/control → discover_other_daemon:
+// 1) et sort sans prendre le nom → les apps attendent l'activation (timeout
+// service_start_timeout 120s). Un --control-directory dédié (cyberrealm-keyring)
+// évite cette détection. Sans --start, le daemon s'installe directement dans
+// le bus privé (DBUS_SESSION_BUS_ADDRESS hérité). Il est enfant du jeu :
+// terminé avec lui (child_pids). Désactivable via WAYLANDGODOT_SECRETS=0.
+void WlrCompositor::launch_secrets_daemon() {
+    const char *skip = getenv("WAYLANDGODOT_SECRETS");
+    if (skip && strcmp(skip, "0") == 0) {
+        return;
+    }
+    const char *daemon = "/usr/bin/gnome-keyring-daemon";
+    if (access(daemon, X_OK) != 0) {
+        UtilityFunctions::print("waylandgodot: gnome-keyring-daemon absent, org.freedesktop.secrets non servi");
+        return;
+    }
+    const char *rt = getenv("XDG_RUNTIME_DIR");
+    if (!rt || rt[0] == '\0') {
+        return;
+    }
+    std::string dir = std::string(rt) + "/cyberrealm-keyring";
+    mkdir(dir.c_str(), 0700);
+    chmod(dir.c_str(), 0700);
+    std::string cmd = std::string(daemon) + " --foreground --components=secrets --control-directory=" + dir;
+    pid_t pid = fork_launch(String(cmd.c_str()), String());
+    if (pid > 0) {
+        child_pids.push_back(pid);
+        UtilityFunctions::print("waylandgodot: lancé gnome-keyring-daemon (org.freedesktop.secrets, pid ", pid, ")");
+    } else {
+        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour gnome-keyring-daemon");
     }
 }
 
