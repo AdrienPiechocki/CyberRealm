@@ -49,6 +49,16 @@ const POLKIT_AGENT_CANDIDATES := [
 var drag_icon_rect: TextureRect
 var drag_icon_size := Vector2.ZERO
 
+# Dedup gestes pinch : le driver Wayland de Godot génère chaque update en
+# double (deux InputEventMagnifyGesture identiques par événement wire — l'écart
+# de 2^24 sur get_instance_id() entre les deux le confirme). Le second forward
+# multiplierait pinch_scale deux fois dans le compositeur (zoom 2× trop vite),
+# on ne garde donc que le premier de la paire (même facteur dans une courte
+# fenêtre temporelle).
+var _last_pinch_factor := 1.0
+var _last_pinch_time_msec := -1
+const PINCH_DEDUP_WINDOW_MS := 100
+
 func _load_level() -> void:
 	# Chargement du niveau custom (res://user/level.tscn) si présent, sinon le
 	# niveau par défaut. Les assets du niveau custom doivent avoir été importés
@@ -426,6 +436,25 @@ func _input(event: InputEvent) -> void:
 	# focus clavier : forward vers elle, quel que soit le mode de la souris.
 	if event is InputEventKey and layers.keyboard_busy() and not capture_selector.visible:
 		layers.forward_keyboard_event(event)
+		return
+
+	# Gestes touchpad (pinch → zoom). Godot forwarde InputEventMagnifyGesture
+	# (factor incrémental) ; le compositeur maintient l'état du geste et route
+	# via le focus pointeur du seat (fenêtre survolée en 3D, fenêtre active en
+	# mode focus). Sans focus, wlroots ignore le geste.
+	if event is InputEventMagnifyGesture and not window_menu.visible and not capture_selector.visible:
+		var mg := event as InputEventMagnifyGesture
+		var now := Time.get_ticks_msec()
+		# Ignorer le second événement de la paire (doublon du driver Wayland).
+		if mg.factor == _last_pinch_factor and _last_pinch_time_msec != -1 \
+				and now - _last_pinch_time_msec < PINCH_DEDUP_WINDOW_MS:
+			get_viewport().set_input_as_handled()
+			return
+		_last_pinch_factor = mg.factor
+		_last_pinch_time_msec = now
+		print("[gesture] magnify recu factor=", mg.factor, " hovered=", win3d.is_in_window, " focus=", focus.is_active())
+		compositor.forward_pointer_pinch(mg.factor, 0.0, 0.0)
+		get_viewport().set_input_as_handled()
 		return
 
 	# En mode focus, forward le clavier et tracker la souris capturée

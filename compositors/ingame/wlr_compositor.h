@@ -38,6 +38,7 @@ extern "C" {
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
+#include <wlr/types/wlr_pointer_gestures_v1.h>
 // wlr_layer_shell_v1.h (et le header de protocole généré) sont du C qui
 // utilise `namespace` comme nom de membre/paramètre, mot-clé C++. Le
 // `#define` temporaire les rend parsables depuis du C++ (le champ n'est
@@ -413,6 +414,13 @@ class WlrCompositor : public Node {
     wlr_seat *seat = nullptr;
     wlr_pointer_constraints_v1 *pointer_constraints = nullptr;
     wlr_relative_pointer_manager_v1 *relative_pointer_manager = nullptr;
+    wlr_pointer_gestures_v1 *pointer_gestures = nullptr;
+    // État du geste pinch (zwp_pointer_gestures_v1) en cours. Godot ne
+    // forwarde pas de begin/end explicite : le compositeur envoie un begin
+    // implicite au premier update, et un end après un timeout sans update.
+    bool pinch_active = false;
+    double pinch_scale = 1.0; // scale CUMULATIVE (le jeu forwarde des factors incrémentaux)
+    uint64_t pinch_last_update_ms = 0;
     wlr_layer_shell_v1 *layer_shell = nullptr;
     // Output layout: nécessaire pour zxdg_output_v1 (waybar 0.15 échoue avec
     // "Failed to acquire required resources." si le global est absent).
@@ -782,6 +790,12 @@ public:
     void forward_pointer_button(int window_id, int button, bool pressed);
     void forward_pointer_button_popup(int popup_id, int button, bool pressed);
     void forward_pointer_axis(int window_id, double delta_x, double delta_y);
+    // Gestes touchpad (zwp_pointer_gestures_v1). Le jeu forward les events
+    // InputEventMagnifyGesture de Godot (factor incrémental) ; le routing
+    // vers le client se fait via le focus pointeur du seat. begin implicite
+    // au premier update, end après timeout (voir _process).
+    void forward_pointer_pinch(double factor, double dx, double dy);
+    void forward_pointer_pinch_end(bool cancelled);
     void forward_pointer_leave();
     void forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel);
     void forward_pointer_motion_layer(int layer_id, double surface_x, double surface_y);
