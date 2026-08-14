@@ -5,6 +5,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/viewport.hpp>
+#include <godot_cpp/classes/os.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -4607,16 +4608,26 @@ void WlrCompositor::launch_polkit_agent() {
     }
 }
 
-void WlrCompositor::launch_app(const String &command) {
+// Lance `command` via /bin/sh dans le dossier `cwd` (fork + setsid), renvoie
+// le pid de l'enfant ou -1 si fork échoue. launch_app() l'utilise avec $HOME ;
+// launch_portals() avec le dossier du binaire du jeu pour résoudre ses chemins
+// relatifs (portal-wlr dans build/portal) sans imposer ce CWD aux apps.
+static pid_t fork_launch(const String &command, const String &cwd) {
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
-        const char *home = getenv("HOME");
-        if (home) chdir(home);
+        if (!cwd.is_empty()) chdir(cwd.utf8().get_data());
         CharString cmd = command.utf8();
         execl("/bin/sh", "sh", "-c", cmd.get_data(), (char *)nullptr);
         _exit(127);
-    } else if (pid > 0) {
+    }
+    return pid;
+}
+
+void WlrCompositor::launch_app(const String &command) {
+    const char *home = getenv("HOME");
+    pid_t pid = fork_launch(command, home ? String(home) : String());
+    if (pid > 0) {
         child_pids.push_back(pid);
     } else {
         UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_app");
@@ -4837,7 +4848,12 @@ String WlrCompositor::write_portal_config() const {
 void WlrCompositor::launch_portals() {
     start_private_dbus();
     // Les binaires portal sont dans /usr/lib/ (pas dans $PATH sur Arch) :
-    // il faut les chemins absolus pour que sh -c les trouve.
+    // il faut le chemin absolu pour que sh -c le trouve. Le portal-wlr local
+    // est lancé via fork_launch avec pour cwd le dossier du binaire du jeu
+    // (Game/build) : son chemin relatif ../../build/portal pointe vers
+    // build/portal, où qu'ait été déplacé le projet, sans changer le CWD des
+    // apps lancées par launch_app() ($HOME).
+    const String bin_dir = OS::get_singleton()->get_executable_path().get_base_dir();
     String portal_config = write_portal_config();
     launch_app("/usr/lib/xdg-desktop-portal");
     // xdg-desktop-portal-wlr local, patché pour la capture fenêtre (le chooser
@@ -4848,10 +4864,16 @@ void WlrCompositor::launch_portals() {
     // -l INFO (MAJUSCULES, niveaux de logger.c) : sans quoi le niveau par
     // défaut (ERROR) supprime le log "window capture target" utile pour
     // vérifier quelle fenêtre est capturée. Un niveau inconnu fait exit(1).
+    String portal_cmd = "../../build/portal/libexec/xdg-desktop-portal-wlr";
     if (!portal_config.is_empty()) {
-        launch_app("/home/adrien/Projets/CyberRealm/build/portal/libexec/xdg-desktop-portal-wlr -c " + portal_config + " -l INFO");
+        portal_cmd += " -c " + portal_config;
+    }
+    portal_cmd += " -l INFO";
+    pid_t pid = fork_launch(portal_cmd, bin_dir);
+    if (pid > 0) {
+        child_pids.push_back(pid);
     } else {
-        launch_app("/home/adrien/Projets/CyberRealm/build/portal/libexec/xdg-desktop-portal-wlr -l INFO");
+        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_portals");
     }
 }
 
