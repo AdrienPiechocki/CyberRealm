@@ -237,6 +237,15 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {(int)Key::KEY_LESS, 86},
     {(int)Key::KEY_GREATER, 86}, // '<' et '>' partagent la même touche physique (86/ISO) ; le décalage Shift est porté par l'état xkb.
     {(int)Key::KEY_SECTION, 41}, // '²' sur AZERTY / backquote sur US (xkb 49)
+    // Touche AZERTY '^'/'¨' (physique US '[') = evdev 26. Godot rapporte le
+    // keysym du layout actif comme physical_keycode (comme '<'/'>'→KEY_LESS) :
+    // sur AZERTY c'est dead_circumflex / dead_diaeresis, pas KEY_BRACKETLEFT.
+    // Valeurs en dur (keysyms X11, stables) : l'enum Key exposée par
+    // GDExtension ne contient pas KEY_DEAD_* ni KEY_DIAERESIS.
+    {(int)Key::KEY_ASCIICIRCUM, 26},
+    {132, 26},     // KEY_DIAERESIS (0x84, XK_diaeresis)
+    {65106, 26},   // KEY_DEAD_CIRCUMFLEX (0xfe52) : '^'
+    {65111, 26},   // KEY_DEAD_DIAERESIS (0xfe57) : '¨' (Shift+^)
     {(int)Key::KEY_NUMLOCK, 69},
     // Numpad (fallback when keycode is already KP_*)
     {(int)Key::KEY_KP_0, 82}, {(int)Key::KEY_KP_1, 79},
@@ -329,6 +338,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
+    ClassDB::bind_method(D_METHOD("is_drag_active"), &WlrCompositor::is_drag_active);
     ClassDB::bind_method(D_METHOD("get_window_cursor", "window_id"), &WlrCompositor::get_window_cursor);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
@@ -3543,7 +3553,6 @@ void WlrCompositor::_process(double delta) {
 // Appelé par toutes les fonctions de forward d'input ci-dessous, et exposé
 // à Godot pour couvrir l'input du joueur qui ne vise aucune surface.
 void WlrCompositor::notify_activity() {
-    UtilityFunctions::print("[idle] notify_activity called");
     if (idle_notifier && seat) {
         wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
     }
@@ -3617,6 +3626,22 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
     if (!surface || !seat) return;
     uint32_t time = get_time_msec();
 
+    static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+    if (dbg && seat->drag) {
+        wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+        fprintf(stderr, "waylandgodot: drag motion -> surface=%p xdg=%p role=%d focus=%p\n",
+            (void *)surface, (void *)xdg,
+            xdg ? (int)xdg->role : -1,
+            (void *)seat->drag->focus);
+    }
+    if (dbg && seat->pointer_state.button_count > 0 && !seat->drag) {
+        wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+        fprintf(stderr, "waylandgodot: motion held -> surface=%p xdg=%p role=%d focused=%d\n",
+            (void *)surface, (void *)xdg,
+            xdg ? (int)xdg->role : -1,
+            (int)(seat->pointer_state.focused_surface == surface));
+    }
+
     // Tant qu'un bouton est enfoncé (le clic qui vient d'ouvrir un menu,
     // grab implicite), ne pas déplacer le focus pointeur vers un popup :
     // entrer le popup pendant le clic est interprété par GTK/Firefox comme
@@ -3624,7 +3649,17 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
     // bug corrigé dans mutter, "wayland: Do not force pointer focus on
     // popups"). Le focus bougera vers le popup au mouvement suivant, une
     // fois le bouton relâché.
-    if (seat->pointer_state.button_count > 0) {
+    // IMPORTANT : ce garde ne doit PAS s'appliquer si le focus pointeur est
+    // déjà sur ce popup (seul un ENTER vers un popup non focusé pendant un
+    // clic ferme le menu) : sans lui, un drag-and-drop initié depuis un popup
+    // (ex. glisser un marque-page Firefox) serait impossible — les mouvements
+    // pendant le maintien du bouton seraient avalés et le client verrait un
+    // simple clic (il ne peut pas lancer start_drag sans mouvement).
+    // EXCEPTION : pendant un drag actif (wl_data_device), il n'y a plus de
+    // grab popup (le grab drag l'a remplacé) et entrer les popups doit être
+    // permis pour que la cible de drop puisse être un popup.
+    if (seat->pointer_state.focused_surface != surface &&
+        seat->pointer_state.button_count > 0 && !seat->drag) {
         wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
         if (xdg && xdg->role == WLR_XDG_SURFACE_ROLE_POPUP) {
             return;
@@ -3887,6 +3922,14 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     notify_activity();
     if (!seat) return;
 
+    static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+    auto log_unmapped = [&](int code) {
+        if (dbg) {
+            fprintf(stderr, "waylandgodot: keyboard keycode non mappé godot=%d loc=%d pressed=%d\n",
+                code, key_location, pressed);
+        }
+    };
+
     uint32_t evdev_code;
     if (godot_physical_keycode == (int)Key::KEY_ALT && key_location == 2) {
         evdev_code = 100; // KEY_RIGHTALT / AltGr
@@ -3898,6 +3941,7 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
         } else {
             auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
             if (it == GODOT_TO_EVDEV.end()) {
+                log_unmapped(godot_physical_keycode);
                 return;
             }
             evdev_code = it->second;
@@ -3905,6 +3949,7 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     } else {
         auto it = GODOT_TO_EVDEV.find(godot_physical_keycode);
         if (it == GODOT_TO_EVDEV.end()) {
+            log_unmapped(godot_physical_keycode);
             return;
         }
         evdev_code = it->second;
@@ -4109,6 +4154,16 @@ void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {
     if (!self->seat) return;
     wlr_seat_request_start_drag_event *event = (wlr_seat_request_start_drag_event *)data;
 
+    static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+    if (dbg) {
+        fprintf(stderr, "waylandgodot: request_start_drag serial=%u drag_serial=%u focused=%p origin=%p "
+            "origin_is_window=%d\n",
+            event->serial, self->seat->pointer_state.grab_serial,
+            (void *)self->seat->pointer_state.focused_surface,
+            (void *)event->origin,
+            event->origin ? (wlr_xdg_surface_try_from_wlr_surface(event->origin) != nullptr) : 0);
+    }
+
     if (wlr_seat_validate_pointer_grab_serial(self->seat, event->origin, event->serial)) {
         wlr_seat_start_pointer_drag(self->seat, event->drag, event->serial);
         return;
@@ -4126,6 +4181,11 @@ void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {
 void WlrCompositor::on_start_drag(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, start_drag_listener);
     wlr_drag *drag = (wlr_drag *)data;
+
+    static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+    if (dbg) {
+        fprintf(stderr, "waylandgodot: drag STARTED icon=%p\n", (void *)(drag->icon ? drag->icon->surface : nullptr));
+    }
 
     self->active_drag = drag;
 
