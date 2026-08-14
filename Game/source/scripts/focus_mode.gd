@@ -661,10 +661,14 @@ func handle_input_event(event: InputEvent) -> bool:
 		var code = key_event.physical_keycode
 		if code == 0:
 			code = key_event.keycode
-		if key_event.unicode == 60 or code == 167:
+		# Chevrons AZERTY : la touche ISO (physique KEY_QUOTELEFT/96) donne '<'
+		# non-shifté et '>' shifté — même touche evdev 86, le Shift est forwardé
+		# à part. Remap par code physique (pas par unicode, nul au relâchement)
+		# pour que l'UP parte avec le MÊME evdev que le DOWN : sinon la touche
+		# reste enfoncée côté client (auto-repeat en boucle) et les appuis
+		# suivants sont bloqués par le garde-fou pressed_keys.
+		if key_event.unicode == 60 or key_event.unicode == 62 or code == KEY_QUOTELEFT:
 			code = KEY_LESS
-		elif key_event.unicode == 62:
-			code = KEY_GREATER
 		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
 	elif st["mouse_captured"] and event is InputEventMouseMotion:
 		# Tracker la position UV + forward le mouvement relatif au client

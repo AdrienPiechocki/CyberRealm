@@ -214,7 +214,7 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {(int)Key::KEY_F, 33}, {(int)Key::KEY_G, 34}, {(int)Key::KEY_H, 35},
     {(int)Key::KEY_J, 36}, {(int)Key::KEY_K, 37}, {(int)Key::KEY_L, 38},
     {(int)Key::KEY_SEMICOLON, 39}, {(int)Key::KEY_APOSTROPHE, 40},
-    {(int)Key::KEY_QUOTELEFT, 41},
+    {(int)Key::KEY_QUOTELEFT, 86}, // Touche ISO (xkb 94) : '<' / '>' sur AZERTY, '\' sur US
     {(int)Key::KEY_SHIFT, 42},
     {(int)Key::KEY_BACKSLASH, 43},
     {(int)Key::KEY_Z, 44}, {(int)Key::KEY_X, 45}, {(int)Key::KEY_C, 46},
@@ -235,6 +235,8 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {(int)Key::KEY_META, 125},
     {(int)Key::KEY_MENU, 139},
     {(int)Key::KEY_LESS, 86},
+    {(int)Key::KEY_GREATER, 86}, // '<' et '>' partagent la même touche physique (86/ISO) ; le décalage Shift est porté par l'état xkb.
+    {(int)Key::KEY_SECTION, 41}, // '²' sur AZERTY / backquote sur US (xkb 49)
     {(int)Key::KEY_NUMLOCK, 69},
     // Numpad (fallback when keycode is already KP_*)
     {(int)Key::KEY_KP_0, 82}, {(int)Key::KEY_KP_1, 79},

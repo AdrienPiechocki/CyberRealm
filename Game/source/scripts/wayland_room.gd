@@ -482,11 +482,14 @@ func _input(event: InputEvent) -> void:
 		if code == 0:
 			code = key_event.keycode
 
-		# Correction spécifique pour les chevrons sur clavier AZERTY / ISO
-		if key_event.unicode == 60 or code == 167: # '<' ou touche bizarre associée
+		# Chevrons AZERTY : la touche ISO (physique KEY_QUOTELEFT/96) donne '<'
+		# non-shifté et '>' shifté — même touche evdev 86, le Shift est forwardé
+		# à part. Remap par code physique (pas par unicode, nul au relâchement)
+		# pour que l'UP parte avec le MÊME evdev que le DOWN : sinon la touche
+		# reste enfoncée côté client (auto-repeat en boucle) et les appuis
+		# suivants sont bloqués par le garde-fou pressed_keys.
+		if key_event.unicode == 60 or key_event.unicode == 62 or code == KEY_QUOTELEFT:
 			code = KEY_LESS
-		elif key_event.unicode == 62: # '>'
-			code = KEY_GREATER # ou KEY_LESS selon le mapping evdev si '>' partage la même touche physique avec Shift
 
 		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
 		get_viewport().set_input_as_handled()
