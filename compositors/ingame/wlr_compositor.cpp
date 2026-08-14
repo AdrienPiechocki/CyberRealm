@@ -3257,6 +3257,7 @@ void WlrCompositor::start_headless() {
     setenv("GDK_BACKEND", "wayland", 0);       
     setenv("QT_QPA_PLATFORM", "wayland", 0);   
     setenv("MOZ_ENABLE_WAYLAND", "1", 0);      
+    setenv("SDL_VIDEODRIVER", "wayland", 0);
     setenv("_JAVA_AWT_WM_NONREPARENTING", "1", 0);
 
     // 2. Désactiver les portails (très utile pour éviter les blocages sur les FileDialogs GTK)
@@ -4174,6 +4175,12 @@ void WlrCompositor::forward_pointer_relative_motion(int window_id, double dx, do
     uint64_t time_usec = get_time_msec() * 1000;
     wlr_relative_pointer_manager_v1_send_relative_motion(
         relative_pointer_manager, seat, time_usec, dx, dy, dx_unaccel, dy_unaccel);
+    // Toujours terminer par un frame : SDL3 (OpenMW) et GLFW (Minecraft)
+    // bufferisent le relatif dans pending_frame et ne le dispatch qu'à
+    // l'arrivée d'un wl_pointer.frame. Depuis qu'on n'envoie plus de
+    // wl_pointer.motion absolu pendant un pointer lock, ce frame est
+    // indispensable — sinon aucun mouvement relatif n'arrive au client.
+    wlr_seat_pointer_notify_frame(seat);
 }
 
 // --- Utilitaires -----------------------------------------------------------
