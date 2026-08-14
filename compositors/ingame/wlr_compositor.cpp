@@ -2994,9 +2994,12 @@ void WlrCompositor::start_headless() {
     // dma-buf est indisponible). Sans ce global, waybar échoue avec
     // "Failed to acquire the required resources" (le global wl_shm n'est
     // jamais annoncé), et GTK/Qt en shm-fallback ne peuvent pas committer.
-    if (!wlr_renderer_init_wl_shm(renderer, display)) {
-        UtilityFunctions::printerr("waylandgodot: échec initialisation du global wl_shm");
-    }
+    // NOTE : wlr_renderer_init_wl_display() ci-dessus crée DÉJÀ wl_shm (et
+    // zwp_linux_dmabuf_v1 si le renderer expose des formats DMABUF). Ne pas
+    // rappeler wlr_renderer_init_wl_shm() / wlr_linux_dmabuf_v1_create_* ici :
+    // un double global wl_shm fait segfault les clients Qt5 (QWaylandShm::
+    // handle_format lors du roundtrip du registry), et le double dmabuf est
+    // inutile.
 
     // --- Initialiser le pipeline Vulkan zero-copy si possible ---------
     //     Si VK_KHR_external_memory_fd est supporté par le pilote GPU,
@@ -3144,9 +3147,7 @@ void WlrCompositor::start_headless() {
     // + WebRender). Sans ce global, ces clients tentent de committer des
     // buffers dmabuf que le compositeur ne peut pas interpréter -> la
     // fenêtre se mappe (xdg-shell OK) mais rien n'est jamais affiché.
-    if (!wlr_linux_dmabuf_v1_create_with_renderer(display, 4, renderer)) {
-        UtilityFunctions::printerr("waylandgodot: échec création global linux-dmabuf-v1");
-    }
+    // NOTE : déjà créé par wlr_renderer_init_wl_display() (cf. plus haut).
     seat = wlr_seat_create(display, "seat0");
 
     // Drag-and-drop: écouter les demandes de drag des clients (Dolphin, etc.)
