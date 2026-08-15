@@ -91,9 +91,9 @@ const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimension
 const WINDOW_TEXTURE_GAP := 0.02 # cadence d'enqueue (50/s max) — le débit réel est borné par le flow control + la capture (~30/s)
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.85 # qualité JPEG du partage
-const WINDOW_VIDEO_MAX_SIDE := 1024 # cap vidéo : ≤ ~40KB/frame (≤ 32 fragments ENet) pour une livraison fiable en 1 vague → RTT bas → 30 ips
-const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
-const WINDOW_FRAME_MAX_BYTES := 40000 # plafond dur : ré-encodage à qualité décroissante au-delà (fenêtre fiable ENet = 32 fragments ≈ 44KB)
+const WINDOW_VIDEO_MAX_SIDE := 1280 # cap vidéo : ≤ ~42KB/frame (≤ 32 fragments ENet) pour une livraison fiable en 1 vague → RTT bas → 30 ips
+const WINDOW_VIDEO_QUALITY := 0.8 # qualité JPEG d'une fenêtre en mouvement continu
+const WINDOW_FRAME_MAX_BYTES := 42000 # plafond dur : ré-encodage à qualité décroissante au-delà (fenêtre fiable ENet = 32 fragments ≈ 44KB)
 const WINDOW_FRAME_MIN_QUALITY := 0.4 # qualité minimale du ré-encodage d'appoint
 const WINDOW_CONTENT_JUMP_THRESHOLD := 0.2 # diff moyenne/pixel > 20% entre 2 frames = saut de contenu (seek) → keyframe
 const WINDOW_KEYFRAME_GAP_MSEC := 1500 # keyframe périodique : borne la dérive résiduelle du stream
