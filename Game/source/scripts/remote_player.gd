@@ -32,6 +32,6 @@ func apply_transform(pos: Vector3, yaw: float) -> void:
 func _physics_process(delta: float) -> void:
 	var k := minf(1.0, delta * LERP_SPEED)
 	_interp_pos = _interp_pos.lerp(_target_pos, k)
-	_interp_yaw = lerpf(_interp_yaw, _target_yaw, k)
+	_interp_yaw = lerp_angle(_interp_yaw, _target_yaw, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
