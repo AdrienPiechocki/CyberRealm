@@ -198,6 +198,7 @@ func _remove_player(peer_id: int) -> void:
 		_remote_players[peer_id].queue_free()
 		_remote_players.erase(peer_id)
 	_players.erase(peer_id)
+	_clear_remote_windows(peer_id)
 	_emit_players()
 
 func _on_peer_connected(id: int) -> void:
