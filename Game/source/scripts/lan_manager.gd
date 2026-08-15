@@ -32,6 +32,9 @@ var compositor: WlrCompositor = null # pour start/stop_audio_share, poll_audio_p
 # jour des PiP / overlays focus des fenêtres distantes (vue seule).
 var pins = null
 var focus = null
+# Joueur local (posé par wayland_room) : transmis aux avatars distants pour la
+# transparence de proximité (fondus sous 1 m).
+var local_player: Node3D = null
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -278,6 +281,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	var avatar := REMOTE_PLAYER_SCENE.instantiate()
 	avatar.name = str(peer_id)
 	avatar.setup(peer_id, pname, color)
+	avatar.local_player = local_player
 	avatar.position = _spawn_position(peer_id)
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar

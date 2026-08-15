@@ -269,6 +269,7 @@ func _ready() -> void:
 	lan.compositor = win3d.compositor
 	lan.pins = pins
 	lan.focus = focus
+	lan.local_player = player
 	win3d.windows_state_changed.connect(_on_windows_state_changed)
 
 	# TextureRect pour l'icône de drag-and-drop
