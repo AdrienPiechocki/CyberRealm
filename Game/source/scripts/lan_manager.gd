@@ -23,12 +23,24 @@ var is_host := false
 var player_name := ""
 var player_color := Color(0.2, 0.6, 1.0)
 var level_text_provider: Callable = Callable() # host : renvoie le texte de la scène Level
+var windows_provider: Callable = Callable() # renvoie la liste des fenêtres locales (world)
+var windows_moving_provider: Callable = Callable() # true si le joueur déplace/redimensionne une fenêtre
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
 var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
 var _last_status := ""
+
+# Fenêtres des autres joueurs, rendues en quads noirs dans le MONDE (pas
+# dans le repère du niveau) : chaque machine diffuse son propre état.
+var _remote_windows_root: Node3D = null
+var _remote_windows: Dictionary = {}      # peer_id -> Node3D (conteneur des quads)
+var _remote_window_quads: Dictionary = {} # peer_id -> {wid -> MeshInstance3D}
+var _windows_dirty := false # un changement d'état de fenêtre est en attente
+var _last_windows_send := 0.0
+const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
+const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -42,6 +54,13 @@ func setup(level_root: Node3D, name: String, color: Color) -> void:
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
 	_level_root.add_child(_players_container)
+	# Quads noirs des fenêtres des autres joueurs : dans l'espace monde, à
+	# l'identité sous ce node (le LAN est enfant de la room), PAS sous le
+	# niveau (dont la racine est rotée/décalée) — cohérent avec les fenêtres
+	# locales qui vivent dans le monde.
+	_remote_windows_root = Node3D.new()
+	_remote_windows_root.name = "RemoteWindows"
+	add_child(_remote_windows_root)
 
 func is_session_active() -> bool:
 	return session_active
@@ -258,7 +277,7 @@ func _sync_player_transform(pos: Vector3, yaw: float) -> void:
 		return
 	_remote_players[from].apply_transform(pos, yaw)
 
-func _physics_process(_delta: float) -> void:
+func _physics_process(delta: float) -> void:
 	if not session_active or _level_root == null:
 		return
 	if multiplayer.get_peers().is_empty():
@@ -267,6 +286,118 @@ func _physics_process(_delta: float) -> void:
 	if player == null:
 		return
 	_sync_player_transform.rpc(player.position, player.rotation.y)
+	_sync_windows_state(delta)
+
+# ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
+
+# Marque un changement d'état de fenêtre local (emit de windows_state_changed) :
+# le prochain tick enverra l'état complet sans attendre la cadence périodique.
+func request_windows_sync() -> void:
+	if session_active:
+		_windows_dirty = true
+
+# Envoie l'état complet des fenêtres locales : immédiatement après un
+# changement d'état, à haute cadence pendant un déplacement/redimensionnement,
+# et périodiquement pour auto-réparer les paquets perdus (RPC unreliable).
+func _sync_windows_state(delta: float) -> void:
+	if not windows_provider.is_valid():
+		return
+	var moving := false
+	if windows_moving_provider.is_valid():
+		moving = bool(windows_moving_provider.call())
+	var gap := WINDOW_SYNC_GAP
+	if moving:
+		gap = WINDOW_SYNC_MOVE_GAP
+	elif _windows_dirty:
+		gap = 0.0
+	_last_windows_send += delta
+	if _last_windows_send < gap:
+		return
+	var list: Array = windows_provider.call()
+	# Rien à dire (aucune fenêtre, pas de changement en attente) : on n'envoie
+	# pas de paquet vide périodique. Un changement d'état (dirty) part toujours.
+	if list.is_empty() and not moving and not _windows_dirty:
+		return
+	_last_windows_send = 0.0
+	_windows_dirty = false
+	_sync_windows.rpc(list)
+
+@rpc("any_peer", "unreliable")
+func _sync_windows(windows: Array) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or from == multiplayer.get_unique_id():
+		return
+	_apply_remote_windows(from, windows)
+
+# Crée/met à jour/supprime les quads noirs représentant les fenêtres d'un
+# joueur distant. Diff sur les wid : ceux absents du paquet sont retirés.
+func _apply_remote_windows(peer_id: int, windows: Array) -> void:
+	if windows.is_empty():
+		_clear_remote_windows(peer_id)
+		return
+	if _remote_windows_root == null or not is_instance_valid(_remote_windows_root):
+		return
+	var container: Node3D = _remote_windows.get(peer_id)
+	if container == null or not is_instance_valid(container):
+		container = Node3D.new()
+		container.name = "Win" + str(peer_id)
+		_remote_windows_root.add_child(container)
+		_remote_windows[peer_id] = container
+		_remote_window_quads[peer_id] = {}
+	var quads: Dictionary = _remote_window_quads[peer_id]
+	var seen := {}
+	for item in windows:
+		if not item is Dictionary:
+			continue
+		var wid := int(item.get("wid", -1))
+		if wid < 0:
+			continue
+		seen[wid] = true
+		var quad: MeshInstance3D = quads.get(wid)
+		if quad == null or not is_instance_valid(quad):
+			quad = _make_remote_quad()
+			quad.name = str(wid)
+			container.add_child(quad)
+			quads[wid] = quad
+		quad.global_transform = item.get("transform", Transform3D.IDENTITY)
+		if quad.mesh is QuadMesh:
+			(quad.mesh as QuadMesh).size = item.get("size", Vector2.ONE)
+		quad.visible = bool(item.get("visible", true))
+	for wid in quads.keys():
+		if seen.has(wid):
+			continue
+		var q: Node3D = quads[wid]
+		if is_instance_valid(q):
+			q.queue_free()
+		quads.erase(wid)
+	if quads.is_empty():
+		_clear_remote_windows(peer_id)
+
+# Quad noir (unshaded, double face, sans ombre) représentant une fenêtre
+# distante : même taille/position que la fenêtre réelle de l'autre joueur.
+func _make_remote_quad() -> MeshInstance3D:
+	var quad := MeshInstance3D.new()
+	var mesh := QuadMesh.new()
+	mesh.size = Vector2.ONE
+	quad.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color.BLACK
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	quad.material_override = mat
+	quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	return quad
+
+func _clear_remote_windows(peer_id: int) -> void:
+	var container: Node3D = _remote_windows.get(peer_id)
+	if container != null and is_instance_valid(container):
+		container.queue_free()
+	_remote_windows.erase(peer_id)
+	_remote_window_quads.erase(peer_id)
+
+func _clear_all_remote_windows() -> void:
+	for peer_id in _remote_windows.keys().duplicate():
+		_clear_remote_windows(peer_id)
 
 # ── Découverte LAN ───────────────────────────────────────────────────
 
@@ -411,6 +542,7 @@ func _disconnect_session() -> void:
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
 	_clear_remote_players()
+	_clear_all_remote_windows()
 	_stop_responder()
 	if _scanner:
 		_scanner.close()
@@ -437,5 +569,6 @@ func _exit_tree() -> void:
 	if _scanner:
 		_scanner.close()
 		_scanner = null
+	_clear_all_remote_windows()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
