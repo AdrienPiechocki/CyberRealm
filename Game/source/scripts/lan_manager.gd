@@ -26,6 +26,7 @@ var level_text_provider: Callable = Callable() # host : renvoie le texte de la s
 var windows_provider: Callable = Callable() # renvoie la liste des fenêtres locales (world)
 var windows_moving_provider: Callable = Callable() # true si le joueur déplace/redimensionne une fenêtre
 var window_image_provider: Callable = Callable() # Callable(window_id) -> Image (contenu réel, stream partage)
+var window_version_provider: Callable = Callable() # Callable(window_id) -> int (version du contenu)
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -42,6 +43,7 @@ var _remote_shared: Dictionary = {} # peer_id -> {wid -> bool} (partage en cours
 var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
 var _last_windows_texture_send := 0.0
+var _last_texture_versions: Dictionary = {} # peer_id -> {wid -> int} (dernière version envoyée)
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
@@ -107,7 +109,7 @@ func host_game() -> bool:
 		_set_status("Déjà en session LAN")
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(PORT, MAX_PLAYERS)
+	var err := peer.create_server(PORT, MAX_PLAYERS, 3)
 	if err != OK:
 		_set_status("Erreur hôte : " + error_string(err))
 		return false
@@ -133,7 +135,7 @@ func join_game(ip: String) -> bool:
 	if ip == "":
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(ip, PORT)
+	var err := peer.create_client(ip, PORT, 3)
 	if err != OK:
 		_set_status("Erreur connexion : " + error_string(err))
 		return false
@@ -266,6 +268,7 @@ func _on_peer_disconnected(id: int) -> void:
 		_remove_player.rpc(id)
 	else:
 		_remove_player(id)
+	_last_texture_versions.erase(id)
 	_set_status("Joueur %d déconnecté" % id)
 
 func _spawn_position(peer_id: int) -> Vector3:
@@ -342,31 +345,47 @@ func _sync_windows(windows: Array) -> void:
 # À cadence fixe (~10 ips), envoie le contenu réel des fenêtres partagées et
 # visibles, encodé en JPEG (LAN). Les fenêtres non partagées (SHARE OFF) ne
 # sont jamais streamées : leur quad reste noir chez les autres joueurs.
+# Seule la version du contenu est comparée : une fenêtre statique n'est pas
+# ré-encodée/re-envoyée (le compositeur ne recapture que si elle est dirty).
+# Envoi par peer : un client qui se connecte en cours de route reçoit aussi
+# la dernière frame.
 func _sync_windows_textures(delta: float) -> void:
 	_last_windows_texture_send += delta
 	if _last_windows_texture_send < WINDOW_TEXTURE_GAP:
 		return
 	_last_windows_texture_send = 0.0
-	if not windows_provider.is_valid() or not window_image_provider.is_valid():
+	if not windows_provider.is_valid() or not window_image_provider.is_valid() or not window_version_provider.is_valid():
 		return
 	var list: Array = windows_provider.call()
-	for item in list:
-		if not item is Dictionary:
+	if list.is_empty():
+		return
+	for pid in multiplayer.get_peers():
+		if pid == multiplayer.get_unique_id():
 			continue
-		if not bool(item.get("shared", false)):
-			continue
-		if not bool(item.get("visible", true)):
-			continue
-		var wid := int(item.get("wid", -1))
-		if wid < 0:
-			continue
-		var img: Image = window_image_provider.call(wid)
-		if img == null or img.is_empty():
-			continue
-		var bytes := _encode_share_frame(img)
-		if bytes.is_empty():
-			continue
-		_sync_window_texture.rpc(wid, bytes)
+		if not _last_texture_versions.has(pid):
+			_last_texture_versions[pid] = {}
+		var sent: Dictionary = _last_texture_versions[pid]
+		for item in list:
+			if not item is Dictionary:
+				continue
+			if not bool(item.get("shared", false)):
+				continue
+			if not bool(item.get("visible", true)):
+				continue
+			var wid := int(item.get("wid", -1))
+			if wid < 0:
+				continue
+			var version := int(window_version_provider.call(wid))
+			if sent.get(wid, -1) == version:
+				continue
+			var img: Image = window_image_provider.call(wid)
+			if img == null or img.is_empty():
+				continue
+			var bytes := _encode_share_frame(img)
+			if bytes.is_empty():
+				continue
+			_sync_window_texture.rpc_id(pid, wid, bytes)
+			sent[wid] = version
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
 func _encode_share_frame(img: Image) -> PackedByteArray:
@@ -382,7 +401,11 @@ func _encode_share_frame(img: Image) -> PackedByteArray:
 
 # Réception d'une frame partagée : décodée puis appliquée sur le quad distant.
 # Les frames en retard pour une fenêtre désormais non partagée sont ignorées.
-@rpc("any_peer", "unreliable")
+# FIABLE sur un canal dédié (canal 2) : ENet ne fragmente pas les paquets
+# unreliable, qui sont donc rejetés au-delà du MTU (~1400 o) — une frame JPEG
+# de fenêtre fait des centaines de Ko. Le canal séparé évite de retarder la
+# sync des avatars (canal 0) pendant le stream.
+@rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
@@ -493,6 +516,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 func _clear_all_remote_windows() -> void:
 	for peer_id in _remote_windows.keys().duplicate():
 		_clear_remote_windows(peer_id)
+	_last_texture_versions.clear()
 
 # ── Découverte LAN ───────────────────────────────────────────────────
 
@@ -638,6 +662,7 @@ func _disconnect_session() -> void:
 		multiplayer.multiplayer_peer = null
 	_clear_remote_players()
 	_clear_all_remote_windows()
+	_last_texture_versions.clear()
 	_stop_responder()
 	if _scanner:
 		_scanner.close()

@@ -75,6 +75,7 @@ var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var window_titles: Dictionary = {} # window_id (int) -> String
 var window_shared: Dictionary = {} # window_id (int) -> bool (visible par les autres joueurs)
+var _texture_versions: Dictionary = {} # window_id (int) -> int (version du contenu, pour le LAN)
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
 var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
 
@@ -168,6 +169,12 @@ func get_window_image(wid: int) -> Image:
 	if tex == null or not is_instance_valid(tex):
 		return null
 	return tex.get_image()
+
+# Version du contenu d'une fenêtre (incrémentée à chaque capture). Le LAN ne
+# stream une frame que si la version a changé, pour ne pas ré-encoder une
+# fenêtre statique à chaque tick.
+func get_window_texture_version(wid: int) -> int:
+	return int(_texture_versions.get(wid, 0))
 
 # Active/désactive la visibilité d'une fenêtre pour les autres joueurs
 # (partage « screenshare » : aucun contrôle distant, juste l'affichage).
@@ -421,6 +428,7 @@ func on_window_unmapped(id: int) -> void:
 		focused_window_id = -1
 	window_textures.erase(id)
 	window_shared.erase(id)
+	_texture_versions.erase(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -431,6 +439,9 @@ func on_window_unmapped(id: int) -> void:
 func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	# Tracker la texture pour le menu de navigation
 	window_textures[id] = texture
+	# Version du contenu : incrémentée à chaque nouvelle capture, utilisée par
+	# le LAN pour n'envoyer une frame que quand la fenêtre a réellement changé.
+	_texture_versions[id] = _texture_versions.get(id, 0) + 1
 
 	if not quads.has(id) or not is_instance_valid(quads[id]):
 		return
