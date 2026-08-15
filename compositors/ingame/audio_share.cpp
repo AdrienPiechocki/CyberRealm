@@ -12,6 +12,9 @@
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <csignal>
+#include <execinfo.h>
+#include <unistd.h>
 
 namespace godot {
 
@@ -57,6 +60,29 @@ static const struct pw_client_events g_client_events = {
 static void stream_state_changed_cb(void *user_data, enum pw_stream_state old_state,
 		enum pw_stream_state state, const char *error);
 
+// Handlers de signaux : imprime une backtrace (backtrace_symbols_fd est
+// async-signal-safe) puis relance le signal (terminaison + core dump).
+static void crash_signal_handler(int sig) {
+	const char msg[] = "\nwaylandgodot: audio: SIGFAULT BACKTRACE\n";
+	(void)!write(STDERR_FILENO, msg, sizeof(msg) - 1);
+	void *frames[32];
+	int n = backtrace(frames, 32);
+	backtrace_symbols_fd(frames, n, STDERR_FILENO);
+	signal(sig, SIG_DFL);
+	raise(sig);
+}
+
+static void install_crash_backtrace() {
+	struct sigaction sa = {};
+	sa.sa_handler = crash_signal_handler;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESETHAND;
+	sigaction(SIGSEGV, &sa, nullptr);
+	sigaction(SIGABRT, &sa, nullptr);
+	sigaction(SIGBUS, &sa, nullptr);
+	sigaction(SIGILL, &sa, nullptr);
+}
+
 static const struct pw_stream_events g_stream_events = {
 	.version = PW_VERSION_STREAM_EVENTS,
 	.destroy = nullptr,
@@ -88,6 +114,7 @@ bool AudioShare::start() {
 	if (thread_loop) {
 		return true; // déjà actif
 	}
+	install_crash_backtrace();
 	pw_init(nullptr, nullptr);
 
 	thread_loop = pw_thread_loop_new("cyberrealm-audio-share", nullptr);
@@ -265,13 +292,11 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 				node_name ? node_name : "?", ") client ", client_id,
 				" — pid du client inconnu pour l'instant");
 		}
-		auto it = pending_node_binds.find(id);
-		if (it != pending_node_binds.end()) {
-			NodeBind *nb = it->second;
-			pending_node_binds.erase(it);
-			pw_proxy_destroy(nb->proxy);
-			free(nb);
-		}
+		// IMPORTANT : on ne détruit PAS nb->proxy / ne free PAS nb ici. Cette
+		// callback info est dispatchée SUR la liste de listeners de ce proxy ;
+		// la détruire ou la libérer pendant l'itération = use-after-free du hook
+		// (crash juste après le connect). Le bind reste en vie, libéré par
+		// on_registry_global_remove ou stop().
 		apply_targets();
 	}
 }
@@ -295,13 +320,8 @@ void AudioShare::on_client_info(uint32_t id, const struct pw_client_info *info) 
 		// Re-résout les nodes appartenant à ce client et retente le ciblage.
 		apply_targets();
 	}
-	auto it = pending_client_binds.find(id);
-	if (it != pending_client_binds.end()) {
-		ClientBind *cb = it->second;
-		pending_client_binds.erase(it);
-		pw_proxy_destroy(cb->proxy);
-		free(cb);
-	}
+	// Le bind client reste en vie (libéré par on_registry_global_remove ou
+	// stop()) : le libérer ici = use-after-free (voir on_node_info).
 }
 
 void AudioShare::bind_client_for_info(uint32_t id) {
