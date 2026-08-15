@@ -261,6 +261,9 @@ func _ready() -> void:
 	lan.status_changed.connect(pause_menu.set_lan_status)
 	lan.players_changed.connect(pause_menu.set_lan_players)
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
+	lan.windows_provider = win3d.get_windows_state
+	lan.windows_moving_provider = win3d.is_window_interacting
+	win3d.windows_state_changed.connect(_on_windows_state_changed)
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -304,6 +307,13 @@ func _on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: 
 		return
 	win3d.on_popup_texture_updated(id, texture, width, height)
 	focus.on_popup_texture_updated(id, texture, width, height)
+
+# Une fenêtre locale a changé (ouverte, fermée, déplacée, redimensionnée,
+# cachée, plein écran…) : prévient le LAN pour qu'il resynchronise les quads
+# noirs que voient les autres joueurs.
+func _on_windows_state_changed() -> void:
+	if lan:
+		lan.request_windows_sync()
 
 # ── Binds custom et helpers d'entrée ─────────────────────────────────
 

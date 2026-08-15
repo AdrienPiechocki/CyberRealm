@@ -5,6 +5,10 @@ extends Node3D
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 signal window_created(window_id: int, quad: MeshInstance3D)
+# Émis quand l'ensemble des fenêtres locales change (map/unmap, hide/show,
+# taille, fin de déplacement/redimensionnement, plein écran) : le LAN s'en
+# sert pour resynchroniser les quads noirs des autres joueurs.
+signal windows_state_changed
 
 const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
 const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARGIN
@@ -131,6 +135,31 @@ func next_spawn_pos() -> Vector3:
 func get_window_texture(wid: int) -> Texture2D:
 	return window_textures.get(wid, null)
 
+# État des fenêtres locales pour le partage LAN (quads noirs des autres
+# joueurs) : une entrée par fenêtre, en coordonnées MONDE (le quad vit sous
+# Windows3D, à l'identité de la room, pas dans le repère du niveau).
+func get_windows_state() -> Array:
+	var list: Array = []
+	for wid in quads:
+		var quad: MeshInstance3D = quads[wid]
+		if not is_instance_valid(quad):
+			continue
+		var size := Vector2.ONE
+		if quad.mesh is QuadMesh:
+			size = (quad.mesh as QuadMesh).size
+		list.append({
+			"wid": wid,
+			"transform": quad.global_transform,
+			"size": size,
+			"visible": quad.visible,
+		})
+	return list
+
+# Vrai si le joueur local déplace ou redimensionne une fenêtre : pendant
+# ce temps le LAN envoie l'état des fenêtres à haute fréquence.
+func is_window_interacting() -> bool:
+	return is_moving or is_resizing or is_moving_2d
+
 # Infos nécessaires au mode focus pour basculer la fenêtre en overlay 2D.
 func get_quad_info(id: int) -> Dictionary:
 	var info := {}
@@ -177,6 +206,7 @@ func toggle_hide(id: int) -> void:
 	var quad: MeshInstance3D = quads[id]
 	quad.visible = not quad.visible
 	_set_quad_interactive(quad, quad.visible)
+	windows_state_changed.emit()
 
 func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	var quad := MeshInstance3D.new()
@@ -268,6 +298,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	)
 
 	window_created.emit(id, quad)
+	windows_state_changed.emit()
 
 # Le client peut changer son titre à tout moment (xdg-shell set_title) :
 # met à jour l'étiquette de la barre de titre du jeu.
@@ -278,6 +309,7 @@ func on_window_title_changed(id: int, title: String) -> void:
 	var bar_label: Label3D = quads[id].get_node_or_null("Titlebar/Label3D")
 	if bar_label != null:
 		bar_label.text = title
+	windows_state_changed.emit()
 
 # Recalcule la barre de titre après un changement de taille du contenu : la
 # barre reste collée au bord supérieur du contenu et suit sa largeur.
@@ -369,6 +401,7 @@ func on_window_unmapped(id: int) -> void:
 		if is_instance_valid(quad):
 			quad.queue_free()
 		quads.erase(id)
+	windows_state_changed.emit()
 
 func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	# Tracker la texture pour le menu de navigation
@@ -433,6 +466,7 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	var shape: BoxShape3D = col.shape
 	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
 	_sync_titlebar(quad)
+	windows_state_changed.emit()
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
 	var parent_quad: MeshInstance3D = null
@@ -594,6 +628,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		if Input.is_action_just_released("grab", true):
 			is_moving = false
 			active_window_id = -1
+			windows_state_changed.emit()
 		return
 	if is_resizing:
 		_update_resize(ray_origin, ray_dir)
@@ -601,12 +636,14 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			is_resizing = false
 			resizing_edge = ""
 			active_window_id = -1
+			windows_state_changed.emit()
 		return
 	if is_moving_2d:
 		_update_move_2d(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("left_click", false):
 			is_moving_2d = false
 			active_window_id = -1
+			windows_state_changed.emit()
 		return
 
 	var to := ray_origin + ray_dir * 1000.0
@@ -885,6 +922,7 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 			var orig_surf: Vector2 = pre_fullscreen_surface_sizes[id]
 			compositor.set_window_size(id, int(orig_surf.x), int(orig_surf.y))
 			pre_fullscreen_surface_sizes.erase(id)
+	windows_state_changed.emit()
 
 # Clic sur la barre de titre du jeu -> déplacer la fenêtre sur son plan 2D
 # (même mécanique que le drag sur la tranche supérieure du contenu).
