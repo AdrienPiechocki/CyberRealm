@@ -60,7 +60,7 @@ const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimension
 # paquets UDP fragmentés (non fiables) : en le gardant léger on évite la
 # congestion du lien WiFi (perte → throttle ENet → lag) et les timeout de
 # déconnexion pendant une vidéo.
-const WINDOW_TEXTURE_GAP := 0.07 # ~14 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_GAP := 0.06 # ~17 ips de stream par fenêtre partagée (fiables, retransmises)
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.85 # qualité JPEG du partage
 const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
@@ -686,13 +686,13 @@ func _debug_dump_once(key: int) -> bool:
 
 # Réception d'une frame partagée : décodée puis appliquée sur le quad distant.
 # Les frames en retard pour une fenêtre désormais non partagée sont ignorées.
-# NON FIABLE (canal 2) : Godot envoie en ENET_PACKET_FLAG_UNSEQUENCED |
-# UNRELIABLE_FRAGMENT → les grosses frames JPEG sont fragmentées sans
-# retransmission. Une frame perdue est simplement remplacée par la suivante :
-# latence minimale, pas de blocage du pipeline (le mode fiable re-séquence
-# TOUT le stream derrière le paquet perdu → lag cumulé pendant la lecture
-# vidéo). Le canal séparé évite de retarder la sync des avatars (canal 0).
-@rpc("any_peer", "call_remote", "unreliable", 2)
+# FIABLE (canal 2) : les frames JPEG (grosses, fragmentées par ENet) sont
+# retransmises en cas de perte. En mode non fiable, un seul fragment perdu
+# sur le WiFi faisait tomber TOUTE la frame → la vidéo distante sautillait
+# ("pas fluide du tout"). Fiables, les fragments perdus sont retransmis (le
+# récepteur les re-séquence) et seules les frames incomplètes sont ignorées.
+# Canal 2 séparé : la sync des avatars (canal 0) n'est jamais retardée.
+@rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
