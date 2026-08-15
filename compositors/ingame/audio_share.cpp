@@ -27,8 +27,17 @@ static const struct pw_registry_events g_registry_events = {
 	.global_remove = AudioShare::registry_global_remove_cb,
 };
 
-// Un bind node en attente d'event info (pour lire application.process.id).
+// Un bind node en attente d'event info (pour lire client.id / node.name).
 struct AudioShare::NodeBind {
+	AudioShare *self;
+	uint32_t id;
+	struct spa_hook hook;
+	struct pw_proxy *proxy;
+};
+
+// Un bind client en attente d'event info (pour lire application.process.id,
+// fixé par le core depuis les credentials du socket → fiable pour tous).
+struct AudioShare::ClientBind {
 	AudioShare *self;
 	uint32_t id;
 	struct spa_hook hook;
@@ -38,6 +47,11 @@ struct AudioShare::NodeBind {
 static const struct pw_node_events g_node_events = {
 	.version = PW_VERSION_NODE_EVENTS,
 	.info = AudioShare::node_info_cb,
+};
+
+static const struct pw_client_events g_client_events = {
+	.version = PW_VERSION_CLIENT_EVENTS,
+	.info = AudioShare::client_info_cb,
 };
 
 static const struct pw_stream_events g_stream_events = {
@@ -188,12 +202,18 @@ void AudioShare::on_registry_global(uint32_t id, const char *type, const struct 
 		return;
 	}
 	// Un node audio = une application en sortie (ou un sink/mic). Les props
-	// GLOBALES du registry sont minimales (parfois sans media.class ni
-	// application.process.id) : on bind systématiquement le node pour lire ses
-	// props complètes via l'event info (asynchrone → on_node_info).
+	// GLOBALES du registry sont minimales : on bind le node pour lire ses props
+	// complètes via l'event info (asynchrone → on_node_info).
 	if (strcmp(type, PW_TYPE_INTERFACE_Node) == 0) {
 		node_pids[id] = -1;
 		bind_node_for_info(id);
+	}
+	// Les clients : leur event info porte application.process.id (fixé par le
+	// core, fiable). On les bind tous — c'est le chemin fiable pour retrouver
+	// le PID d'un node externe (node → client.id → client → pid).
+	if (strcmp(type, PW_TYPE_INTERFACE_Client) == 0) {
+		client_pids[id] = -1;
+		bind_client_for_info(id);
 	}
 }
 
@@ -213,18 +233,34 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 	// L'event info initial peut arriver SANS props (délivrance incrémentale) :
 	// on garde le bind vivant tant que les props complètes ne sont pas là.
 	if (info != nullptr && info->props != nullptr) {
-		const char *proc_id = spa_dict_lookup(info->props, "application.process.id");
-		int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+		const char *node_name = spa_dict_lookup(info->props, "node.name");
+		// Le PID direct (application.process.id) n'est PAS fiable pour les
+		// apps externes (absentes de haruna/cava). On lit client.id puis on
+		// résout via le client (→ application.process.id du client).
+		const char *client_id_s = spa_dict_lookup(info->props, "client.id");
+		uint32_t client_id = 0;
+		if (client_id_s && *client_id_s) {
+			client_id = (uint32_t)strtoul(client_id_s, nullptr, 10);
+			node_clients[id] = client_id;
+		}
+		int pid = -1;
+		if (client_id > 0) {
+			auto it = client_pids.find(client_id);
+			if (it != client_pids.end()) {
+				pid = it->second;
+			}
+		} else {
+			const char *proc_id = spa_dict_lookup(info->props, "application.process.id");
+			pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+		}
 		node_pids[id] = pid;
 		if (pid > 0) {
-			const char *node_name = spa_dict_lookup(info->props, "node.name");
 			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
 				node_name ? node_name : "?", ") → pid ", pid);
-			apply_targets();
 		} else {
-			const char *node_name = spa_dict_lookup(info->props, "node.name");
 			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
-				node_name ? node_name : "?", ") props reçues sans application.process.id");
+				node_name ? node_name : "?", ") client ", client_id,
+				" — pid du client inconnu pour l'instant");
 		}
 		auto it = pending_node_binds.find(id);
 		if (it != pending_node_binds.end()) {
@@ -233,7 +269,54 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 			pw_proxy_destroy(nb->proxy);
 			free(nb);
 		}
+		apply_targets();
 	}
+}
+
+void AudioShare::client_info_cb(void *user_data, const struct pw_client_info *info) {
+	auto *cb = static_cast<ClientBind *>(user_data);
+	if (cb) {
+		cb->self->on_client_info(cb->id, info);
+	}
+}
+
+void AudioShare::on_client_info(uint32_t id, const struct pw_client_info *info) {
+	if (info == nullptr) {
+		return;
+	}
+	if (info->props != nullptr) {
+		const char *proc_id = spa_dict_lookup(info->props, "application.process.id");
+		int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+		client_pids[id] = pid;
+		UtilityFunctions::print("waylandgodot: audio: client ", id, " → pid ", pid);
+		// Re-résout les nodes appartenant à ce client et retente le ciblage.
+		apply_targets();
+	}
+	auto it = pending_client_binds.find(id);
+	if (it != pending_client_binds.end()) {
+		ClientBind *cb = it->second;
+		pending_client_binds.erase(it);
+		pw_proxy_destroy(cb->proxy);
+		free(cb);
+	}
+}
+
+void AudioShare::bind_client_for_info(uint32_t id) {
+	if (pending_client_binds.find(id) != pending_client_binds.end()) {
+		return; // déjà en cours
+	}
+	struct pw_proxy *proxy = static_cast<struct pw_proxy *>(pw_registry_bind(
+			(pw_registry *)registry, id, PW_TYPE_INTERFACE_Client, PW_VERSION_CLIENT,
+			sizeof(void *)));
+	if (!proxy) {
+		return;
+	}
+	auto *cb = new ClientBind();
+	cb->self = this;
+	cb->id = id;
+	cb->proxy = proxy;
+	pw_proxy_add_object_listener(proxy, &cb->hook, &g_client_events, cb);
+	pending_client_binds[id] = cb;
 }
 
 void AudioShare::bind_node_for_info(uint32_t id) {
@@ -256,12 +339,32 @@ void AudioShare::bind_node_for_info(uint32_t id) {
 
 void AudioShare::on_registry_global_remove(uint32_t id) {
 	node_pids.erase(id);
+	node_clients.erase(id);
 	auto it = pending_node_binds.find(id);
 	if (it != pending_node_binds.end()) {
 		NodeBind *nb = it->second;
 		pending_node_binds.erase(it);
 		pw_proxy_destroy(nb->proxy);
 		free(nb);
+	}
+	// Client supprimé : oublie son pid et les nodes qui en dépendaient.
+	auto cit = pending_client_binds.find(id);
+	if (cit != pending_client_binds.end()) {
+		ClientBind *cb = cit->second;
+		pending_client_binds.erase(cit);
+		pw_proxy_destroy(cb->proxy);
+		free(cb);
+	}
+	auto pit = client_pids.find(id);
+	if (pit != client_pids.end()) {
+		client_pids.erase(pit);
+		for (auto it3 = node_clients.begin(); it3 != node_clients.end();) {
+			if (it3->second == id) {
+				it3 = node_clients.erase(it3);
+			} else {
+				++it3;
+			}
+		}
 	}
 	// Si on capturait ce node (app fermée), on détruit son stream.
 	std::lock_guard<std::mutex> lk(streams_mutex);

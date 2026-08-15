@@ -31,6 +31,7 @@
 // incomplet (différent du spa_dict global utilisé par PipeWire).
 struct spa_dict;
 struct pw_node_info;
+struct pw_client_info;
 
 namespace godot {
 
@@ -84,18 +85,28 @@ public:
 			const char *type, uint32_t version, const struct ::spa_dict *props);
 	static void registry_global_remove_cb(void *user_data, uint32_t id);
 	static void node_info_cb(void *user_data, const struct pw_node_info *info);
+	static void client_info_cb(void *user_data, const struct pw_client_info *info);
 
 private:
 	void on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props);
 	void on_registry_global_remove(uint32_t id);
 	void on_node_info(uint32_t id, const struct pw_node_info *info);
+	void on_client_info(uint32_t id, const struct pw_client_info *info);
 	// Bind un node pour lire ses props complètes (les props globales du
-	// registry n'exposent pas toujours application.process.id). Le résultat
+	// registry n'exposent pas toujours media.class ni client.id). Le résultat
 	// arrive de façon asynchrone dans on_node_info ; le NodeBind est rangé
 	// dans pending_node_binds jusqu'à l'event info.
 	void bind_node_for_info(uint32_t id);
+	void bind_client_for_info(uint32_t id);
 	struct NodeBind;
+	struct ClientBind;
 	std::unordered_map<uint32_t, NodeBind *> pending_node_binds;
+	std::unordered_map<uint32_t, ClientBind *> pending_client_binds;
+	// node_id → client_id (client.id lu dans les props du node).
+	std::unordered_map<uint32_t, uint32_t> node_clients;
+	// client_id → pid (application.process.id du client, fiable : fixé par le
+	// core depuis les credentials du socket, contrairement aux props du node).
+	std::unordered_map<uint32_t, int> client_pids;
 
 	// Exécutée sur le thread PipeWire : aligne les streams sur target_pids
 	// (détruit ceux dont le PID n'est plus ciblé, connecte ceux qui manquent).
