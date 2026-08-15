@@ -6,6 +6,7 @@ signal keyboard_layout_changed(layout: String, variant: String)
 signal polkit_agent_changed(path: String)
 signal pins_layer_changed(above: bool)
 signal pins_opacity_changed(percent: int)
+signal pins_position_changed(position: String)
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -565,6 +566,21 @@ func get_pins_above_focus() -> bool:
 func get_pins_opacity() -> int:
 	return clampi(int(_settings.get("pins_opacity", 0)), 0, 100)
 
+# Emplacements possibles de la fenêtre épinglée.
+const PIN_POSITIONS := [
+	{ "id": "top_left", "label": "Top Left" },
+	{ "id": "top_right", "label": "Top Right" },
+	{ "id": "bottom_left", "label": "Bottom Left" },
+	{ "id": "bottom_right", "label": "Bottom Right" },
+]
+
+func get_pins_position() -> String:
+	var pos := String(_settings.get("pins_position", "top_left"))
+	for entry in PIN_POSITIONS:
+		if String(entry.get("id", "")) == pos:
+			return pos
+	return "top_left"
+
 func _show_pins() -> void:
 	_clear()
 	_waiting_action = ""
@@ -595,6 +611,25 @@ func _show_pins() -> void:
 	opt.selected = 1 if get_pins_above_focus() else 0
 	container.add_child(opt)
 
+	var pos_label := Label.new()
+	pos_label.text = "Position"
+	pos_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pos_label.add_theme_font_size_override("font_size", 13)
+	pos_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(pos_label)
+
+	var pos_opt := OptionButton.new()
+	pos_opt.custom_minimum_size = Vector2(0, 40)
+	pos_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pos_opt.add_theme_font_size_override("font_size", 14)
+	var cur_pos := get_pins_position()
+	for i in PIN_POSITIONS.size():
+		var entry: Dictionary = PIN_POSITIONS[i]
+		pos_opt.add_item(String(entry.get("label", "")), i)
+		if String(entry.get("id", "")) == cur_pos:
+			pos_opt.selected = i
+	container.add_child(pos_opt)
+
 	var transp_label := Label.new()
 	transp_label.text = "Transparency"
 	transp_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -623,20 +658,25 @@ func _show_pins() -> void:
 	)
 
 	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_pins_settings.bind(opt, slider))
+	apply_btn.pressed.connect(_apply_pins_settings.bind(opt, pos_opt, slider))
 	container.add_child(apply_btn)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
-func _apply_pins_settings(opt: OptionButton, slider: HSlider) -> void:
+func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSlider) -> void:
 	var above := opt.selected == 1
 	var percent: int = clampi(int(slider.value), 0, 100)
+	var pos := "top_left"
+	if pos_opt.selected >= 0 and pos_opt.selected < PIN_POSITIONS.size():
+		pos = String(PIN_POSITIONS[pos_opt.selected].get("id", "top_left"))
 	_settings["pins_above_focus"] = above
 	_settings["pins_opacity"] = percent
+	_settings["pins_position"] = pos
 	_save_settings()
 	pins_layer_changed.emit(above)
 	pins_opacity_changed.emit(percent)
+	pins_position_changed.emit(pos)
 	_show_main()
 
 # ── Startup apps ─────────────────────────────────────────────────────

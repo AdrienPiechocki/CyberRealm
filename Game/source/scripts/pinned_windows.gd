@@ -15,15 +15,41 @@ var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
 var pins_above_focus := false
 # Pourcentage de transparence de la fenêtre épinglée (0 = opaque, 100 = invisible).
 var pins_opacity := 0
+# Coin de l'écran où est affichée la fenêtre épinglée.
+# "top_left" | "top_right" | "bottom_left" | "bottom_right"
+var pins_position := "top_left"
 
 func setup(ui_ref: CanvasLayer) -> void:
 	ui = ui_ref
+	if ui != null and ui.get_viewport() != null:
+		ui.get_viewport().size_changed.connect(_reposition_all)
 
 func _pin_z_index() -> int:
 	return PIN_Z_ABOVE_FOCUS if pins_above_focus else PIN_Z_BASE
 
 func _pin_alpha() -> float:
 	return 1.0 - float(pins_opacity) / 100.0
+
+func _pin_position() -> Vector2:
+	var size := Vector2(PIN_MARGIN, PIN_MARGIN)
+	if ui != null and ui.get_viewport() != null:
+		size = ui.get_viewport().get_visible_rect().size
+	var px := PIN_SIZE.x + 4.0 + PIN_MARGIN
+	var py := PIN_SIZE.y + 4.0 + PIN_MARGIN
+	match pins_position:
+		"top_right":
+			return Vector2(size.x - px, PIN_MARGIN)
+		"bottom_left":
+			return Vector2(PIN_MARGIN, size.y - py)
+		"bottom_right":
+			return Vector2(size.x - px, size.y - py)
+	return Vector2(PIN_MARGIN, PIN_MARGIN)
+
+func _reposition_all() -> void:
+	for current_id in pinned_windows:
+		var pip: Control = pinned_windows[current_id]
+		if is_instance_valid(pip):
+			pip.position = _pin_position()
 
 func is_pinned(id: int) -> bool:
 	return pinned_windows.has(id)
@@ -54,8 +80,7 @@ func pin(id: int, texture: Texture2D) -> void:
 	border.z_index = _pin_z_index()
 	border.modulate.a = _pin_alpha()
 
-	# Position fixe dans le coin supérieur gauche
-	border.position = Vector2(PIN_MARGIN, PIN_MARGIN)
+	border.position = _pin_position()
 	pip.set_meta("window_id", id)
 	ui.add_child(border)
 	pinned_windows[id] = border
@@ -98,6 +123,15 @@ func set_pins_opacity(percent: int) -> void:
 		var pip: Control = pinned_windows[current_id]
 		if is_instance_valid(pip):
 			pip.modulate.a = alpha
+
+# Déplace la fenêtre épinglée dans le coin choisi (s'applique immédiatement).
+func set_pins_position(position: String) -> void:
+	if not position in ["top_left", "top_right", "bottom_left", "bottom_right"]:
+		return
+	if pins_position == position:
+		return
+	pins_position = position
+	_reposition_all()
 
 func on_window_texture_updated(id: int, texture: Texture2D) -> void:
 	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):
