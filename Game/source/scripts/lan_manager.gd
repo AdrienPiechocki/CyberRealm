@@ -781,6 +781,7 @@ func _decode_worker() -> void:
 			"wid": int(job.get("wid", -1)),
 			"version": int(job.get("version", -1)),
 			"img": img,
+			"t_recv": int(job.get("t_recv", 0)),
 		})
 		_decode_mutex.unlock()
 
@@ -802,11 +803,17 @@ func _drain_decoded_frames() -> void:
 	_decode_results = []
 	_decode_mutex.unlock()
 	var acked_senders := {}
+	var rx_proc_sum := 0
+	var rx_proc_n := 0
 	for result in results:
 		var from := int(result.get("from", -1))
 		var wid := int(result.get("wid", -1))
 		var version := int(result.get("version", -1))
 		var img: Image = result.get("img")
+		var t_recv := int(result.get("t_recv", 0))
+		if t_recv > 0:
+			rx_proc_sum += Time.get_ticks_msec() - t_recv
+			rx_proc_n += 1
 		if img == null or img.is_empty():
 			continue
 		# Frame périmée (keyframe plus récente déjà appliquée) : ne pas
@@ -833,11 +840,15 @@ func _drain_decoded_frames() -> void:
 	for from in acked_senders:
 		if from in multiplayer.get_peers():
 			_ack_window_versions.rpc_id(from, _last_applied_version[from])
-	# Diagnostic récepteur : cadence d'application + file de décodage restante.
+	# Diagnostic récepteur : cadence d'application + file de décodage restante
+	# + temps local réception→application (décodage + upload GPU).
 	_diag_applied_count += results.size()
 	if Time.get_ticks_msec() - _diag_last_applied >= 1000:
-		print("[lan] diag rx: appliquées/s=%d decode_q=%d" % [
-			_diag_applied_count, _decode_queue.size()])
+		var rx_ms := -1
+		if rx_proc_n > 0:
+			rx_ms = rx_proc_sum / rx_proc_n
+		print("[lan] diag rx: appliquées/s=%d decode_q=%d rx_proc=%dms" % [
+			_diag_applied_count, _decode_queue.size(), rx_ms])
 		_diag_applied_count = 0
 		_diag_last_applied = Time.get_ticks_msec()
 
@@ -911,7 +922,7 @@ func _receive_share_frame(wid: int, version: int, bytes: PackedByteArray, is_key
 		_decode_mutex.unlock()
 	_start_decode_thread()
 	_decode_mutex.lock()
-	_decode_queue.append({"from": from, "wid": wid, "version": version, "bytes": bytes})
+	_decode_queue.append({"from": from, "wid": wid, "version": version, "bytes": bytes, "t_recv": Time.get_ticks_msec()})
 	_decode_mutex.unlock()
 	_decode_sem.post()
 
