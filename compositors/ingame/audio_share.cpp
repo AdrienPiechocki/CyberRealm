@@ -210,6 +210,8 @@ void AudioShare::node_info_cb(void *user_data, const struct pw_node_info *info) 
 }
 
 void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
+	// L'event info initial peut arriver SANS props (délivrance incrémentale) :
+	// on garde le bind vivant tant que les props complètes ne sont pas là.
 	if (info != nullptr && info->props != nullptr) {
 		const char *proc_id = spa_dict_lookup(info->props, "application.process.id");
 		int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
@@ -219,14 +221,18 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
 				node_name ? node_name : "?", ") → pid ", pid);
 			apply_targets();
+		} else {
+			const char *node_name = spa_dict_lookup(info->props, "node.name");
+			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
+				node_name ? node_name : "?", ") props reçues sans application.process.id");
 		}
-	}
-	auto it = pending_node_binds.find(id);
-	if (it != pending_node_binds.end()) {
-		NodeBind *nb = it->second;
-		pending_node_binds.erase(it);
-		pw_proxy_destroy(nb->proxy);
-		free(nb);
+		auto it = pending_node_binds.find(id);
+		if (it != pending_node_binds.end()) {
+			NodeBind *nb = it->second;
+			pending_node_binds.erase(it);
+			pw_proxy_destroy(nb->proxy);
+			free(nb);
+		}
 	}
 }
 
