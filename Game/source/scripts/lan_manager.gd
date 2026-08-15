@@ -63,8 +63,9 @@ var _frame_fingerprint_last: Dictionary = {}
 # avoir appliquée (via _ack_window_versions). Flow control de l'émetteur.
 var _last_acked_version: Dictionary = {}
 # ── Diagnostics (latence du stream) ────────────────────────────────────
-var _frame_sent_version: Dictionary = {} # pid -> {wid -> version} à l'envoi
-var _frame_sent_msec: Dictionary = {}    # pid -> {wid -> msec} à l'envoi
+# pid -> {wid -> {version: msec}} : historique des frames envoyées, pour
+# mesurer le RTT ACK (l'ACK accuse une version passée, pas la dernière).
+var _frame_sent_log: Dictionary = {}
 var _frame_enqueued_msec: Dictionary = {} # wid -> {version: msec} à l'enqueue
 var _diag_last_log := 0
 var _diag_rtt_sum := 0
@@ -615,12 +616,12 @@ func _drain_encoded_frames() -> void:
 			else:
 				_sync_window_texture.rpc_id(pid, wid, version, bytes)
 			sent[wid] = version
-			# Diagnostic : timestamp d'envoi + âge du contenu encodé.
-			if not _frame_sent_version.has(pid):
-				_frame_sent_version[pid] = {}
-				_frame_sent_msec[pid] = {}
-			_frame_sent_version[pid][wid] = version
-			_frame_sent_msec[pid][wid] = now
+			# Diagnostic : timestamp d'envoi (historique par version).
+			if not _frame_sent_log.has(pid):
+				_frame_sent_log[pid] = {}
+			if not _frame_sent_log[pid].has(wid):
+				_frame_sent_log[pid][wid] = {}
+			_frame_sent_log[pid][wid][version] = now
 			if t_enc > 0:
 				_frame_enqueued_msec[wid] = now - t_enc
 	# Diagnostics périodiques (1/s) : âge du contenu à l'envoi, RTT ACK,
@@ -917,14 +918,23 @@ func _ack_window_versions(versions: Dictionary) -> void:
 			cur[wid] = versions[wid]
 	_last_acked_version[from] = cur
 	# Diagnostic RTT : aller-retour envoi → application distante → ACK.
-	var sent_map: Dictionary = _frame_sent_version.get(from, {})
-	var sent_times: Dictionary = _frame_sent_msec.get(from, {})
+	# L'ACK accuse une version passée : on la retrouve dans l'historique
+	# d'envoi (et on purge les entrées trop anciennes).
+	var sent_log: Dictionary = _frame_sent_log.get(from, {})
 	for wid in versions:
-		if int(sent_map.get(wid, -1)) == int(versions[wid]):
-			var sent_t: int = int(sent_times.get(wid, -1))
-			if sent_t > 0:
-				_diag_rtt_sum += Time.get_ticks_msec() - sent_t
-				_diag_rtt_count += 1
+		var v := int(versions[wid])
+		if sent_log.has(wid) and sent_log[wid].has(v):
+			var sent_t: int = int(sent_log[wid][v])
+			_diag_rtt_sum += Time.get_ticks_msec() - sent_t
+			_diag_rtt_count += 1
+	var now_m := Time.get_ticks_msec()
+	for wid in sent_log:
+		var to_purge: Array = []
+		for v in sent_log[wid]:
+			if now_m - int(sent_log[wid][v]) > 2000:
+				to_purge.append(v)
+		for v in to_purge:
+			sent_log[wid].erase(v)
 
 # ── Audio partagé : capture (émetteur) + lecture (récepteur) ──────────
 
