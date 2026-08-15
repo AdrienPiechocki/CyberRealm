@@ -2,7 +2,6 @@ godot-cpp/
 Game/source/bin/*.so
 Game/source/bin/*.dylib
 Game/source/bin/*.dll
-Game/build/*.so
 .sconsign.dblite
 *.os
 *.o

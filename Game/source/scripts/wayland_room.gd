@@ -266,6 +266,7 @@ func _ready() -> void:
 	lan.windows_moving_provider = win3d.is_window_interacting
 	lan.window_image_provider = win3d.get_window_image
 	lan.window_version_provider = win3d.get_window_texture_version
+	lan.compositor = win3d.compositor
 	win3d.windows_state_changed.connect(_on_windows_state_changed)
 
 	# TextureRect pour l'icône de drag-and-drop

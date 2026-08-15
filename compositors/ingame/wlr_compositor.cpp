@@ -339,6 +339,10 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
+    ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
+    ClassDB::bind_method(D_METHOD("stop_audio_share"), &WlrCompositor::stop_audio_share);
+    ClassDB::bind_method(D_METHOD("poll_audio_packet"), &WlrCompositor::poll_audio_packet);
+    ClassDB::bind_method(D_METHOD("audio_decode", "packet"), &WlrCompositor::audio_decode);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("is_drag_active"), &WlrCompositor::is_drag_active);
@@ -5176,6 +5180,32 @@ Ref<Image> WlrCompositor::get_window_cpu_image(int window_id) {
     // chaque capture (chemin Vulkan) ou par le chemin dmabuf/pixels.
     return Image::create_from_data(cache.width, cache.height, false,
         Image::FORMAT_RGBA8, cache.bytes);
+}
+
+// ---------------------------------------------------------------------
+// Partage audio (stream LAN) : capture PipeWire + OPUS.
+// ---------------------------------------------------------------------
+
+bool WlrCompositor::start_audio_share() {
+    return audio_share.start();
+}
+
+void WlrCompositor::stop_audio_share() {
+    audio_share.stop();
+}
+
+Dictionary WlrCompositor::poll_audio_packet() {
+    Dictionary result;
+    PackedByteArray packet;
+    if (!audio_share.poll_opus_packet(packet)) {
+        return result;
+    }
+    result["data"] = packet;
+    return result;
+}
+
+PackedByteArray WlrCompositor::audio_decode(const PackedByteArray &packet) {
+    return audio_share.decode_opus_packet(packet);
 }
 
 bool WlrCompositor::popup_accepts_input(int popup_id) {
