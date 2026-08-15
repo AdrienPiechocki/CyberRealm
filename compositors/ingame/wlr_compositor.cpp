@@ -338,6 +338,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_window_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_window_fullscreen);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
+    ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("is_drag_active"), &WlrCompositor::is_drag_active);
@@ -1293,6 +1294,39 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
         if (old_offscreen) {
             wlr_buffer_drop(old_offscreen);
         }
+
+        // mmap du dmabuf pour la copie CPU synchrone (partage LAN). Même
+        // principe que le chemin DMABUF : lecture fiable du contenu juste
+        // après le rendu, contrairement au readback RD différé. Un échec de
+        // mmap ne bloque PAS l'affichage zero-copy, il rend juste le partage
+        // indisponible pour cette fenêtre.
+        if (cache.map_base) {
+            munmap(cache.map_base, cache.map_size);
+            cache.map_base = nullptr;
+            cache.map_size = 0;
+            cache.data = nullptr;
+            cache.stride = 0;
+        }
+        if (attribs.modifier == DRM_FORMAT_MOD_INVALID ||
+            attribs.modifier == DRM_FORMAT_MOD_LINEAR) {
+            long page_size = sysconf(_SC_PAGE_SIZE);
+            off_t plane_offset = (off_t)attribs.offset[0];
+            off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
+            size_t map_delta = (size_t)(plane_offset - map_offset);
+            size_t map_size = map_delta + (size_t)attribs.stride[0] * (size_t)alloc_h;
+            void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
+                                  attribs.fd[0], map_offset);
+            if (map_base == MAP_FAILED) {
+                UtilityFunctions::printerr("waylandgodot: vulkan: mmap dmabuf a échoué");
+                map_base = nullptr;
+            } else {
+                cache.map_base = map_base;
+                cache.map_size = map_size;
+                cache.data = static_cast<uint8_t *>(map_base) + map_delta;
+                cache.stride = attribs.stride[0];
+            }
+        }
+
         // NOTE: on ne PAS appeler cache.reset() ici car vulkan_rid et
         // offscreen pointent maintenant vers les nouvelles ressources.
         // Les anciennes ont été libérées ci-dessus.
@@ -1361,6 +1395,45 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     // jusqu'à leur achèvement. C'est la seule synchronisation fiable
     // entre deux API GPU (EGL wlroots ↔ Vulkan Godot).
     wait_for_dmabuf_gpu_writes(cache.dma_fd);
+
+    // Copie CPU synchrone pour le partage LAN (get_window_cpu_image) : on
+    // lit le dmabuf IMMÉDIATEMENT après le rendu, tant qu'il est encore le
+    // buffer de capture de cette fenêtre. C'est le même principe fiable que
+    // capture_surface_dmabuf — un readback RD différé (texture_get_data)
+    // peut arriver trop tard et lire un buffer réutilisé par un autre rendu.
+    if (cache.data && cache.stride > 0) {
+        if (cache.bytes.size() != (int64_t)w * h * 4) {
+            cache.bytes.resize((int64_t)w * h * 4);
+        }
+        uint8_t *dst = cache.bytes.ptrw();
+        struct dma_buf_sync sync = {};
+        sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+        bool has_alpha = (cache.format == DRM_FORMAT_ABGR8888 ||
+                          cache.format == DRM_FORMAT_ARGB8888);
+        if (cache.format == DRM_FORMAT_ABGR8888 ||
+            cache.format == DRM_FORMAT_XBGR8888) {
+            // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
+            for (int y = 0; y < h; y++) {
+                memcpy(dst + (size_t)y * w * 4,
+                    cache.data + (size_t)y * cache.stride,
+                    (size_t)w * 4);
+            }
+        } else {
+            // BGRA en mémoire → swizzle B↔R par pixel (contenu opaque)
+            for (int y = 0; y < h; y++) {
+                const uint8_t *row = cache.data + (size_t)y * cache.stride;
+                for (int x = 0; x < w; x++) {
+                    dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
+                    dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+                    dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
+                    dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 255;
+                }
+            }
+        }
+        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    }
 
     tex = cache.rd_texture;
     out_w = w;
@@ -5041,6 +5114,19 @@ Dictionary WlrCompositor::get_window_geometry(int window_id) {
     result["width"] = geo.width;
     result["height"] = geo.height;
     return result;
+}
+
+Ref<Image> WlrCompositor::get_window_cpu_image(int window_id) {
+    WindowState *ws = find_window(window_id);
+    if (!ws) return Ref<Image>();
+    CaptureCache &cache = ws->capture_cache;
+    if (cache.bytes.is_empty() || cache.width <= 0 || cache.height <= 0) {
+        return Ref<Image>();
+    }
+    // cache.bytes est RGBA8 tightly-packed, mis à jour de façon synchrone à
+    // chaque capture (chemin Vulkan) ou par le chemin dmabuf/pixels.
+    return Image::create_from_data(cache.width, cache.height, false,
+        Image::FORMAT_RGBA8, cache.bytes);
 }
 
 bool WlrCompositor::popup_accepts_input(int popup_id) {

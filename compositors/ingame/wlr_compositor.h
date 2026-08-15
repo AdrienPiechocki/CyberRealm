@@ -893,6 +893,12 @@ public:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
     Dictionary get_window_geometry(int window_id);
 
+    // Image CPU RGBA8 de la dernière capture d'une fenêtre (chemin Vulkan :
+    // copie synchrone du dmabuf faite juste après le rendu — lisible de
+    // façon fiable pour le partage LAN, contrairement au readback RD différé
+    // qui peut lire un buffer réutilisé). Renvoie null si aucune capture.
+    Ref<Image> get_window_cpu_image(int window_id);
+
     // Taille de l'output virtuel (viewport Godot) pour le layout des layer
     // surfaces. À appeler par le script dès qu'il connaît sa taille réelle
     // et à chaque changement de résolution.
