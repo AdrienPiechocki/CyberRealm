@@ -172,6 +172,25 @@ func get_window_image(wid: int) -> Image:
 	var tex: Texture2D = window_textures.get(wid)
 	if tex == null or not is_instance_valid(tex):
 		return null
+	if tex is Texture2DRD:
+		# Chemin Vulkan zero-copy : l'affichage in-game échantillonne le
+		# VkImage (correct), mais tex.get_image() ferait un readback RD
+		# DIFFÉRÉ (texture_get_data exécuté plus tard sur le thread de rendu)
+		# qui peut lire un buffer réutilisé → contenu de la scène au lieu de
+		# la fenêtre. On lit donc la copie CPU faite de façon SYNCHRONE à la
+		# capture (get_window_cpu_image), juste après le render pass et la
+		# synchro DMA-BUF : elle ne peut pas être « tardive ».
+		if compositor != null and compositor.has_method("get_window_cpu_image"):
+			var cimg: Image = compositor.get_window_cpu_image(wid)
+			if cimg != null and not cimg.is_empty():
+				if not _debug_share_path.has(wid):
+					_debug_share_path[wid] = "cpu_image"
+					print("[share] ", wid, " path=cpu_image ", cimg.get_width(), "x", cimg.get_height())
+				return cimg
+			if not _debug_share_path.has(wid):
+				_debug_share_path[wid] = "cpu_image_null"
+				print("[share] ", wid, " path=cpu_image NULL (texte ", tex.get_class(), ")")
+		return null
 	var img := tex.get_image()
 	if img != null and not img.is_empty():
 		if not _debug_share_path.has(wid):
@@ -179,16 +198,6 @@ func get_window_image(wid: int) -> Image:
 			print("[share] ", wid, " path=image_texture ", tex.get_width(), "x", tex.get_height(),
 				" title=", _window_title(wid), " app=", _window_app_id(wid))
 		return img
-	if tex is Texture2DRD and compositor != null and compositor.has_method("get_window_cpu_image"):
-		var cimg: Image = compositor.get_window_cpu_image(wid)
-		if cimg != null and not cimg.is_empty():
-			if not _debug_share_path.has(wid):
-				_debug_share_path[wid] = "cpu_image"
-				print("[share] ", wid, " path=cpu_image ", cimg.get_width(), "x", cimg.get_height())
-			return cimg
-		if not _debug_share_path.has(wid):
-			_debug_share_path[wid] = "cpu_image_null"
-			print("[share] ", wid, " path=cpu_image NULL (texte ", tex.get_class(), ")")
 	return null
 
 var _debug_share_path := {}
