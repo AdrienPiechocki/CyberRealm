@@ -2,9 +2,14 @@ extends Node3D
 ## Avatar d'un autre joueur en LAN : simple représentation visuelle
 ## (capsule colorée + nom), synchronisée en position/rotation par le
 ## lan_manager. Pas de collision : on peut traverser les autres joueurs.
+## Transparence progressive sous 1 m du joueur local : plus le joueur
+## distant est proche, plus il devient transparent (alpha 0 à distance 0).
 
 var peer_id := 0
 var player_name := ""
+# Joueur local (posé par lan_manager à la création de l'avatar) : référence
+# pour calculer la distance → transparence.
+var local_player: Node3D = null
 
 var _interp_pos := Vector3.ZERO
 var _interp_yaw := 0.0
@@ -12,6 +17,12 @@ var _target_pos := Vector3.ZERO
 var _target_yaw := 0.0
 
 const LERP_SPEED := 20.0
+# Distance (m) en dessous de laquelle l'avatar commence à s'estomper.
+const FADE_DISTANCE := 1.0
+
+var _body_mat: StandardMaterial3D = null
+var _head_mat: StandardMaterial3D = null
+var _label: Label3D = null
 
 func setup(id: int, name: String, color: Color) -> void:
 	peer_id = id
@@ -19,8 +30,20 @@ func setup(id: int, name: String, color: Color) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.roughness = 0.7
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	($MeshInstance3D as MeshInstance3D).material_override = mat
-	($NameLabel as Label3D).text = name
+	_body_mat = mat
+	# La tête (CSGSphere3D) : dupliquer son matériau pour ne pas muter le
+	# sub_resource partagé de la scène (une modification affecterait toutes
+	# les instances).
+	var head_mat := ($CSGSphere3D as CSGPrimitive3D).material as StandardMaterial3D
+	if head_mat != null:
+		head_mat = head_mat.duplicate() as StandardMaterial3D
+		head_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		($CSGSphere3D as CSGPrimitive3D).material = head_mat
+		_head_mat = head_mat
+	_label = $NameLabel as Label3D
+	_label.text = name
 	_interp_pos = position
 	_target_pos = position
 	_target_yaw = rotation.y
@@ -35,3 +58,18 @@ func _physics_process(delta: float) -> void:
 	_interp_yaw = lerp_angle(_interp_yaw, _target_yaw, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
+	_update_transparency()
+
+# Alpha = distance / FADE_DISTANCE, clampé [0,1] : à 1 m et au-delà l'avatar
+# est opaque, il s'estompe linéairement jusqu'à être invisible à 0 m.
+func _update_transparency() -> void:
+	if local_player == null or not is_instance_valid(local_player):
+		return
+	var dist := global_position.distance_to(local_player.global_position)
+	var alpha := clampf(dist / FADE_DISTANCE, 0.0, 1.0)
+	if _body_mat != null:
+		_body_mat.albedo_color.a = alpha
+	if _head_mat != null:
+		_head_mat.albedo_color.a = alpha
+	if _label != null:
+		_label.modulate.a = alpha
