@@ -8,6 +8,7 @@ signal action_focus(window_id: int)
 signal action_toggle_hide(window_id: int)
 signal action_find(window_id: int)
 signal action_pin(window_id: int)
+signal action_share(window_id: int)
 signal action_quit(window_id: int)
 signal menu_closed()
 
@@ -21,17 +22,20 @@ var selected_window_id := -1
 
 var tab_buttons: Dictionary = {} # window_id -> Button
 var action_buttons: Array[Button] = []
+var _share_button: Button
 
 var _get_texture_func: Callable # Callable(window_id) -> Texture2D
+var _get_shared_func: Callable # Callable(window_id) -> bool
 
 func _ready() -> void:
 	visible = false
 	_build_action_buttons()
 	_apply_styling()
 
-func setup(compositor_ref: WlrCompositor, get_texture: Callable) -> void:
+func setup(compositor_ref: WlrCompositor, get_texture: Callable, get_shared: Callable) -> void:
 	compositor = compositor_ref
 	_get_texture_func = get_texture
+	_get_shared_func = get_shared
 
 func _apply_styling() -> void:
 	var bg := StyleBoxFlat.new()
@@ -65,6 +69,7 @@ func _build_action_buttons() -> void:
 		{"label": "FOCUS", "signal": "action_focus"},
 		{"label": "HIDE/SHOW", "signal": "action_toggle_hide"},
 		{"label": "PIN", "signal": "action_pin"},
+		{"label": "SHARE", "signal": "action_share"},
 		{"label": "FIND", "signal": "action_find"},
 		{"label": "QUIT", "signal": "action_quit"},
 	]
@@ -105,6 +110,8 @@ func _build_action_buttons() -> void:
 
 		var sig_name: String = def["signal"]
 		btn.pressed.connect(func(): _on_action(sig_name))
+		if sig_name == "action_share":
+			_share_button = btn
 		actions_container.add_child(btn)
 		action_buttons.append(btn)
 
@@ -122,6 +129,9 @@ func _on_action(sig_name: String) -> void:
 			action_find.emit(selected_window_id)
 		"action_pin":
 			action_pin.emit(selected_window_id)
+		"action_share":
+			action_share.emit(selected_window_id)
+			_update_share_label()
 		"action_quit":
 			action_quit.emit(selected_window_id)
 			# Rafraîchir après un court délai pour laisser le temps au client de fermer
@@ -243,9 +253,11 @@ func _update_preview() -> void:
 	if selected_window_id == -1 or not _get_texture_func:
 		preview_rect.texture = null
 		title_label.text = ""
+		_update_share_label()
 		return
 	var tex: Texture2D = _get_texture_func.call(selected_window_id)
 	preview_rect.texture = tex
+	_update_share_label()
 	# Mettre à jour le titre
 	if compositor:
 		var window_list: Array = compositor.get_window_list()
@@ -262,6 +274,13 @@ func _update_preview() -> void:
 func refresh_preview() -> void:
 	if visible:
 		_update_preview()
+
+# Affiche l'état de partage (« screenshare ») de la fenêtre sélectionnée.
+func _update_share_label() -> void:
+	if _share_button == null or not _get_shared_func.is_valid() or selected_window_id == -1:
+		return
+	var shared: bool = bool(_get_shared_func.call(selected_window_id))
+	_share_button.text = "SHARE: ON" if shared else "SHARE: OFF"
 
 func _input(event: InputEvent) -> void:
 	if not visible:

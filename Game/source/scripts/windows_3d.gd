@@ -74,6 +74,7 @@ var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var window_titles: Dictionary = {} # window_id (int) -> String
+var window_shared: Dictionary = {} # window_id (int) -> bool (visible par les autres joueurs)
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
 var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
 
@@ -138,11 +139,15 @@ func get_window_texture(wid: int) -> Texture2D:
 # État des fenêtres locales pour le partage LAN (quads noirs des autres
 # joueurs) : une entrée par fenêtre, en coordonnées MONDE (le quad vit sous
 # Windows3D, à l'identité de la room, pas dans le repère du niveau).
+# Les fenêtres non partagées sont omises : leur quad disparaît côté distant
+# grâce au diff du récepteur.
 func get_windows_state() -> Array:
 	var list: Array = []
 	for wid in quads:
 		var quad: MeshInstance3D = quads[wid]
 		if not is_instance_valid(quad):
+			continue
+		if not window_shared.get(wid, true):
 			continue
 		var size := Vector2.ONE
 		if quad.mesh is QuadMesh:
@@ -154,6 +159,15 @@ func get_windows_state() -> Array:
 			"visible": quad.visible,
 		})
 	return list
+
+# Active/désactive la visibilité d'une fenêtre pour les autres joueurs
+# (partage « screenshare » : aucun contrôle distant, juste l'affichage).
+func set_window_shared(wid: int, shared: bool) -> void:
+	window_shared[wid] = shared
+	windows_state_changed.emit()
+
+func is_window_shared(wid: int) -> bool:
+	return window_shared.get(wid, true)
 
 # Vrai si le joueur local déplace ou redimensionne une fenêtre : pendant
 # ce temps le LAN envoie l'état des fenêtres à haute fréquence.
@@ -289,6 +303,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 
 	add_child(quad)
 	quads[id] = quad
+	window_shared[id] = true
 	quad.global_position = next_spawn_pos()
 	var camera := _camera()
 
@@ -396,6 +411,7 @@ func on_window_unmapped(id: int) -> void:
 	if focused_window_id == id:
 		focused_window_id = -1
 	window_textures.erase(id)
+	window_shared.erase(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):

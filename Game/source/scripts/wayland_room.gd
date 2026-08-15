@@ -217,12 +217,13 @@ func _ready() -> void:
 	for cmd in pause_menu.get_startup_apps():
 		compositor.launch_app(cmd)
 	# Setup du menu de navigation entre fenêtres
-	window_menu.setup(compositor, _get_window_texture)
+	window_menu.setup(compositor, _get_window_texture, _get_window_shared)
 	window_menu.action_grab.connect(_on_window_menu_grab)
 	window_menu.action_focus.connect(_on_window_menu_focus)
 	window_menu.action_toggle_hide.connect(_on_window_menu_toggle_hide)
 	window_menu.action_find.connect(_on_window_menu_find)
 	window_menu.action_pin.connect(_on_window_menu_pin)
+	window_menu.action_share.connect(_on_window_menu_share)
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 	# Sélecteur de cible de capture OBS : ouvert quand portal-wlr signale une
@@ -616,6 +617,9 @@ func _on_drag_icon_removed() -> void:
 func _get_window_texture(wid: int) -> Texture2D:
 	return win3d.get_window_texture(wid)
 
+func _get_window_shared(wid: int) -> bool:
+	return win3d.is_window_shared(wid)
+
 func _on_window_menu_grab(wid: int) -> void:
 	# Fermer le menu, sélectionner la fenêtre et initier le grab
 	window_menu.hide_menu()
@@ -637,6 +641,13 @@ func _on_window_menu_find(wid: int) -> void:
 func _on_window_menu_pin(wid: int) -> void:
 	_toggle_pin(wid)
 	window_menu.hide_menu()
+
+func _on_window_menu_share(wid: int) -> void:
+	# Partage « screenshare » : on ne fait que basculer la visibilité du quad
+	# chez les autres joueurs — aucune interaction distante possible.
+	win3d.set_window_shared(wid, not win3d.is_window_shared(wid))
+	if window_menu.visible:
+		window_menu.refresh_preview()
 
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
