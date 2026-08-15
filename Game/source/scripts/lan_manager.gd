@@ -917,12 +917,14 @@ func _ack_window_versions(versions: Dictionary) -> void:
 			cur[wid] = versions[wid]
 	_last_acked_version[from] = cur
 	# Diagnostic RTT : aller-retour envoi → application distante → ACK.
-	var sent_v: int = int(_frame_sent_version.get(from, {}).get(wid, -1))
-	if sent_v == int(versions[wid]):
-		var sent_t: int = int(_frame_sent_msec.get(from, {}).get(wid, -1))
-		if sent_t > 0:
-			_diag_rtt_sum += Time.get_ticks_msec() - sent_t
-			_diag_rtt_count += 1
+	var sent_map: Dictionary = _frame_sent_version.get(from, {})
+	var sent_times: Dictionary = _frame_sent_msec.get(from, {})
+	for wid in versions:
+		if int(sent_map.get(wid, -1)) == int(versions[wid]):
+			var sent_t: int = int(sent_times.get(wid, -1))
+			if sent_t > 0:
+				_diag_rtt_sum += Time.get_ticks_msec() - sent_t
+				_diag_rtt_count += 1
 
 # ── Audio partagé : capture (émetteur) + lecture (récepteur) ──────────
 
