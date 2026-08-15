@@ -184,7 +184,20 @@ void AudioShare::stop() {
 		free(nb);
 	}
 	pending_node_binds.clear();
+	// Binds clients : même traitement que les binds nodes. Ne pas les libérer
+	// ici = map stale au redémarrage : bind_client_for_info saute le re-bind
+	// (l'entrée y est encore) alors que le proxy a été détruit par la
+	// déconnexion → plus jamais d'event info client → PID jamais résolu →
+	// aucun stream créé au 2e partage.
+	for (auto &kv : pending_client_binds) {
+		ClientBind *cb = kv.second;
+		pw_proxy_destroy(cb->proxy);
+		free(cb);
+	}
+	pending_client_binds.clear();
 	node_pids.clear();
+	client_pids.clear();
+	node_clients.clear();
 	target_pids.clear();
 	if (core) {
 		pw_core_disconnect((pw_core *)core);
