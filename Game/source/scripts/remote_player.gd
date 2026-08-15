@@ -30,7 +30,10 @@ func setup(id: int, name: String, color: Color) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
 	mat.roughness = 0.7
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# ALPHA_DEPTH_PRE_PASS (et pas ALPHA) : la tête (CSGSphere3D) et la capsule
+	# sont triées par profondeur réelle au lieu du painter's algorithm (tri par
+	# centre) — sans pré-pass la tête "traversait" le corps (pas de profondeur).
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
 	($MeshInstance3D as MeshInstance3D).material_override = mat
 	_body_mat = mat
 	# La tête (CSGSphere3D) : dupliquer son matériau pour ne pas muter le
@@ -39,7 +42,7 @@ func setup(id: int, name: String, color: Color) -> void:
 	var head_mat := ($CSGSphere3D as CSGPrimitive3D).material as StandardMaterial3D
 	if head_mat != null:
 		head_mat = head_mat.duplicate() as StandardMaterial3D
-		head_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		head_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
 		($CSGSphere3D as CSGPrimitive3D).material = head_mat
 		_head_mat = head_mat
 	_label = $NameLabel as Label3D
