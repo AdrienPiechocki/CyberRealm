@@ -30,6 +30,7 @@
 // à l'intérieur du namespace godot serait résolu en un type godot::spa_dict
 // incomplet (différent du spa_dict global utilisé par PipeWire).
 struct spa_dict;
+struct pw_node_info;
 
 namespace godot {
 
@@ -82,10 +83,19 @@ public:
 	static void registry_global_cb(void *user_data, uint32_t id, uint32_t permissions,
 			const char *type, uint32_t version, const struct ::spa_dict *props);
 	static void registry_global_remove_cb(void *user_data, uint32_t id);
+	static void node_info_cb(void *user_data, const struct pw_node_info *info);
 
 private:
 	void on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props);
 	void on_registry_global_remove(uint32_t id);
+	void on_node_info(uint32_t id, const struct pw_node_info *info);
+	// Bind un node pour lire ses props complètes (les props globales du
+	// registry n'exposent pas toujours application.process.id). Le résultat
+	// arrive de façon asynchrone dans on_node_info ; le NodeBind est rangé
+	// dans pending_node_binds jusqu'à l'event info.
+	void bind_node_for_info(uint32_t id);
+	struct NodeBind;
+	std::unordered_map<uint32_t, NodeBind *> pending_node_binds;
 
 	// Exécutée sur le thread PipeWire : aligne les streams sur target_pids
 	// (détruit ceux dont le PID n'est plus ciblé, connecte ceux qui manquent).
