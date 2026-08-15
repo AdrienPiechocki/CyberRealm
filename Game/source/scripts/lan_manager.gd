@@ -180,7 +180,7 @@ func host_game() -> bool:
 		_set_status("Déjà en session LAN")
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(PORT, MAX_PLAYERS, 4)
+	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
 	if err != OK:
 		_set_status("Erreur hôte : " + error_string(err))
 		return false
@@ -206,7 +206,7 @@ func join_game(ip: String) -> bool:
 	if ip == "":
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(ip, PORT, 4)
+	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
 		_set_status("Erreur connexion : " + error_string(err))
 		return false
