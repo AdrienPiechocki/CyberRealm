@@ -70,6 +70,7 @@ var _frame_enqueued_msec: Dictionary = {} # wid -> {version: msec} à l'enqueue
 var _diag_last_log := 0
 var _diag_rtt_sum := 0
 var _diag_rtt_count := 0
+var _diag_sent_in_sec := 0
 var _diag_applied_count := 0
 var _diag_last_applied := 0
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
@@ -624,8 +625,9 @@ func _drain_encoded_frames() -> void:
 			_frame_sent_log[pid][wid][version] = now
 			if t_enc > 0:
 				_frame_enqueued_msec[wid] = now - t_enc
+			_diag_sent_in_sec += 1
 	# Diagnostics périodiques (1/s) : âge du contenu à l'envoi, RTT ACK,
-	# temps d'encodage.
+	# temps d'encodage, écart ACK (flow control) et cadence d'envoi.
 	if now - _diag_last_log >= 1000 and not results.is_empty():
 		_diag_last_log = now
 		var last: Dictionary = results[results.size() - 1]
@@ -633,10 +635,22 @@ func _drain_encoded_frames() -> void:
 		var rtt_ms := -1
 		if _diag_rtt_count > 0:
 			rtt_ms = _diag_rtt_sum / _diag_rtt_count
-		print("[lan] diag env: age=%dms enc=%dms rtt=%dms (n=%d)" % [
-			age_ms, int(last.get("enc_us", 0)) / 1000, rtt_ms, _diag_rtt_count])
+		var gap := -99
+		var lwid := int(last.get("wid", -1))
+		for pid in multiplayer.get_peers():
+			if pid == multiplayer.get_unique_id():
+				continue
+			var s: int = int(_last_texture_versions.get(pid, {}).get(lwid, -1))
+			var a: int = int(_last_acked_version.get(pid, {}).get(lwid, -1))
+			if a >= 0:
+				gap = s - a
+			break
+		print("[lan] diag env: age=%dms enc=%dms rtt=%dms (n=%d) gap=%d send/s=%.1f" % [
+			age_ms, int(last.get("enc_us", 0)) / 1000, rtt_ms, _diag_rtt_count,
+			gap, float(_diag_sent_in_sec)])
 		_diag_rtt_sum = 0
 		_diag_rtt_count = 0
+		_diag_sent_in_sec = 0
 
 func _start_encode_thread() -> void:
 	if _encode_thread != null:
