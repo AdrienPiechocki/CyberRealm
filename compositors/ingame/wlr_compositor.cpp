@@ -345,6 +345,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("audio_decode", "packet"), &WlrCompositor::audio_decode);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
+    ClassDB::bind_method(D_METHOD("get_window_pid", "window_id"), &WlrCompositor::get_window_pid);
+    ClassDB::bind_method(D_METHOD("set_audio_share_pids", "pids"), &WlrCompositor::set_audio_share_pids);
     ClassDB::bind_method(D_METHOD("is_drag_active"), &WlrCompositor::is_drag_active);
     ClassDB::bind_method(D_METHOD("get_window_cursor", "window_id"), &WlrCompositor::get_window_cursor);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
@@ -1782,6 +1784,19 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
 
     String title = ws->toplevel->title ? String::utf8(ws->toplevel->title) : String();
     String app_id = ws->toplevel->app_id ? String::utf8(ws->toplevel->app_id) : String();
+
+    // PID du client Wayland de la fenêtre : servi au partage audio « fenêtres
+    // seules » (matching avec application.process.id du node PipeWire).
+    ws->pid = -1;
+    wl_client *map_client = ws->toplevel->base->surface->resource
+        ? wl_resource_get_client(ws->toplevel->base->surface->resource) : nullptr;
+    if (map_client) {
+        pid_t pid = 0;
+        uid_t uid = 0;
+        gid_t gid = 0;
+        wl_client_get_credentials(map_client, &pid, &uid, &gid);
+        ws->pid = pid;
+    }
 
     // Handle ext-foreign-toplevel-list-v1 : c'est ce que le chooser de
     // portal-wlr liste pour proposer la "capture fenêtre" à OBS.
@@ -4300,6 +4315,24 @@ bool WlrCompositor::is_window_xwayland(int window_id) {
     // /proc/<pid>/comm est limité à TASK_COMM_LEN (15 caractères + NUL) :
     // "xwayland-satellite" (18) apparaît donc comme "xwayland-satell".
     return comm == "xwayland-satell";
+}
+
+int WlrCompositor::get_window_pid(int window_id) {
+    WindowState *ws = find_window(window_id);
+    if (!ws) return -1;
+    return (int)ws->pid;
+}
+
+void WlrCompositor::set_audio_share_pids(Array pids) {
+    std::vector<int> targets;
+    targets.reserve((size_t)pids.size());
+    for (int i = 0; i < pids.size(); i++) {
+        int pid = (int)pids[i];
+        if (pid > 0) {
+            targets.push_back(pid);
+        }
+    }
+    audio_share.set_target_pids(targets);
 }
 
 void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {

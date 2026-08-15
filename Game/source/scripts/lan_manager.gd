@@ -107,13 +107,15 @@ var _encode_inflight: Dictionary = {} # wid -> version (job déjà soumis)
 var _encode_stop := false
 
 # ── Audio partagé (stream LAN) ───────────────────────────────────────
-# L'audio diffusé est le monitor du sink PipeWire par défaut de la machine
-# émettrice (audio de la session, pas d'adressage fenêtre→flux en Wayland).
+# L'audio diffusé est celui des SEULES fenêtres partagées : le compositeur
+# capture les applications dont le PID figure dans _audio_share_pids
+# (matching avec application.process.id des nodes PipeWire).
 # Paquets OPUS 20 ms (48 kHz stéréo) sur le canal 3 (non fiable) : un paquet
 # perdu = 20 ms de silence, sans blocage. La lecture côté récepteur utilise
 # AudioStreamGenerator (push_buffer) : si le buffer est plein on laisse
 # tomber les frames, la fraîcheur prime.
 var _audio_active := false
+var _audio_share_pids: Array = []
 var _audio_player: AudioStreamPlayer = null
 var _audio_playback: AudioStreamGeneratorPlayback = null
 var _audio_start_msec := 0
@@ -979,27 +981,41 @@ func _ack_window_versions(versions: Dictionary) -> void:
 # Active/arrête la capture audio selon qu'il existe au moins une fenêtre
 # locale partagée ET visible (même condition que le stream vidéo), puis
 # envoie les paquets OPUS disponibles sur le canal 3 (non fiable).
+# Depuis la capture « fenêtres seules » : on transmet au compositeur les PIDs
+# des fenêtres partagées, seules leurs applications audio sont capturées.
 func _sync_audio_state() -> void:
 	if compositor == null:
 		return
 	var want := false
+	var pids: Array = []
 	if windows_provider.is_valid():
 		for item in windows_provider.call():
 			if item is Dictionary \
 					and bool(item.get("shared", false)) \
 					and bool(item.get("visible", true)):
 				want = true
-				break
+				var pid := int(item.get("pid", -1))
+				if pid > 0 and not pids.has(pid):
+					pids.append(pid)
 	if want and not _audio_active:
+		_audio_share_pids = pids
 		if compositor.start_audio_share():
+			compositor.set_audio_share_pids(pids)
 			_audio_active = true
 			_audio_start_msec = Time.get_ticks_msec()
 			_audio_send_count = 0
 			_audio_no_data_warned = false
-			print("[audio] capture démarrée (audio de session)")
+			print("[audio] capture démarrée (audio des fenêtres partagées: %s)" % str(pids))
+	elif want:
+		# L'ensemble des fenêtres partagées a pu changer : on resynchronise.
+		if pids != _audio_share_pids:
+			_audio_share_pids = pids
+			compositor.set_audio_share_pids(pids)
+			print("[audio] cibles audio mises à jour: %s" % str(pids))
 	elif not want and _audio_active:
 		compositor.stop_audio_share()
 		_audio_active = false
+		_audio_share_pids = []
 		_audio_send_count = 0
 		_audio_no_data_warned = false
 		print("[audio] capture arrêtée")

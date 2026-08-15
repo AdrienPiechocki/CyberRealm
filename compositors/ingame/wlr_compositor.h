@@ -133,6 +133,12 @@ struct WindowState {
     int id = -1;
     wlr_xdg_toplevel *toplevel = nullptr;
 
+    // PID du client Wayland de la fenêtre (obtenu au map via
+    // wl_client_get_credentials). Sert à retrouver le node audio PipeWire de
+    // l'application (application.process.id) pour le partage audio
+    // « fenêtres seules ». -1 si indisponible.
+    pid_t pid = -1;
+
     wl_listener map_listener{};
     wl_listener unmap_listener{};
     wl_listener destroy_listener{};
@@ -893,6 +899,15 @@ public:
     // relatif LOCKED, sinon la position absolue diverge du curseur réel et
     // revient sauter à chaque changement de grab (caméra FPS qui "snap-back").
     bool is_window_xwayland(int window_id);
+
+    // PID du client Wayland de la fenêtre (-1 si inconnu). Utilisé pour le
+    // partage audio « fenêtres seules » : le node audio PipeWire de l'app a
+    // la même valeur dans application.process.id.
+    int get_window_pid(int window_id);
+
+    // Remplace l'ensemble des PIDs des fenêtres partagées dont l'audio doit
+    // être capturé (forward vers AudioShare, exécuté sur son thread PW).
+    void set_audio_share_pids(Array pids);
 
     // Curseur custom (wl_pointer.set_cursor) posé par le client de la fenêtre.
     // Renvoie un Dictionary { serial, image (Ref<Image> RGBA8), hotspot_x,
