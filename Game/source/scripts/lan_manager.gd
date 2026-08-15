@@ -56,7 +56,7 @@ var _window_change_rates: Dictionary = {}
 var _last_seen_version: Dictionary = {} # wid -> dernière version observée localement
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
-const WINDOW_TEXTURE_GAP := 0.05 # ~20 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_GAP := 0.075 # ~13 ips de stream par fenêtre partagée (encodage JPEG sur le thread principal)
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
 const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
@@ -72,6 +72,12 @@ const WINDOW_VIDEO_QUALITY := 0.65 # qualité réduite pour une fenêtre en mouv
 var _audio_active := false
 var _audio_player: AudioStreamPlayer = null
 var _audio_playback: AudioStreamGeneratorPlayback = null
+var _audio_start_msec := 0
+var _audio_send_count := 0
+var _audio_no_data_warned := false
+var _audio_received_count := 0
+var _audio_first_printed := false
+var _audio_decode_warned := false
 const AUDIO_MIX_RATE := 48000
 const AUDIO_BUFFER_SEC := 0.5
 
@@ -179,6 +185,8 @@ func _on_connected_to_server() -> void:
 	is_host = false
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
+	# Timeouts ENet généreux côté client (voir _on_peer_connected).
+	_set_peer_timeout(1)
 	_set_status("Connecté au serveur")
 	_emit_players()
 	# S'annoncer : le serveur va re-broadcaster le spawn de tous les avatars.
@@ -237,6 +245,11 @@ func _remove_player(peer_id: int) -> void:
 func _on_peer_connected(id: int) -> void:
 	if is_host:
 		_set_status("Joueur %d connecté…" % id)
+		# Timeouts ENet généreux : pendant un stream partagé (vidéo/audio), le
+		# thread principal fait de l'encodage/décodage JPEG par frame ; un à-coup
+		# de quelques secondes ne doit pas faire tomber la session (défaut ENet :
+		# déconnexion après ~5 s sans ACK).
+		_set_peer_timeout(id)
 		_send_level_to(id)
 
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
@@ -286,6 +299,23 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 		if p and p != _players_container:
 			p.remove_child(av)
 		_players_container.add_child(av)
+
+# Timeouts ENet généreux (limit, min, max) pour résister aux à-coups du
+# thread principal pendant un stream partagé. Défaut ENet (5000/30000 ms)
+# coupe la session après ~5 s sans ACK, trop juste quand l'encodage/décodage
+# JPEG vidéo monopolise le thread principal.
+const ENET_TIMEOUT_LIMIT := 64
+const ENET_TIMEOUT_MIN := 15000
+const ENET_TIMEOUT_MAX := 90000
+
+func _set_peer_timeout(id: int) -> void:
+	var mp = multiplayer.multiplayer_peer
+	if mp == null or not (mp is ENetMultiplayerPeer):
+		return
+	var peer = (mp as ENetMultiplayerPeer).get_peer(id)
+	if peer == null:
+		return
+	peer.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN, ENET_TIMEOUT_MAX)
 
 func _on_peer_disconnected(id: int) -> void:
 	if is_host:
@@ -385,42 +415,61 @@ func _sync_windows_textures(delta: float) -> void:
 	var list: Array = windows_provider.call()
 	if list.is_empty():
 		return
+	# 1) Encoder UNE fois chaque fenêtre à envoyer (le JPEG coûte cher sur le
+	# thread principal : ne pas le re-faire par peer), puis 2) diffuser la
+	# frame encodée à tous les peers qui en ont besoin (version différente).
+	var to_send := {} # wid -> {"version": int, "bytes": PackedByteArray}
+	for item in list:
+		if not item is Dictionary:
+			continue
+		if not bool(item.get("shared", false)):
+			continue
+		if not bool(item.get("visible", true)):
+			continue
+		var wid := int(item.get("wid", -1))
+		if wid < 0:
+			continue
+		var version := int(window_version_provider.call(wid))
+		# Cadence de changement : décroît à chaque tick, +1 par changement.
+		var rate: float = _window_change_rates.get(wid, 0.0)
+		if version != _last_seen_version.get(wid, -1):
+			_last_seen_version[wid] = version
+			rate += 1.0
+		_window_change_rates[wid] = rate * 0.9
+		var video := rate >= 2.0
+		# Au moins un peer attend une version plus récente ?
+		var need_send := false
+		for pid in multiplayer.get_peers():
+			if pid == multiplayer.get_unique_id():
+				continue
+			var sent: Dictionary = _last_texture_versions.get(pid, {})
+			if sent.get(wid, -1) != version:
+				need_send = true
+				break
+		if not need_send:
+			continue
+		var img: Image = window_image_provider.call(wid)
+		if img == null or img.is_empty():
+			continue
+		var bytes := _encode_share_frame(img,
+			WINDOW_VIDEO_MAX_SIDE if video else WINDOW_TEXTURE_MAX_SIDE,
+			WINDOW_VIDEO_QUALITY if video else WINDOW_TEXTURE_QUALITY)
+		if bytes.is_empty():
+			continue
+		to_send[wid] = {"version": version, "bytes": bytes}
+	# 2) Diffusion aux peers.
 	for pid in multiplayer.get_peers():
 		if pid == multiplayer.get_unique_id():
 			continue
 		if not _last_texture_versions.has(pid):
 			_last_texture_versions[pid] = {}
 		var sent: Dictionary = _last_texture_versions[pid]
-		for item in list:
-			if not item is Dictionary:
+		for wid in to_send:
+			var entry: Dictionary = to_send[wid]
+			if sent.get(wid, -1) == int(entry.get("version", -1)):
 				continue
-			if not bool(item.get("shared", false)):
-				continue
-			if not bool(item.get("visible", true)):
-				continue
-			var wid := int(item.get("wid", -1))
-			if wid < 0:
-				continue
-			var version := int(window_version_provider.call(wid))
-			# Cadence de changement : décroît à chaque tick, +1 par changement.
-			var rate: float = _window_change_rates.get(wid, 0.0)
-			if version != _last_seen_version.get(wid, -1):
-				_last_seen_version[wid] = version
-				rate += 1.0
-			_window_change_rates[wid] = rate * 0.9
-			var video := rate >= 2.0
-			if sent.get(wid, -1) == version:
-				continue
-			var img: Image = window_image_provider.call(wid)
-			if img == null or img.is_empty():
-				continue
-			var bytes := _encode_share_frame(img,
-				WINDOW_VIDEO_MAX_SIDE if video else WINDOW_TEXTURE_MAX_SIDE,
-				WINDOW_VIDEO_QUALITY if video else WINDOW_TEXTURE_QUALITY)
-			if bytes.is_empty():
-				continue
-			_sync_window_texture.rpc_id(pid, wid, bytes)
-			sent[wid] = version
+			_sync_window_texture.rpc_id(pid, wid, entry["bytes"])
+			sent[wid] = int(entry.get("version", -1))
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
 func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByteArray:
@@ -434,6 +483,8 @@ func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByt
 		img = work
 		w = img.get_width()
 		h = img.get_height()
+	# Pas de duplicate si le redimensionnement n'est pas nécessaire : économise
+	# une copie complète de l'image (chère sur une vidéo 720p streamée en continu).
 	var bytes := img.save_jpg_to_buffer(quality)
 	if _debug_dump_once(0):
 		img.save_png("user://share_sender.png")
@@ -499,10 +550,15 @@ func _sync_audio_state() -> void:
 	if want and not _audio_active:
 		if compositor.start_audio_share():
 			_audio_active = true
+			_audio_start_msec = Time.get_ticks_msec()
+			_audio_send_count = 0
+			_audio_no_data_warned = false
 			print("[audio] capture démarrée (audio de session)")
 	elif not want and _audio_active:
 		compositor.stop_audio_share()
 		_audio_active = false
+		_audio_send_count = 0
+		_audio_no_data_warned = false
 		print("[audio] capture arrêtée")
 	if not _audio_active:
 		return
@@ -511,7 +567,13 @@ func _sync_audio_state() -> void:
 	# entre eux et diviserait la cadence effective par peer).
 	var packet: Dictionary = compositor.poll_audio_packet()
 	if packet.is_empty():
+		# Diagnostique : capture active mais aucun paquet OPUS produit.
+		if _audio_send_count == 0 and not _audio_no_data_warned \
+				and Time.get_ticks_msec() - _audio_start_msec > 3000:
+			_audio_no_data_warned = true
+			push_warning("[audio] capture active mais aucun paquet OPUS (stream PipeWire non connecté ?)")
 		return
+	_audio_send_count += 1
 	var data: PackedByteArray = packet.get("data", PackedByteArray())
 	if data.is_empty():
 		return
@@ -532,7 +594,14 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 		return
 	var pcm: PackedByteArray = compositor.audio_decode(bytes)
 	if pcm.is_empty():
+		if not _audio_decode_warned:
+			_audio_decode_warned = true
+			push_warning("[audio] paquets reçus mais décodage OPUS vide")
 		return
+	_audio_received_count += 1
+	if not _audio_first_printed:
+		_audio_first_printed = true
+		print("[audio] premier paquet reçu et décodé (%d frames)" % (pcm.size() / 4))
 	_ensure_audio_player()
 	var frames := PackedVector2Array()
 	var n := pcm.size() / 4
@@ -564,11 +633,17 @@ func _stop_audio_share() -> void:
 	if _audio_active and compositor != null:
 		compositor.stop_audio_share()
 	_audio_active = false
+	_audio_start_msec = 0
+	_audio_send_count = 0
+	_audio_no_data_warned = false
 	if _audio_player != null and is_instance_valid(_audio_player):
 		_audio_player.stop()
 		_audio_player.queue_free()
 		_audio_player = null
 	_audio_playback = null
+	_audio_received_count = 0
+	_audio_first_printed = false
+	_audio_decode_warned = false
 
 # Crée/met à jour/supprime les quads noirs représentant les fenêtres d'un
 # joueur distant. Diff sur les wid : ceux absents du paquet sont retirés.

@@ -774,7 +774,13 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd) {
         struct pollfd pfd;
         pfd.fd = export_args.fd;
         pfd.events = POLLIN;
-        poll(&pfd, 1, -1); // bloque jusqu'à l'achèvement GPU
+        // Bloque jusqu'à l'achèvement GPU, borné à 250 ms : si le sync_file
+        // ne signale pas (pilote/stall GPU pathologique), on NE bloque PAS le
+        // thread principal indéfiniment — sinon le service réseau n'est plus
+        // appelé et ENet finit par déconnecter le peer (timeout 5-30 s).
+        // Au pire on lit un buffer pas encore synchronisé → artefact visuel,
+        // jamais un gel/disconnexion.
+        poll(&pfd, 1, 250);
         close(export_args.fd);
         return;
     }
