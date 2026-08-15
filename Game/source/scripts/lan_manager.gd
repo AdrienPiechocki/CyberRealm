@@ -88,7 +88,7 @@ const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement
 const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
 const WINDOW_CONTENT_JUMP_THRESHOLD := 0.2 # diff moyenne/pixel > 20% entre 2 frames = saut de contenu (seek) → keyframe
 const WINDOW_KEYFRAME_GAP_MSEC := 1500 # keyframe périodique : borne la dérive résiduelle du stream
-const WINDOW_MAX_AHEAD := 1 # flow control : au plus 1 frame non appliquée en route (envoyée − ACKée) par peer
+const WINDOW_MAX_AHEAD := 2 # flow control : au plus 2 frames non appliquées en route (envoyée − ACKée) par peer. Pipelinage : la livraison réseau (~70ms/sens en WiFi) se chevauche avec l'envoi suivant → ~16 ips au lieu de ~1/RTT≈5 ips
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
 # L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
