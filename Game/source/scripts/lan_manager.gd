@@ -40,15 +40,17 @@ var _remote_windows_root: Node3D = null
 var _remote_windows: Dictionary = {}      # peer_id -> Node3D (conteneur des quads)
 var _remote_window_quads: Dictionary = {} # peer_id -> {wid -> MeshInstance3D}
 var _remote_shared: Dictionary = {} # peer_id -> {wid -> bool} (partage en cours côté émetteur)
+# peer_id -> {wid -> Texture2D} : dernière texture reçue, même pour une fenêtre
+# pas encore marquée `shared` par l'état (course 1re frame vs état). Réappliquée
+# par _apply_remote_windows quand le quad est recréé/que l'état arrive.
+var _pending_remote_textures: Dictionary = {}
 var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
 var _last_windows_texture_send := 0.0
-var _texture_resend_elapsed := 0.0
 var _last_texture_versions: Dictionary = {} # peer_id -> {wid -> int} (dernière version envoyée)
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
-const WINDOW_TEXTURE_RESYNC_GAP := 1.0 # re-envoi périodique (auto-réparation)
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
 
@@ -356,14 +358,6 @@ func _sync_windows_textures(delta: float) -> void:
 	if _last_windows_texture_send < WINDOW_TEXTURE_GAP:
 		return
 	_last_windows_texture_send = 0.0
-	# Re-envoi périodique de toutes les fenêtres partagées : répare la course où
-	# la 1re frame (émise au toggle SHARE) arrive avant l'état `shared` et est
-	# rejetée côté destinataire → sans re-envoi, version identique = jamais re-sent.
-	_texture_resend_elapsed += WINDOW_TEXTURE_GAP
-	var force_resend := false
-	if _texture_resend_elapsed >= WINDOW_TEXTURE_RESYNC_GAP:
-		_texture_resend_elapsed = 0.0
-		force_resend = true
 	if not windows_provider.is_valid() or not window_image_provider.is_valid() or not window_version_provider.is_valid():
 		return
 	var list: Array = windows_provider.call()
@@ -386,7 +380,7 @@ func _sync_windows_textures(delta: float) -> void:
 			if wid < 0:
 				continue
 			var version := int(window_version_provider.call(wid))
-			if not force_resend and sent.get(wid, -1) == version:
+			if sent.get(wid, -1) == version:
 				continue
 			var img: Image = window_image_provider.call(wid)
 			if img == null or img.is_empty():
@@ -434,11 +428,6 @@ func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
-	if not _remote_shared.has(from) or not _remote_shared[from].get(wid, false):
-		return
-	if not _remote_window_quads.has(from) or not _remote_window_quads[from].has(wid):
-		return
-	var quad: MeshInstance3D = _remote_window_quads[from][wid]
 	var img := Image.new()
 	var err := img.load_jpg_from_buffer(bytes)
 	if err != OK or img.is_empty():
@@ -447,7 +436,16 @@ func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 		img.save_png("user://share_receiver_%d.png" % from)
 		print("[share] receiver: ", img.get_width(), "x", img.get_height(),
 			" bytes=", bytes.size(), " format=", img.get_format(), " wid=", wid)
-	_set_remote_quad_texture(quad, ImageTexture.create_from_image(img))
+	var tex: Texture2D = ImageTexture.create_from_image(img)
+	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
+	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
+	if not _pending_remote_textures.has(from):
+		_pending_remote_textures[from] = {}
+	_pending_remote_textures[from][wid] = tex
+	if not _remote_window_quads.has(from) or not _remote_window_quads[from].has(wid):
+		return
+	var quad: MeshInstance3D = _remote_window_quads[from][wid]
+	_set_remote_quad_texture(quad, tex)
 
 # Crée/met à jour/supprime les quads noirs représentant les fenêtres d'un
 # joueur distant. Diff sur les wid : ceux absents du paquet sont retirés.
@@ -491,6 +489,12 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		# frames streamées (rpc _sync_window_texture) le textureront en direct.
 		if not shared:
 			_set_remote_quad_texture(quad, null)
+		else:
+			# Course 1re frame vs état : si une texture a déjà été reçue,
+			# l'appliquer maintenant (le quad vient peut-être d'être recréé).
+			var pending: Dictionary = _pending_remote_textures.get(peer_id, {})
+			if pending.has(wid):
+				_set_remote_quad_texture(quad, pending[wid])
 	for wid in quads.keys():
 		if seen.has(wid):
 			continue
@@ -540,6 +544,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 	_remote_windows.erase(peer_id)
 	_remote_window_quads.erase(peer_id)
 	_remote_shared.erase(peer_id)
+	_pending_remote_textures.erase(peer_id)
 
 func _clear_all_remote_windows() -> void:
 	for peer_id in _remote_windows.keys().duplicate():
