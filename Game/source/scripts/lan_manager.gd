@@ -76,7 +76,7 @@ const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement
 const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
 const WINDOW_CONTENT_JUMP_THRESHOLD := 0.2 # diff moyenne/pixel > 20% entre 2 frames = saut de contenu (seek) → keyframe
 const WINDOW_KEYFRAME_GAP_MSEC := 1500 # keyframe périodique : borne la dérive résiduelle du stream
-const WINDOW_MAX_AHEAD := 2 # flow control : au-delà de 2 frames de retard accusé, l'émetteur saute le peer
+const WINDOW_MAX_AHEAD := 1 # flow control : au-delà de 2 frames de retard accusé, l'émetteur saute le peer
 const WINDOW_ACK_GAP := 0.2 # cadence d'envoi des ACK de version (récepteur → émetteur)
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
