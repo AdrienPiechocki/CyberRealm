@@ -75,6 +75,7 @@ private:
 
 	bool stream_connected = false;
 	bool node_name_seen = false;
+	bool rescan_done = false; // registry ré-énuméré une fois pour retrouver le sink
 	std::string target_node_name; // nom du sink par défaut (résolu via metadata)
 
 	// Ring buffer : échantillons F32 interleaved (L,R), 48 kHz.

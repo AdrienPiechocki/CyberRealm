@@ -142,6 +142,7 @@ void AudioShare::stop() {
 	stream_connected = false;
 	target_node_name.clear();
 	node_name_seen = false;
+	rescan_done = false;
 	{
 		std::lock_guard<std::mutex> lk(ring_mutex);
 		ring_head = 0;
@@ -214,17 +215,31 @@ void AudioShare::on_metadata_property(uint32_t subject, const char *key, const c
 	}
 	target_node_name = value;
 	if (node_name_seen) {
-		return; // le node a déjà été trouvé avant la metadata
+		return; // le node a déjà été trouvé et le stream connecté
 	}
-	// Si le node est déjà passé au registry, on ne peut plus le revoir :
-	// pw_stream_connect avec PW_ID_ANY + AUTOCONNECT se rabattra sur le
-	// sink par défaut ? Non — pour un input, il se rabat sur la source.
-	// Dans ce cas on n'a pas d'audio (rare : metadata plus lente que le
-	// registry). On tente quand même un rattrapage en re-listant.
-	if (!stream_connected) {
-		UtilityFunctions::print("waylandgodot: audio: sink par défaut = ", value,
-			" — attente du node pour connexion");
+	if (rescan_done) {
+		return; // ré-énumération déjà lancée (le node arrivera dessus)
 	}
+	// RACE (la cause classique du « pas d'audio partagé ») : la metadata
+	// "default.audio.sink" peut arriver APRÈS l'énumération du registry. Le
+	// node correspondant est alors déjà passé et ne sera plus jamais revu
+	// sur cette instance de registry → le stream ne se connecte jamais.
+	// Correction : on ré-énumère le registry une fois (nouveau proxy → tous
+	// les globals sont re-émis, y compris le node du sink) ; le callback
+	// global matchera alors target_node_name et connectera le stream.
+	rescan_done = true;
+	if (registry) {
+		pw_proxy_destroy((pw_proxy *)registry);
+		registry = nullptr;
+	}
+	free(registry_hook);
+	registry_hook = nullptr;
+	registry = pw_core_get_registry((pw_core *)core, PW_VERSION_REGISTRY, 0);
+	registry_hook = malloc(sizeof(struct spa_hook));
+	pw_registry_add_listener((pw_registry *)registry,
+			(struct spa_hook *)registry_hook, &g_registry_events, this);
+	UtilityFunctions::print("waylandgodot: audio: sink par défaut = ", value,
+		" — node non encore vu, ré-énumération du registry");
 }
 
 void AudioShare::connect_stream(uint32_t target_node_id) {
