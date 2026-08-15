@@ -27,6 +27,19 @@ static const struct pw_registry_events g_registry_events = {
 	.global_remove = AudioShare::registry_global_remove_cb,
 };
 
+// Un bind node en attente d'event info (pour lire application.process.id).
+struct AudioShare::NodeBind {
+	AudioShare *self;
+	uint32_t id;
+	struct spa_hook hook;
+	struct pw_proxy *proxy;
+};
+
+static const struct pw_node_events g_node_events = {
+	.version = PW_VERSION_NODE_EVENTS,
+	.info = AudioShare::node_info_cb,
+};
+
 static const struct pw_stream_events g_stream_events = {
 	.version = PW_VERSION_STREAM_EVENTS,
 	.destroy = nullptr,
@@ -121,6 +134,12 @@ void AudioShare::stop() {
 	}
 	free(registry_hook);
 	registry_hook = nullptr;
+	for (auto &kv : pending_node_binds) {
+		NodeBind *nb = kv.second;
+		pw_proxy_destroy(nb->proxy);
+		free(nb);
+	}
+	pending_node_binds.clear();
 	node_pids.clear();
 	target_pids.clear();
 	if (core) {
@@ -151,25 +170,36 @@ void AudioShare::registry_global_cb(void *user_data, uint32_t id, uint32_t permi
 }
 
 void AudioShare::on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props) {
-	if (type == nullptr || props == nullptr) {
+	if (type == nullptr) {
 		return;
 	}
-	// Un node audio = une application en sortie. On retient son PID pour
-	// pouvoir la capturer quand elle correspond à une fenêtre partagée.
-	if (strcmp(type, PW_TYPE_INTERFACE_Node) == 0) {
-		const char *proc_id = spa_dict_lookup(props, "application.process.id");
-		int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+	// Un node audio = une application en sortie (ou un sink/mic). On retient
+	// son PID pour pouvoir la capturer quand elle correspond à une fenêtre
+	// partagée.
+	if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0) {
+		return;
+	}
+	const char *media_class = props ? spa_dict_lookup(props, "media.class") : nullptr;
+	if (media_class == nullptr || strstr(media_class, "Audio") == nullptr) {
+		return; // pas un node audio
+	}
+	const char *proc_id = props ? spa_dict_lookup(props, "application.process.id") : nullptr;
+	int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+	if (pid > 0) {
 		node_pids[id] = pid;
-		if (pid > 0) {
-			// Diagnostics ponctuels : utile pour vérifier le matching fenêtre→node.
-			const char *node_name = spa_dict_lookup(props, "node.name");
-			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
-				node_name ? node_name : "?", ") → pid ", pid);
-		}
+		const char *node_name = spa_dict_lookup(props, "node.name");
+		UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
+			node_name ? node_name : "?", ") → pid ", pid);
 		// Un node ciblé peut apparaître APRÈS set_target_pids (app lancée au
 		// cours du partage) : on retente l'alignement à chaque node nouveau.
 		apply_targets();
+		return;
 	}
+	// Les props globales du registry n'exposent pas toujours
+	// application.process.id : on bind le node pour lire ses props complètes
+	// (l'event info arrive de façon asynchrone → on_node_info).
+	node_pids[id] = -1;
+	bind_node_for_info(id);
 }
 
 void AudioShare::registry_global_remove_cb(void *user_data, uint32_t id) {
@@ -177,15 +207,68 @@ void AudioShare::registry_global_remove_cb(void *user_data, uint32_t id) {
 	self->on_registry_global_remove(id);
 }
 
+void AudioShare::node_info_cb(void *user_data, const struct pw_node_info *info) {
+	auto *nb = static_cast<NodeBind *>(user_data);
+	if (nb) {
+		nb->self->on_node_info(nb->id, info);
+	}
+}
+
+void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
+	if (info != nullptr && info->props != nullptr) {
+		const char *proc_id = spa_dict_lookup(info->props, "application.process.id");
+		int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+		node_pids[id] = pid;
+		if (pid > 0) {
+			const char *node_name = spa_dict_lookup(info->props, "node.name");
+			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
+				node_name ? node_name : "?", ") → pid ", pid);
+			apply_targets();
+		}
+	}
+	auto it = pending_node_binds.find(id);
+	if (it != pending_node_binds.end()) {
+		NodeBind *nb = it->second;
+		pending_node_binds.erase(it);
+		pw_proxy_destroy(nb->proxy);
+		free(nb);
+	}
+}
+
+void AudioShare::bind_node_for_info(uint32_t id) {
+	if (pending_node_binds.find(id) != pending_node_binds.end()) {
+		return; // déjà en cours
+	}
+	struct pw_proxy *proxy = static_cast<struct pw_proxy *>(pw_registry_bind(
+			(pw_registry *)registry, id, PW_TYPE_INTERFACE_Node, PW_VERSION_NODE,
+			sizeof(void *)));
+	if (!proxy) {
+		return;
+	}
+	auto *nb = new NodeBind();
+	nb->self = this;
+	nb->id = id;
+	nb->proxy = proxy;
+	pw_proxy_add_object_listener(proxy, &nb->hook, &g_node_events, nb);
+	pending_node_binds[id] = nb;
+}
+
 void AudioShare::on_registry_global_remove(uint32_t id) {
 	node_pids.erase(id);
+	auto it = pending_node_binds.find(id);
+	if (it != pending_node_binds.end()) {
+		NodeBind *nb = it->second;
+		pending_node_binds.erase(it);
+		pw_proxy_destroy(nb->proxy);
+		free(nb);
+	}
 	// Si on capturait ce node (app fermée), on détruit son stream.
 	std::lock_guard<std::mutex> lk(streams_mutex);
 	AudioCaptureStream *s = find_stream_for_node(id);
 	if (s) {
-		for (auto it = streams.begin(); it != streams.end(); ++it) {
-			if (*it == s) {
-				streams.erase(it);
+		for (auto it2 = streams.begin(); it2 != streams.end(); ++it2) {
+			if (*it2 == s) {
+				streams.erase(it2);
 				break;
 			}
 		}
