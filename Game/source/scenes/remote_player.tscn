@@ -26,7 +26,7 @@ font_size = 48
 outline_size = 6
 
 [node name="CSGSphere3D" type="CSGSphere3D" parent="." unique_id=1409371660]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0.1)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, -0.1)
 radial_segments = 64
 rings = 8
 material = SubResource("StandardMaterial3D_bj1mr")

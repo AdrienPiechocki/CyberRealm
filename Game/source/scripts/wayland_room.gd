@@ -41,6 +41,8 @@ var _host_agent_stopped := false
 const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
 const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
 
+var _level_path := ""
+
 const POLKIT_AGENT_CANDIDATES := [
 	"/usr/lib/polkit-kde-authentication-agent-1",
 	"/usr/lib/polkit-gnome/polkit-gnome-authentication-agent-1",
@@ -67,6 +69,7 @@ func _load_level() -> void:
 	var level_path := DEFAULT_LEVEL_PATH
 	if ResourceLoader.exists(CUSTOM_LEVEL_PATH):
 		level_path = CUSTOM_LEVEL_PATH
+	_level_path = level_path
 	var scene: PackedScene = load(level_path)
 	if scene == null:
 		push_error("Impossible de charger le niveau '%s'" % level_path)
@@ -74,6 +77,57 @@ func _load_level() -> void:
 	var level := scene.instantiate()
 	level.name = "Level"
 	add_child(level)
+
+# Texte brut de la scène Level chargée (envoyé par le host aux clients LAN).
+func get_level_scene_text() -> String:
+	if _level_path == "" or not FileAccess.file_exists(_level_path):
+		return ""
+	var f := FileAccess.open(_level_path, FileAccess.READ)
+	if f == null:
+		return ""
+	return f.get_as_text()
+
+# Applique le niveau de l'hôte (reçu via le LAN) : on instancie sa scène mais
+# on RÉUTILISE le Player local (et son UI/menus) — tout le câblage du jeu
+# (managers, signaux) référence ce node. Seul l'environnement change ; le
+# joueur est repositionné au spawn défini dans le niveau de l'hôte.
+func apply_host_level(scene: PackedScene) -> bool:
+	if scene == null:
+		return false
+	var old_level := get_node_or_null("Level") as Node3D
+	if old_level == null:
+		return false
+	var new_level := scene.instantiate()
+	if new_level == null:
+		return false
+	var old_player := old_level.get_node_or_null("Player")
+	var host_player := new_level.get_node_or_null("Player")
+	var spawn_pos := Vector3.ZERO
+	if host_player is Node3D:
+		spawn_pos = (host_player as Node3D).position
+	if old_player != null:
+		if host_player != null:
+			new_level.remove_child(host_player)
+			host_player.queue_free()
+		old_player.get_parent().remove_child(old_player)
+		new_level.add_child(old_player)
+		old_player.position = spawn_pos
+		old_player.rotation = Vector3.ZERO
+	# Bascule du manager LAN AVANT de libérer l'ancien niveau (les avatars
+	# distants sont déplacés vers le nouveau conteneur).
+	if lan:
+		lan.on_level_swapped(new_level)
+	for c in old_level.get_children():
+		old_level.remove_child(c)
+		c.queue_free()
+	# Retirer l'ancien niveau de l'arbre AVANT d'ajouter le nouveau : sinon
+	# add_child() renomme le nouveau (conflit de nom "Level") en "@Node3D@…"
+	# et tout le $Level/… du jeu casse.
+	remove_child(old_level)
+	old_level.queue_free()
+	new_level.name = "Level"
+	add_child(new_level)
+	return true
 
 func _add_manager(script: Script, node_name: String) -> Node3D:
 	var node := Node3D.new()
@@ -197,6 +251,8 @@ func _ready() -> void:
 	lan.set_script(preload("res://scripts/lan_manager.gd"))
 	add_child(lan)
 	lan.setup($Level, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
+	lan.level_text_provider = get_level_scene_text
+	lan.level_apply_requested.connect(apply_host_level)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_host_requested.connect(lan.host_game)
 	pause_menu.lan_join_requested.connect(lan.join_game)
