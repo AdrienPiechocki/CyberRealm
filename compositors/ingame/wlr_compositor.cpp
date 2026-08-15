@@ -716,17 +716,34 @@ CaptureCache::~CaptureCache() {
 // =====================================================================
 
 bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
+    static bool printed_path = false;
     // Essayer d'abord le chemin Vulkan zero-copy (GPU→GPU, pas de CPU readback).
     if (gpu_pipeline_active && dmabuf_available &&
         capture_surface_vulkan(surface, tex, out_w, out_h, cache)) {
+        if (!printed_path) {
+            UtilityFunctions::print("waylandgodot: [diag] capture -> vulkan (gpu=", gpu_pipeline_active,
+                " dmabuf=", dmabuf_available, ")");
+            printed_path = true;
+        }
         return true;
     }
     // Fallback : dmabuf + mmap CPU readback.
     if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h, cache)) {
+        if (!printed_path) {
+            UtilityFunctions::print("waylandgodot: [diag] capture -> dmabuf (gpu=", gpu_pipeline_active,
+                " dmabuf=", dmabuf_available, ")");
+            printed_path = true;
+        }
         return true;
     }
     // Dernier recours : Pixman (rendu logiciel, buffer en RAM).
-    return capture_surface_pixels(surface, tex, out_w, out_h, cache);
+    bool ok = capture_surface_pixels(surface, tex, out_w, out_h, cache);
+    if (!printed_path) {
+        UtilityFunctions::print("waylandgodot: [diag] capture -> pixels ok=", ok,
+            " (gpu=", gpu_pipeline_active, " dmabuf=", dmabuf_available, ")");
+        printed_path = true;
+    }
+    return ok;
 }
 
 // =====================================================================
@@ -1101,6 +1118,22 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         }
     }
     clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
+
+    if (!cache.debug_sampled) {
+        cache.debug_sampled = true;
+        const uint8_t *s = cache.bytes.ptr();
+        auto px = [&](int x, int y) -> String {
+            if (x < 0 || y < 0 || x >= w || y >= h) return String("hors-buffer");
+            const uint8_t *p = s + ((size_t)y * w + (size_t)x) * 4;
+            return String::num(p[0]) + "," + String::num(p[1]) + "," +
+                String::num(p[2]) + "," + String::num(p[3]);
+        };
+        UtilityFunctions::print("waylandgodot: [diag] dmabuf pixels ", w, "x", h,
+            " fmt=0x", String::num_uint64(cache.format, 16),
+            " stride=", cache.stride,
+            " TL=", px(0, 0), " C=", px(w / 2, h / 2),
+            " BR=", px(w - 1, h - 1));
+    }
 
     timespec t_sync2_start, t_sync2_end;
     clock_gettime(CLOCK_MONOTONIC, &t_sync2_start);
@@ -1557,6 +1590,22 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         }
     }
     clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
+
+    if (!cache.debug_sampled) {
+        cache.debug_sampled = true;
+        const uint8_t *s = cache.bytes.ptr();
+        auto px = [&](int x, int y) -> String {
+            if (x < 0 || y < 0 || x >= w || y >= h) return String("hors-buffer");
+            const uint8_t *p = s + ((size_t)y * w + (size_t)x) * 4;
+            return String::num(p[0]) + "," + String::num(p[1]) + "," +
+                String::num(p[2]) + "," + String::num(p[3]);
+        };
+        UtilityFunctions::print("waylandgodot: [diag] pixels pixels ", w, "x", h,
+            " fmt=0x", String::num_uint64(px_format, 16),
+            " stride=", stride,
+            " TL=", px(0, 0), " C=", px(w / 2, h / 2),
+            " BR=", px(w - 1, h - 1));
+    }
 
     wlr_buffer_end_data_ptr_access(cache.offscreen);
 

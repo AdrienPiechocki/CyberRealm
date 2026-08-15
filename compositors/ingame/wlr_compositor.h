@@ -91,6 +91,7 @@ struct CaptureCache {
     int alloc_width = 0;
     int alloc_height = 0;
     PackedByteArray bytes; // tampon CPU réutilisé (évite un malloc/frame)
+    bool debug_sampled = false; // diagnostic temporaire : pixels déjà échantillonnés
 
     // --- Vulkan zero-copy DMA-BUF import ------------------------------
     // Ces champs sont utilisés lorsque le pipeline GPU Vulkan est actif.
