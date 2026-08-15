@@ -157,6 +157,7 @@ func get_windows_state() -> Array:
 			"size": size,
 			"visible": quad.visible,
 			"shared": window_shared.get(wid, false),
+			"pid": compositor.get_window_pid(wid) if compositor != null else -1,
 		})
 	return list
 
