@@ -15,19 +15,12 @@ const DISCOVERY_TIMEOUT := 1.6
 const DISCOVERY_RETRY_INTERVAL := 0.4
 const DISCOVERY_QUERY := "CYBERREALM_DISCOVER"
 
-# Palette des avatars (par ordre de peer_id, le host = peer 1).
-const AVATAR_COLORS := [
-	Color(0.2, 0.6, 1.0),
-	Color(1.0, 0.4, 0.3),
-	Color(0.3, 1.0, 0.5),
-	Color(1.0, 0.85, 0.3),
-]
-
 const REMOTE_PLAYER_SCENE := preload("res://scenes/remote_player.tscn")
 
 var session_active := false
 var is_host := false
 var player_name := ""
+var player_color := Color(0.2, 0.6, 1.0)
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -40,9 +33,10 @@ var _scanner: PacketPeerUDP = null   # client : scanne le réseau
 var _scanning := false
 var _scan_results: Array = []
 
-func setup(level_root: Node3D, name: String) -> void:
+func setup(level_root: Node3D, name: String, color: Color) -> void:
 	_level_root = level_root
 	player_name = name
+	player_color = color
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
 	_level_root.add_child(_players_container)
@@ -50,13 +44,30 @@ func setup(level_root: Node3D, name: String) -> void:
 func is_session_active() -> bool:
 	return session_active
 
+# Met à jour la couleur locale et la diffuse si une session est en cours.
+func update_local_color(color: Color) -> void:
+	player_color = color
+	if not session_active:
+		return
+	var my_id := multiplayer.get_unique_id()
+	if not _players.has(my_id):
+		return
+	_players[my_id]["color"] = color
+	if is_host:
+		for id in _players:
+			var entry: Dictionary = _players[id]
+			_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+	else:
+		_register_player.rpc_id(1, player_name, color)
+
 func get_last_status() -> String:
 	return _last_status
 
 func get_players_roster() -> Array:
 	var roster: Array = []
 	for id in _players:
-		roster.append({"id": id, "name": _players[id]})
+		var entry: Dictionary = _players[id]
+		roster.append({"id": id, "name": entry.get("name", ""), "color": entry.get("color", Color.WHITE)})
 	roster.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
 		return int(a.get("id", 0)) < int(b.get("id", 0))
 	)
@@ -77,7 +88,7 @@ func host_game() -> bool:
 	session_active = true
 	is_host = true
 	_players.clear()
-	_players[multiplayer.get_unique_id()] = player_name
+	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	_start_responder()
@@ -113,11 +124,11 @@ func _on_connected_to_server() -> void:
 	session_active = true
 	is_host = false
 	_players.clear()
-	_players[multiplayer.get_unique_id()] = player_name
+	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	_set_status("Connecté au serveur")
 	_emit_players()
 	# S'annoncer : le serveur va re-broadcaster le spawn de tous les avatars.
-	_register_player.rpc_id(1, player_name)
+	_register_player.rpc_id(1, player_name, player_color)
 
 func _on_connection_failed() -> void:
 	_disconnect_session()
@@ -133,26 +144,28 @@ func _on_server_disconnected() -> void:
 # de tous les joueurs connus pour que tout le monde (late-join compris)
 # converge vers le même état.
 @rpc("any_peer", "reliable")
-func _register_player(pname: String) -> void:
+func _register_player(pname: String, color: Color) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
 		return
-	_players[from] = pname
+	_players[from] = {"name": pname, "color": color}
 	_set_status("Joueur %d (%s) a rejoint" % [from, pname])
 	for id in _players:
-		_spawn_player.rpc(id, String(_players[id]))
+		var entry: Dictionary = _players[id]
+		_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
 	_emit_players()
 
 # Chaque pair saute son propre peer_id (il a déjà son joueur local).
 @rpc("any_peer", "reliable", "call_local")
-func _spawn_player(peer_id: int, pname: String) -> void:
+func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	if peer_id == multiplayer.get_unique_id():
 		return
 	if _remote_players.has(peer_id):
+		_remote_players[peer_id].setup(peer_id, pname, color)
 		return
 	var avatar := REMOTE_PLAYER_SCENE.instantiate()
 	avatar.name = str(peer_id)
-	avatar.setup(peer_id, pname, AVATAR_COLORS[(peer_id - 1) % AVATAR_COLORS.size()])
+	avatar.setup(peer_id, pname, color)
 	avatar.position = _spawn_position(peer_id)
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar
