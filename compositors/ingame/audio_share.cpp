@@ -54,10 +54,13 @@ static const struct pw_client_events g_client_events = {
 	.info = AudioShare::client_info_cb,
 };
 
+static void stream_state_changed_cb(void *user_data, enum pw_stream_state old_state,
+		enum pw_stream_state state, const char *error);
+
 static const struct pw_stream_events g_stream_events = {
 	.version = PW_VERSION_STREAM_EVENTS,
 	.destroy = nullptr,
-	.state_changed = nullptr,
+	.state_changed = stream_state_changed_cb,
 	.control_info = nullptr,
 	.io_changed = nullptr,
 	.param_changed = nullptr,
@@ -518,18 +521,34 @@ static float limit_sample(float v) {
 	return v;
 }
 
+// Défini dans le .cpp (où stream.h est inclus) : callback libre, le type réel
+// enum pw_stream_state est disponible ici.
+static void stream_state_changed_cb(void *user_data, enum pw_stream_state old_state,
+		enum pw_stream_state state, const char *error) {
+	auto *s = static_cast<AudioCaptureStream *>(user_data);
+	UtilityFunctions::print("waylandgodot: audio: stream ",
+		s ? (s->node_id) : 0, " (pid ", s ? s->pid : -1, ") state ",
+		(int)old_state, " → ", (int)state, error && *error ? " err: " : "", error ? error : "");
+}
+
 void AudioShare::stream_process_cb(void *user_data) {
 	auto *s = static_cast<AudioCaptureStream *>(user_data);
 	if (!s || !s->stream) {
 		return;
 	}
 	struct pw_buffer *b = pw_stream_dequeue_buffer((pw_stream *)s->stream);
-	if (!b) {
+	if (!b || !b->buffer) {
 		return;
 	}
 	struct spa_data *d = &b->buffer->datas[0];
+	// d->chunk peut être null au premier appel (négociation pas finie) : le
+	// vérifier AVANT d'accéder à chunk->size, sinon segfault.
+	if (d == nullptr || d->chunk == nullptr || d->chunk->size == 0) {
+		pw_stream_queue_buffer((pw_stream *)s->stream, b);
+		return;
+	}
 	uint8_t *data = static_cast<uint8_t *>(d->data);
-	if (data == nullptr || d->chunk->size == 0) {
+	if (data == nullptr) {
 		pw_stream_queue_buffer((pw_stream *)s->stream, b);
 		return;
 	}
