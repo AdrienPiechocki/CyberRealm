@@ -161,7 +161,7 @@ func enter_focus(id: int) -> void:
 	_refresh_rect_layout(id)
 
 	# Cacher le quad 3D, l'overlay 2D prend le relais
-	windows.set_quad_visible(id, false)
+	# windows.set_quad_visible(id, false)
 
 	# Bloquer le player à la première entrée en mode focus
 	if entering:
