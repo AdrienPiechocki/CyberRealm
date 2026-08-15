@@ -81,14 +81,14 @@ const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimension
 # paquets UDP fragmentés (non fiables) : en le gardant léger on évite la
 # congestion du lien WiFi (perte → throttle ENet → lag) et les timeout de
 # déconnexion pendant une vidéo.
-const WINDOW_TEXTURE_GAP := 0.06 # ~17 ips de stream par fenêtre partagée (fiables, retransmises)
+const WINDOW_TEXTURE_GAP := 0.02 # cadence d'enqueue (50/s max) — le débit réel est borné par le flow control + la capture (~30/s)
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.85 # qualité JPEG du partage
-const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
+const WINDOW_VIDEO_MAX_SIDE := 1024 # cap vidéo : ≤ ~44KB/frame (≤ 32 fragments ENet) pour une livraison fiable en 1 vague → RTT bas → 30 ips
 const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
 const WINDOW_CONTENT_JUMP_THRESHOLD := 0.2 # diff moyenne/pixel > 20% entre 2 frames = saut de contenu (seek) → keyframe
 const WINDOW_KEYFRAME_GAP_MSEC := 1500 # keyframe périodique : borne la dérive résiduelle du stream
-const WINDOW_MAX_AHEAD := 2 # flow control : au plus 2 frames non appliquées en route (envoyée − ACKée) par peer. Pipelinage : la livraison réseau (~70ms/sens en WiFi) se chevauche avec l'envoi suivant → ~16 ips au lieu de ~1/RTT≈5 ips
+const WINDOW_MAX_AHEAD := 3 # flow control : au plus 3 frames non appliquées en route. Pipelinage : 3 frames en vol × ~20ms/frame de livraison → ~30 ips à faible RTT
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
 # L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
@@ -634,6 +634,7 @@ func _drain_encoded_frames() -> void:
 		_diag_last_log = now
 		var last: Dictionary = results[results.size() - 1]
 		var age_ms: int = _frame_enqueued_msec.get(int(last.get("wid", -1)), -1)
+		var last_bytes: PackedByteArray = last.get("bytes", PackedByteArray())
 		var rtt_ms := -1
 		if _diag_rtt_count > 0:
 			rtt_ms = _diag_rtt_sum / _diag_rtt_count
@@ -647,9 +648,9 @@ func _drain_encoded_frames() -> void:
 			if a >= 0:
 				gap = s - a
 			break
-		print("[lan] diag env: age=%dms enc=%dms rtt=%dms (n=%d) gap=%d send/s=%.1f" % [
+		print("[lan] diag env: age=%dms enc=%dms rtt=%dms (n=%d) gap=%d send/s=%.1f bytes=%d" % [
 			age_ms, int(last.get("enc_us", 0)) / 1000, rtt_ms, _diag_rtt_count,
-			gap, float(_diag_sent_in_sec)])
+			gap, float(_diag_sent_in_sec), last_bytes.size()])
 		_diag_rtt_sum = 0
 		_diag_rtt_count = 0
 		_diag_sent_in_sec = 0
