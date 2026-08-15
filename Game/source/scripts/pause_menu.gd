@@ -709,9 +709,12 @@ func get_lan_player_color() -> Color:
 		return v
 	if v is String:
 		var s := (v as String).strip_edges()
-		# Nouveau format : hex "#rrggbbaa".
+		# Nouveau format : hex "#rrggbbaa". NB : en Godot 4 Color.to_html()
+		# renvoie l'hex SANS '#' ("rrggbbaa") → accepter aussi ce format.
 		if s.begins_with("#"):
 			return Color.from_string(s, fallback)
+		if s.length() == 6 or s.length() == 8:
+			return Color.from_string("#" + s, fallback)
 		# Ancien format (Color stringifié par JSON) : "(r, g, b, a)".
 		if s.begins_with("(") and s.ends_with(")"):
 			var parts := s.substr(1, s.length() - 2).split(",")
