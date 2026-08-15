@@ -60,7 +60,7 @@ const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimension
 # paquets UDP fragmentés (non fiables) : en le gardant léger on évite la
 # congestion du lien WiFi (perte → throttle ENet → lag) et les timeout de
 # déconnexion pendant une vidéo.
-const WINDOW_TEXTURE_GAP := 0.08 # ~12 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_GAP := 0.07 # ~14 ips de stream par fenêtre partagée
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.85 # qualité JPEG du partage
 const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
@@ -392,6 +392,7 @@ func _physics_process(delta: float) -> void:
 	_sync_windows_state(delta)
 	_sync_windows_textures(delta)
 	_sync_audio_state()
+	_drain_decoded_frames()
 
 # ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
 
@@ -581,6 +582,84 @@ func _stop_encode_thread() -> void:
 	_encode_thread.wait_to_finish()
 	_encode_thread = null
 
+# ── Décodage JPEG côté récepteur (thread de travail) ─────────────────
+# Symétrique de l'encode : le décodage d'une vidéo partagée (plusieurs
+# frames/s × 720p) sur le thread principal figeait la lecture distante.
+# Le thread décode le JPEG (CPU pur), le thread principal ne fait plus que
+# l'upload GPU (ImageTexture) + le swap de texture, à chaque tick.
+
+var _decode_thread: Thread = null
+var _decode_mutex := Mutex.new()
+var _decode_sem := Semaphore.new()
+var _decode_queue: Array = []   # {from, wid, bytes}
+var _decode_results: Array = [] # {from, wid, img}
+var _decode_stop := false
+
+func _start_decode_thread() -> void:
+	if _decode_thread != null:
+		return
+	_decode_stop = false
+	_decode_thread = Thread.new()
+	_decode_thread.start(_decode_worker)
+
+func _decode_worker() -> void:
+	while true:
+		_decode_sem.wait()
+		_decode_mutex.lock()
+		var stopping := _decode_stop
+		var job: Dictionary = _decode_queue.pop_front() if not _decode_queue.is_empty() else {}
+		_decode_mutex.unlock()
+		if stopping:
+			return
+		if job.is_empty():
+			continue
+		var img := Image.new()
+		var err := img.load_jpg_from_buffer(job.get("bytes", PackedByteArray()))
+		if err != OK or img.is_empty():
+			continue
+		_decode_mutex.lock()
+		_decode_results.append({
+			"from": int(job.get("from", -1)),
+			"wid": int(job.get("wid", -1)),
+			"img": img,
+		})
+		_decode_mutex.unlock()
+
+func _stop_decode_thread() -> void:
+	if _decode_thread == null:
+		return
+	_decode_mutex.lock()
+	_decode_stop = true
+	_decode_queue.clear()
+	_decode_results.clear()
+	_decode_mutex.unlock()
+	_decode_sem.post()
+	_decode_thread.wait_to_finish()
+	_decode_thread = null
+
+func _drain_decoded_frames() -> void:
+	_decode_mutex.lock()
+	var results: Array = _decode_results
+	_decode_results = []
+	_decode_mutex.unlock()
+	for result in results:
+		var from := int(result.get("from", -1))
+		var wid := int(result.get("wid", -1))
+		var img: Image = result.get("img")
+		if img == null or img.is_empty():
+			continue
+		if _debug_dump_once(100000 + from):
+			img.save_png("user://share_receiver_%d.png" % from)
+			print("[share] receiver: ", img.get_width(), "x", img.get_height(), " wid=", wid)
+		var tex: Texture2D = ImageTexture.create_from_image(img)
+		# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
+		# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
+		if not _pending_remote_textures.has(from):
+			_pending_remote_textures[from] = {}
+		_pending_remote_textures[from][wid] = tex
+		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
+			_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
+
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
 func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByteArray:
 	var w := img.get_width()
@@ -618,24 +697,13 @@ func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
-	var img := Image.new()
-	var err := img.load_jpg_from_buffer(bytes)
-	if err != OK or img.is_empty():
+	if bytes.is_empty():
 		return
-	if _debug_dump_once(100000 + from):
-		img.save_png("user://share_receiver_%d.png" % from)
-		print("[share] receiver: ", img.get_width(), "x", img.get_height(),
-			" bytes=", bytes.size(), " format=", img.get_format(), " wid=", wid)
-	var tex: Texture2D = ImageTexture.create_from_image(img)
-	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
-	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
-	if not _pending_remote_textures.has(from):
-		_pending_remote_textures[from] = {}
-	_pending_remote_textures[from][wid] = tex
-	if not _remote_window_quads.has(from) or not _remote_window_quads[from].has(wid):
-		return
-	var quad: MeshInstance3D = _remote_window_quads[from][wid]
-	_set_remote_quad_texture(quad, tex)
+	_start_decode_thread()
+	_decode_mutex.lock()
+	_decode_queue.append({"from": from, "wid": wid, "bytes": bytes})
+	_decode_mutex.unlock()
+	_decode_sem.post()
 
 # ── Audio partagé : capture (émetteur) + lecture (récepteur) ──────────
 
@@ -1024,6 +1092,7 @@ func _disconnect_session() -> void:
 
 func _exit_tree() -> void:
 	_stop_encode_thread()
+	_stop_decode_thread()
 	_stop_audio_share()
 	_stop_responder()
 	if _scanner:
