@@ -304,7 +304,8 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
         RenderingDevice::TEXTURE_TYPE_2D,
         rd_format,
         RenderingDevice::TEXTURE_SAMPLES_1,
-        RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT,
+        RenderingDevice::TEXTURE_USAGE_SAMPLING_BIT |
+            RenderingDevice::TEXTURE_USAGE_CAN_COPY_FROM_BIT,
         reinterpret_cast<uint64_t>(vk_image),
         width, height, 1, 1);
 
