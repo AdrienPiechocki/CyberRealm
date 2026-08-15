@@ -7,6 +7,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed(roster: Array)
 signal discovery_results(results: Array)
+signal level_apply_requested(scene: PackedScene)
 
 const PORT := 7777
 const DISCOVERY_PORT := 9999
@@ -21,6 +22,7 @@ var session_active := false
 var is_host := false
 var player_name := ""
 var player_color := Color(0.2, 0.6, 1.0)
+var level_text_provider: Callable = Callable() # host : renvoie le texte de la scène Level
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -182,6 +184,55 @@ func _remove_player(peer_id: int) -> void:
 func _on_peer_connected(id: int) -> void:
 	if is_host:
 		_set_status("Joueur %d connecté…" % id)
+		_send_level_to(id)
+
+# L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
+# rejoint : le texte de la scène, ré-écrit côté client puis instancié.
+func _send_level_to(id: int) -> void:
+	if not level_text_provider.is_valid():
+		return
+	var text := String(level_text_provider.call())
+	if text.is_empty():
+		return
+	_receive_level.rpc_id(id, text)
+
+@rpc("any_peer", "reliable")
+func _receive_level(scene_text: String) -> void:
+	if is_host or multiplayer.get_remote_sender_id() != 1:
+		return
+	if scene_text.is_empty():
+		return
+	var tmp := "user://lan_level.tscn"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		_set_status("Impossible d'écrire le niveau de l'hôte")
+		return
+	f.store_string(scene_text)
+	f.close()
+	var scene: PackedScene = load(tmp)
+	if scene == null:
+		_set_status("Niveau de l'hôte illisible (assets manquants ?), niveau local conservé")
+		return
+	level_apply_requested.emit(scene)
+	_set_status("Niveau de l'hôte chargé")
+
+# Appelé par wayland_room après avoir remplacé le niveau : bascule la racine
+# et déplace les avatars distants vers un nouveau conteneur (l'ancien niveau
+# est sur le point d'être libéré).
+func on_level_swapped(new_level_root: Node3D) -> void:
+	_level_root = new_level_root
+	_players_container = Node3D.new()
+	_players_container.name = "Players"
+	_level_root.add_child(_players_container)
+	for id in _remote_players:
+		var av: Node = _remote_players[id]
+		if not is_instance_valid(av):
+			_remote_players.erase(id)
+			continue
+		var p: Node = av.get_parent()
+		if p and p != _players_container:
+			p.remove_child(av)
+		_players_container.add_child(av)
 
 func _on_peer_disconnected(id: int) -> void:
 	if is_host:
