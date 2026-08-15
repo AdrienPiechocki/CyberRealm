@@ -62,6 +62,15 @@ var _frame_fingerprint_last: Dictionary = {}
 # from -> {wid -> version} : dernière version que le peer distante a CONFIRMÉ
 # avoir appliquée (via _ack_window_versions). Flow control de l'émetteur.
 var _last_acked_version: Dictionary = {}
+# ── Diagnostics (latence du stream) ────────────────────────────────────
+var _frame_sent_version: Dictionary = {} # pid -> {wid -> version} à l'envoi
+var _frame_sent_msec: Dictionary = {}    # pid -> {wid -> msec} à l'envoi
+var _frame_enqueued_msec: Dictionary = {} # wid -> {version: msec} à l'enqueue
+var _diag_last_log := 0
+var _diag_rtt_sum := 0
+var _diag_rtt_count := 0
+var _diag_applied_count := 0
+var _diag_last_applied := 0
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 # Cadence et qualités du stream vidéo partagé. Le stream passe par des
@@ -546,6 +555,7 @@ func _sync_windows_textures(delta: float) -> void:
 			"max_side": max_side,
 			"quality": quality,
 			"force_key": force_key,
+			"t_msec": Time.get_ticks_msec(),
 		})
 		_encode_mutex.unlock()
 		_encode_inflight[wid] = version
@@ -572,10 +582,12 @@ func _drain_encoded_frames() -> void:
 		var version := int(result.get("version", -1))
 		var bytes: PackedByteArray = result.get("bytes", PackedByteArray())
 		var keyframe := bool(result.get("keyframe", false))
+		var t_enc := int(result.get("t_msec", 0))
+		var now := Time.get_ticks_msec()
 		if _encode_inflight.get(wid, -1) == version:
 			_encode_inflight.erase(wid)
 		if keyframe:
-			_last_keyframe_msec[wid] = Time.get_ticks_msec()
+			_last_keyframe_msec[wid] = now
 		for pid in multiplayer.get_peers():
 			if pid == multiplayer.get_unique_id():
 				continue
@@ -603,6 +615,27 @@ func _drain_encoded_frames() -> void:
 			else:
 				_sync_window_texture.rpc_id(pid, wid, version, bytes)
 			sent[wid] = version
+			# Diagnostic : timestamp d'envoi + âge du contenu encodé.
+			if not _frame_sent_version.has(pid):
+				_frame_sent_version[pid] = {}
+				_frame_sent_msec[pid] = {}
+			_frame_sent_version[pid][wid] = version
+			_frame_sent_msec[pid][wid] = now
+			if t_enc > 0:
+				_frame_enqueued_msec[wid] = now - t_enc
+	# Diagnostics périodiques (1/s) : âge du contenu à l'envoi, RTT ACK,
+	# temps d'encodage.
+	if now - _diag_last_log >= 1000 and not results.is_empty():
+		_diag_last_log = now
+		var last: Dictionary = results[results.size() - 1]
+		var age_ms: int = _frame_enqueued_msec.get(int(last.get("wid", -1)), -1)
+		var rtt_ms := -1
+		if _diag_rtt_count > 0:
+			rtt_ms = _diag_rtt_sum / _diag_rtt_count
+		print("[lan] diag env: age=%dms enc=%dms rtt=%dms (n=%d)" % [
+			age_ms, int(last.get("enc_us", 0)) / 1000, rtt_ms, _diag_rtt_count])
+		_diag_rtt_sum = 0
+		_diag_rtt_count = 0
 
 func _start_encode_thread() -> void:
 	if _encode_thread != null:
@@ -652,6 +685,7 @@ func _encode_worker() -> void:
 		if img == null or img.is_empty():
 			continue
 		var wid := int(job.get("wid", -1))
+		var t_enc := Time.get_ticks_usec()
 		var bytes := _encode_share_frame(img,
 			int(job.get("max_side", WINDOW_TEXTURE_MAX_SIDE)),
 			float(job.get("quality", WINDOW_TEXTURE_QUALITY)))
@@ -669,6 +703,8 @@ func _encode_worker() -> void:
 			"version": int(job.get("version", -1)),
 			"bytes": bytes,
 			"keyframe": keyframe,
+			"t_msec": int(job.get("t_msec", 0)),
+			"enc_us": Time.get_ticks_usec() - t_enc,
 		})
 		_encode_mutex.unlock()
 
@@ -782,6 +818,13 @@ func _drain_decoded_frames() -> void:
 	for from in acked_senders:
 		if multiplayer.has_peer(from):
 			_ack_window_versions.rpc_id(from, _last_applied_version[from])
+	# Diagnostic récepteur : cadence d'application + file de décodage restante.
+	_diag_applied_count += results.size()
+	if Time.get_ticks_msec() - _diag_last_applied >= 1000:
+		print("[lan] diag rx: appliquées/s=%d decode_q=%d" % [
+			_diag_applied_count, _decode_queue.size()])
+		_diag_applied_count = 0
+		_diag_last_applied = Time.get_ticks_msec()
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
 func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByteArray:
@@ -860,7 +903,9 @@ func _receive_share_frame(wid: int, version: int, bytes: PackedByteArray, is_key
 # ACK du récepteur vers l'émetteur : dernière version appliquée par fenêtre.
 # Fiables (petits) → quasi jamais perdus ; s'ils sont retardés, l'émetteur
 # saute des frames (le backlog ne grossit pas) et reprend dès leur arrivée.
-@rpc("any_peer", "call_remote", "reliable")
+# Canal 5 dédié : ne se met pas en file derrière les RPC fiables volumineux
+# du canal 0 (niveau, états) qui pourraient retarder le flow control.
+@rpc("any_peer", "call_remote", "reliable", 5)
 func _ack_window_versions(versions: Dictionary) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
@@ -871,6 +916,13 @@ func _ack_window_versions(versions: Dictionary) -> void:
 		if int(versions[wid]) > int(cur.get(wid, -1)):
 			cur[wid] = versions[wid]
 	_last_acked_version[from] = cur
+	# Diagnostic RTT : aller-retour envoi → application distante → ACK.
+	var sent_v: int = int(_frame_sent_version.get(from, {}).get(wid, -1))
+	if sent_v == int(versions[wid]):
+		var sent_t: int = int(_frame_sent_msec.get(from, {}).get(wid, -1))
+		if sent_t > 0:
+			_diag_rtt_sum += Time.get_ticks_msec() - sent_t
+			_diag_rtt_count += 1
 
 # ── Audio partagé : capture (émetteur) + lecture (récepteur) ──────────
 
