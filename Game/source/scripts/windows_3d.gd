@@ -136,18 +136,16 @@ func next_spawn_pos() -> Vector3:
 func get_window_texture(wid: int) -> Texture2D:
 	return window_textures.get(wid, null)
 
-# État des fenêtres locales pour le partage LAN (quads noirs des autres
-# joueurs) : une entrée par fenêtre, en coordonnées MONDE (le quad vit sous
-# Windows3D, à l'identité de la room, pas dans le repère du niveau).
-# Les fenêtres non partagées sont omises : leur quad disparaît côté distant
-# grâce au diff du récepteur.
+# État des fenêtres locales pour le partage LAN (quads des autres joueurs) :
+# une entrée par fenêtre (partagée OU non), en coordonnées MONDE (le quad vit
+# sous Windows3D, à l'identité de la room, pas dans le repère du niveau).
+# « shared » vaut false → le quad distant reste noir (placeholder) ;
+# « shared » vaut true → le contenu réel est streamé (voir get_window_image).
 func get_windows_state() -> Array:
 	var list: Array = []
 	for wid in quads:
 		var quad: MeshInstance3D = quads[wid]
 		if not is_instance_valid(quad):
-			continue
-		if not window_shared.get(wid, true):
 			continue
 		var size := Vector2.ONE
 		if quad.mesh is QuadMesh:
@@ -157,8 +155,19 @@ func get_windows_state() -> Array:
 			"transform": quad.global_transform,
 			"size": size,
 			"visible": quad.visible,
+			"shared": window_shared.get(wid, false),
 		})
 	return list
+
+# Image CPU actuelle d'une fenêtre, pour le stream « partage » vers les autres
+# joueurs. Renvoie null si la fenêtre n'a pas encore de contenu. Le texture du
+# compositeur est une ImageTexture RGBA8 en RAM (capture_surface / _pixels),
+# donc get_image() est bon marché (pas de lecture GPU).
+func get_window_image(wid: int) -> Image:
+	var tex: Texture2D = window_textures.get(wid)
+	if tex == null or not is_instance_valid(tex):
+		return null
+	return tex.get_image()
 
 # Active/désactive la visibilité d'une fenêtre pour les autres joueurs
 # (partage « screenshare » : aucun contrôle distant, juste l'affichage).
@@ -167,7 +176,7 @@ func set_window_shared(wid: int, shared: bool) -> void:
 	windows_state_changed.emit()
 
 func is_window_shared(wid: int) -> bool:
-	return window_shared.get(wid, true)
+	return window_shared.get(wid, false)
 
 # Vrai si le joueur local déplace ou redimensionne une fenêtre : pendant
 # ce temps le LAN envoie l'état des fenêtres à haute fréquence.
@@ -303,7 +312,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 
 	add_child(quad)
 	quads[id] = quad
-	window_shared[id] = true
+	window_shared[id] = false
 	quad.global_position = next_spawn_pos()
 	var camera := _camera()
 
