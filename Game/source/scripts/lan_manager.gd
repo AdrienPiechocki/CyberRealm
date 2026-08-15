@@ -43,10 +43,12 @@ var _remote_shared: Dictionary = {} # peer_id -> {wid -> bool} (partage en cours
 var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
 var _last_windows_texture_send := 0.0
+var _texture_resend_elapsed := 0.0
 var _last_texture_versions: Dictionary = {} # peer_id -> {wid -> int} (dernière version envoyée)
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_RESYNC_GAP := 1.0 # re-envoi périodique (auto-réparation)
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
 
@@ -354,6 +356,14 @@ func _sync_windows_textures(delta: float) -> void:
 	if _last_windows_texture_send < WINDOW_TEXTURE_GAP:
 		return
 	_last_windows_texture_send = 0.0
+	# Re-envoi périodique de toutes les fenêtres partagées : répare la course où
+	# la 1re frame (émise au toggle SHARE) arrive avant l'état `shared` et est
+	# rejetée côté destinataire → sans re-envoi, version identique = jamais re-sent.
+	_texture_resend_elapsed += WINDOW_TEXTURE_GAP
+	var force_resend := false
+	if _texture_resend_elapsed >= WINDOW_TEXTURE_RESYNC_GAP:
+		_texture_resend_elapsed = 0.0
+		force_resend = true
 	if not windows_provider.is_valid() or not window_image_provider.is_valid() or not window_version_provider.is_valid():
 		return
 	var list: Array = windows_provider.call()
@@ -376,7 +386,7 @@ func _sync_windows_textures(delta: float) -> void:
 			if wid < 0:
 				continue
 			var version := int(window_version_provider.call(wid))
-			if sent.get(wid, -1) == version:
+			if not force_resend and sent.get(wid, -1) == version:
 				continue
 			var img: Image = window_image_provider.call(wid)
 			if img == null or img.is_empty():
