@@ -170,36 +170,31 @@ void AudioShare::registry_global_cb(void *user_data, uint32_t id, uint32_t permi
 }
 
 void AudioShare::on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props) {
+	// Diagnostique (temporaire) : confirme que les globals arrivent bien, et
+	// ce qu'ils portent. À retirer une fois le matching fenêtre→node validé.
+	const char *dbg_name = props ? spa_dict_lookup(props, "node.name") : nullptr;
+	if (dbg_name == nullptr) {
+		dbg_name = props ? spa_dict_lookup(props, "metadata.name") : nullptr;
+	}
+	if (dbg_name == nullptr) {
+		dbg_name = props ? spa_dict_lookup(props, "object.name") : nullptr;
+	}
+	const char *dbg_media = props ? spa_dict_lookup(props, "media.class") : nullptr;
+	const char *dbg_pid = props ? spa_dict_lookup(props, "application.process.id") : nullptr;
+	UtilityFunctions::print("waylandgodot: audio: [reg] ", id, " type=",
+		type ? type : "?", " name=", dbg_name ? dbg_name : "?",
+		" media=", dbg_media ? dbg_media : "?", " pid=", dbg_pid ? dbg_pid : "?");
 	if (type == nullptr) {
 		return;
 	}
-	// Un node audio = une application en sortie (ou un sink/mic). On retient
-	// son PID pour pouvoir la capturer quand elle correspond à une fenêtre
-	// partagée.
-	if (strcmp(type, PW_TYPE_INTERFACE_Node) != 0) {
-		return;
+	// Un node audio = une application en sortie (ou un sink/mic). Les props
+	// GLOBALES du registry sont minimales (parfois sans media.class ni
+	// application.process.id) : on bind systématiquement le node pour lire ses
+	// props complètes via l'event info (asynchrone → on_node_info).
+	if (strcmp(type, PW_TYPE_INTERFACE_Node) == 0) {
+		node_pids[id] = -1;
+		bind_node_for_info(id);
 	}
-	const char *media_class = props ? spa_dict_lookup(props, "media.class") : nullptr;
-	if (media_class == nullptr || strstr(media_class, "Audio") == nullptr) {
-		return; // pas un node audio
-	}
-	const char *proc_id = props ? spa_dict_lookup(props, "application.process.id") : nullptr;
-	int pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
-	if (pid > 0) {
-		node_pids[id] = pid;
-		const char *node_name = spa_dict_lookup(props, "node.name");
-		UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
-			node_name ? node_name : "?", ") → pid ", pid);
-		// Un node ciblé peut apparaître APRÈS set_target_pids (app lancée au
-		// cours du partage) : on retente l'alignement à chaque node nouveau.
-		apply_targets();
-		return;
-	}
-	// Les props globales du registry n'exposent pas toujours
-	// application.process.id : on bind le node pour lire ses props complètes
-	// (l'event info arrive de façon asynchrone → on_node_info).
-	node_pids[id] = -1;
-	bind_node_for_info(id);
 }
 
 void AudioShare::registry_global_remove_cb(void *user_data, uint32_t id) {
