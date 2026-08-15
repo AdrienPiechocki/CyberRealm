@@ -176,7 +176,8 @@ func get_window_image(wid: int) -> Image:
 	if img != null and not img.is_empty():
 		if not _debug_share_path.has(wid):
 			_debug_share_path[wid] = "image_texture"
-			print("[share] ", wid, " path=image_texture ", tex.get_width(), "x", tex.get_height())
+			print("[share] ", wid, " path=image_texture ", tex.get_width(), "x", tex.get_height(),
+				" title=", _window_title(wid), " app=", _window_app_id(wid))
 		return img
 	if tex is Texture2DRD and compositor != null and compositor.has_method("get_window_cpu_image"):
 		var cimg: Image = compositor.get_window_cpu_image(wid)
@@ -191,6 +192,22 @@ func get_window_image(wid: int) -> Image:
 	return null
 
 var _debug_share_path := {}
+
+func _window_title(wid: int) -> String:
+	if compositor == null or not compositor.has_method("get_window_list"):
+		return ""
+	for entry in compositor.get_window_list():
+		if int(entry.get("id", -1)) == wid:
+			return str(entry.get("title", ""))
+	return ""
+
+func _window_app_id(wid: int) -> String:
+	if compositor == null or not compositor.has_method("get_window_list"):
+		return ""
+	for entry in compositor.get_window_list():
+		if int(entry.get("id", -1)) == wid:
+			return str(entry.get("app_id", ""))
+	return ""
 
 # Version du contenu d'une fenêtre (incrémentée à chaque capture). Le LAN ne
 # stream une frame que si la version a changé, pour ne pas ré-encoder une
