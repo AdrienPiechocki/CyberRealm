@@ -230,7 +230,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     // GPU page tables for a tiled layout while the actual backing memory
     // is linear → the GPU reads garbage addresses.
     image_info.tiling = VK_IMAGE_TILING_LINEAR;
-    image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 

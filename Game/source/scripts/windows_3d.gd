@@ -76,6 +76,7 @@ var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var window_titles: Dictionary = {} # window_id (int) -> String
 var window_shared: Dictionary = {} # window_id (int) -> bool (visible par les autres joueurs)
 var _texture_versions: Dictionary = {} # window_id (int) -> int (version du contenu, pour le LAN)
+var _window_content_sizes: Dictionary = {} # window_id (int) -> Vector2i (taille logique du contenu)
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
 var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
 
@@ -161,14 +162,59 @@ func get_windows_state() -> Array:
 	return list
 
 # Image CPU actuelle d'une fenêtre, pour le stream « partage » vers les autres
-# joueurs. Renvoie null si la fenêtre n'a pas encore de contenu. Le texture du
-# compositeur est une ImageTexture RGBA8 en RAM (capture_surface / _pixels),
-# donc get_image() est bon marché (pas de lecture GPU).
+# joueurs. Renvoie null si la fenêtre n'a pas encore de contenu.
+# Deux chemins possibles côté compositeur :
+#  - fallback CPU → ImageTexture : get_image() est direct ;
+#  - chemin Vulkan zero-copy → Texture2DRD : get_image() renvoie null, on fait
+#    un readback RenderingDevice puis on crop au contenu réel (le buffer RD
+#    est alloué arrondi au multiple de 64, le contenu est en haut-gauche).
 func get_window_image(wid: int) -> Image:
 	var tex: Texture2D = window_textures.get(wid)
 	if tex == null or not is_instance_valid(tex):
 		return null
-	return tex.get_image()
+	var img := tex.get_image()
+	if img != null and not img.is_empty():
+		return img
+	if tex is Texture2DRD:
+		var content: Vector2i = _window_content_sizes.get(wid, Vector2i.ZERO)
+		return _readback_rd_texture(tex as Texture2DRD, content)
+	return null
+
+# Readback GPU→CPU d'une Texture2DRD importée (capture_surface_vulkan).
+func _readback_rd_texture(tex: Texture2DRD, content: Vector2i) -> Image:
+	var rd := RenderingServer.get_rendering_device()
+	if rd == null:
+		return null
+	var rid := tex.get_rid()
+	if not rid.is_valid() or not rd.texture_is_valid(rid):
+		return null
+	var fmt := rd.texture_get_format(rid)
+	var img_format: Image.Format
+	var swap_bgr := false
+	match int(fmt.format):
+		RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM:
+			img_format = Image.FORMAT_RGBA8
+		RenderingDevice.DATA_FORMAT_B8G8R8A8_UNORM:
+			img_format = Image.FORMAT_RGBA8
+			swap_bgr = true
+		_:
+			return null
+	var bytes := rd.texture_get_data(rid, 0)
+	if bytes.is_empty():
+		return null
+	var alloc_w := int(fmt.width)
+	var alloc_h := int(fmt.height)
+	if alloc_w <= 0 or alloc_h <= 0:
+		return null
+	if swap_bgr:
+		for i in range(0, bytes.size(), 4):
+			var t := bytes[i]
+			bytes[i] = bytes[i + 2]
+			bytes[i + 2] = t
+	var img := Image.create_from_data(alloc_w, alloc_h, false, img_format, bytes)
+	if content.x > 0 and content.y > 0 and content.x <= alloc_w and content.y <= alloc_h:
+		img.crop(content.x, content.y)
+	return img
 
 # Version du contenu d'une fenêtre (incrémentée à chaque capture). Le LAN ne
 # stream une frame que si la version a changé, pour ne pas ré-encoder une
@@ -429,6 +475,7 @@ func on_window_unmapped(id: int) -> void:
 	window_textures.erase(id)
 	window_shared.erase(id)
 	_texture_versions.erase(id)
+	_window_content_sizes.erase(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -439,6 +486,7 @@ func on_window_unmapped(id: int) -> void:
 func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	# Tracker la texture pour le menu de navigation
 	window_textures[id] = texture
+	_window_content_sizes[id] = Vector2i(width, height)
 	# Version du contenu : incrémentée à chaque nouvelle capture, utilisée par
 	# le LAN pour n'envoyer une frame que quand la fenêtre a réellement changé.
 	_texture_versions[id] = _texture_versions.get(id, 0) + 1
