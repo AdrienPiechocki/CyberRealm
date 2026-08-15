@@ -183,9 +183,11 @@ func _ready() -> void:
 	pause_menu.polkit_agent_changed.connect(_on_polkit_agent_changed)
 	pause_menu.pins_layer_changed.connect(_on_pins_layer_changed)
 	pause_menu.pins_opacity_changed.connect(_on_pins_opacity_changed)
-	# Appliquer la couche et la transparence des fenêtres épinglées sauvegardées
+	pause_menu.pins_position_changed.connect(_on_pins_position_changed)
+	# Appliquer la couche, la transparence et la position des fenêtres épinglées
 	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
 	pins.set_pins_opacity(pause_menu.get_pins_opacity())
+	pins.set_pins_position(pause_menu.get_pins_position())
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
@@ -378,16 +380,18 @@ func _process(delta: float) -> void:
 	if layers.keyboard_busy():
 		return
 
-	# F en visant une fenêtre → entrer en mode focus
+	# F en visant une fenêtre → entrer en mode focus. Le rayon part de la
+	# position réelle du viseur (_aim_pos), pas de get_mouse_position() :
+	# en mode capturé celle-ci reste figée à l'endroit de la capture.
 	if Input.is_action_just_pressed("focus_window", true) and not interact_mode_active:
-		var wid := _raycast_window_id(get_viewport().get_mouse_position())
+		var wid := _raycast_window_id(_aim_pos())
 		if wid != -1:
 			focus.enter_focus(wid)
 			return
 
 	# P en visant une fenêtre → pin/unpin PiP
 	if Input.is_action_just_pressed("pin_window", true) and not interact_mode_active:
-		var wid := _raycast_window_id(get_viewport().get_mouse_position())
+		var wid := _raycast_window_id(_aim_pos())
 		if wid != -1:
 			_toggle_pin(wid)
 			return
@@ -646,6 +650,9 @@ func _on_pins_layer_changed(above: bool) -> void:
 
 func _on_pins_opacity_changed(percent: int) -> void:
 	pins.set_pins_opacity(percent)
+
+func _on_pins_position_changed(position: String) -> void:
+	pins.set_pins_position(position)
 
 # ── Cycle de vie ─────────────────────────────────────────────────────
 
