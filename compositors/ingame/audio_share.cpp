@@ -153,7 +153,7 @@ bool AudioShare::start() {
 		return false;
 	}
 	UtilityFunctions::print("waylandgodot: audio: capture PipeWire démarrée "
-		"(audio des fenêtres partagées, par PID) [build client-pid v2]");
+		"(audio des fenêtres partagées, par PID) [build client-pid v3]");
 	return true;
 }
 
@@ -227,20 +227,6 @@ void AudioShare::registry_global_cb(void *user_data, uint32_t id, uint32_t permi
 }
 
 void AudioShare::on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props) {
-	// Diagnostique (temporaire) : confirme que les globals arrivent bien, et
-	// ce qu'ils portent. À retirer une fois le matching fenêtre→node validé.
-	const char *dbg_name = props ? spa_dict_lookup(props, "node.name") : nullptr;
-	if (dbg_name == nullptr) {
-		dbg_name = props ? spa_dict_lookup(props, "metadata.name") : nullptr;
-	}
-	if (dbg_name == nullptr) {
-		dbg_name = props ? spa_dict_lookup(props, "object.name") : nullptr;
-	}
-	const char *dbg_media = props ? spa_dict_lookup(props, "media.class") : nullptr;
-	const char *dbg_pid = props ? spa_dict_lookup(props, "application.process.id") : nullptr;
-	UtilityFunctions::print("waylandgodot: audio: [reg] ", id, " type=",
-		type ? type : "?", " name=", dbg_name ? dbg_name : "?",
-		" media=", dbg_media ? dbg_media : "?", " pid=", dbg_pid ? dbg_pid : "?");
 	if (type == nullptr) {
 		return;
 	}

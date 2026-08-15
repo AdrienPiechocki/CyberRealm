@@ -65,7 +65,8 @@ public:
 
 	// Nouvel ensemble de PIDs à capturer (les fenêtres partagées). Appelé
 	// depuis le thread du jeu ; la réconciliation (création/destruction de
-	// streams) est exécutée sur le thread PipeWire via pw_thread_loop_invoke.
+	// streams) est exécutée directement sous pw_thread_loop_lock (les
+	// callbacks PW sont suspendus → atomique, cf. set_target_pids).
 	void set_target_pids(const std::vector<int> &pids);
 
 	// Encode un paquet OPUS (20 ms, stéréo 48 kHz) mélangé depuis tous les
@@ -108,8 +109,10 @@ private:
 	// core depuis les credentials du socket, contrairement aux props du node).
 	std::unordered_map<uint32_t, int> client_pids;
 
-	// Exécutée sur le thread PipeWire : aligne les streams sur target_pids
-	// (détruit ceux dont le PID n'est plus ciblé, connecte ceux qui manquent).
+	// Aligne les streams sur target_pids (détruit ceux dont le PID n'est plus
+	// ciblé, connecte ceux qui manquent). Exécutée sous streams_mutex, depuis
+	// le thread du jeu (set_target_pids sous lock de la boucle) ou depuis un
+	// callback PW (on_node_info / on_client_info, sur le thread de la boucle).
 	void apply_targets();
 	AudioCaptureStream *find_stream_for_pid(int pid) const;
 	AudioCaptureStream *find_stream_for_node(uint32_t node_id) const;
@@ -123,11 +126,12 @@ private:
 	void *registry = nullptr;    // pw_registry*
 	void *registry_hook = nullptr; // spa_hook* (persistant)
 
-	// node_id -> application.process.id (vus au registry). Lu/écrit
-	// exclusivement sur le thread PipeWire.
+	// node_id -> application.process.id (vus au registry). Lu/écrit sur le
+	// thread PipeWire (callbacks registry/node/client) ou sous
+	// pw_thread_loop_lock (set_target_pids → apply_targets).
 	std::unordered_map<uint32_t, int> node_pids;
-	// PIDs ciblés (fenêtres partagées). N'écrit que sur le thread PipeWire
-	// (set_target_pids délègue via invoke) ; poll_opus_packet ne le lit pas.
+	// PIDs ciblés (fenêtres partagées). Protégé par le lock de la boucle PW ;
+	// poll_opus_packet ne le lit pas.
 	std::vector<int> target_pids;
 	// Streams actifs, indexés par node_id. Protégé par streams_mutex
 	// (poll_opus_packet du thread du jeu les lit pour mélanger).
