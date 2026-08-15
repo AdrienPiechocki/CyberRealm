@@ -267,6 +267,8 @@ func _ready() -> void:
 	lan.window_image_provider = win3d.get_window_image
 	lan.window_version_provider = win3d.get_window_texture_version
 	lan.compositor = win3d.compositor
+	lan.pins = pins
+	lan.focus = focus
 	win3d.windows_state_changed.connect(_on_windows_state_changed)
 
 	# TextureRect pour l'icône de drag-and-drop
@@ -376,8 +378,10 @@ func _aim_pos() -> Vector2:
 		return get_viewport().get_visible_rect().size / 2.0
 	return get_viewport().get_mouse_position()
 
-# Cast un rayon depuis la souris et renvoie l'id de la fenêtre touchée (-1 sinon).
-func _raycast_window_id(mouse_pos: Vector2) -> int:
+# Cast un rayon depuis la souris et renvoie la fenêtre touchée : {"local": wid}
+# pour une fenêtre du compositeur local, {"remote_peer": pid, "remote_wid":
+# wid} pour une fenêtre d'un autre joueur (vue seule), {} sinon.
+func _raycast_window_target(mouse_pos: Vector2) -> Dictionary:
 	var cam: Camera3D = player.get_node("Camera3D") as Camera3D
 	var ray_origin = cam.project_ray_origin(mouse_pos)
 	var ray_dir = cam.project_ray_normal(mouse_pos)
@@ -385,11 +389,15 @@ func _raycast_window_id(mouse_pos: Vector2) -> int:
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
 	var hit := space.intersect_ray(params)
-	if not hit.is_empty():
-		var body: Node3D = hit.collider
-		if body.has_meta("window_id"):
-			return body.get_meta("window_id")
-	return -1
+	if hit.is_empty():
+		return {}
+	var body: Node3D = hit.collider
+	if body.has_meta("window_id"):
+		return {"local": body.get_meta("window_id")}
+	if body.has_meta("remote_window"):
+		var info: Dictionary = body.get_meta("remote_window")
+		return {"remote_peer": int(info.get("peer_id", -1)), "remote_wid": int(info.get("wid", -1))}
+	return {}
 
 # Pin/unpin d'une fenêtre en PiP (touche P ou menu fenêtres).
 func _toggle_pin(wid: int) -> void:
@@ -399,6 +407,15 @@ func _toggle_pin(wid: int) -> void:
 		if not win3d.quads.has(wid):
 			return
 		pins.pin(wid, win3d.get_window_texture(wid))
+
+# Pin/unpin d'une fenêtre DISTANTE en PiP (vue seule, aucun input).
+func _toggle_remote_pin(peer_id: int, wid: int) -> void:
+	if pins.is_pinned_remote(peer_id, wid):
+		pins.unpin_remote(peer_id, wid)
+	else:
+		var tex: Texture2D = lan.get_remote_window_texture(peer_id, wid)
+		if tex != null:
+			pins.pin_remote(peer_id, wid, tex)
 
 # ── Boucle principale ────────────────────────────────────────────────
 
@@ -449,7 +466,9 @@ func _process(delta: float) -> void:
 		if Input.is_action_just_pressed("focus_window", true):
 			focus.exit_focus()
 			return
-		if Input.is_action_just_pressed("kill_window", true):
+		# Kill : seulement pour une fenêtre LOCALE en focus. Le focus d'une
+		# fenêtre distante est vue seule : pas de fermeture possible.
+		if not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):
 			compositor.close_window(focus.get_focus_window_id())
 			return
 		focus.handle_focus_input()
@@ -470,24 +489,34 @@ func _process(delta: float) -> void:
 	# F en visant une fenêtre → entrer en mode focus. Le rayon part de la
 	# position réelle du viseur (_aim_pos), pas de get_mouse_position() :
 	# en mode capturé celle-ci reste figée à l'endroit de la capture.
+	# Une fenêtre DISTANTE entre aussi en focus mais en VUE SEULE (aucun
+	# input forwardé, pas de kill).
 	if Input.is_action_just_pressed("focus_window", true) and not interact_mode_active:
-		var wid := _raycast_window_id(_aim_pos())
-		if wid != -1:
-			focus.enter_focus(wid)
+		var target := _raycast_window_target(_aim_pos())
+		if target.has("local"):
+			focus.enter_focus(target["local"])
+			return
+		if target.has("remote_peer"):
+			focus.enter_remote_focus(target["remote_peer"], target["remote_wid"],
+				lan.get_remote_window_texture(target["remote_peer"], target["remote_wid"]))
 			return
 
 	# P en visant une fenêtre → pin/unpin PiP
 	if Input.is_action_just_pressed("pin_window", true) and not interact_mode_active:
-		var wid := _raycast_window_id(_aim_pos())
-		if wid != -1:
-			_toggle_pin(wid)
+		var target := _raycast_window_target(_aim_pos())
+		if target.has("local"):
+			_toggle_pin(target["local"])
+			return
+		if target.has("remote_peer"):
+			_toggle_remote_pin(target["remote_peer"], target["remote_wid"])
 			return
 
-	# K en visant une fenêtre → demander sa fermeture (close)
+	# K en visant une fenêtre LOCALE → demander sa fermeture (close). Les
+	# fenêtres distantes ne sont pas fermables (aucune interaction).
 	if Input.is_action_just_pressed("kill_window", true) and not interact_mode_active:
-		var wid := _raycast_window_id(_aim_pos())
-		if wid != -1:
-			compositor.close_window(wid)
+		var target := _raycast_window_target(_aim_pos())
+		if target.has("local"):
+			compositor.close_window(target["local"])
 			return
 
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
@@ -553,8 +582,11 @@ func _input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 		return
 
-	# En mode focus, forward le clavier et tracker la souris capturée
-	if focus.is_active() and focus.get_focus_window_id() != -1 and not capture_selector.visible:
+	# En mode focus, forward le clavier et tracker la souris capturée.
+	# Le focus DISTANT (vue seule) consomme aussi tout l'input (via
+	# handle_input_event) pour que rien ne fuie vers les binds du jeu.
+	if focus.is_active() and not capture_selector.visible \
+			and (focus.is_remote() or focus.get_focus_window_id() != -1):
 		if focus.handle_input_event(event):
 			return
 

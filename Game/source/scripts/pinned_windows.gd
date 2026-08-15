@@ -10,7 +10,7 @@ const PIN_Z_BASE := 1900
 const PIN_Z_ABOVE_FOCUS := 2100
 
 var ui: CanvasLayer
-var pinned_windows: Dictionary = {} # window_id (int) -> TextureRect
+var pinned_windows: Dictionary = {} # clé (int window_id local, ou String "r:peer:wid" distant) -> TextureRect
 # True : la fenêtre épinglée s'affiche au-dessus du layer focus.
 var pins_above_focus := false
 # Pourcentage de transparence de la fenêtre épinglée (0 = opaque, 100 = invisible).
@@ -55,8 +55,33 @@ func is_pinned(id: int) -> bool:
 	return pinned_windows.has(id)
 
 func pin(id: int, texture: Texture2D) -> void:
+	_add_pin(id, texture)
+
+# Clé de PiP unique pour une fenêtre distante (un wid local et un wid distant
+# peuvent coïncider numériquement : on préfixe par le peer).
+func _remote_key(peer_id: int, wid: int) -> String:
+	return "r:%d:%d" % [peer_id, wid]
+
+func is_pinned_remote(peer_id: int, wid: int) -> bool:
+	return pinned_windows.has(_remote_key(peer_id, wid))
+
+func pin_remote(peer_id: int, wid: int, texture: Texture2D) -> void:
+	_add_pin(_remote_key(peer_id, wid), texture)
+
+func unpin_remote(peer_id: int, wid: int) -> void:
+	unpin(_remote_key(peer_id, wid))
+
+# Retire tous les PiP des fenêtres d'un joueur distant (déconnexion, fin de
+# session, plus aucune fenêtre partagée).
+func unpin_peer(peer_id: int) -> void:
+	var prefix := "r:%d:" % peer_id
+	for key in pinned_windows.keys().duplicate():
+		if key is String and key.begins_with(prefix):
+			unpin(key)
+
+func _add_pin(key, texture: Texture2D) -> void:
 	# Si la fenêtre est déjà épinglée, on ne fait rien
-	if pinned_windows.has(id):
+	if pinned_windows.has(key):
 		return
 
 	# Si une AUTRE fenêtre est déjà épinglée, on la retire d'abord
@@ -81,17 +106,17 @@ func pin(id: int, texture: Texture2D) -> void:
 	border.modulate.a = _pin_alpha()
 
 	border.position = _pin_position()
-	pip.set_meta("window_id", id)
+	pip.set_meta("window_id", key)
 	ui.add_child(border)
-	pinned_windows[id] = border
+	pinned_windows[key] = border
 
-func unpin(id: int) -> void:
-	if not pinned_windows.has(id):
+func unpin(key) -> void:
+	if not pinned_windows.has(key):
 		return
-	var pip: Control = pinned_windows[id]
+	var pip: Control = pinned_windows[key]
 	if is_instance_valid(pip):
 		pip.queue_free()
-	pinned_windows.erase(id)
+	pinned_windows.erase(key)
 
 ## Retire toutes les fenêtres épinglées (pour garantir 1 seule fenêtre max)
 func unpin_all() -> void:
@@ -136,4 +161,12 @@ func set_pins_position(position: String) -> void:
 func on_window_texture_updated(id: int, texture: Texture2D) -> void:
 	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):
 		var pip_tex: TextureRect = pinned_windows[id].get_child(0)
+		pip_tex.texture = texture
+
+# Mise à jour de la texture d'une fenêtre distante épinglée (appelé par
+# lan_manager à chaque frame streamée reçue).
+func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> void:
+	var key := _remote_key(peer_id, wid)
+	if pinned_windows.has(key) and is_instance_valid(pinned_windows[key]):
+		var pip_tex: TextureRect = pinned_windows[key].get_child(0)
 		pip_tex.texture = texture
