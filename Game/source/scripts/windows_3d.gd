@@ -174,12 +174,23 @@ func get_window_image(wid: int) -> Image:
 		return null
 	var img := tex.get_image()
 	if img != null and not img.is_empty():
+		if not _debug_share_path.has(wid):
+			_debug_share_path[wid] = "image_texture"
+			print("[share] ", wid, " path=image_texture ", tex.get_width(), "x", tex.get_height())
 		return img
 	if tex is Texture2DRD and compositor != null and compositor.has_method("get_window_cpu_image"):
 		var cimg: Image = compositor.get_window_cpu_image(wid)
 		if cimg != null and not cimg.is_empty():
+			if not _debug_share_path.has(wid):
+				_debug_share_path[wid] = "cpu_image"
+				print("[share] ", wid, " path=cpu_image ", cimg.get_width(), "x", cimg.get_height())
 			return cimg
+		if not _debug_share_path.has(wid):
+			_debug_share_path[wid] = "cpu_image_null"
+			print("[share] ", wid, " path=cpu_image NULL (texte ", tex.get_class(), ")")
 	return null
+
+var _debug_share_path := {}
 
 # Version du contenu d'une fenêtre (incrémentée à chaque capture). Le LAN ne
 # stream une frame que si la version a changé, pour ne pas ré-encoder une

@@ -406,8 +406,22 @@ func _encode_share_frame(img: Image) -> PackedByteArray:
 		var scale := float(WINDOW_TEXTURE_MAX_SIDE) / float(longest)
 		var work := img.duplicate()
 		work.resize(maxi(1, int(w * scale)), maxi(1, int(h * scale)), Image.INTERPOLATE_BILINEAR)
-		return work.save_jpg_to_buffer(WINDOW_TEXTURE_QUALITY)
-	return img.save_jpg_to_buffer(WINDOW_TEXTURE_QUALITY)
+		img = work
+		w = img.get_width()
+		h = img.get_height()
+	var bytes := img.save_jpg_to_buffer(WINDOW_TEXTURE_QUALITY)
+	if _debug_dump_once(0):
+		img.save_png("user://share_sender.png")
+		print("[share] sender: ", w, "x", h, " bytes=", bytes.size(),
+			" format=", img.get_format())
+	return bytes
+
+var _debug_dumped := {}
+func _debug_dump_once(key: int) -> bool:
+	if _debug_dumped.has(key):
+		return false
+	_debug_dumped[key] = true
+	return true
 
 # Réception d'une frame partagée : décodée puis appliquée sur le quad distant.
 # Les frames en retard pour une fenêtre désormais non partagée sont ignorées.
@@ -429,6 +443,10 @@ func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 	var err := img.load_jpg_from_buffer(bytes)
 	if err != OK or img.is_empty():
 		return
+	if _debug_dump_once(100000 + from):
+		img.save_png("user://share_receiver_%d.png" % from)
+		print("[share] receiver: ", img.get_width(), "x", img.get_height(),
+			" bytes=", bytes.size(), " format=", img.get_format(), " wid=", wid)
 	_set_remote_quad_texture(quad, ImageTexture.create_from_image(img))
 
 # Crée/met à jour/supprime les quads noirs représentant les fenêtres d'un
