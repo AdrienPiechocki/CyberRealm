@@ -28,6 +28,10 @@ var windows_moving_provider: Callable = Callable() # true si le joueur déplace/
 var window_image_provider: Callable = Callable() # Callable(window_id) -> Image (contenu réel, stream partage)
 var window_version_provider: Callable = Callable() # Callable(window_id) -> int (version du contenu)
 var compositor: WlrCompositor = null # pour start/stop_audio_share, poll_audio_packet, audio_decode
+# Références vers les sous-systèmes locaux (posées par wayland_room) : mise à
+# jour des PiP / overlays focus des fenêtres distantes (vue seule).
+var pins = null
+var focus = null
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -1138,10 +1142,21 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			quad.name = str(wid)
 			container.add_child(quad)
 			quads[wid] = quad
+			# Métas pour le raycast (F/P, voir _raycast_window_target de
+			# wayland_room.gd) et pour la mise à jour texture (pins/focus).
+			quad.set_meta("remote_peer", peer_id)
+			quad.set_meta("remote_wid", wid)
+			var remote_body: StaticBody3D = quad.get_node_or_null("RemoteCollision") as StaticBody3D
+			if remote_body != null:
+				remote_body.set_meta("remote_window", {"peer_id": peer_id, "wid": wid})
 		quad.global_transform = item.get("transform", Transform3D.IDENTITY)
 		if quad.mesh is QuadMesh:
 			(quad.mesh as QuadMesh).size = item.get("size", Vector2.ONE)
+		_sync_remote_quad_collision(quad)
 		quad.visible = bool(item.get("visible", true))
+		var remote_body2: StaticBody3D = quad.get_node_or_null("RemoteCollision") as StaticBody3D
+		if remote_body2 != null:
+			remote_body2.disabled = not quad.visible
 		# SHARE OFF : le quad redevient noir (placeholder). SHARE ON : les
 		# frames streamées (rpc _sync_window_texture) le textureront en direct.
 		if not shared:
@@ -1159,12 +1174,19 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		if is_instance_valid(q):
 			q.queue_free()
 		quads.erase(wid)
+		if pins != null:
+			pins.unpin_remote(peer_id, wid)
+		if focus != null:
+			focus.handle_remote_window_removed(peer_id, wid)
 	if quads.is_empty():
 		_clear_remote_windows(peer_id)
 
 # Quad représentant une fenêtre distante : noir tant que la fenêtre n'est pas
 # partagée (SHARE OFF), texturé par le contenu réel quand les frames arrivent
 # (SHARE ON). Unshaded, transparent, double face, sans ombre.
+# Porte un corps de collision (meta "remote_window" posée par
+# _apply_remote_windows) pour être visable au raycast F/P : vue seule, aucune
+# interaction possible (aucun input n'est forwardé vers ces fenêtres).
 func _make_remote_quad() -> MeshInstance3D:
 	var quad := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
@@ -1177,10 +1199,36 @@ func _make_remote_quad() -> MeshInstance3D:
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	quad.material_override = mat
 	quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var body := StaticBody3D.new()
+	body.name = "RemoteCollision"
+	body.collision_layer = 2
+	body.collision_mask = 2
+	var col := CollisionShape3D.new()
+	var shape := BoxShape3D.new()
+	shape.size = Vector3(1.0, 1.0, 0.01)
+	col.shape = shape
+	body.add_child(col)
+	quad.add_child(body)
 	return quad
 
+# Aligne la CollisionShape3D du quad distant sur la taille du mesh.
+func _sync_remote_quad_collision(quad: MeshInstance3D) -> void:
+	if quad == null or not is_instance_valid(quad):
+		return
+	var body: StaticBody3D = quad.get_node_or_null("RemoteCollision") as StaticBody3D
+	if body == null:
+		return
+	var col: CollisionShape3D = body.get_child(0) as CollisionShape3D
+	if col == null:
+		return
+	var shape: BoxShape3D = col.shape as BoxShape3D
+	if shape != null and quad.mesh is QuadMesh:
+		var s: Vector2 = (quad.mesh as QuadMesh).size
+		shape.size = Vector3(s.x, s.y, 0.01)
+
 # Pose/retire la texture du contenu réel sur le quad distant. Sans texture, le
-# quad revient au noir (placeholder, SHARE OFF).
+# quad revient au noir (placeholder, SHARE OFF). Quand une texture est posée,
+# on répercute aussi sur les PiP (pins) et l'overlay focus distant (vue seule).
 func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
 	if quad == null or not is_instance_valid(quad):
 		return
@@ -1193,6 +1241,24 @@ func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
 	else:
 		mat.albedo_texture = tex
 		mat.albedo_color = Color.WHITE
+		var peer: int = int(quad.get_meta("remote_peer", -1))
+		var wid: int = int(quad.get_meta("remote_wid", -1))
+		if peer >= 0 and wid >= 0:
+			if pins != null:
+				pins.on_remote_texture_updated(peer, wid, tex)
+			if focus != null:
+				focus.on_remote_texture_updated(peer, wid, tex)
+
+# Renvoie la texture actuellement affichée sur un quad distant (null si la
+# fenêtre n'est pas partagée / pas de frames reçues). Pour les PiP/overlays.
+func get_remote_window_texture(peer_id: int, wid: int) -> Texture2D:
+	if _remote_window_quads.has(peer_id) and _remote_window_quads[peer_id].has(wid):
+		var quad: MeshInstance3D = _remote_window_quads[peer_id][wid]
+		if is_instance_valid(quad):
+			var mat: StandardMaterial3D = quad.material_override
+			if mat != null and mat.albedo_texture != null:
+				return mat.albedo_texture
+	return null
 
 func _clear_remote_windows(peer_id: int) -> void:
 	var container: Node3D = _remote_windows.get(peer_id)
@@ -1203,6 +1269,10 @@ func _clear_remote_windows(peer_id: int) -> void:
 	_remote_shared.erase(peer_id)
 	_pending_remote_textures.erase(peer_id)
 	_last_applied_version.erase(peer_id)
+	if pins != null:
+		pins.unpin_peer(peer_id)
+	if focus != null:
+		focus.handle_peer_removed(peer_id)
 
 func _clear_all_remote_windows() -> void:
 	for peer_id in _remote_windows.keys().duplicate():

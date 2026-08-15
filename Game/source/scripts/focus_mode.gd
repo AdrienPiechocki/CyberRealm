@@ -79,6 +79,15 @@ var cursor_overlay: TextureRect
 var cursor_overlay_tex: ImageTexture
 var cursor_overlay_serial := -1
 
+# Focus d'une fenêtre DISTANTE (streamée par un autre joueur) : affichage plein
+# écran VUE SEULE. Aucun input (clavier/souris) n'est forwardé, pas de kill.
+# focus_stack est vide (aucune fenêtre du compositeur local), _active_id() et
+# get_focus_window_id() renvoient donc -1.
+var remote_focus := false
+var remote_focus_peer := -1
+var remote_focus_wid := -1
+var remote_focus_rect: TextureRect = null
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -97,6 +106,16 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 
 func is_active() -> bool:
 	return focus_mode
+
+# Vrai si le mode focus affiche une fenêtre distante (vue seule, aucun input).
+func is_remote() -> bool:
+	return remote_focus
+
+func get_remote_peer() -> int:
+	return remote_focus_peer
+
+func get_remote_wid() -> int:
+	return remote_focus_wid
 
 func get_focus_window_id() -> int:
 	return _active_id()
@@ -117,6 +136,8 @@ func _state(id: int) -> Dictionary:
 	return focus_states[id]
 
 func enter_focus(id: int) -> void:
+	if remote_focus:
+		return
 	if not windows.quads.has(id) or not is_instance_valid(windows.quads[id]):
 		return
 	if focus_stack.has(id):
@@ -176,8 +197,37 @@ func enter_focus(id: int) -> void:
 
 	_activate_window(id)
 
+# Affiche en plein écran une fenêtre d'un AUTRE joueur (vue seule) : aucun
+# input forwardé, pas de kill, seul le raccourci de sortie fonctionne. La
+# texture est rafraîchie par lan_manager (on_remote_texture_updated).
+func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
+	if focus_mode:
+		return
+	focus_mode = true
+	remote_focus = true
+	remote_focus_peer = peer_id
+	remote_focus_wid = wid
+	var rect := TextureRect.new()
+	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.texture = texture
+	rect.z_index = FOCUS_Z_BASE + 1
+	ui.add_child(rect)
+	remote_focus_rect = rect
+	player.focus_mode_active = true
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
 func exit_focus() -> void:
 	if not focus_mode:
+		return
+
+	# Focus distant (vue seule) : pas de fenêtre du compositeur à restaurer.
+	if remote_focus:
+		if remote_focus_rect != null and is_instance_valid(remote_focus_rect):
+			remote_focus_rect.queue_free()
+		remote_focus_rect = null
+		_reset_focus_ui()
 		return
 
 	compositor.release_all_keys()
@@ -210,6 +260,27 @@ func exit_focus() -> void:
 			stack_index += 1
 
 	_reset_focus_ui()
+
+# Une frame streamée d'une fenêtre distante est arrivée : la refléter dans
+# l'overlay focus distant (appelé par lan_manager).
+func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> void:
+	if not remote_focus or not is_instance_valid(remote_focus_rect):
+		return
+	if remote_focus_peer != peer_id or remote_focus_wid != wid:
+		return
+	remote_focus_rect.texture = texture
+
+# Une fenêtre distante a été retirée (fermée par le joueur distant) : sortir
+# du focus si c'était celle affichée.
+func handle_remote_window_removed(peer_id: int, wid: int) -> void:
+	if remote_focus and remote_focus_peer == peer_id and remote_focus_wid == wid:
+		exit_focus()
+
+# Un joueur distant s'est déconnecté / n'a plus de fenêtres : sortir du focus
+# distant et retirer ses PiP s'il était affiché.
+func handle_peer_removed(peer_id: int) -> void:
+	if remote_focus and remote_focus_peer == peer_id:
+		exit_focus()
 
 func on_window_unmapped(id: int) -> void:
 	if not focus_mode or not focus_stack.has(id):
@@ -286,7 +357,7 @@ func _refresh_rect_layout(id: int) -> void:
 	rect.position = (viewport_size - display_size) / 2.0
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
-	if not focus_mode:
+	if not focus_mode or remote_focus:
 		return
 	_create_popup_overlay(id, parent_window_id, parent_popup_id, x, y, width, height)
 
@@ -300,7 +371,7 @@ func on_popup_unmapped(id: int) -> void:
 		focus_popup_rects.erase(id)
 
 func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
-	if not focus_popup_rects.has(id) or not is_instance_valid(focus_popup_rects[id]):
+	if remote_focus or not focus_popup_rects.has(id) or not is_instance_valid(focus_popup_rects[id]):
 		return
 	var popup_tex_rect: TextureRect = focus_popup_rects[id]
 	# texture = propriété du TextureRect : sans elle le contrôle ne dessine
@@ -511,6 +582,10 @@ func _reset_focus_ui() -> void:
 	focus_stack.clear()
 	focus_fullscreen_id = -1
 	focus_mode = false
+	remote_focus = false
+	remote_focus_peer = -1
+	remote_focus_wid = -1
+	remote_focus_rect = null
 	# Restaurer le curseur système (l'overlay custom de la fenêtre focalisée
 	# ne doit pas survivre à la sortie du mode focus).
 	_hide_cursor_overlay()
@@ -571,6 +646,8 @@ func _hide_cursor_overlay() -> void:
 # Routage souris/clavier du mode focus, appelé chaque frame par
 # wayland_room.gd tant que le mode est actif. L'input va à la fenêtre active.
 func handle_focus_input() -> void:
+	if remote_focus:
+		return
 	var active_id := _active_id()
 	if active_id == -1 or not focus_rects.has(active_id):
 		return
@@ -833,6 +910,10 @@ func _try_reconstruct_composed_key(event: InputEventKey) -> bool:
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
 func handle_input_event(event: InputEvent) -> bool:
+	# Focus distant (vue seule) : tout est consommé, rien n'est forwardé
+	# (focus_stack est vide pour le focus distant).
+	if remote_focus:
+		return true
 	if not focus_mode or focus_stack.is_empty():
 		return false
 	var active_id := _active_id()
