@@ -60,11 +60,11 @@ const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimension
 # paquets UDP fragmentés (non fiables) : en le gardant léger on évite la
 # congestion du lien WiFi (perte → throttle ENet → lag) et les timeout de
 # déconnexion pendant une vidéo.
-const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
-const WINDOW_TEXTURE_MAX_SIDE := 1600 # cap de résolution pour l'encodage JPEG
-const WINDOW_TEXTURE_QUALITY := 0.7 # qualité JPEG du partage
-const WINDOW_VIDEO_MAX_SIDE := 1024 # cap réduit pour une fenêtre en mouvement continu
-const WINDOW_VIDEO_QUALITY := 0.55 # qualité réduite pour une fenêtre en mouvement continu
+const WINDOW_TEXTURE_GAP := 0.08 # ~12 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
+const WINDOW_TEXTURE_QUALITY := 0.85 # qualité JPEG du partage
+const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
+const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
 # L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
@@ -730,9 +730,6 @@ func _ensure_audio_player() -> void:
 	gen.mix_rate = AUDIO_MIX_RATE
 	gen.buffer_length = AUDIO_BUFFER_SEC
 	_audio_player = AudioStreamPlayer.new()
-	# Marge de sécurité (~-6 dB) : le flux est déjà limité côté émetteur, mais
-	# un stream chaud doit rester audibly propre sans crête au DAC.
-	_audio_player.volume_db = -6.0
 	_audio_player.stream = gen
 	add_child(_audio_player)
 	_audio_player.play()
