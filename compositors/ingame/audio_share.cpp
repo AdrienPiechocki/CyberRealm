@@ -123,7 +123,7 @@ bool AudioShare::start() {
 		return false;
 	}
 	UtilityFunctions::print("waylandgodot: audio: capture PipeWire démarrée "
-		"(audio des fenêtres partagées, par PID)");
+		"(audio des fenêtres partagées, par PID) [build client-pid v2]");
 	return true;
 }
 
