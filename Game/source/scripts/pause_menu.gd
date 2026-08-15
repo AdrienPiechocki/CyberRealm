@@ -703,7 +703,25 @@ func get_lan_player_name() -> String:
 	return nm
 
 func get_lan_player_color() -> Color:
-	return Color(_settings.get("lan_player_color", Color(0.2, 0.6, 1.0)))
+	var fallback := Color(0.2, 0.6, 1.0)
+	var v = _settings.get("lan_player_color", fallback)
+	if v is Color:
+		return v
+	if v is String:
+		var s := (v as String).strip_edges()
+		# Nouveau format : hex "#rrggbbaa".
+		if s.begins_with("#"):
+			return Color.from_string(s, fallback)
+		# Ancien format (Color stringifié par JSON) : "(r, g, b, a)".
+		if s.begins_with("(") and s.ends_with(")"):
+			var parts := s.substr(1, s.length() - 2).split(",")
+			if parts.size() >= 3:
+				return Color(
+					parts[0].strip_edges().to_float(),
+					parts[1].strip_edges().to_float(),
+					parts[2].strip_edges().to_float(),
+					1.0 if parts.size() < 4 else parts[3].strip_edges().to_float())
+	return fallback
 
 func _save_lan_name(edit: LineEdit) -> void:
 	var nm := edit.text.strip_edges()
@@ -755,7 +773,7 @@ func _show_lan() -> void:
 	color_btn.custom_minimum_size = Vector2(64, 30)
 	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	color_btn.color_changed.connect(func(c: Color):
-		_settings["lan_player_color"] = c
+		_settings["lan_player_color"] = c.to_html(true)
 		_save_settings()
 		lan_color_changed.emit(c)
 	)
