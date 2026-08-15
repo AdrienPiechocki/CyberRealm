@@ -25,6 +25,7 @@ var player_color := Color(0.2, 0.6, 1.0)
 var level_text_provider: Callable = Callable() # host : renvoie le texte de la scène Level
 var windows_provider: Callable = Callable() # renvoie la liste des fenêtres locales (world)
 var windows_moving_provider: Callable = Callable() # true si le joueur déplace/redimensionne une fenêtre
+var window_image_provider: Callable = Callable() # Callable(window_id) -> Image (contenu réel, stream partage)
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -37,10 +38,15 @@ var _last_status := ""
 var _remote_windows_root: Node3D = null
 var _remote_windows: Dictionary = {}      # peer_id -> Node3D (conteneur des quads)
 var _remote_window_quads: Dictionary = {} # peer_id -> {wid -> MeshInstance3D}
+var _remote_shared: Dictionary = {} # peer_id -> {wid -> bool} (partage en cours côté émetteur)
 var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
+var _last_windows_texture_send := 0.0
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
+const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
+const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -288,6 +294,7 @@ func _physics_process(delta: float) -> void:
 		return
 	_sync_player_transform.rpc(player.position, player.rotation.y)
 	_sync_windows_state(delta)
+	_sync_windows_textures(delta)
 
 # ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
 
@@ -330,6 +337,67 @@ func _sync_windows(windows: Array) -> void:
 		return
 	_apply_remote_windows(from, windows)
 
+# ── Stream du partage (SHARE ON = vraie fenêtre diffusée) ─────────────
+
+# À cadence fixe (~10 ips), envoie le contenu réel des fenêtres partagées et
+# visibles, encodé en JPEG (LAN). Les fenêtres non partagées (SHARE OFF) ne
+# sont jamais streamées : leur quad reste noir chez les autres joueurs.
+func _sync_windows_textures(delta: float) -> void:
+	_last_windows_texture_send += delta
+	if _last_windows_texture_send < WINDOW_TEXTURE_GAP:
+		return
+	_last_windows_texture_send = 0.0
+	if not windows_provider.is_valid() or not window_image_provider.is_valid():
+		return
+	var list: Array = windows_provider.call()
+	for item in list:
+		if not item is Dictionary:
+			continue
+		if not bool(item.get("shared", false)):
+			continue
+		if not bool(item.get("visible", true)):
+			continue
+		var wid := int(item.get("wid", -1))
+		if wid < 0:
+			continue
+		var img: Image = window_image_provider.call(wid)
+		if img == null or img.is_empty():
+			continue
+		var bytes := _encode_share_frame(img)
+		if bytes.is_empty():
+			continue
+		_sync_window_texture.rpc(wid, bytes)
+
+# Redimensionne (si plus grand que le cap) puis encode en JPEG.
+func _encode_share_frame(img: Image) -> PackedByteArray:
+	var w := img.get_width()
+	var h := img.get_height()
+	var longest := maxi(w, h)
+	if longest > WINDOW_TEXTURE_MAX_SIDE:
+		var scale := float(WINDOW_TEXTURE_MAX_SIDE) / float(longest)
+		var work := img.duplicate()
+		work.resize(maxi(1, int(w * scale)), maxi(1, int(h * scale)), Image.INTERPOLATE_BILINEAR)
+		return work.save_jpg_to_buffer(WINDOW_TEXTURE_QUALITY)
+	return img.save_jpg_to_buffer(WINDOW_TEXTURE_QUALITY)
+
+# Réception d'une frame partagée : décodée puis appliquée sur le quad distant.
+# Les frames en retard pour une fenêtre désormais non partagée sont ignorées.
+@rpc("any_peer", "unreliable")
+func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or from == multiplayer.get_unique_id():
+		return
+	if not _remote_shared.has(from) or not _remote_shared[from].get(wid, false):
+		return
+	if not _remote_window_quads.has(from) or not _remote_window_quads[from].has(wid):
+		return
+	var quad: MeshInstance3D = _remote_window_quads[from][wid]
+	var img := Image.new()
+	var err := img.load_jpg_from_buffer(bytes)
+	if err != OK or img.is_empty():
+		return
+	_set_remote_quad_texture(quad, ImageTexture.create_from_image(img))
+
 # Crée/met à jour/supprime les quads noirs représentant les fenêtres d'un
 # joueur distant. Diff sur les wid : ceux absents du paquet sont retirés.
 func _apply_remote_windows(peer_id: int, windows: Array) -> void:
@@ -345,7 +413,9 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		_remote_windows_root.add_child(container)
 		_remote_windows[peer_id] = container
 		_remote_window_quads[peer_id] = {}
+		_remote_shared[peer_id] = {}
 	var quads: Dictionary = _remote_window_quads[peer_id]
+	var shared_dict: Dictionary = _remote_shared[peer_id]
 	var seen := {}
 	for item in windows:
 		if not item is Dictionary:
@@ -354,6 +424,8 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		if wid < 0:
 			continue
 		seen[wid] = true
+		var shared: bool = bool(item.get("shared", false))
+		shared_dict[wid] = shared
 		var quad: MeshInstance3D = quads.get(wid)
 		if quad == null or not is_instance_valid(quad):
 			quad = _make_remote_quad()
@@ -364,6 +436,10 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		if quad.mesh is QuadMesh:
 			(quad.mesh as QuadMesh).size = item.get("size", Vector2.ONE)
 		quad.visible = bool(item.get("visible", true))
+		# SHARE OFF : le quad redevient noir (placeholder). SHARE ON : les
+		# frames streamées (rpc _sync_window_texture) le textureront en direct.
+		if not shared:
+			_set_remote_quad_texture(quad, null)
 	for wid in quads.keys():
 		if seen.has(wid):
 			continue
@@ -374,8 +450,9 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 	if quads.is_empty():
 		_clear_remote_windows(peer_id)
 
-# Quad noir (unshaded, double face, sans ombre) représentant une fenêtre
-# distante : même taille/position que la fenêtre réelle de l'autre joueur.
+# Quad représentant une fenêtre distante : noir tant que la fenêtre n'est pas
+# partagée (SHARE OFF), texturé par le contenu réel quand les frames arrivent
+# (SHARE ON). Unshaded, transparent, double face, sans ombre.
 func _make_remote_quad() -> MeshInstance3D:
 	var quad := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
@@ -383,11 +460,27 @@ func _make_remote_quad() -> MeshInstance3D:
 	quad.mesh = mesh
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	mat.albedo_color = Color.BLACK
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	quad.material_override = mat
 	quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	return quad
+
+# Pose/retire la texture du contenu réel sur le quad distant. Sans texture, le
+# quad revient au noir (placeholder, SHARE OFF).
+func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
+	if quad == null or not is_instance_valid(quad):
+		return
+	var mat: StandardMaterial3D = quad.material_override
+	if mat == null:
+		return
+	if tex == null:
+		mat.albedo_texture = null
+		mat.albedo_color = Color.BLACK
+	else:
+		mat.albedo_texture = tex
+		mat.albedo_color = Color.WHITE
 
 func _clear_remote_windows(peer_id: int) -> void:
 	var container: Node3D = _remote_windows.get(peer_id)
@@ -395,6 +488,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 		container.queue_free()
 	_remote_windows.erase(peer_id)
 	_remote_window_quads.erase(peer_id)
+	_remote_shared.erase(peer_id)
 
 func _clear_all_remote_windows() -> void:
 	for peer_id in _remote_windows.keys().duplicate():

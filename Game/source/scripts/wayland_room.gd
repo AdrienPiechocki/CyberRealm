@@ -264,6 +264,7 @@ func _ready() -> void:
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
 	lan.windows_provider = win3d.get_windows_state
 	lan.windows_moving_provider = win3d.is_window_interacting
+	lan.window_image_provider = win3d.get_window_image
 	win3d.windows_state_changed.connect(_on_windows_state_changed)
 
 	# TextureRect pour l'icône de drag-and-drop
