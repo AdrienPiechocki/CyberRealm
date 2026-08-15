@@ -73,6 +73,8 @@ var _diag_rtt_count := 0
 var _diag_sent_in_sec := 0
 var _diag_applied_count := 0
 var _diag_last_applied := 0
+var _diag_rx_proc_sum := 0
+var _diag_rx_proc_n := 0
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 # Cadence et qualités du stream vidéo partagé. Le stream passe par des
@@ -803,8 +805,6 @@ func _drain_decoded_frames() -> void:
 	_decode_results = []
 	_decode_mutex.unlock()
 	var acked_senders := {}
-	var rx_proc_sum := 0
-	var rx_proc_n := 0
 	for result in results:
 		var from := int(result.get("from", -1))
 		var wid := int(result.get("wid", -1))
@@ -812,8 +812,8 @@ func _drain_decoded_frames() -> void:
 		var img: Image = result.get("img")
 		var t_recv := int(result.get("t_recv", 0))
 		if t_recv > 0:
-			rx_proc_sum += Time.get_ticks_msec() - t_recv
-			rx_proc_n += 1
+			_diag_rx_proc_sum += Time.get_ticks_msec() - t_recv
+			_diag_rx_proc_n += 1
 		if img == null or img.is_empty():
 			continue
 		# Frame périmée (keyframe plus récente déjà appliquée) : ne pas
@@ -845,11 +845,13 @@ func _drain_decoded_frames() -> void:
 	_diag_applied_count += results.size()
 	if Time.get_ticks_msec() - _diag_last_applied >= 1000:
 		var rx_ms := -1
-		if rx_proc_n > 0:
-			rx_ms = rx_proc_sum / rx_proc_n
+		if _diag_rx_proc_n > 0:
+			rx_ms = _diag_rx_proc_sum / _diag_rx_proc_n
 		print("[lan] diag rx: appliquées/s=%d decode_q=%d rx_proc=%dms" % [
 			_diag_applied_count, _decode_queue.size(), rx_ms])
 		_diag_applied_count = 0
+		_diag_rx_proc_sum = 0
+		_diag_rx_proc_n = 0
 		_diag_last_applied = Time.get_ticks_msec()
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
