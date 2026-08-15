@@ -62,7 +62,6 @@ var _frame_fingerprint_last: Dictionary = {}
 # from -> {wid -> version} : dernière version que le peer distante a CONFIRMÉ
 # avoir appliquée (via _ack_window_versions). Flow control de l'émetteur.
 var _last_acked_version: Dictionary = {}
-var _last_ack_send := 0.0
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 # Cadence et qualités du stream vidéo partagé. Le stream passe par des
@@ -76,8 +75,7 @@ const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement
 const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
 const WINDOW_CONTENT_JUMP_THRESHOLD := 0.2 # diff moyenne/pixel > 20% entre 2 frames = saut de contenu (seek) → keyframe
 const WINDOW_KEYFRAME_GAP_MSEC := 1500 # keyframe périodique : borne la dérive résiduelle du stream
-const WINDOW_MAX_AHEAD := 1 # flow control : au-delà de 2 frames de retard accusé, l'émetteur saute le peer
-const WINDOW_ACK_GAP := 0.2 # cadence d'envoi des ACK de version (récepteur → émetteur)
+const WINDOW_MAX_AHEAD := 1 # flow control : au plus 1 frame non appliquée en route (envoyée − ACKée) par peer
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
 # L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
@@ -409,7 +407,6 @@ func _physics_process(delta: float) -> void:
 	_drain_encoded_frames()
 	_sync_audio_state()
 	_drain_decoded_frames()
-	_send_window_acks(delta)
 
 # ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
 
@@ -511,18 +508,28 @@ func _sync_windows_textures(delta: float) -> void:
 				break
 		if not need_send:
 			continue
-		# Flow control : si TOUS les peers accusent réception loin en retard
-		# (> WINDOW_MAX_AHEAD frames), ne pas enqueue : le backlog fiable ne
-		# doit pas grossir (c'est lui qui créait 1-2 s de latence accumulée).
+		# Keyframe périodique : borne la dérive résiduelle du stream (le
+		# récepteur resynchronise dessus, version en main pour ignorer les
+		# frames plus anciennes encore en transit).
+		var force_key := false
+		if Time.get_ticks_msec() - int(_last_keyframe_msec.get(wid, -999999)) > WINDOW_KEYFRAME_GAP_MSEC:
+			force_key = true
+		# Flow control : si TOUS les peers ont déjà WINDOW_MAX_AHEAD frames
+		# non appliquées en route (dernière envoyée − dernière ACKée), on ne
+		# enqueue PAS sauf si une keyframe est due. NB : la comparaison se fait
+		# sur la version ENVOYÉE, pas la version courante — les captures
+		# tournent à ~30/s (plus vite que le stream) ; comparer à la version
+		# courante bloquait le flux quelques secondes après le début du partage.
 		var all_behind := true
 		for pid in multiplayer.get_peers():
 			if pid == multiplayer.get_unique_id():
 				continue
+			var sent_v: int = int(_last_texture_versions.get(pid, {}).get(wid, -1))
 			var acked: int = int(_last_acked_version.get(pid, {}).get(wid, -1))
-			if acked < 0 or version - acked <= WINDOW_MAX_AHEAD:
+			if acked < 0 or sent_v - acked < WINDOW_MAX_AHEAD:
 				all_behind = false
 				break
-		if all_behind:
+		if all_behind and not force_key:
 			continue
 		var img: Image = window_image_provider.call(wid)
 		if img == null or img.is_empty():
@@ -531,12 +538,6 @@ func _sync_windows_textures(delta: float) -> void:
 			img.save_png("user://share_sender.png")
 			print("[share] sender: ", img.get_width(), "x", img.get_height(),
 				" format=", img.get_format())
-		# Keyframe périodique : borne la dérive résiduelle du stream (le
-		# récepteur resynchronise dessus, version en main pour ignorer les
-		# frames plus anciennes encore en transit).
-		var force_key := false
-		if Time.get_ticks_msec() - int(_last_keyframe_msec.get(wid, -999999)) > WINDOW_KEYFRAME_GAP_MSEC:
-			force_key = true
 		_encode_mutex.lock()
 		_encode_queue.append({
 			"wid": wid,
@@ -583,12 +584,16 @@ func _drain_encoded_frames() -> void:
 			var sent: Dictionary = _last_texture_versions[pid]
 			if sent.get(wid, -1) == version:
 				continue
-			# Flow control par peer : en retard > MAX_AHEAD, on ne lui envoie
-			# pas cette frame (les suivantes feront le suivi, cadence bornée).
-			var acked: int = int(_last_acked_version.get(pid, {}).get(wid, -1))
-			if acked >= 0 and version - acked > WINDOW_MAX_AHEAD:
-				sent[wid] = version
-				continue
+			if not keyframe:
+				# Flow control par peer : pas plus de WINDOW_MAX_AHEAD frames
+				# non appliquées en route (dernière envoyée − dernière ACKée).
+				# Les keyframes passent TOUJOURS : elles servent justement à
+				# resynchroniser un récepteur en retard.
+				var last_sent: int = sent.get(wid, -1)
+				var acked: int = int(_last_acked_version.get(pid, {}).get(wid, -1))
+				if acked >= 0 and last_sent - acked >= WINDOW_MAX_AHEAD:
+					sent[wid] = version
+					continue
 			if keyframe:
 				# Canal 4 (fiables) : ne se met PAS en file derrière le backlog
 				# du canal 2 → le récepteur se recalibre immédiatement sur un
@@ -745,6 +750,7 @@ func _drain_decoded_frames() -> void:
 	var results: Array = _decode_results
 	_decode_results = []
 	_decode_mutex.unlock()
+	var acked_senders := {}
 	for result in results:
 		var from := int(result.get("from", -1))
 		var wid := int(result.get("wid", -1))
@@ -762,6 +768,7 @@ func _drain_decoded_frames() -> void:
 		if not _last_applied_version.has(from):
 			_last_applied_version[from] = {}
 		_last_applied_version[from][wid] = version
+		acked_senders[from] = true
 		var tex: Texture2D = ImageTexture.create_from_image(img)
 		# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 		# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
@@ -770,6 +777,11 @@ func _drain_decoded_frames() -> void:
 		_pending_remote_textures[from][wid] = tex
 		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
 			_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
+	# ACK immédiat de la version appliquée (fiables, minuscules) : l'émetteur
+	# sait presque en temps réel où en est le récepteur → flow control précis.
+	for from in acked_senders:
+		if multiplayer.has_peer(from):
+			_ack_window_versions.rpc_id(from, _last_applied_version[from])
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
 func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByteArray:
@@ -853,22 +865,12 @@ func _ack_window_versions(versions: Dictionary) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
-	_last_acked_version[from] = versions.duplicate()
-
-# Cadence l'envoi des ACK (WINDOW_ACK_GAP) pour ne pas polluer le lien.
-func _send_window_acks(delta: float) -> void:
-	if _last_applied_version.is_empty():
-		return
-	_last_ack_send += delta
-	if _last_ack_send < WINDOW_ACK_GAP:
-		return
-	_last_ack_send = 0.0
-	for from in _last_applied_version.keys():
-		if from == multiplayer.get_unique_id():
-			continue
-		if not multiplayer.has_peer(from):
-			continue
-		_ack_window_versions.rpc_id(from, _last_applied_version[from])
+	# Max par fenêtre : un ACK reçu en retard ne doit pas régresser l'écart.
+	var cur: Dictionary = _last_acked_version.get(from, {})
+	for wid in versions:
+		if int(versions[wid]) > int(cur.get(wid, -1)):
+			cur[wid] = versions[wid]
+	_last_acked_version[from] = cur
 
 # ── Audio partagé : capture (émetteur) + lecture (récepteur) ──────────
 
