@@ -11,7 +11,8 @@ signal discovery_results(results: Array)
 const PORT := 7777
 const DISCOVERY_PORT := 9999
 const MAX_PLAYERS := 4
-const DISCOVERY_TIMEOUT := 1.0
+const DISCOVERY_TIMEOUT := 1.6
+const DISCOVERY_RETRY_INTERVAL := 0.4
 const DISCOVERY_QUERY := "CYBERREALM_DISCOVER"
 
 # Palette des avatars (par ordre de peer_id, le host = peer 1).
@@ -80,7 +81,7 @@ func host_game() -> bool:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	_start_responder()
-	_set_status("Hébergement sur le port %d (%s)" % [PORT, _local_ip()])
+	_set_status("Hébergement sur %s:%d — ouvrez le port UDP %d (et %d) dans le pare-feu si un client ne se connecte pas" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
 	return true
 
@@ -120,7 +121,7 @@ func _on_connected_to_server() -> void:
 
 func _on_connection_failed() -> void:
 	_disconnect_session()
-	_set_status("Connexion échouée")
+	_set_status("Connexion échouée — IP inaccessible. Vérifiez : même réseau, pare-feu (UDP %d/%d ouvert côté hôte), isolation AP du routeur." % [PORT, DISCOVERY_PORT])
 
 func _on_server_disconnected() -> void:
 	_disconnect_session()
@@ -218,46 +219,68 @@ func discover_games() -> void:
 		_scanning = false
 		_set_status("Erreur scan réseau")
 		return
-	# Broadcast limité (255.255.255.255) + broadcast du sous-réseau local.
-	var dests := ["255.255.255.255"]
-	var lip := _local_ip()
-	if lip != "127.0.0.1":
-		var octets := lip.split(".")
-		if octets.size() == 4:
-			dests.append("%s.%s.%s.255" % [octets[0], octets[1], octets[2]])
-	for dest in dests:
-		_scanner.set_dest_address(dest, DISCOVERY_PORT)
-		_scanner.put_packet(DISCOVERY_QUERY.to_utf8_buffer())
+	# Requête en unicast sur tout le /24 (fiable, et teste le même chemin
+	# réseau que le join) + broadcasts, renvoyés plusieurs fois (UDP non fiable).
+	_send_unicast_sweep(_scanner)
+	_send_broadcast_queries(_scanner)
 	_set_status("Recherche de parties…")
-	await get_tree().create_timer(DISCOVERY_TIMEOUT).timeout
+	var elapsed := 0.0
+	while elapsed < DISCOVERY_TIMEOUT:
+		await get_tree().create_timer(DISCOVERY_RETRY_INTERVAL).timeout
+		elapsed += DISCOVERY_RETRY_INTERVAL
+		_poll_scanner()
+		_send_broadcast_queries(_scanner)
 	_poll_scanner()
 	_scanner.close()
 	_scanner = null
 	_scanning = false
 	if _scan_results.is_empty():
-		_set_status("Aucune partie trouvée sur le réseau")
+		_set_status("Aucune partie trouvée — vérifiez que les 2 PC sont sur le même réseau (pare-feu, isolation AP du routeur)")
 	else:
 		_set_status("%d partie(s) trouvée(s)" % _scan_results.size())
 	discovery_results.emit(_scan_results.duplicate())
+
+func _send_unicast_sweep(udp: PacketPeerUDP) -> void:
+	for ip in _local_ips():
+		var octets := String(ip).split(".")
+		if octets.size() != 4:
+			continue
+		var prefix := "%s.%s.%s" % [octets[0], octets[1], octets[2]]
+		for i in range(1, 255):
+			udp.set_dest_address("%s.%d" % [prefix, i], DISCOVERY_PORT)
+			udp.put_packet(DISCOVERY_QUERY.to_utf8_buffer())
+
+func _send_broadcast_queries(udp: PacketPeerUDP) -> void:
+	var targets := ["255.255.255.255"]
+	for ip in _local_ips():
+		var octets := String(ip).split(".")
+		if octets.size() == 4:
+			var b := "%s.%s.%s.255" % [octets[0], octets[1], octets[2]]
+			if not targets.has(b):
+				targets.append(b)
+	for target in targets:
+		udp.set_dest_address(target, DISCOVERY_PORT)
+		udp.put_packet(DISCOVERY_QUERY.to_utf8_buffer())
 
 func _poll_scanner() -> void:
 	if _scanner == null:
 		return
 	while _scanner.get_available_packet_count() > 0:
 		var data := _scanner.get_packet()
-		var ip: String = _scanner.get_packet_ip()
 		var text := String(data.get_string_from_utf8()).strip_edges()
 		var parts := text.split("|")
 		if parts.size() < 3:
 			continue
 		var port := int(parts[2])
+		var ips := parts[1].split(",")
+		var key_ip := String(ips[0]) if ips.size() > 0 else ""
 		var exists := false
 		for r in _scan_results:
-			if String(r.get("ip", "")) == ip and int(r.get("port", 0)) == port:
+			if String(r.get("ip", "")) == key_ip and int(r.get("port", 0)) == port:
 				exists = true
 				break
 		if not exists:
-			_scan_results.append({"name": parts[0], "ip": ip, "port": port})
+			_scan_results.append({"name": parts[0], "ip": key_ip, "ips": ips, "port": port})
 
 func _process(_delta: float) -> void:
 	if _responder:
@@ -288,18 +311,24 @@ func _poll_responder() -> void:
 			continue
 		var addr: String = _responder.get_packet_ip()
 		var port := _responder.get_packet_port()
-		var payload := "%s|%s|%d" % [player_name, _local_ip(), PORT]
+		var payload := "%s|%s|%d" % [player_name, ",".join(_local_ips()), PORT]
 		_responder.set_dest_address(addr, port)
 		_responder.put_packet(payload.to_utf8_buffer())
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
-func _local_ip() -> String:
+func _local_ips() -> Array:
+	var ips: Array = []
 	for ip in IP.get_local_addresses():
 		if ip.begins_with("127.") or ip.begins_with("169.254.") or ":" in ip:
 			continue
-		return ip
-	return "127.0.0.1"
+		ips.append(ip)
+	if ips.is_empty():
+		ips.append("127.0.0.1")
+	return ips
+
+func _local_ip() -> String:
+	return _local_ips()[0]
 
 func _set_status(text: String) -> void:
 	_last_status = text
