@@ -56,11 +56,15 @@ var _window_change_rates: Dictionary = {}
 var _last_seen_version: Dictionary = {} # wid -> dernière version observée localement
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
-const WINDOW_TEXTURE_GAP := 0.075 # ~13 ips de stream par fenêtre partagée (encodage JPEG sur le thread principal)
-const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
-const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
-const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
-const WINDOW_VIDEO_QUALITY := 0.65 # qualité réduite pour une fenêtre en mouvement continu
+# Cadence et qualités du stream vidéo partagé. Le stream passe par des
+# paquets UDP fragmentés (non fiables) : en le gardant léger on évite la
+# congestion du lien WiFi (perte → throttle ENet → lag) et les timeout de
+# déconnexion pendant une vidéo.
+const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_MAX_SIDE := 1600 # cap de résolution pour l'encodage JPEG
+const WINDOW_TEXTURE_QUALITY := 0.7 # qualité JPEG du partage
+const WINDOW_VIDEO_MAX_SIDE := 1024 # cap réduit pour une fenêtre en mouvement continu
+const WINDOW_VIDEO_QUALITY := 0.55 # qualité réduite pour une fenêtre en mouvement continu
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
 # L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
@@ -332,6 +336,16 @@ func _set_peer_timeout(id: int) -> void:
 	peer.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN, ENET_TIMEOUT_MAX)
 
 func _on_peer_disconnected(id: int) -> void:
+	# Diagnostique : la déconnexion survient pendant un partage vidéo. ENet
+	# déconnecte quand une commande reliable (ping/ACK) reste non-acknowledgée
+	# ≥15 s (timeout min) — soit un lien saturé, soit un thread principal
+	# bloqué. Ce log permet de corréler avec les symptômes (lag → déconnexion).
+	print("[lan] peer %d déconnecté — état: video_stream=%s audio=%s nframes=%d" % [
+		id,
+		_has_streaming_window(),
+		"on" if _audio_active else "off",
+		_audio_send_count + _audio_received_count,
+	])
 	if is_host:
 		_players.erase(id)
 		_remove_player.rpc(id)
@@ -339,6 +353,16 @@ func _on_peer_disconnected(id: int) -> void:
 		_remove_player(id)
 	_last_texture_versions.erase(id)
 	_set_status("Joueur %d déconnecté" % id)
+
+func _has_streaming_window() -> bool:
+	if not windows_provider.is_valid():
+		return false
+	for item in windows_provider.call():
+		if item is Dictionary \
+				and bool(item.get("shared", false)) \
+				and bool(item.get("visible", true)):
+			return true
+	return false
 
 func _spawn_position(peer_id: int) -> Vector3:
 	var player := _level_root.get_node_or_null("Player") as Node3D
@@ -706,6 +730,9 @@ func _ensure_audio_player() -> void:
 	gen.mix_rate = AUDIO_MIX_RATE
 	gen.buffer_length = AUDIO_BUFFER_SEC
 	_audio_player = AudioStreamPlayer.new()
+	# Marge de sécurité (~-6 dB) : le flux est déjà limité côté émetteur, mais
+	# un stream chaud doit rester audibly propre sans crête au DAC.
+	_audio_player.volume_db = -6.0
 	_audio_player.stream = gen
 	add_child(_audio_player)
 	_audio_player.play()

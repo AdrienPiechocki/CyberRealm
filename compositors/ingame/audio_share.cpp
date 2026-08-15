@@ -363,6 +363,20 @@ void AudioShare::connect_stream(uint32_t target_node_id) {
 	UtilityFunctions::print("waylandgodot: audio: stream connecté au node ", target_node_id);
 }
 
+// Limiteur simple : ~1,4 dB de marge + clamp à ±1. Le monitor du sink peut
+// dépasser 0 dBFS (audio du jeu joué fort) ; sans limite, le décodage OPUS en
+// s16 côté récepteur WRAP au-delà de ±32767 → distorsion dure (signal « saturé »).
+static float limit_sample(float v) {
+	v *= 0.85f;
+	if (v > 1.0f) {
+		return 1.0f;
+	}
+	if (v < -1.0f) {
+		return -1.0f;
+	}
+	return v;
+}
+
 void AudioShare::stream_process_cb(void *user_data) {
 	AudioShare *self = static_cast<AudioShare *>(user_data);
 	if (!self->stream) {
@@ -391,16 +405,18 @@ void AudioShare::stream_process_cb(void *user_data) {
 	std::lock_guard<std::mutex> lk(self->ring_mutex);
 	for (uint32_t i = 0; i < n_frames; i++) {
 		float *frame = reinterpret_cast<float *>(data + (size_t)i * stride);
+		float l = limit_sample(frame[0]);
+		float r = limit_sample(frame[1]);
 		if (self->ring_count < RING_CAPACITY_FRAMES) {
 			size_t tail = (self->ring_head + self->ring_count) % RING_CAPACITY_FRAMES;
-			self->ring[tail * AUDIO_CHANNELS + 0] = frame[0];
-			self->ring[tail * AUDIO_CHANNELS + 1] = frame[1];
+			self->ring[tail * AUDIO_CHANNELS + 0] = l;
+			self->ring[tail * AUDIO_CHANNELS + 1] = r;
 			self->ring_count++;
 		} else {
 			// Buffer plein : on écrase la plus ancienne (live, la fraîcheur prime).
 			size_t tail = (self->ring_head + self->ring_count) % RING_CAPACITY_FRAMES;
-			self->ring[tail * AUDIO_CHANNELS + 0] = frame[0];
-			self->ring[tail * AUDIO_CHANNELS + 1] = frame[1];
+			self->ring[tail * AUDIO_CHANNELS + 0] = l;
+			self->ring[tail * AUDIO_CHANNELS + 1] = r;
 			self->ring_head = (self->ring_head + 1) % RING_CAPACITY_FRAMES;
 		}
 	}
