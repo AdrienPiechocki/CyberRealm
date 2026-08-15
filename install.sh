@@ -100,3 +100,7 @@ Type=Application
 Categories=Game;
 StartupNotify=false
 EOF
+
+# for multiplayer
+sudo ufw allow 7777/udp
+sudo ufw allow 9999/udp
