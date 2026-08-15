@@ -577,13 +577,13 @@ func _drain_encoded_frames() -> void:
 		return
 	if not windows_provider.is_valid():
 		return
+	var now := Time.get_ticks_msec()
 	for result in results:
 		var wid := int(result.get("wid", -1))
 		var version := int(result.get("version", -1))
 		var bytes: PackedByteArray = result.get("bytes", PackedByteArray())
 		var keyframe := bool(result.get("keyframe", false))
 		var t_enc := int(result.get("t_msec", 0))
-		var now := Time.get_ticks_msec()
 		if _encode_inflight.get(wid, -1) == version:
 			_encode_inflight.erase(wid)
 		if keyframe:
