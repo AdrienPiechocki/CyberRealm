@@ -816,7 +816,7 @@ func _drain_decoded_frames() -> void:
 	# ACK immédiat de la version appliquée (fiables, minuscules) : l'émetteur
 	# sait presque en temps réel où en est le récepteur → flow control précis.
 	for from in acked_senders:
-		if multiplayer.has_peer(from):
+		if from in multiplayer.get_peers():
 			_ack_window_versions.rpc_id(from, _last_applied_version[from])
 	# Diagnostic récepteur : cadence d'application + file de décodage restante.
 	_diag_applied_count += results.size()
