@@ -706,6 +706,14 @@ static constexpr int LAYER_SAFETY_RECAPTURE_INTERVAL = 20;
 // contenu resterait figé jusqu'au prochain commit racine.
 static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 
+// Intervalle minimum (en frames) entre deux recaptures d'une fenêtre dirty.
+// Une vidéo est dirty à CHAQUE frame : la recapturer à 60 FPS coûte un render
+// pass GL + une sync GPU bloquante + une copie CPU + un import Vulkan par
+// frame sur le thread principal → surcharge (lag du partage LAN, risque de
+// déconnexion ENet). À 60 Hz, 2 ≈ 30 FPS de recapture : fluide pour les quads
+// 3D ET pour le stream LAN (qui n'encode de toute façon qu'à ~13 ips).
+static constexpr int WINDOW_CAPTURE_INTERVAL = 2;
+
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
 // pinch_end si aucun update n'arrive pendant cette durée.
@@ -774,13 +782,15 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd) {
         struct pollfd pfd;
         pfd.fd = export_args.fd;
         pfd.events = POLLIN;
-        // Bloque jusqu'à l'achèvement GPU, borné à 250 ms : si le sync_file
+        // Bloque jusqu'à l'achèvement GPU, borné à 50 ms : si le sync_file
         // ne signale pas (pilote/stall GPU pathologique), on NE bloque PAS le
         // thread principal indéfiniment — sinon le service réseau n'est plus
         // appelé et ENet finit par déconnecter le peer (timeout 5-30 s).
-        // Au pire on lit un buffer pas encore synchronisé → artefact visuel,
-        // jamais un gel/disconnexion.
-        poll(&pfd, 1, 250);
+        // À 30 captures/s max (WINDOW_CAPTURE_INTERVAL), le pire cas reste
+        // 1,5 s de blocage par seconde ; un cap plus haut ferait saturer la
+        // boucle. Au pire on lit un buffer pas encore synchronisé → artefact
+        // visuel transitoire, jamais un gel/disconnexion durable.
+        poll(&pfd, 1, 50);
         close(export_args.fd);
         return;
     }
@@ -3532,13 +3542,22 @@ void WlrCompositor::_process(double delta) {
         WindowState &ws = pair.second;
         if (ws.toplevel && ws.toplevel->base && ws.toplevel->base->surface) {
             sync_window_subsurfaces(ws);
-            if (ws.dirty || (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0) {
+            // Limite de fréquence : une fenêtre dirty (vidéo) n'est recapturée
+            // qu'une fois toutes les WINDOW_CAPTURE_INTERVAL frames. Sans ça,
+            // la capture tourne à 60 FPS pendant une vidéo → surcharge du
+            // thread principal → lag du partage LAN, risque de déconnexion.
+            bool due = ws.dirty && ws.capture_skip >= WINDOW_CAPTURE_INTERVAL - 1;
+            bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
+            if (due || safety) {
+                ws.capture_skip = 0;
                 if (capture_surface(ws.toplevel->base->surface,
                         ws.texture, ws.width, ws.height, ws.capture_cache)) {
                     ws.dirty = false;
                     emit_signal("window_texture_updated", ws.id, ws.texture,
                         ws.width, ws.height);
                 }
+            } else if (ws.dirty) {
+                ws.capture_skip++;
             }
         }
         // Capture fenêtre OBS : copier l'offscreen (toujours valide, même
