@@ -6,6 +6,10 @@
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_body"]
 
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_bj1mr"]
+metallic = 1.0
+roughness = 0.5
+
 [node name="RemotePlayer" type="Node3D" unique_id=1200275872]
 script = ExtResource("1_remote")
 
@@ -20,3 +24,9 @@ billboard = 1
 text = "Player"
 font_size = 48
 outline_size = 6
+
+[node name="CSGSphere3D" type="CSGSphere3D" parent="." unique_id=1409371660]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0.1)
+radial_segments = 64
+rings = 8
+material = SubResource("StandardMaterial3D_bj1mr")

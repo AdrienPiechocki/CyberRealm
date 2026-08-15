@@ -196,7 +196,8 @@ func _ready() -> void:
 	lan.name = "LAN"
 	lan.set_script(preload("res://scripts/lan_manager.gd"))
 	add_child(lan)
-	lan.setup($Level, pause_menu.get_lan_player_name())
+	lan.setup($Level, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
+	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_host_requested.connect(lan.host_game)
 	pause_menu.lan_join_requested.connect(lan.join_game)
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)

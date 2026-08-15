@@ -11,6 +11,7 @@ signal lan_host_requested
 signal lan_join_requested(ip: String)
 signal lan_disconnect_requested
 signal lan_discover_requested
+signal lan_color_changed(color: Color)
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -701,6 +702,9 @@ func get_lan_player_name() -> String:
 		return OS.get_environment("USER")
 	return nm
 
+func get_lan_player_color() -> Color:
+	return Color(_settings.get("lan_player_color", Color(0.2, 0.6, 1.0)))
+
 func _save_lan_name(edit: LineEdit) -> void:
 	var nm := edit.text.strip_edges()
 	if nm == "":
@@ -737,6 +741,26 @@ func _show_lan() -> void:
 		_save_lan_name(name_edit)
 	)
 	container.add_child(name_edit)
+
+	var color_row := HBoxContainer.new()
+	color_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	color_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var color_label := Label.new()
+	color_label.text = "Avatar color"
+	color_label.add_theme_font_size_override("font_size", 13)
+	color_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	color_row.add_child(color_label)
+	var color_btn := ColorPickerButton.new()
+	color_btn.color = get_lan_player_color()
+	color_btn.custom_minimum_size = Vector2(64, 30)
+	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	color_btn.color_changed.connect(func(c: Color):
+		_settings["lan_player_color"] = c
+		_save_settings()
+		lan_color_changed.emit(c)
+	)
+	color_row.add_child(color_btn)
+	container.add_child(color_row)
 
 	var host_btn := _make_btn("Host Game")
 	host_btn.pressed.connect(func():
