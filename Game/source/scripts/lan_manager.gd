@@ -62,6 +62,20 @@ const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
 const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
 const WINDOW_VIDEO_QUALITY := 0.65 # qualité réduite pour une fenêtre en mouvement continu
 
+# ── Encodage JPEG sur un thread de travail ───────────────────────────
+# L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
+# principal : c'est la cause principale du lag du stream partagé (et, par
+# famine du service réseau, du risque de déconnexion ENet pendant une
+# vidéo). Le thread principal ne fait que CAPTURER l'image (copie CPU
+# rapide), le worker encode, le thread principal diffuse via RPC.
+var _encode_thread: Thread = null
+var _encode_mutex := Mutex.new()
+var _encode_sem := Semaphore.new()
+var _encode_queue: Array = []     # {wid, version, img, max_side, quality}
+var _encode_results: Array = []   # {wid, version, bytes}
+var _encode_inflight: Dictionary = {} # wid -> version (job déjà soumis)
+var _encode_stop := false
+
 # ── Audio partagé (stream LAN) ───────────────────────────────────────
 # L'audio diffusé est le monitor du sink PipeWire par défaut de la machine
 # émettrice (audio de la session, pas d'adressage fenêtre→flux en Wayland).
@@ -415,10 +429,11 @@ func _sync_windows_textures(delta: float) -> void:
 	var list: Array = windows_provider.call()
 	if list.is_empty():
 		return
-	# 1) Encoder UNE fois chaque fenêtre à envoyer (le JPEG coûte cher sur le
-	# thread principal : ne pas le re-faire par peer), puis 2) diffuser la
-	# frame encodée à tous les peers qui en ont besoin (version différente).
-	var to_send := {} # wid -> {"version": int, "bytes": PackedByteArray}
+	# 1) Capturer + soumettre à l'encodage (thread de travail) UNE fois par
+	# fenêtre à envoyer : le JPEG est hors du thread principal. 2) Diffuser
+	# les frames encodées (drain des résultats du worker) aux peers qui les
+	# attendent (version différente de la dernière envoyée).
+	_start_encode_thread()
 	for item in list:
 		if not item is Dictionary:
 			continue
@@ -437,6 +452,11 @@ func _sync_windows_textures(delta: float) -> void:
 			rate += 1.0
 		_window_change_rates[wid] = rate * 0.9
 		var video := rate >= 2.0
+		var max_side := WINDOW_VIDEO_MAX_SIDE if video else WINDOW_TEXTURE_MAX_SIDE
+		var quality := WINDOW_VIDEO_QUALITY if video else WINDOW_TEXTURE_QUALITY
+		# Un job pour cette version est déjà en cours d'encodage ?
+		if _encode_inflight.get(wid, -1) == version:
+			continue
 		# Au moins un peer attend une version plus récente ?
 		var need_send := false
 		for pid in multiplayer.get_peers():
@@ -451,25 +471,91 @@ func _sync_windows_textures(delta: float) -> void:
 		var img: Image = window_image_provider.call(wid)
 		if img == null or img.is_empty():
 			continue
+		if _debug_dump_once(0):
+			img.save_png("user://share_sender.png")
+			print("[share] sender: ", img.get_width(), "x", img.get_height(),
+				" format=", img.get_format())
+		_encode_mutex.lock()
+		_encode_queue.append({
+			"wid": wid,
+			"version": version,
+			"img": img,
+			"max_side": max_side,
+			"quality": quality,
+		})
+		_encode_mutex.unlock()
+		_encode_inflight[wid] = version
+		_encode_sem.post()
+	# 2) Drain des frames encodées par le worker → diffusion aux peers.
+	_encode_mutex.lock()
+	var results: Array = _encode_results
+	_encode_results = []
+	_encode_mutex.unlock()
+	for result in results:
+		var wid := int(result.get("wid", -1))
+		var version := int(result.get("version", -1))
+		var bytes: PackedByteArray = result.get("bytes", PackedByteArray())
+		if _encode_inflight.get(wid, -1) == version:
+			_encode_inflight.erase(wid)
+		for pid in multiplayer.get_peers():
+			if pid == multiplayer.get_unique_id():
+				continue
+			if not _last_texture_versions.has(pid):
+				_last_texture_versions[pid] = {}
+			var sent: Dictionary = _last_texture_versions[pid]
+			if sent.get(wid, -1) == version:
+				continue
+			_sync_window_texture.rpc_id(pid, wid, bytes)
+			sent[wid] = version
+
+func _start_encode_thread() -> void:
+	if _encode_thread != null:
+		return
+	_encode_stop = false
+	_encode_thread = Thread.new()
+	_encode_thread.start(_encode_worker)
+
+# Boucle du thread de travail : encode les images soumises (resize + JPEG),
+# hors du thread principal. Lit _encode_stop sous mutex pour un arrêt propre.
+func _encode_worker() -> void:
+	while true:
+		_encode_sem.wait()
+		_encode_mutex.lock()
+		var stopping := _encode_stop
+		var job: Dictionary = _encode_queue.pop_front() if not _encode_queue.is_empty() else {}
+		_encode_mutex.unlock()
+		if stopping:
+			return
+		if job.is_empty():
+			continue
+		var img: Image = job.get("img")
+		if img == null or img.is_empty():
+			continue
 		var bytes := _encode_share_frame(img,
-			WINDOW_VIDEO_MAX_SIDE if video else WINDOW_TEXTURE_MAX_SIDE,
-			WINDOW_VIDEO_QUALITY if video else WINDOW_TEXTURE_QUALITY)
+			int(job.get("max_side", WINDOW_TEXTURE_MAX_SIDE)),
+			float(job.get("quality", WINDOW_TEXTURE_QUALITY)))
 		if bytes.is_empty():
 			continue
-		to_send[wid] = {"version": version, "bytes": bytes}
-	# 2) Diffusion aux peers.
-	for pid in multiplayer.get_peers():
-		if pid == multiplayer.get_unique_id():
-			continue
-		if not _last_texture_versions.has(pid):
-			_last_texture_versions[pid] = {}
-		var sent: Dictionary = _last_texture_versions[pid]
-		for wid in to_send:
-			var entry: Dictionary = to_send[wid]
-			if sent.get(wid, -1) == int(entry.get("version", -1)):
-				continue
-			_sync_window_texture.rpc_id(pid, wid, entry["bytes"])
-			sent[wid] = int(entry.get("version", -1))
+		_encode_mutex.lock()
+		_encode_results.append({
+			"wid": int(job.get("wid", -1)),
+			"version": int(job.get("version", -1)),
+			"bytes": bytes,
+		})
+		_encode_mutex.unlock()
+
+func _stop_encode_thread() -> void:
+	if _encode_thread == null:
+		return
+	_encode_mutex.lock()
+	_encode_stop = true
+	_encode_queue.clear()
+	_encode_results.clear()
+	_encode_inflight.clear()
+	_encode_mutex.unlock()
+	_encode_sem.post()
+	_encode_thread.wait_to_finish()
+	_encode_thread = null
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
 func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByteArray:
@@ -485,12 +571,8 @@ func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByt
 		h = img.get_height()
 	# Pas de duplicate si le redimensionnement n'est pas nécessaire : économise
 	# une copie complète de l'image (chère sur une vidéo 720p streamée en continu).
-	var bytes := img.save_jpg_to_buffer(quality)
-	if _debug_dump_once(0):
-		img.save_png("user://share_sender.png")
-		print("[share] sender: ", w, "x", h, " bytes=", bytes.size(),
-			" format=", img.get_format())
-	return bytes
+	# S'exécute sur le thread de travail (_encode_worker).
+	return img.save_jpg_to_buffer(quality)
 
 var _debug_dumped := {}
 func _debug_dump_once(key: int) -> bool:
@@ -917,6 +999,7 @@ func _disconnect_session() -> void:
 	_emit_players()
 
 func _exit_tree() -> void:
+	_stop_encode_thread()
 	_stop_audio_share()
 	_stop_responder()
 	if _scanner:

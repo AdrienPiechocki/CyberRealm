@@ -10,6 +10,7 @@
 #include <spa/utils/type.h>
 #include <opus/opus.h>
 
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 
@@ -198,6 +199,77 @@ int AudioShare::metadata_property_cb(void *user_data, uint32_t subject, const ch
 	return 0;
 }
 
+// PipeWire stocke default.audio.sink comme un pod Spa:String:JSON — un objet
+// {"name":"<nom du node>"} (ou {"id": <n>}) — pas un nom brut. Sans extraction,
+// le nom recherché serait la chaîne JSON entière et ne matcherait jamais le
+// node.name d'un global Node. Gère aussi le nom brut et "id:" (id direct).
+static std::string parse_metadata_sink_value(const char *value) {
+	std::string s = value ? value : "";
+	size_t start = s.find_first_not_of(" \t\r\n");
+	if (start == std::string::npos) {
+		return "";
+	}
+	s = s.substr(start);
+	// Objet JSON : {"name": "...", ...} ou {"id": <n>}.
+	if (!s.empty() && s[0] == '{') {
+		for (size_t i = 1; i < s.size(); i++) {
+			if (s[i] != '"') {
+				continue;
+			}
+			size_t k = i + 1;
+			size_t ke = s.find('"', k);
+			if (ke == std::string::npos) {
+				break;
+			}
+			std::string key = s.substr(k, ke - k);
+			if (key != "name" && key != "id" && key != "node.name") {
+				i = ke;
+				continue;
+			}
+			size_t c = s.find(':', ke + 1);
+			if (c == std::string::npos) {
+				break;
+			}
+			size_t v = c + 1;
+			while (v < s.size() && (s[v] == ' ' || s[v] == '\t')) {
+				v++;
+			}
+			if (key == "id") {
+				size_t e = v;
+				while (e < s.size() && isdigit((unsigned char)s[e])) {
+					e++;
+				}
+				if (e > v) {
+					return "id:" + s.substr(v, e - v);
+				}
+				return "";
+			}
+			if (v < s.size() && s[v] == '"') {
+				v++;
+				size_t e = v;
+				while (e < s.size() && s[e] != '"') {
+					if (s[e] == '\\' && e + 1 < s.size()) {
+						e++;
+					}
+					e++;
+				}
+				return s.substr(v, e - v);
+			}
+			return "";
+		}
+		return "";
+	}
+	// Chaîne entre guillemets ou nom brut.
+	if (!s.empty() && s[0] == '"') {
+		size_t e = s.find('"', 1);
+		if (e == std::string::npos) {
+			return "";
+		}
+		return s.substr(1, e - 1);
+	}
+	return s;
+}
+
 void AudioShare::on_metadata_property(uint32_t subject, const char *key, const char *value) {
 	(void)subject;
 	if (key == nullptr || value == nullptr) {
@@ -206,14 +278,25 @@ void AudioShare::on_metadata_property(uint32_t subject, const char *key, const c
 	if (stream_connected || strcmp(key, "default.audio.sink") != 0) {
 		return;
 	}
-	// Valeur ":<id>" → id de node direct ; sinon un nom de node à résoudre via
-	// le registry.
+	// Valeur possible : ":<id>" (id de node direct), un nom de node brut,
+	// ou un objet JSON PipeWire {"name":"<nom>"} (Spa:String:JSON).
 	if (value[0] == ':' && value[1] != '\0') {
 		uint32_t id = (uint32_t)strtoul(value + 1, nullptr, 10);
 		connect_stream(id);
 		return;
 	}
-	target_node_name = value;
+	std::string name = parse_metadata_sink_value(value);
+	if (name.rfind("id:", 0) == 0) {
+		uint32_t id = (uint32_t)strtoul(name.c_str() + 3, nullptr, 10);
+		connect_stream(id);
+		return;
+	}
+	if (name.empty()) {
+		UtilityFunctions::print("waylandgodot: audio: valeur default.audio.sink non reconnue: ",
+			value);
+		return;
+	}
+	target_node_name = name;
 	if (node_name_seen) {
 		return; // le node a déjà été trouvé et le stream connecté
 	}
@@ -238,7 +321,7 @@ void AudioShare::on_metadata_property(uint32_t subject, const char *key, const c
 	registry_hook = malloc(sizeof(struct spa_hook));
 	pw_registry_add_listener((pw_registry *)registry,
 			(struct spa_hook *)registry_hook, &g_registry_events, this);
-	UtilityFunctions::print("waylandgodot: audio: sink par défaut = ", value,
+	UtilityFunctions::print("waylandgodot: audio: sink par défaut = ", name.c_str(),
 		" — node non encore vu, ré-énumération du registry");
 }
 

@@ -174,6 +174,12 @@ struct WindowState {
     // total grossissait linéairement avec le nombre de fenêtres ouvertes.
     bool dirty = true;
 
+    // Décompte des frames sautées par la limite de fréquence de recapture
+    // (WINDOW_CAPTURE_INTERVAL) : une fenêtre dirty n'est recapturée qu'une
+    // fois toutes les N frames, même si elle est vidéo (dirty à chaque frame).
+    // Diminue drastiquement la charge du thread principal pendant un partage.
+    int capture_skip = 0;
+
     // Trackers de commits attachés à chaque sous-surface de l'arbre (voir
     // SurfaceCommitTracker). Indexés par surface ; retirés par leur propre
     // handler de destroy ou par clear_sub_surface_trackers() à la
