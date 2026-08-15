@@ -493,7 +493,7 @@ func _make_remote_quad() -> MeshInstance3D:
 	quad.mesh = mesh
 	var mat := StandardMaterial3D.new()
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_DISABLED
 	mat.albedo_color = Color.BLACK
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	quad.material_override = mat
