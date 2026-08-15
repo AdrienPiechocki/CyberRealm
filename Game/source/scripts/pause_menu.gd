@@ -774,6 +774,14 @@ func _show_lan() -> void:
 	_lan_results_box.add_theme_constant_override("separation", 4)
 	container.add_child(_lan_results_box)
 
+	var lan_hint := Label.new()
+	lan_hint.text = "Astuce : si un PC ne voit pas l'autre, vérifiez qu'ils sont sur le même réseau, que le pare-feu de l'hôte laisse passer UDP 7777/9999, et désactivez l'isolation AP du routeur."
+	lan_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lan_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lan_hint.add_theme_font_size_override("font_size", 11)
+	lan_hint.add_theme_color_override("font_color", Color(0.5, 0.55, 0.65))
+	container.add_child(lan_hint)
+
 	_lan_status_label = Label.new()
 	_lan_status_label.text = _lan_status_text
 	_lan_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -823,7 +831,12 @@ func set_lan_discovery_results(results: Array) -> void:
 	for c in _lan_results_box.get_children():
 		c.queue_free()
 	for r in results:
-		var ip := String(r.get("ip", ""))
+		var ips: Array = r.get("ips", [])
+		var ip := ""
+		if ips.size() > 0:
+			ip = String(ips[0])
+		else:
+			ip = String(r.get("ip", ""))
 		var btn := _make_btn("%s — %s" % [String(r.get("name", "?")), ip])
 		btn.custom_minimum_size = Vector2(0, 34)
 		btn.pressed.connect(_join_discovered.bind(ip))
