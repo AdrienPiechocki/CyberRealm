@@ -27,6 +27,7 @@ var windows_provider: Callable = Callable() # renvoie la liste des fenêtres loc
 var windows_moving_provider: Callable = Callable() # true si le joueur déplace/redimensionne une fenêtre
 var window_image_provider: Callable = Callable() # Callable(window_id) -> Image (contenu réel, stream partage)
 var window_version_provider: Callable = Callable() # Callable(window_id) -> int (version du contenu)
+var compositor: WlrCompositor = null # pour start/stop_audio_share, poll_audio_packet, audio_decode
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
@@ -48,11 +49,31 @@ var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
 var _last_windows_texture_send := 0.0
 var _last_texture_versions: Dictionary = {} # peer_id -> {wid -> int} (dernière version envoyée)
+# wid -> float : cadence de changement de contenu (décroît à chaque tick de
+# _sync_windows_textures). Une fenêtre qui change quasi à chaque tick (vidéo)
+# est encodée en résolution/qualité réduites pour borner le coût CPU + réseau.
+var _window_change_rates: Dictionary = {}
+var _last_seen_version: Dictionary = {} # wid -> dernière version observée localement
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
-const WINDOW_TEXTURE_GAP := 0.1 # ~10 ips de stream par fenêtre partagée
+const WINDOW_TEXTURE_GAP := 0.05 # ~20 ips de stream par fenêtre partagée
 const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.8 # qualité JPEG du partage
+const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
+const WINDOW_VIDEO_QUALITY := 0.65 # qualité réduite pour une fenêtre en mouvement continu
+
+# ── Audio partagé (stream LAN) ───────────────────────────────────────
+# L'audio diffusé est le monitor du sink PipeWire par défaut de la machine
+# émettrice (audio de la session, pas d'adressage fenêtre→flux en Wayland).
+# Paquets OPUS 20 ms (48 kHz stéréo) sur le canal 3 (non fiable) : un paquet
+# perdu = 20 ms de silence, sans blocage. La lecture côté récepteur utilise
+# AudioStreamGenerator (push_buffer) : si le buffer est plein on laisse
+# tomber les frames, la fraîcheur prime.
+var _audio_active := false
+var _audio_player: AudioStreamPlayer = null
+var _audio_playback: AudioStreamGeneratorPlayback = null
+const AUDIO_MIX_RATE := 48000
+const AUDIO_BUFFER_SEC := 0.5
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -113,7 +134,7 @@ func host_game() -> bool:
 		_set_status("Déjà en session LAN")
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(PORT, MAX_PLAYERS, 3)
+	var err := peer.create_server(PORT, MAX_PLAYERS, 4)
 	if err != OK:
 		_set_status("Erreur hôte : " + error_string(err))
 		return false
@@ -139,7 +160,7 @@ func join_game(ip: String) -> bool:
 	if ip == "":
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(ip, PORT, 3)
+	var err := peer.create_client(ip, PORT, 4)
 	if err != OK:
 		_set_status("Erreur connexion : " + error_string(err))
 		return false
@@ -302,6 +323,7 @@ func _physics_process(delta: float) -> void:
 	_sync_player_transform.rpc(player.position, player.rotation.y)
 	_sync_windows_state(delta)
 	_sync_windows_textures(delta)
+	_sync_audio_state()
 
 # ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
 
@@ -380,30 +402,39 @@ func _sync_windows_textures(delta: float) -> void:
 			if wid < 0:
 				continue
 			var version := int(window_version_provider.call(wid))
+			# Cadence de changement : décroît à chaque tick, +1 par changement.
+			var rate: float = _window_change_rates.get(wid, 0.0)
+			if version != _last_seen_version.get(wid, -1):
+				_last_seen_version[wid] = version
+				rate += 1.0
+			_window_change_rates[wid] = rate * 0.9
+			var video := rate >= 2.0
 			if sent.get(wid, -1) == version:
 				continue
 			var img: Image = window_image_provider.call(wid)
 			if img == null or img.is_empty():
 				continue
-			var bytes := _encode_share_frame(img)
+			var bytes := _encode_share_frame(img,
+				WINDOW_VIDEO_MAX_SIDE if video else WINDOW_TEXTURE_MAX_SIDE,
+				WINDOW_VIDEO_QUALITY if video else WINDOW_TEXTURE_QUALITY)
 			if bytes.is_empty():
 				continue
 			_sync_window_texture.rpc_id(pid, wid, bytes)
 			sent[wid] = version
 
 # Redimensionne (si plus grand que le cap) puis encode en JPEG.
-func _encode_share_frame(img: Image) -> PackedByteArray:
+func _encode_share_frame(img: Image, max_side: int, quality: float) -> PackedByteArray:
 	var w := img.get_width()
 	var h := img.get_height()
 	var longest := maxi(w, h)
-	if longest > WINDOW_TEXTURE_MAX_SIDE:
-		var scale := float(WINDOW_TEXTURE_MAX_SIDE) / float(longest)
+	if longest > max_side:
+		var scale := float(max_side) / float(longest)
 		var work := img.duplicate()
 		work.resize(maxi(1, int(w * scale)), maxi(1, int(h * scale)), Image.INTERPOLATE_BILINEAR)
 		img = work
 		w = img.get_width()
 		h = img.get_height()
-	var bytes := img.save_jpg_to_buffer(WINDOW_TEXTURE_QUALITY)
+	var bytes := img.save_jpg_to_buffer(quality)
 	if _debug_dump_once(0):
 		img.save_png("user://share_sender.png")
 		print("[share] sender: ", w, "x", h, " bytes=", bytes.size(),
@@ -419,11 +450,13 @@ func _debug_dump_once(key: int) -> bool:
 
 # Réception d'une frame partagée : décodée puis appliquée sur le quad distant.
 # Les frames en retard pour une fenêtre désormais non partagée sont ignorées.
-# FIABLE sur un canal dédié (canal 2) : ENet ne fragmente pas les paquets
-# unreliable, qui sont donc rejetés au-delà du MTU (~1400 o) — une frame JPEG
-# de fenêtre fait des centaines de Ko. Le canal séparé évite de retarder la
-# sync des avatars (canal 0) pendant le stream.
-@rpc("any_peer", "call_remote", "reliable", 2)
+# NON FIABLE (canal 2) : Godot envoie en ENET_PACKET_FLAG_UNSEQUENCED |
+# UNRELIABLE_FRAGMENT → les grosses frames JPEG sont fragmentées sans
+# retransmission. Une frame perdue est simplement remplacée par la suivante :
+# latence minimale, pas de blocage du pipeline (le mode fiable re-séquence
+# TOUT le stream derrière le paquet perdu → lag cumulé pendant la lecture
+# vidéo). Le canal séparé évite de retarder la sync des avatars (canal 0).
+@rpc("any_peer", "call_remote", "unreliable", 2)
 func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
@@ -446,6 +479,96 @@ func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
 		return
 	var quad: MeshInstance3D = _remote_window_quads[from][wid]
 	_set_remote_quad_texture(quad, tex)
+
+# ── Audio partagé : capture (émetteur) + lecture (récepteur) ──────────
+
+# Active/arrête la capture audio selon qu'il existe au moins une fenêtre
+# locale partagée ET visible (même condition que le stream vidéo), puis
+# envoie les paquets OPUS disponibles sur le canal 3 (non fiable).
+func _sync_audio_state() -> void:
+	if compositor == null:
+		return
+	var want := false
+	if windows_provider.is_valid():
+		for item in windows_provider.call():
+			if item is Dictionary \
+					and bool(item.get("shared", false)) \
+					and bool(item.get("visible", true)):
+				want = true
+				break
+	if want and not _audio_active:
+		if compositor.start_audio_share():
+			_audio_active = true
+			print("[audio] capture démarrée (audio de session)")
+	elif not want and _audio_active:
+		compositor.stop_audio_share()
+		_audio_active = false
+		print("[audio] capture arrêtée")
+	if not _audio_active:
+		return
+	# Un seul poll par frame (~60/s pour ~50 paquets/s de 20 ms) : le paquet
+	# est diffusé à tous les peers (un poll par peer alternerait les paquets
+	# entre eux et diviserait la cadence effective par peer).
+	var packet: Dictionary = compositor.poll_audio_packet()
+	if packet.is_empty():
+		return
+	var data: PackedByteArray = packet.get("data", PackedByteArray())
+	if data.is_empty():
+		return
+	for pid in multiplayer.get_peers():
+		if pid == multiplayer.get_unique_id():
+			continue
+		_sync_audio.rpc_id(pid, data)
+
+# Réception d'un paquet OPUS (20 ms) : décodé puis poussé dans le générateur
+# audio. Canal 3 séparé + non fiable : un paquet perdu = 20 ms de silence,
+# le flux ne bloque jamais (fiable re-séquencerait tout derrière la perte).
+@rpc("any_peer", "call_remote", "unreliable", 3)
+func _sync_audio(bytes: PackedByteArray) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or from == multiplayer.get_unique_id():
+		return
+	if bytes.is_empty() or compositor == null:
+		return
+	var pcm: PackedByteArray = compositor.audio_decode(bytes)
+	if pcm.is_empty():
+		return
+	_ensure_audio_player()
+	var frames := PackedVector2Array()
+	var n := pcm.size() / 4
+	frames.resize(n)
+	for i in n:
+		var s := i * 4
+		var l := float(pcm.decode_s16(s)) / 32768.0
+		var r := float(pcm.decode_s16(s + 2)) / 32768.0
+		frames[i] = Vector2(l, r)
+	if _audio_playback != null and is_instance_valid(_audio_playback):
+		_audio_playback.push_buffer(frames)
+
+# Crée le lecteur de flux audio distant au premier paquet reçu. Le buffer du
+# générateur (0.5 s) absorbe la gigue réseau ; push_buffer laisse tomber les
+# frames quand il est plein (la fraîcheur prime sur la continuité).
+func _ensure_audio_player() -> void:
+	if _audio_player != null and is_instance_valid(_audio_player):
+		return
+	var gen := AudioStreamGenerator.new()
+	gen.mix_rate = AUDIO_MIX_RATE
+	gen.buffer_length = AUDIO_BUFFER_SEC
+	_audio_player = AudioStreamPlayer.new()
+	_audio_player.stream = gen
+	add_child(_audio_player)
+	_audio_player.play()
+	_audio_playback = _audio_player.get_stream_playback() as AudioStreamGeneratorPlayback
+
+func _stop_audio_share() -> void:
+	if _audio_active and compositor != null:
+		compositor.stop_audio_share()
+	_audio_active = false
+	if _audio_player != null and is_instance_valid(_audio_player):
+		_audio_player.stop()
+		_audio_player.queue_free()
+		_audio_player = null
+	_audio_playback = null
 
 # Crée/met à jour/supprime les quads noirs représentant les fenêtres d'un
 # joueur distant. Diff sur les wid : ceux absents du paquet sont retirés.
@@ -690,6 +813,7 @@ func _clear_remote_players() -> void:
 	_remote_players.clear()
 
 func _disconnect_session() -> void:
+	_stop_audio_share()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 		multiplayer.multiplayer_peer = null
@@ -718,6 +842,7 @@ func _disconnect_session() -> void:
 	_emit_players()
 
 func _exit_tree() -> void:
+	_stop_audio_share()
 	_stop_responder()
 	if _scanner:
 		_scanner.close()

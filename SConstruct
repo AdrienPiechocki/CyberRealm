@@ -16,6 +16,10 @@ env.ParseConfig("pkg-config --cflags --libs wlroots-0.19 wayland-server xkbcommo
 # librairie de chargement (libvulkan.so) sont requis à la compilation.
 env.ParseConfig("pkg-config --cflags --libs vulkan")
 
+# Audio de session pour le partage LAN : capture du monitor PipeWire du sink
+# par défaut (thread) + encodage/décodage OPUS.
+env.ParseConfig("pkg-config --cflags --libs libpipewire-0.3 libspa-0.2 opus")
+
 # dbus-1 pour le daemon de notification (optionnel)
 if subprocess.call(["pkg-config", "--exists", "dbus-1"]) == 0:
     env.ParseConfig("pkg-config --cflags --libs dbus-1")

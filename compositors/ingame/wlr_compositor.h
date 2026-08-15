@@ -14,6 +14,7 @@
 #include <string>
 
 #include "vulkan_dmauf.h"
+#include "audio_share.h"
 
 extern "C" {
 #include <wayland-server-core.h>
@@ -741,6 +742,11 @@ class WlrCompositor : public Node {
 
     // --- Vulkan zero-copy DMA-BUF pipeline ----------------------------
     VulkanDmaBufImport vulkan_import;
+
+    // Capture audio de session (monitor du sink PipeWire par défaut) pour le
+    // partage LAN. Encodage OPUS à la demande (poll_opus_packet) et décodage
+    // côté récepteur.
+    AudioShare audio_share;
     bool gpu_pipeline_active = false;
 
     // --- Portal backend (XDG_CURRENT_DESKTOP) ---------------------------
@@ -899,6 +905,17 @@ public:
     // façon fiable pour le partage LAN, contrairement au readback RD différé
     // qui peut lire un buffer réutilisé). Renvoie null si aucune capture.
     Ref<Image> get_window_cpu_image(int window_id);
+
+    // --- Partage audio (stream LAN) -----------------------------------
+    // L'audio partagé est le monitor du sink PipeWire par défaut de la
+    // session (pas d'adressage fenêtre→flux en Wayland). start_audio_share()
+    // lance la capture en thread ; poll_audio_packet() renvoie un paquet
+    // OPUS de 20 ms dès qu'il est disponible (sinon null) ; audio_decode()
+    // décode un paquet OPUS reçu → PCM s16 interleaved stéréo 48 kHz.
+    bool start_audio_share();
+    void stop_audio_share();
+    Dictionary poll_audio_packet();
+    PackedByteArray audio_decode(const PackedByteArray &packet);
 
     // Taille de l'output virtuel (viewport Godot) pour le layout des layer
     // surfaces. À appeler par le script dès qu'il connaît sa taille réelle
