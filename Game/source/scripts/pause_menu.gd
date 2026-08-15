@@ -7,6 +7,10 @@ signal polkit_agent_changed(path: String)
 signal pins_layer_changed(above: bool)
 signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
+signal lan_host_requested
+signal lan_join_requested(ip: String)
+signal lan_disconnect_requested
+signal lan_discover_requested
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -48,7 +52,7 @@ const REMAPPABLE_ACTIONS := [
 ]
 
 var _settings: Dictionary = {}
-var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit"
+var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "lan"
 var _waiting_action := "" # action en cours de rebind, "" = aucun
 var _keybinds_buttons: Dictionary = {} # action -> Button
 # Capture d'une touche pour un custom bind
@@ -60,6 +64,12 @@ var _custom_key_btn: Button = null
 var _custom_cmd_edit: LineEdit = null
 var _quit_btn: Button = null
 var _play_time := 0.0
+# Page LAN
+var _lan_status_label: Label = null
+var _lan_players_label: Label = null
+var _lan_results_box: VBoxContainer = null
+var _lan_status_text := ""
+var _lan_roster: Array = []
 
 func _process(delta: float) -> void:
 	if _play_time < QUIT_GAMEPLAY_DELAY:
@@ -233,6 +243,10 @@ func _show_main() -> void:
 	var pins_btn := _make_btn("Pinned Windows")
 	pins_btn.pressed.connect(_show_pins)
 	container.add_child(pins_btn)
+	
+	var lan_btn := _make_btn("LAN Game")
+	lan_btn.pressed.connect(_show_lan)
+	container.add_child(lan_btn)
 	
 	container.add_child(_make_spacer())
 	
@@ -678,6 +692,146 @@ func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSli
 	pins_opacity_changed.emit(percent)
 	pins_position_changed.emit(pos)
 	_show_main()
+
+# ── LAN multiplayer ──────────────────────────────────────────────────
+
+func get_lan_player_name() -> String:
+	var nm := String(_settings.get("lan_player_name", "")).strip_edges()
+	if nm == "":
+		return OS.get_environment("USER")
+	return nm
+
+func _save_lan_name(edit: LineEdit) -> void:
+	var nm := edit.text.strip_edges()
+	if nm == "":
+		nm = OS.get_environment("USER")
+		edit.text = nm
+	_settings["lan_player_name"] = nm
+	_save_settings()
+
+func _show_lan() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "lan"
+
+	container.add_child(_make_title("LAN GAME"))
+
+	var hint := Label.new()
+	hint.text = "Multiplayer on your local network (2-4 players).\nEach player keeps their own desktop; you see each other's avatar."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	var name_label := Label.new()
+	name_label.text = "Player name"
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 13)
+	name_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(name_label)
+
+	var name_edit := _make_line_edit()
+	name_edit.text = get_lan_player_name()
+	name_edit.placeholder_text = "Player name"
+	name_edit.text_submitted.connect(func(_t: String):
+		_save_lan_name(name_edit)
+	)
+	container.add_child(name_edit)
+
+	var host_btn := _make_btn("Host Game")
+	host_btn.pressed.connect(func():
+		_save_lan_name(name_edit)
+		lan_host_requested.emit()
+	)
+	container.add_child(host_btn)
+
+	var join_row := HBoxContainer.new()
+	join_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var ip_edit := _make_line_edit()
+	ip_edit.placeholder_text = "Host IP (ex: 192.168.1.5)"
+	join_row.add_child(ip_edit)
+	var join_btn := _make_btn("Join")
+	join_btn.custom_minimum_size = Vector2(100, 36)
+	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	join_btn.pressed.connect(func():
+		_save_lan_name(name_edit)
+		var ip := ip_edit.text.strip_edges()
+		if ip != "":
+			lan_join_requested.emit(ip)
+	)
+	join_row.add_child(join_btn)
+	container.add_child(join_row)
+
+	var discover_btn := _make_btn("Discover LAN games")
+	discover_btn.pressed.connect(func():
+		_save_lan_name(name_edit)
+		lan_discover_requested.emit()
+	)
+	container.add_child(discover_btn)
+
+	_lan_results_box = VBoxContainer.new()
+	_lan_results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lan_results_box.add_theme_constant_override("separation", 4)
+	container.add_child(_lan_results_box)
+
+	_lan_status_label = Label.new()
+	_lan_status_label.text = _lan_status_text
+	_lan_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_status_label.add_theme_font_size_override("font_size", 13)
+	_lan_status_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(_lan_status_label)
+
+	_lan_players_label = Label.new()
+	_lan_players_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_players_label.add_theme_font_size_override("font_size", 13)
+	_lan_players_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(_lan_players_label)
+	_update_lan_players_label()
+
+	var disconnect_btn := _make_btn("Disconnect", Color(0.3, 0.2, 0.1, 0.9))
+	disconnect_btn.pressed.connect(func():
+		lan_disconnect_requested.emit()
+	)
+	container.add_child(disconnect_btn)
+
+	container.add_child(_make_spacer())
+	container.add_child(_make_back_btn())
+
+func set_lan_status(text: String) -> void:
+	_lan_status_text = text
+	if _lan_status_label:
+		_lan_status_label.text = text
+
+func set_lan_players(roster: Array) -> void:
+	_lan_roster = roster
+	_update_lan_players_label()
+
+func _update_lan_players_label() -> void:
+	if _lan_players_label == null:
+		return
+	if _lan_roster.is_empty():
+		_lan_players_label.text = ""
+		return
+	var parts: PackedStringArray = []
+	for p in _lan_roster:
+		parts.append("• %s (%d)" % [String(p.get("name", "?")), int(p.get("id", 0))])
+	_lan_players_label.text = "Players:\n" + "\n".join(parts)
+
+func set_lan_discovery_results(results: Array) -> void:
+	if _current_view != "lan" or _lan_results_box == null:
+		return
+	for c in _lan_results_box.get_children():
+		c.queue_free()
+	for r in results:
+		var ip := String(r.get("ip", ""))
+		var btn := _make_btn("%s — %s" % [String(r.get("name", "?")), ip])
+		btn.custom_minimum_size = Vector2(0, 34)
+		btn.pressed.connect(_join_discovered.bind(ip))
+		_lan_results_box.add_child(btn)
+
+func _join_discovered(ip: String) -> void:
+	if ip != "":
+		lan_join_requested.emit(ip)
 
 # ── Startup apps ─────────────────────────────────────────────────────
 

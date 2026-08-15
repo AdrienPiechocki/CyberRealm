@@ -23,6 +23,7 @@ var layers: Node3D
 var pins: Node3D
 var fx: Node3D
 var presenter: Node3D # présente le viewport à l'output headless pour OBS
+var lan: Node # multijoueur LAN (hôte/join, avatars)
 
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
@@ -188,6 +189,21 @@ func _ready() -> void:
 	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
 	pins.set_pins_opacity(pause_menu.get_pins_opacity())
 	pins.set_pins_position(pause_menu.get_pins_position())
+
+	# Multijoueur LAN : l'hôte est serveur, chaque machine garde son propre
+	# compositeur/bureau, seuls les avatars des joueurs sont partagés.
+	lan = Node.new()
+	lan.name = "LAN"
+	lan.set_script(preload("res://scripts/lan_manager.gd"))
+	add_child(lan)
+	lan.setup($Level, pause_menu.get_lan_player_name())
+	pause_menu.lan_host_requested.connect(lan.host_game)
+	pause_menu.lan_join_requested.connect(lan.join_game)
+	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)
+	pause_menu.lan_discover_requested.connect(lan.discover_games)
+	lan.status_changed.connect(pause_menu.set_lan_status)
+	lan.players_changed.connect(pause_menu.set_lan_players)
+	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
