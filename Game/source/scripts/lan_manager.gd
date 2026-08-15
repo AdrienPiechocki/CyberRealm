@@ -54,6 +54,11 @@ var _last_texture_versions: Dictionary = {} # peer_id -> {wid -> int} (dernière
 # est encodée en résolution/qualité réduites pour borner le coût CPU + réseau.
 var _window_change_rates: Dictionary = {}
 var _last_seen_version: Dictionary = {} # wid -> dernière version observée localement
+# wid -> ticks ms de la dernière keyframe envoyée (borne la dérive du stream).
+var _last_keyframe_msec: Dictionary = {}
+# wid -> empreinte basse résolution de la dernière frame encodée (accédée
+# uniquement par le worker d'encodage → pas de mutex nécessaire).
+var _frame_fingerprint_last: Dictionary = {}
 const WINDOW_SYNC_GAP := 1.0 # resync périodique (auto-réparation des paquets perdus)
 const WINDOW_SYNC_MOVE_GAP := 0.05 # cadence pendant un déplacement/redimensionnement
 # Cadence et qualités du stream vidéo partagé. Le stream passe par des
@@ -65,6 +70,8 @@ const WINDOW_TEXTURE_MAX_SIDE := 1920 # cap de résolution pour l'encodage JPEG
 const WINDOW_TEXTURE_QUALITY := 0.85 # qualité JPEG du partage
 const WINDOW_VIDEO_MAX_SIDE := 1280 # cap réduit pour une fenêtre en mouvement continu
 const WINDOW_VIDEO_QUALITY := 0.7 # qualité réduite pour une fenêtre en mouvement continu
+const WINDOW_CONTENT_JUMP_THRESHOLD := 0.2 # diff moyenne/pixel > 20% entre 2 frames = saut de contenu (seek) → keyframe
+const WINDOW_KEYFRAME_GAP_MSEC := 1500 # keyframe périodique : borne la dérive résiduelle du stream
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
 # L'encodage JPEG (~2-8 ms en 720p-1080p) ne doit pas bloquer le thread
@@ -352,6 +359,7 @@ func _on_peer_disconnected(id: int) -> void:
 	else:
 		_remove_player(id)
 	_last_texture_versions.erase(id)
+	_last_applied_version.erase(id)
 	_set_status("Joueur %d déconnecté" % id)
 
 func _has_streaming_window() -> bool:
@@ -500,6 +508,12 @@ func _sync_windows_textures(delta: float) -> void:
 			img.save_png("user://share_sender.png")
 			print("[share] sender: ", img.get_width(), "x", img.get_height(),
 				" format=", img.get_format())
+		# Keyframe périodique : borne la dérive résiduelle du stream (le
+		# récepteur resynchronise dessus, version en main pour ignorer les
+		# frames plus anciennes encore en transit).
+		var force_key := false
+		if Time.get_ticks_msec() - int(_last_keyframe_msec.get(wid, -999999)) > WINDOW_KEYFRAME_GAP_MSEC:
+			force_key = true
 		_encode_mutex.lock()
 		_encode_queue.append({
 			"wid": wid,
@@ -507,6 +521,7 @@ func _sync_windows_textures(delta: float) -> void:
 			"img": img,
 			"max_side": max_side,
 			"quality": quality,
+			"force_key": force_key,
 		})
 		_encode_mutex.unlock()
 		_encode_inflight[wid] = version
@@ -520,8 +535,11 @@ func _sync_windows_textures(delta: float) -> void:
 		var wid := int(result.get("wid", -1))
 		var version := int(result.get("version", -1))
 		var bytes: PackedByteArray = result.get("bytes", PackedByteArray())
+		var keyframe := bool(result.get("keyframe", false))
 		if _encode_inflight.get(wid, -1) == version:
 			_encode_inflight.erase(wid)
+		if keyframe:
+			_last_keyframe_msec[wid] = Time.get_ticks_msec()
 		for pid in multiplayer.get_peers():
 			if pid == multiplayer.get_unique_id():
 				continue
@@ -530,7 +548,14 @@ func _sync_windows_textures(delta: float) -> void:
 			var sent: Dictionary = _last_texture_versions[pid]
 			if sent.get(wid, -1) == version:
 				continue
-			_sync_window_texture.rpc_id(pid, wid, bytes)
+			if keyframe:
+				# Canal 4 (fiables) : ne se met PAS en file derrière le backlog
+				# du canal 2 → le récepteur se recalibre immédiatement sur un
+				# saut de contenu (seek). La version permet d'ignorer les
+				# frames pré-seek encore en transit sur le canal 2.
+				_sync_window_keyframe.rpc_id(pid, wid, version, bytes)
+			else:
+				_sync_window_texture.rpc_id(pid, wid, version, bytes)
 			sent[wid] = version
 
 func _start_encode_thread() -> void:
@@ -539,6 +564,30 @@ func _start_encode_thread() -> void:
 	_encode_stop = false
 	_encode_thread = Thread.new()
 	_encode_thread.start(_encode_worker)
+
+# Empreinte basse résolution (24×14 RGBA) d'une image : sert à détecter un
+# saut de contenu (seek) entre deux frames encodées. S'exécute sur le worker.
+func _frame_fingerprint(img: Image) -> PackedByteArray:
+	var fp_img := img.duplicate()
+	fp_img.resize(24, 14, Image.INTERPOLATE_NEAREST)
+	if fp_img.get_format() != Image.FORMAT_RGBA8:
+		fp_img.convert(Image.FORMAT_RGBA8)
+	return fp_img.get_data()
+
+# true si la frame courante diffère fortement de la précédente pour cette
+# fenêtre (seek, changement de scène) → elle doit être une keyframe.
+func _is_content_jump(wid: int, fp: PackedByteArray) -> bool:
+	var prev: PackedByteArray = _frame_fingerprint_last.get(wid, PackedByteArray())
+	_frame_fingerprint_last[wid] = fp
+	if prev.is_empty():
+		return true # première frame du stream = keyframe
+	var n := mini(prev.size(), fp.size())
+	if n == 0:
+		return false
+	var total := 0.0
+	for i in range(n):
+		total += absf(float(prev[i]) - float(fp[i]))
+	return total / float(n) / 255.0 > WINDOW_CONTENT_JUMP_THRESHOLD
 
 # Boucle du thread de travail : encode les images soumises (resize + JPEG),
 # hors du thread principal. Lit _encode_stop sous mutex pour un arrêt propre.
@@ -556,16 +605,24 @@ func _encode_worker() -> void:
 		var img: Image = job.get("img")
 		if img == null or img.is_empty():
 			continue
+		var wid := int(job.get("wid", -1))
 		var bytes := _encode_share_frame(img,
 			int(job.get("max_side", WINDOW_TEXTURE_MAX_SIDE)),
 			float(job.get("quality", WINDOW_TEXTURE_QUALITY)))
 		if bytes.is_empty():
 			continue
+		# Détection d'un saut de contenu (seek / changement de scène) : une
+		# empreinte basse résolution de la frame précédente est comparée à la
+		# courante. Gros écart ⇒ keyframe (le récepteur resynchronise dessus).
+		var keyframe := bool(job.get("force_key", false))
+		if not keyframe and _is_content_jump(wid, _frame_fingerprint(img)):
+			keyframe = true
 		_encode_mutex.lock()
 		_encode_results.append({
-			"wid": int(job.get("wid", -1)),
+			"wid": wid,
 			"version": int(job.get("version", -1)),
 			"bytes": bytes,
+			"keyframe": keyframe,
 		})
 		_encode_mutex.unlock()
 
@@ -591,9 +648,13 @@ func _stop_encode_thread() -> void:
 var _decode_thread: Thread = null
 var _decode_mutex := Mutex.new()
 var _decode_sem := Semaphore.new()
-var _decode_queue: Array = []   # {from, wid, bytes}
-var _decode_results: Array = [] # {from, wid, img}
+var _decode_queue: Array = []   # {from, wid, version, bytes}
+var _decode_results: Array = [] # {from, wid, version, img}
 var _decode_stop := false
+# from -> {wid -> version} : dernière version APPLIQUÉE sur le quad distant.
+# Toute frame reçue/extraite avec une version ≤ celle-ci est ignorée (sévérité
+# contre la régression après une keyframe / une réception en retard).
+var _last_applied_version: Dictionary = {}
 
 func _start_decode_thread() -> void:
 	if _decode_thread != null:
@@ -621,6 +682,7 @@ func _decode_worker() -> void:
 		_decode_results.append({
 			"from": int(job.get("from", -1)),
 			"wid": int(job.get("wid", -1)),
+			"version": int(job.get("version", -1)),
 			"img": img,
 		})
 		_decode_mutex.unlock()
@@ -645,12 +707,20 @@ func _drain_decoded_frames() -> void:
 	for result in results:
 		var from := int(result.get("from", -1))
 		var wid := int(result.get("wid", -1))
+		var version := int(result.get("version", -1))
 		var img: Image = result.get("img")
 		if img == null or img.is_empty():
+			continue
+		# Frame périmée (keyframe plus récente déjà appliquée) : ne pas
+		# régresser l'affichage (ex. frame pré-seek arrivée après la keyframe).
+		if version <= int(_last_applied_version.get(from, {}).get(wid, -1)):
 			continue
 		if _debug_dump_once(100000 + from):
 			img.save_png("user://share_receiver_%d.png" % from)
 			print("[share] receiver: ", img.get_width(), "x", img.get_height(), " wid=", wid)
+		if not _last_applied_version.has(from):
+			_last_applied_version[from] = {}
+		_last_applied_version[from][wid] = version
 		var tex: Texture2D = ImageTexture.create_from_image(img)
 		# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 		# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
@@ -693,15 +763,44 @@ func _debug_dump_once(key: int) -> bool:
 # récepteur les re-séquence) et seules les frames incomplètes sont ignorées.
 # Canal 2 séparé : la sync des avatars (canal 0) n'est jamais retardée.
 @rpc("any_peer", "call_remote", "reliable", 2)
-func _sync_window_texture(wid: int, bytes: PackedByteArray) -> void:
+func _sync_window_texture(wid: int, version: int, bytes: PackedByteArray) -> void:
+	_receive_share_frame(wid, version, bytes, false)
+
+# Keyframe (seek / saut de contenu / keyframe périodique) : canal 4 fiable,
+# indépendant du canal 2 → ne se met PAS en file derrière les frames pré-seek
+# encore en transit. Le récepteur se recalibre immédiatement dessus : il
+# ignore alors toute frame de version antérieure encore en file de décodage.
+@rpc("any_peer", "call_remote", "reliable", 4)
+func _sync_window_keyframe(wid: int, version: int, bytes: PackedByteArray) -> void:
+	_receive_share_frame(wid, version, bytes, true)
+
+func _receive_share_frame(wid: int, version: int, bytes: PackedByteArray, is_keyframe: bool) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
 	if bytes.is_empty():
 		return
+	# Une version déjà appliquée (ou plus ancienne, reçue en retard via le
+	# canal 2 après une keyframe) ne doit jamais régresser l'affichage.
+	var last: int = int(_last_applied_version.get(from, {}).get(wid, -1))
+	if version <= last:
+		return
+	if is_keyframe:
+		# Vider la file de décodage des frames antérieures de cette fenêtre :
+		# elles sont périmées, inutile de perdre du CPU à les décoder.
+		_decode_mutex.lock()
+		var kept: Array = []
+		for j in _decode_queue:
+			if int(j.get("from", -1)) == from \
+					and int(j.get("wid", -1)) == wid \
+					and int(j.get("version", -1)) < version:
+				continue
+			kept.append(j)
+		_decode_queue = kept
+		_decode_mutex.unlock()
 	_start_decode_thread()
 	_decode_mutex.lock()
-	_decode_queue.append({"from": from, "wid": wid, "bytes": bytes})
+	_decode_queue.append({"from": from, "wid": wid, "version": version, "bytes": bytes})
 	_decode_mutex.unlock()
 	_decode_sem.post()
 
@@ -917,11 +1016,13 @@ func _clear_remote_windows(peer_id: int) -> void:
 	_remote_window_quads.erase(peer_id)
 	_remote_shared.erase(peer_id)
 	_pending_remote_textures.erase(peer_id)
+	_last_applied_version.erase(peer_id)
 
 func _clear_all_remote_windows() -> void:
 	for peer_id in _remote_windows.keys().duplicate():
 		_clear_remote_windows(peer_id)
 	_last_texture_versions.clear()
+	_last_applied_version.clear()
 
 # ── Découverte LAN ───────────────────────────────────────────────────
 
