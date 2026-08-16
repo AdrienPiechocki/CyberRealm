@@ -92,6 +92,7 @@ struct VideoEncodeWindow {
 	void *va_frames_ctx = nullptr;       // AVBufferRef* pool VAAPI NV12 (taille = contenu)
 	void *packet = nullptr;              // AVPacket* (tampon d'encodage réutilisé)
 	int64_t frame_index = 0;
+	std::vector<uint8_t> readbuf;        // copie CPU du DMA-BUF (memcpy serré)
 };
 
 // Un paquet vidéo prêt à être envoyé (file de sortie, vidée par poll_packets()).
