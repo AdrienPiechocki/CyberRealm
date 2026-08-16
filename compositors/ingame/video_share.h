@@ -225,6 +225,9 @@ private:
 		int width = 0;
 		int height = 0;
 		int sws_fmt = -1; // format source du dernier ctx sws (recréé s'il change)
+		// Diagnostic v4 : compteur de frames décodées pour loguer les
+		// premières (dimensions/format réels du flux reçu).
+		int diag_first_decoded = 0;
 	};
 	std::unordered_map<std::string, DecoderCtx *> decoders;
 	// Diagnostics du décodage, protégés par dec_mutex.
