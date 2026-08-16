@@ -187,18 +187,6 @@ bool VideoShare::window_ready(int wid) const {
 	return true; // fenêtre non partagée → capture normale
 }
 
-bool VideoShare::is_encode_window(int wid) const {
-	std::vector<VideoEncodeWindow *> ws;
-	{
-		std::lock_guard<std::mutex> g(windows_mutex);
-		ws = windows;
-	}
-	for (auto *w : ws) {
-		if (w->wid == wid) return true;
-	}
-	return false;
-}
-
 bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc,
 		int alloc_w, int alloc_h, int content_w, int content_h) {
 	if (!active.load()) return false;
@@ -312,6 +300,12 @@ Array VideoShare::poll_packets() {
 // ---------------------------------------------------------------------------
 
 void VideoShare::worker_loop() {
+	// Diagnostic : timing d'encodage cumulé sur 1 s (ce thread).
+	using clock = std::chrono::steady_clock;
+	auto stat_start = clock::now();
+	long stat_frames = 0;
+	double stat_sum_ms = 0.0, stat_max_ms = 0.0;
+
 	while (active.load()) {
 		reconcile_windows();
 
@@ -345,7 +339,13 @@ void VideoShare::worker_loop() {
 			if (!have) continue;
 			any = true;
 
+			auto t0 = clock::now();
 			encode_window(w, fd, stride, fourcc, aw, ah, cw, ch);
+			auto t1 = clock::now();
+			double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+			stat_frames++;
+			stat_sum_ms += ms;
+			stat_max_ms = std::max(stat_max_ms, ms);
 
 			// Lecture terminée → le buffer peut être re-rendu. Si la file de
 			// sortie est pleine (réseau lent), on retient la fenêtre en
@@ -368,6 +368,19 @@ void VideoShare::worker_loop() {
 					w->busy = false;
 				}
 			}
+		}
+
+		// Diagnostic 1×/s : coût réel d'encodage (thread worker) pour
+		// confirmer si le goulot est l'encodeur ou le thread principal.
+		if (stat_frames > 0 &&
+				std::chrono::duration<double>(clock::now() - stat_start).count() >= 1.0) {
+			UtilityFunctions::print("waylandgodot: [video] worker diag: ",
+				stat_frames, " img/s, moy ", String::num(stat_sum_ms / stat_frames, 1),
+				" ms, max ", String::num(stat_max_ms, 1), " ms");
+			stat_start = clock::now();
+			stat_frames = 0;
+			stat_sum_ms = 0.0;
+			stat_max_ms = 0.0;
 		}
 
 		if (!any) {
