@@ -151,8 +151,12 @@ func _make_remote_cursor_fallback() -> ImageTexture:
 				continue
 			for oy in range(2):
 				for ox in range(2):
-					# Ombre portée décalée d'un pixel en bas-droite
-					img.set_pixel(x * 2 + ox + 1, y * 2 + oy + 1, Color(0, 0, 0, 0.6))
+					# Ombre portée décalée d'un pixel en bas-droite (clampée aux
+					# bords de l'image 32×32)
+					var sx := x * 2 + ox + 1
+					var sy := y * 2 + oy + 1
+					if sx < 32 and sy < 32:
+						img.set_pixel(sx, sy, Color(0, 0, 0, 0.6))
 					img.set_pixel(x * 2 + ox, y * 2 + oy, Color(1, 1, 1, 1))
 	return ImageTexture.create_from_image(img)
 
