@@ -79,6 +79,14 @@ var _texture_versions: Dictionary = {} # window_id (int) -> int (version du cont
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
 var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
 
+# Shader UNIQUE partagé par toutes les fenêtres/popups. Le créer une seule
+# fois évite à Godot de recompiler le shader à chaque ouverture de fenêtre
+# (compile synchrone sur le thread principal au premier dessin → gros stall /
+# chute de FPS perceptible). Le ShaderMaterial reste propre à chaque quad
+# (uniformes window_texture/content_size), seule la ressource Shader est
+# partagée.
+var _shared_window_shader: Shader = null
+
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 
 var resizing_edge := "" # "left", "right", "bottom", etc.
@@ -115,6 +123,12 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D) -> void:
 
 func _camera() -> Camera3D:
 	return player.get_node("Camera3D") as Camera3D
+
+func _window_shader() -> Shader:
+	if _shared_window_shader == null:
+		_shared_window_shader = Shader.new()
+		_shared_window_shader.code = WAYLAND_SHADER_CODE
+	return _shared_window_shader
 
 func next_spawn_pos() -> Vector3:
 	var camera: Camera3D = _camera()
@@ -293,8 +307,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	mesh.size = Vector2(1.6, 1.0) # ratio ajusté au premier texture_updated
 	quad.mesh = mesh
 
-	var shader := Shader.new()
-	shader.code = WAYLAND_SHADER_CODE
+	var shader := _window_shader()
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
 	mat.render_priority = 0
@@ -604,8 +617,7 @@ func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: in
 	print("popup_layout: id=", id, " x=", x, " y=", y, " w=", width, " h=", height,
 		" scale=", _scale, " quad_pos=", quad.position, " mesh_size=", mesh.size)
 
-	var shader := Shader.new()
-	shader.code = WAYLAND_SHADER_CODE
+	var shader := _window_shader()
 	var mat := ShaderMaterial.new()
 	mat.shader = shader
 	mat.render_priority = 1 # Force l'affichage au-dessus des fenêtres

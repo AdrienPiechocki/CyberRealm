@@ -708,13 +708,15 @@ static constexpr int LAYER_SAFETY_RECAPTURE_INTERVAL = 20;
 // contenu resterait figé jusqu'au prochain commit racine.
 static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 
-// Intervalle minimum (en frames) entre deux recaptures d'une fenêtre dirty.
-// Une vidéo est dirty à CHAQUE frame : la recapturer à 60 FPS coûte un render
+// Intervalle minimum entre deux recaptures d'une fenêtre dirty. Une vidéo
+// est dirty à CHAQUE frame : la recapturer à chaque frame coûte un render
 // pass GL + une sync GPU bloquante + une copie CPU + un import Vulkan par
 // frame sur le thread principal → surcharge (lag du partage LAN, risque de
-// déconnexion ENet). À 60 Hz, 2 ≈ 30 FPS de recapture : fluide pour les quads
-// 3D ET pour le stream LAN (qui n'encode de toute façon qu'à ~13 ips).
-static constexpr int WINDOW_CAPTURE_INTERVAL = 2;
+// déconnexion ENet). 33 ms ≈ 30 FPS de recapture : fluide pour les quads 3D
+// ET pour le stream LAN (qui n'encode de toute façon qu'à ~13 ips). C'est un
+// intervalle de TEMPS (pas un décompte de frames) : le taux de recapture
+// reste ~30/s quel que soit le max_fps du jeu (à 60 Hz comme à 120 Hz).
+static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US = 33 * 1000;
 
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
@@ -3557,22 +3559,24 @@ void WlrCompositor::_process(double delta) {
         WindowState &ws = pair.second;
         if (ws.toplevel && ws.toplevel->base && ws.toplevel->base->surface) {
             sync_window_subsurfaces(ws);
-            // Limite de fréquence : une fenêtre dirty (vidéo) n'est recapturée
-            // qu'une fois toutes les WINDOW_CAPTURE_INTERVAL frames. Sans ça,
-            // la capture tourne à 60 FPS pendant une vidéo → surcharge du
-            // thread principal → lag du partage LAN, risque de déconnexion.
-            bool due = ws.dirty && ws.capture_skip >= WINDOW_CAPTURE_INTERVAL - 1;
+            // Limite de fréquence de recapture : une fenêtre dirty (vidéo)
+            // n'est recapturée que toutes les WINDOW_CAPTURE_INTERVAL_US µs
+            // (temporel, pas un compteur de frames — voir la constante).
+            // Sans ça, la capture tournerait à chaque frame pendant une
+            // vidéo → surcharge du thread principal → lag du partage LAN,
+            // risque de déconnexion.
+            uint64_t now_us = (uint64_t)now.tv_sec * 1000000u + (uint64_t)(now.tv_nsec / 1000);
+            bool due = ws.dirty &&
+                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= WINDOW_CAPTURE_INTERVAL_US);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
-                ws.capture_skip = 0;
+                ws.last_capture_us = now_us;
                 if (capture_surface(ws.toplevel->base->surface,
                         ws.texture, ws.width, ws.height, ws.capture_cache)) {
                     ws.dirty = false;
                     emit_signal("window_texture_updated", ws.id, ws.texture,
                         ws.width, ws.height);
                 }
-            } else if (ws.dirty) {
-                ws.capture_skip++;
             }
         }
         // Capture fenêtre OBS : copier l'offscreen (toujours valide, même
