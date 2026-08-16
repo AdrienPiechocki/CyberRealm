@@ -953,6 +953,12 @@ public:
     // le focus pointeur peut poser son curseur (validation du compositeur).
     Dictionary get_window_cursor(int window_id);
 
+    // Renvoie la position du pointeur du jeu DANS une fenêtre (coordonnées
+    // surface, y vers le bas) : Dictionary { inside, x, y }. Alimentée chaque
+    // frame par set_window_pointer (raycast 3D / focus mode). Le partage LAN
+    // s'en sert pour diffuser le curseur du propriétaire aux autres joueurs.
+    Dictionary get_window_pointer(int window_id);
+
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
     Dictionary get_window_geometry(int window_id);
