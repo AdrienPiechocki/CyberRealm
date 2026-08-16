@@ -216,7 +216,7 @@ func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
 	ui.add_child(rect)
 	remote_focus_rect = rect
 	player.focus_mode_active = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 
 func exit_focus() -> void:
 	if not focus_mode:
