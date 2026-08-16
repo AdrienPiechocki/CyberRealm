@@ -183,6 +183,9 @@ var _video_diag_applied := 0
 var _video_diag_feed_fail := 0
 var _video_diag_noconfig := 0
 var _video_diag_nack := 0
+var _video_diag_rx_calls := 0
+var _video_diag_first_rx := 0
+var _video_diag_first_sent := 0
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -1350,6 +1353,10 @@ func _drain_video_packets() -> void:
 				# inutile d'envoyer des frames qu'il ne peut pas décoder.
 				_announce_video_configs(false)
 				continue
+			if _video_diag_first_sent < 5:
+				_video_diag_first_sent += 1
+				print("[video] env paquet n°%d pid=%d wid=%d seq=%d bytes=%d keyframe=%s" % [
+					_video_diag_first_sent, pid, wid, seq, data.size(), keyframe])
 			_send_video_packet(pid, wid, seq, keyframe, data)
 			sent[wid] = seq
 			_video_diag_sent += 1
@@ -1433,6 +1440,7 @@ func _sync_video_config(wid: int, codec: String, width: int, height: int) -> voi
 	if not _video_configs.has(from):
 		_video_configs[from] = {}
 	_video_configs[from][wid] = {"codec": codec, "w": width, "h": height}
+	print("[video] config reçue peer=%d wid=%d codec=%s %dx%d" % [from, wid, codec, width, height])
 	compositor.video_decoder_configure(_video_key(from, wid), codec, width, height)
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
@@ -1449,6 +1457,7 @@ func _video_need_keyframe(wid: int) -> void:
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
 	if _video_mode and compositor != null and compositor.has_method("video_share_request_keyframe"):
+		print("[video] NACK reçu wid=%d (keyframe demandée)" % wid)
 		compositor.video_share_request_keyframe(wid)
 
 # ACK du récepteur : dernières seq appliquées par fenêtre (petits, fiables,
@@ -1473,6 +1482,13 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
+	# Compteur de diagnostics : un appel ici prouve qu'un paquet vidéo arrive
+	# (avant tout early-return). Les 5 premiers appels sont logués en détail.
+	_video_diag_rx_calls += 1
+	if _video_diag_first_rx < 5:
+		_video_diag_first_rx += 1
+		print("[video] rx frame n°%d wid=%d seq=%d idx=%d/%d bytes=%d keyframe=%s" % [
+			_video_diag_first_rx, wid, seq, index, total, bytes.size(), keyframe])
 	if wid < 0 or seq < 0 or total < 1 or bytes.is_empty():
 		return
 	if compositor == null or not compositor.has_method("video_decoder_feed"):
@@ -1562,12 +1578,13 @@ func _process_video_receiver() -> void:
 	_purge_video_chunks()
 	if Time.get_ticks_msec() - _video_diag_last_applied >= 1000:
 		_video_diag_last_applied = Time.get_ticks_msec()
-		print("[video] diag rx: appliquées/s=%d feed_fail/s=%d noconfig/s=%d nack/s=%d" % [
-			_video_diag_applied, _video_diag_feed_fail, _video_diag_noconfig, _video_diag_nack])
+		print("[video] diag rx: appliquées/s=%d feed_fail/s=%d noconfig/s=%d nack/s=%d rx_calls/s=%d" % [
+			_video_diag_applied, _video_diag_feed_fail, _video_diag_noconfig, _video_diag_nack, _video_diag_rx_calls])
 		_video_diag_applied = 0
 		_video_diag_feed_fail = 0
 		_video_diag_noconfig = 0
 		_video_diag_nack = 0
+		_video_diag_rx_calls = 0
 
 # Demande une keyframe à l'émetteur (décodeur désynchronisé, config manquante
 # ou changée). Throttlé pour ne pas flooder (au plus 2×/s par fenêtre).

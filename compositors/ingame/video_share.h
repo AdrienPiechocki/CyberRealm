@@ -12,6 +12,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Capture vidéo des fenêtres partagées et streaming inter-frame (le
@@ -226,6 +227,7 @@ private:
 	uint64_t diag_last_err_ms = 0;
 	unsigned diag_send_err = 0;
 	unsigned diag_recv_err = 0;
+	std::unordered_set<std::string> diag_fed_keys;
 };
 
 } // namespace godot
