@@ -947,6 +947,7 @@ Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArra
 	int ret = avcodec_send_packet(d->avctx, d->pkt);
 	av_packet_unref(d->pkt);
 	if (ret < 0 && ret != AVERROR(EAGAIN)) {
+		diag_decode_error("send", ret);
 		return Ref<Image>();
 	}
 	int r = avcodec_receive_frame(d->avctx, d->frame);
@@ -955,7 +956,29 @@ Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArra
 		av_frame_unref(d->frame);
 		return img;
 	}
+	if (r != AVERROR(EAGAIN)) {
+		diag_decode_error("recv", r);
+	}
 	return Ref<Image>();
+}
+
+void VideoShare::diag_decode_error(const char *stage, int err) {
+	// Appelé sous dec_mutex : les compteurs et l'horodatage sont sûrs.
+	using sclock = std::chrono::steady_clock;
+	if (strcmp(stage, "send") == 0) {
+		diag_send_err++;
+	} else {
+		diag_recv_err++;
+	}
+	auto now = sclock::now();
+	uint64_t now_ms = (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+		now.time_since_epoch()).count();
+	if (now_ms - diag_last_err_ms < 1000) return;
+	diag_last_err_ms = now_ms;
+	char eb[AV_ERROR_MAX_STRING_SIZE] = {0};
+	av_strerror(err, eb, sizeof(eb));
+	printf("[video] decode_%s erreur=%d (%s) | cumul send=%u recv=%u\n",
+		stage, err, eb, diag_send_err, diag_recv_err);
 }
 
 Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
