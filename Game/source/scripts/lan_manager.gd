@@ -952,7 +952,7 @@ func _drain_decoded_frames() -> void:
 		if not _pending_remote_textures.has(from):
 			_pending_remote_textures[from] = {}
 		_pending_remote_textures[from][wid] = tex
-		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
+		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid) and OS.get_environment("CYBERREALM_SKIP_QUAD") != "1":
 			_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
 	# ACK immédiat de la version appliquée (fiables, minuscules) : l'émetteur
 	# sait presque en temps réel où en est le récepteur → flow control précis.
@@ -1538,6 +1538,11 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
+	if OS.get_environment("CYBERREALM_SKIP_TEX") == "1":
+		if _video_diag_first_rx < 8:
+			print("[video] rx SKIP_TEX (décode sans texture) wid=%d seq=%d" % [wid, seq])
+		_video_diag_applied += 1
+		return
 	var tex: Texture2D = ImageTexture.create_from_image(img)
 	if _video_diag_first_rx < 8:
 		print("[video] rx texture créée wid=%d seq=%d (%dx%d)" % [wid, seq, img.get_width(), img.get_height()])
@@ -1561,6 +1566,8 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 		_video_ack_pending[from] = {}
 	_video_ack_pending[from][wid] = seq
 	_video_diag_applied += 1
+	if _video_diag_first_rx < 8:
+		print("[video] rx frame traité wid=%d seq=%d (handler complet)" % [wid, seq])
 
 # Accumule les morceaux d'un paquet chunké ; renvoie le paquet complet une
 # fois tous les morceaux reçus (canal fiable → pas de perte, l'ordre intra-
@@ -1602,6 +1609,8 @@ func _flush_video_acks() -> void:
 		return
 	for from in _video_ack_pending:
 		if from in multiplayer.get_peers():
+			if _video_diag_first_rx < 8:
+				print("[video] rx ack flush vers %d (%d entrées)" % [from, (_video_ack_pending[from] as Dictionary).size()])
 			_ack_video_seq.rpc_id(from, _video_ack_pending[from])
 	_video_ack_pending.clear()
 
@@ -1705,7 +1714,7 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			# Course 1re frame vs état : si une texture a déjà été reçue,
 			# l'appliquer maintenant (le quad vient peut-être d'être recréé).
 			var pending: Dictionary = _pending_remote_textures.get(peer_id, {})
-			if pending.has(wid):
+			if pending.has(wid) and OS.get_environment("CYBERREALM_SKIP_QUAD") != "1":
 				_set_remote_quad_texture(quad, pending[wid])
 	for wid in quads.keys():
 		if seen.has(wid):
