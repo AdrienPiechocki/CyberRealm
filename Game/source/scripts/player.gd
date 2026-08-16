@@ -7,6 +7,9 @@ var speed = 5
 var jump_speed = 3
 var mouse_sensitivity = 0.002
 
+var keyboard_only := OS.get_environment("KEYBOARD_ONLY") == "1"
+var keyboard_look_speed := 2.0
+
 var interact_mode_active := false
 var focus_mode_active := false
 # Positionné par wayland_room.gd : vrai quand la souris survole une layer
@@ -50,6 +53,13 @@ func _physics_process(delta):
 	var movement_dir = transform.basis * Vector3(input.x, 0, input.y)
 	velocity.x = movement_dir.x * speed
 	velocity.z = movement_dir.z * speed
+
+	if keyboard_only:
+		var yaw := float(Input.is_action_pressed("look_right", true)) - float(Input.is_action_pressed("look_left", true))
+		var pitch := float(Input.is_action_pressed("look_down", true)) - float(Input.is_action_pressed("look_up", true))
+		rotate_y(-yaw * keyboard_look_speed * delta)
+		$Camera3D.rotate_x(-pitch * keyboard_look_speed * delta)
+		$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
 
 	if not interact_mode_active:
 		move_and_slide()
