@@ -444,7 +444,12 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 		_level_bake_receive = {"data": PackedByteArray(), "spawn": spawn, "size": uncompressed_size, "total": total, "next": 0}
 	if index < int(_level_bake_receive.get("next", 0)):
 		return
-	(_level_bake_receive["data"] as PackedByteArray).append_array(chunk)
+	# Passer par une variable locale : l'append_array sur un accès direct
+	# `(dict["data"] as PackedByteArray)` travaille sur une copie détachée et
+	# l'assemblage ne grossit jamais (→ decompress sur un buffer vide).
+	var data: PackedByteArray = _level_bake_receive["data"]
+	data.append_array(chunk)
+	_level_bake_receive["data"] = data
 	_level_bake_receive["next"] = index + 1
 	if index + 1 < total:
 		return
