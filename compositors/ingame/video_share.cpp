@@ -904,6 +904,9 @@ void VideoShare::decoder_configure(const std::string &key, const String &codec, 
 	const AVCodec *cd = avcodec_find_decoder(cid);
 	if (!cd) return;
 
+	printf("[video] decode config key=%s codec=%s %dx%d\n", key.c_str(),
+		codec == "av1" ? "av1" : "h264", width, height);
+
 	auto *d = new DecoderCtx();
 	d->avctx = avcodec_alloc_context3(cd);
 	d->frame = av_frame_alloc();
@@ -926,6 +929,14 @@ Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArra
 	if (it == decoders.end() || !it->second->avctx) return Ref<Image>();
 	DecoderCtx *d = it->second;
 	if (data.size() <= 0) return Ref<Image>();
+
+	// Log du premier paquet alimenté par clé (l'appelant sait déjà que la
+	// config est reçue ; ce log prouve que video_decoder_feed est atteint).
+	if (diag_fed_keys.find(key) == diag_fed_keys.end()) {
+		diag_fed_keys.insert(key);
+		printf("[video] decode 1er paquet key=%s taille=%d keyframe=%d\n",
+			key.c_str(), (int)data.size(), keyframe ? 1 : 0);
+	}
 
 	// Pas d'avcodec_flush_buffers() sur un IDR : le contexte de décodage est
 	// propre à chaque flux (clé (from,wid), recréé à la config) et l'IDR est
