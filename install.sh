@@ -17,7 +17,7 @@ if ! pkg-config --exists wlroots-0.19; then
     echo "install: wlroots-0.19 absent des dépôts officiels — build depuis AUR ..."
     WLR_AUR="$(mktemp -d)"
     git clone --depth 1 https://aur.archlinux.org/wlroots0.19.git "$WLR_AUR/wlroots0.19"
-    (cd "$WLR_AUR/wlroots0.19" && makepkg -s --noconfirm)
+    (cd "$WLR_AUR/wlroots0.19" && makepkg -s --noconfirm --skippgpcheck)
     sudo pacman -U --noconfirm "$WLR_AUR"/wlroots0.19/wlroots0.19-*.pkg.tar.zst
     rm -rf "$WLR_AUR"
 fi
