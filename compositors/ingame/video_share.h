@@ -180,6 +180,14 @@ private:
 	std::vector<int> target_wids;
 	std::vector<VideoEncodeWindow *> windows;
 
+	// Fenêtres retirées du partage : jamais delete pendant l'activité. Les
+	// threads du jeu (window_ready, submit_dmabuf, request_keyframe,
+	// poll_packets) copient `windows` sous windows_mutex puis verrouillent
+	// encode_mutex sur ces pointeurs bruts — un delete libérerait un mutex
+	// encore en vol (UAF → corruption du tas). Détruites à stop(), après
+	// join() du thread worker.
+	std::vector<VideoEncodeWindow *> retired_windows;
+
 	// File de sortie (worker → poll_packets).
 	mutable std::mutex out_mutex;
 	std::condition_variable out_cv;

@@ -138,6 +138,13 @@ void VideoShare::stop() {
 		windows.clear();
 		target_wids.clear();
 	}
+	// Fenêtres retirées du partage (destruction différée) : libérées ici,
+	// après join() du worker — plus aucune copie en vol possible.
+	for (auto *w : retired_windows) {
+		destroy_encoder(w);
+		delete w;
+	}
+	retired_windows.clear();
 	{
 		std::lock_guard<std::mutex> g(out_mutex);
 		for (auto *p : out_queue) delete p;
@@ -410,6 +417,11 @@ void VideoShare::reconcile_windows() {
 				{
 					std::lock_guard<std::mutex> wg(w->encode_mutex);
 					w->stop_encoding = true;
+					if (w->fd >= 0) {
+						close(w->fd);
+						w->fd = -1;
+						w->queued = false;
+					}
 				}
 				to_delete.push_back(w);
 				it = windows.erase(it);
@@ -426,13 +438,19 @@ void VideoShare::reconcile_windows() {
 			windows.push_back(w);
 		}
 	}
-	// Suppression hors du lock windows_mutex : on prend encode_mutex pour
-	// attendre toute soumission (thread principal) encore en cours.
+	// Destruction différée : d'autres threads (window_ready, submit_dmabuf,
+	// request_keyframe, poll_packets) copient `windows` sous windows_mutex
+	// puis verrouillent encode_mutex sur ces pointeurs bruts. Un delete ici
+	// libérerait un encode_mutex encore en cours de verrouillage → use-
+	// after-free → corruption du tas ("malloc(): invalid size (unsorted)").
+	// Les encodeurs retirés sont libérés, les objets restent vivants jusqu'à
+	// stop() (après join() du worker). encode_mutex est pris pour attendre
+	// toute soumission (thread principal) encore en cours.
 	for (auto *w : to_delete) {
 		std::lock_guard<std::mutex> g(w->encode_mutex);
 		destroy_encoder(w);
-		delete w;
 	}
+	retired_windows.insert(retired_windows.end(), to_delete.begin(), to_delete.end());
 }
 
 // ---------------------------------------------------------------------------
@@ -860,20 +878,30 @@ void VideoShare::decoder_configure(const std::string &key, const String &codec, 
 }
 
 Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArray &data, bool keyframe) {
+	(void)keyframe; // l'IDR est un point de resynchronisation naturel, pas de flush
 	std::lock_guard<std::mutex> g(dec_mutex);
 	auto it = decoders.find(key);
 	if (it == decoders.end() || !it->second->avctx) return Ref<Image>();
 	DecoderCtx *d = it->second;
 	if (data.size() <= 0) return Ref<Image>();
 
-	if (keyframe) {
-		// IDR : on resynchronise le décodeur (nouveau SPS/PPS/IDR en bande).
-		avcodec_flush_buffers(d->avctx);
-	}
+	// Pas d'avcodec_flush_buffers() sur un IDR : le contexte de décodage est
+	// propre à chaque flux (clé (from,wid), recréé à la config) et l'IDR est
+	// déjà un point de resynchronisation. Un flush détruirait l'état SPS/PPS
+	// déjà parsé : le paquet suivant (P-frame, ou IDR sans SPS/PPS en bande,
+	// typique de h264_vaapi) échouerait → boucle de demandes de keyframe
+	// (peu de frames appliquées + latence + risque de décodage d'état dégradé).
 
+	// Paquet refcounté avec padding (AV_INPUT_BUFFER_PADDING_SIZE) : les
+	// lecteurs de bitstream h264 lisent jusqu'à 8 octets au-delà de la fin du
+	// buffer. Un packet pointant sur la mémoire Godot (data.ptr(), sans
+	// padding) est fragile ; on copie dans un buffer av_packet correctement
+	// dimensionné. Le décodeur ne garde alors aucune référence vers `data`.
 	av_packet_unref(d->pkt);
-	d->pkt->data = const_cast<uint8_t *>(data.ptr());
-	d->pkt->size = (int)data.size();
+	if (av_new_packet(d->pkt, (int)data.size()) < 0) {
+		return Ref<Image>();
+	}
+	memcpy(d->pkt->data, data.ptr(), (size_t)data.size());
 	int ret = avcodec_send_packet(d->avctx, d->pkt);
 	av_packet_unref(d->pkt);
 	if (ret < 0 && ret != AVERROR(EAGAIN)) {
