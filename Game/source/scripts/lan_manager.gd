@@ -112,12 +112,12 @@ const WINDOW_MAX_AHEAD := 3 # flow control : au plus 3 frames non appliquées en
 # petites (P-frames) mais dépendantes : pas de drop possible (le compositeur
 # saute une capture si l'encodeur lit encore le buffer), les keyframes
 # resynchronisent.
-const VIDEO_BITRATE := 4_000_000 # débit cible par fenêtre (bits/s) ; total = n_fenêtres × ceci
+const VIDEO_BITRATE := 6_000_000 # débit cible par fenêtre (bits/s) ; total = n_fenêtres × ceci. 6 Mb/s à 60 ips ≈ 12,5 KB/frame, tenable en LAN et suffisant pour du 1080p fluide
 const VIDEO_CODEC_PREF := ["av1", "h264"] # essai dans cet ordre ; av1 = matériel seulement (pas de fallback logiciel)
 const VIDEO_PACKET_SINGLE_MAX := 40000 # paquet ≤ ceci : 1 RPC (≤ 32 fragments ENet, 1 vague)
 const VIDEO_CHUNK_SIZE := 30000 # au-delà : découpage, chaque morceau ≤ 1 vague ENet
 const VIDEO_CHUNK_STALE_MSEC := 2000 # purge des assemblages de chunks incomplets
-const VIDEO_MAX_AHEAD := 4 # flow control : ≤ 4 frames non appliquées en vol par peer
+const VIDEO_MAX_AHEAD := 6 # flow control : ≤ 6 frames non appliquées en vol par peer. À 60 ips (16,7 ms/frame) et ~20 ms de RTT ACK, il faut ≥ 2-3 frames en vol : 6 laisse la marge contre les sursauts réseau sans gonfler la latence
 const VIDEO_NACK_GAP_MSEC := 500 # demande de keyframe (NACK) au plus 2×/s par fenêtre
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
@@ -185,6 +185,17 @@ var _video_diag_sent := 0
 var _video_diag_bytes := 0
 var _video_diag_last_applied := 0
 var _video_diag_applied := 0
+# Décodeur vidéo sur thread worker (même mécanique que le décodeur JPEG) :
+# à 60 ips, le décodage AVCodec + la conversion swscale (~5-8 ms en 1080p)
+# NE doivent PAS bloquer le thread principal (sinon saccade du jeu ET du
+# stream). Le thread principal ne fait que réassembler les chunks, enfiler
+# et appliquer les images décodées (tex.update) à la cadence du tick.
+var _video_decode_thread: Thread = null
+var _video_decode_mutex := Mutex.new()
+var _video_decode_sem := Semaphore.new()
+var _video_decode_queue: Array = []     # {from, wid, seq, keyframe, bytes}
+var _video_decode_results: Array = []   # {from, wid, seq, keyframe, img}
+var _video_decode_stop := false
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -1202,9 +1213,10 @@ func _stop_audio_share() -> void:
 # Récepteur : on recrée un décodeur AVCodec par flux (clé from|wid) à partir
 # de la config annoncée, on réassemble les paquets chunkés et on applique
 # l'image décodée sur le quad distant (même mécanique que le JPEG : pending
-# textures + _set_remote_quad_texture). Le décodage AVCodec (~2-5 ms en 720p)
-# tourne sur le thread principal — bien plus léger que le JPEG par-frame, et
-# l'encode tourne déjà hors thread principal.
+# textures + _set_remote_quad_texture). Le décodage AVCodec (~5-8 ms en
+# 1080p) tourne sur un thread worker (_video_decode_worker) : à 60 ips il ne
+# doit pas bloquer le thread principal. L'encode tourne aussi hors thread
+# principal (VideoShare C++).
 
 func _video_key(from: int, wid: int) -> String:
 	return "%d|%d" % [from, wid]
@@ -1467,7 +1479,8 @@ func _ack_video_seq(seqs: Dictionary) -> void:
 	_video_acked[from] = cur
 
 # Réception d'une frame vidéo : chunké ou non, on vérifie la séquence, on
-# décode (video_decoder_feed) et on applique la texture sur le quad distant.
+# enfile le paquet pour le décodeur worker (qui applique ensuite la texture
+# sur le quad distant via _drain_video_decoded).
 # Une frame déjà appliquée (ou plus ancienne, reçue en retard via le canal 2
 # après une keyframe du canal 4) ne doit jamais régresser l'affichage.
 func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: PackedByteArray, keyframe: bool) -> void:
@@ -1489,27 +1502,101 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 		# Course config/frame (canaux différents) : on ne peut pas décoder.
 		_request_video_keyframe(from, wid)
 		return
-	var img: Image = compositor.video_decoder_feed(_video_key(from, wid), data, keyframe)
-	if img == null or img.is_empty():
-		if not keyframe:
-			_request_video_keyframe(from, wid)
+	# Décodage délégué au thread worker (cf. _video_decode_worker) : le thread
+	# principal ne doit pas bloquer sur AVCodec + swscale à 60 ips. L'ACK de
+	# la version appliquée est envoyé depuis _drain_video_decoded au prochain
+	# tick (flow control de l'émetteur inchangé, juste un tick de plus).
+	_start_video_decode_thread()
+	_video_decode_mutex.lock()
+	_video_decode_queue.append({"from": from, "wid": wid, "seq": seq, "keyframe": keyframe, "bytes": data})
+	_video_decode_mutex.unlock()
+	_video_decode_sem.post()
+
+func _start_video_decode_thread() -> void:
+	if _video_decode_thread != null:
 		return
-	if not _video_applied.has(from):
-		_video_applied[from] = {}
-	_video_applied[from][wid] = seq
-	var tex: Texture2D = _make_or_update_remote_texture(from, wid, img)
-	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
-	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
-	if not _pending_remote_textures.has(from):
-		_pending_remote_textures[from] = {}
-	_pending_remote_textures[from][wid] = tex
-	if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
-		_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
-	# ACK en lot (vidé par _flush_video_acks au prochain tick).
-	if not _video_ack_pending.has(from):
-		_video_ack_pending[from] = {}
-	_video_ack_pending[from][wid] = seq
-	_video_diag_applied += 1
+	_video_decode_stop = false
+	_video_decode_thread = Thread.new()
+	_video_decode_thread.start(_video_decode_worker)
+
+func _video_decode_worker() -> void:
+	while true:
+		_video_decode_sem.wait()
+		_video_decode_mutex.lock()
+		var stopping := _video_decode_stop
+		var job: Dictionary = _video_decode_queue.pop_front() if not _video_decode_queue.is_empty() else {}
+		_video_decode_mutex.unlock()
+		if stopping:
+			return
+		if job.is_empty():
+			continue
+		var from := int(job.get("from", -1))
+		var wid := int(job.get("wid", -1))
+		var seq := int(job.get("seq", -1))
+		var keyframe := bool(job.get("keyframe", false))
+		var img: Image = null
+		if compositor != null and compositor.has_method("video_decoder_feed"):
+			# video_decoder_feed est un appel GDExtension protégé par son
+			# propre mutex C++ (dec_mutex) : appelable depuis un worker.
+			img = compositor.video_decoder_feed(_video_key(from, wid),
+				job.get("bytes", PackedByteArray()), keyframe)
+		_video_decode_mutex.lock()
+		_video_decode_results.append({
+			"from": from, "wid": wid, "seq": seq, "keyframe": keyframe, "img": img,
+		})
+		_video_decode_mutex.unlock()
+
+func _stop_video_decode_thread() -> void:
+	if _video_decode_thread == null:
+		return
+	_video_decode_mutex.lock()
+	_video_decode_stop = true
+	_video_decode_queue.clear()
+	_video_decode_results.clear()
+	_video_decode_mutex.unlock()
+	_video_decode_sem.post()
+	_video_decode_thread.wait_to_finish()
+	_video_decode_thread = null
+
+# Applique les images décodées par le thread worker sur les quads distants
+# (cadence du tick réseau), puis ACK les versions appliquées (flow control).
+func _drain_video_decoded() -> void:
+	_video_decode_mutex.lock()
+	var results: Array = _video_decode_results
+	_video_decode_results = []
+	_video_decode_mutex.unlock()
+	for result in results:
+		var from := int(result.get("from", -1))
+		var wid := int(result.get("wid", -1))
+		var seq := int(result.get("seq", -1))
+		var keyframe := bool(result.get("keyframe", false))
+		var img: Image = result.get("img")
+		if img == null or img.is_empty():
+			# Décodeur désynchronisé (paquet corrompu, config change) : une
+			# keyframe le resynchronisera. Throttlé (≤ 2×/s par fenêtre).
+			if not keyframe:
+				_request_video_keyframe(from, wid)
+			continue
+		# Une version déjà appliquée (ou plus ancienne, reçue en retard) ne
+		# doit jamais régresser l'affichage.
+		if seq <= int(_video_applied.get(from, {}).get(wid, -1)):
+			continue
+		if not _video_applied.has(from):
+			_video_applied[from] = {}
+		_video_applied[from][wid] = seq
+		var tex: Texture2D = _make_or_update_remote_texture(from, wid, img)
+		# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
+		# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
+		if not _pending_remote_textures.has(from):
+			_pending_remote_textures[from] = {}
+		_pending_remote_textures[from][wid] = tex
+		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
+			_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
+		# ACK en lot (vidé par _flush_video_acks au prochain tick).
+		if not _video_ack_pending.has(from):
+			_video_ack_pending[from] = {}
+		_video_ack_pending[from][wid] = seq
+		_video_diag_applied += 1
 
 # Accumule les morceaux d'un paquet chunké ; renvoie le paquet complet une
 # fois tous les morceaux reçus (canal fiable → pas de perte, l'ordre intra-
@@ -1555,8 +1642,10 @@ func _flush_video_acks() -> void:
 	_video_ack_pending.clear()
 
 # Côté récepteur : maintenance du flux vidéo, exécutée chaque tick (indépen-
-# damment du mode émetteur local). ACK en lot, purge des chunks, diagnostics.
+# damment du mode émetteur local). ACK en lot, purge des chunks, application
+# des frames décodées par le worker, diagnostics.
 func _process_video_receiver() -> void:
+	_drain_video_decoded()
 	_flush_video_acks()
 	_purge_video_chunks()
 	if Time.get_ticks_msec() - _video_diag_last_applied >= 1000:
@@ -1936,6 +2025,7 @@ func _clear_remote_players() -> void:
 	_remote_players.clear()
 
 func _disconnect_session() -> void:
+	_stop_video_decode_thread()
 	_stop_audio_share()
 	_stop_video_share()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):
@@ -1975,6 +2065,7 @@ func _disconnect_session() -> void:
 func _exit_tree() -> void:
 	_stop_encode_thread()
 	_stop_decode_thread()
+	_stop_video_decode_thread()
 	_stop_audio_share()
 	_stop_video_share()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):

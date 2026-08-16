@@ -797,13 +797,19 @@ static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 
 // Intervalle minimum entre deux recaptures d'une fenêtre dirty. Une vidéo
 // est dirty à CHAQUE frame : la recapturer à chaque frame coûte un render
-// pass GL + une sync GPU bloquante + une copie CPU + un import Vulkan par
-// frame sur le thread principal → surcharge (lag du partage LAN, risque de
-// déconnexion ENet). 33 ms ≈ 30 FPS de recapture : fluide pour les quads 3D
-// ET pour le stream LAN (qui n'encode de toute façon qu'à ~13 ips). C'est un
-// intervalle de TEMPS (pas un décompte de frames) : le taux de recapture
-// reste ~30/s quel que soit le max_fps du jeu (à 60 Hz comme à 120 Hz).
-static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US = 33 * 1000;
+// pass GL + une sync GPU bloquante + un import Vulkan par frame sur le
+// thread principal → surcharge (lag du partage LAN, risque de déconnexion
+// ENet). En mode partage vidéo inter-frame, la copie CPU est supprimée (le
+// worker encode le DMA-BUF en mmap) : le coût par capture est un render pass
+// + une sync (poll court) + un submit, tenable à 60/s pour un stream fluide.
+// 16 667 µs ≈ 60 FPS de recapture — la cadence d'encodage demandée pour le
+// stream LAN. C'est un intervalle de TEMPS (pas un décompte de frames) : le
+// taux de recapture reste ~60/s quel que soit le max_fps du jeu (à 60 Hz
+// comme à 120 Hz). Si une fenêtre est en backpressure (réseau/encodeur en
+// retard), window_ready renvoie false et on saute la capture → la cadence
+// réelle retombe à ~30/s sans accumuler de retard, jamais plus vite que la
+// vidéo ne peut être livrée.
+static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US = 16'667;
 
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
@@ -877,10 +883,12 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd) {
         // ne signale pas (pilote/stall GPU pathologique), on NE bloque PAS le
         // thread principal indéfiniment — sinon le service réseau n'est plus
         // appelé et ENet finit par déconnecter le peer (timeout).
-        // À 30 captures/s max (WINDOW_CAPTURE_INTERVAL), le pire cas reste
-        // 0,75 s de blocage par seconde ; un cap plus haut ferait saturer la
-        // boucle. Au pire on lit un buffer pas encore synchronisé → artefact
-        // visuel transitoire, jamais un gel/disconnexion durable.
+        // À 60 captures/s max (WINDOW_CAPTURE_INTERVAL), le pire cas reste
+        // 1,5 s de blocage par seconde — mais ce borne ne s'atteint qu'en
+        // cas de stall GPU pathologique ; en fonctionnement normal le poll
+        // rend en <1 ms dès que le render pass est terminé. Au pire on lit
+        // un buffer pas encore synchronisé → artefact visuel transitoire,
+        // jamais un gel/disconnexion durable.
         poll(&pfd, 1, 25);
         close(export_args.fd);
         return;
@@ -3704,7 +3712,7 @@ void WlrCompositor::_process(double delta) {
                 // re-rend PAS — un nouveau render pass écraserait les données
                 // pendant l'encodage → corruption vidéo. On saute cette frame
                 // (la texture locale garde le contenu précédent, un frame
-                // sautée à ~30 fps est imperceptible).
+                // sautée à ~60 fps est imperceptible).
                 ws.capture_cache.wid = ws.id;
                 if (video_share.is_active() && !video_share.window_ready(ws.id)) {
                     continue;
