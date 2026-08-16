@@ -339,6 +339,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
+    ClassDB::bind_method(D_METHOD("set_cpu_capture_requested", "requested"), &WlrCompositor::set_cpu_capture_requested);
     ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
     ClassDB::bind_method(D_METHOD("stop_audio_share"), &WlrCompositor::stop_audio_share);
     ClassDB::bind_method(D_METHOD("poll_audio_packet"), &WlrCompositor::poll_audio_packet);
@@ -1445,6 +1446,9 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 
     if (!wlr_render_pass_submit(pass)) return false;
 
+    timespec t_r0, t_r1, t_c0, t_c1;
+    clock_gettime(CLOCK_MONOTONIC, &t_r0);
+
     // Attendre que le render pass EGL/GLES2 soit terminé sur le GPU
     // avant que Godot n'échantillonne le VkImage (backed par le même
     // DMA-BUF). DMA_BUF_IOCTL_EXPORT_SYNC_FILE exporte un sync_file
@@ -1452,13 +1456,20 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     // jusqu'à leur achèvement. C'est la seule synchronisation fiable
     // entre deux API GPU (EGL wlroots ↔ Vulkan Godot).
     wait_for_dmabuf_gpu_writes(cache.dma_fd);
+    clock_gettime(CLOCK_MONOTONIC, &t_r1);
+    t_c0 = t_r1;
 
     // Copie CPU synchrone pour le partage LAN (get_window_cpu_image) : on
     // lit le dmabuf IMMÉDIATEMENT après le rendu, tant qu'il est encore le
     // buffer de capture de cette fenêtre. C'est le même principe fiable que
     // capture_surface_dmabuf — un readback RD différé (texture_get_data)
     // peut arriver trop tard et lire un buffer réutilisé par un autre rendu.
-    if (cache.data && cache.stride > 0) {
+    // NB : l'AFFICHAGE des quads passe par le VkImage zero-copy (cache.rd_
+    // texture), pas par cette copie. Elle n'est nécessaire que si le partage
+    // LAN la lit (cpu_capture_requested). La bloquer (DMA_BUF_SYNC + memcpy/
+    // swizzle) coûte 30-50 ms sur le thread principal pour une fenêtre
+    // 1920×1080 : sans demande LAN, on la saute entièrement.
+    if (cpu_capture_requested && cache.data && cache.stride > 0) {
         if (cache.bytes.size() != (int64_t)w * h * 4) {
             cache.bytes.resize((int64_t)w * h * 4);
         }
@@ -1490,6 +1501,18 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
         }
         sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
         ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    }
+    clock_gettime(CLOCK_MONOTONIC, &t_c1);
+
+    auto cms = [](const timespec &a, const timespec &b) {
+        return (b.tv_sec - a.tv_sec) * 1000.0 + (b.tv_nsec - a.tv_nsec) / 1e6;
+    };
+    double d_wait = cms(t_r0, t_r1);
+    double d_copy = cms(t_c0, t_c1);
+    double d_total = d_wait + d_copy;
+    if (d_total > 1.0) { // ne log que les captures qui coûtent réellement
+        UtilityFunctions::print("waylandgodot: [diag] vulkan capture ", w, "x", h,
+            " wait_gpu=", d_wait, "ms cpu_copy=", d_copy, "ms TOTAL=", d_total, "ms");
     }
 
     tex = cache.rd_texture;
@@ -5242,6 +5265,10 @@ Ref<Image> WlrCompositor::get_window_cpu_image(int window_id) {
     // chaque capture (chemin Vulkan) ou par le chemin dmabuf/pixels.
     return Image::create_from_data(cache.width, cache.height, false,
         Image::FORMAT_RGBA8, cache.bytes);
+}
+
+void WlrCompositor::set_cpu_capture_requested(bool requested) {
+    cpu_capture_requested = requested;
 }
 
 // ---------------------------------------------------------------------
