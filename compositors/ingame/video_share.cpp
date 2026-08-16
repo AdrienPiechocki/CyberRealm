@@ -891,6 +891,10 @@ void VideoShare::va_cleanup() {
 // Décodeur (récepteur)
 // ---------------------------------------------------------------------------
 
+String VideoShare::diag_version() const {
+	return "2026-08-16-decode-diag-v2";
+}
+
 void VideoShare::decoder_configure(const std::string &key, const String &codec, int width, int height) {
 	std::lock_guard<std::mutex> g(dec_mutex);
 	auto it = decoders.find(key);
@@ -901,8 +905,13 @@ void VideoShare::decoder_configure(const std::string &key, const String &codec, 
 	}
 
 	AVCodecID cid = (codec == "av1") ? AV_CODEC_ID_AV1 : AV_CODEC_ID_H264;
+	printf("[video] decode configure key=%s codec=%s %dx%d (find_decoder…)\n",
+		key.c_str(), codec == "av1" ? "av1" : "h264", width, height);
 	const AVCodec *cd = avcodec_find_decoder(cid);
-	if (!cd) return;
+	if (!cd) {
+		printf("[video] decode ECHEC avcodec_find_decoder cid=%d\n", (int)cid);
+		return;
+	}
 
 	printf("[video] decode config key=%s codec=%s %dx%d\n", key.c_str(),
 		codec == "av1" ? "av1" : "h264", width, height);
@@ -915,11 +924,14 @@ void VideoShare::decoder_configure(const std::string &key, const String &codec, 
 	d->height = height;
 	if (!d->avctx || !d->frame || !d->pkt ||
 		avcodec_open2(d->avctx, cd, nullptr) < 0) {
+		printf("[video] decode ECHEC alloc/open2 key=%s\n", key.c_str());
 		decoder_destroy(d);
 		delete d;
 		return;
 	}
 	decoders[key] = d;
+	printf("[video] decode config key=%s prêt codec=%s %dx%d\n", key.c_str(),
+		codec == "av1" ? "av1" : "h264", width, height);
 }
 
 Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArray &data, bool keyframe) {

@@ -241,10 +241,22 @@ func get_players_roster() -> Array:
 
 # ── Host ─────────────────────────────────────────────────────────────
 
+func _video_so_probe() -> void:
+	# Vérifie depuis GDScript quelle version du .so est réellement chargée :
+	# si le récepteur affiche une version != source courante, les logs C++
+	# manquants s'expliquent (déploiement partiel) au lieu d'une régression.
+	var has_cfg := compositor != null and compositor.has_method("video_decoder_configure")
+	var has_feed := compositor != null and compositor.has_method("video_decoder_feed")
+	var ver := ""
+	if compositor != null and compositor.has_method("video_diag_version"):
+		ver = String(compositor.video_diag_version())
+	print("[video] .so probe: has_configure=%s has_feed=%s version=%s" % [has_cfg, has_feed, ver])
+
 func host_game() -> bool:
 	if session_active:
 		_set_status("Déjà en session LAN")
 		return false
+	_video_so_probe()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
 	if err != OK:
@@ -271,6 +283,7 @@ func join_game(ip: String) -> bool:
 	ip = ip.strip_edges()
 	if ip == "":
 		return false
+	_video_so_probe()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
@@ -1154,6 +1167,10 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 		_audio_first_printed = true
 		print("[audio] premier paquet reçu et décodé (%d frames)" % (pcm.size() / 4))
 	_ensure_audio_player()
+	if _audio_received_count <= 5:
+		print("[audio] _ensure_audio_player ok (player=%s playback=%s)" % [
+			"valid" if (_audio_player != null and is_instance_valid(_audio_player)) else "null",
+			"valid" if (_audio_playback != null and is_instance_valid(_audio_playback)) else "null"])
 	var frames := PackedVector2Array()
 	var n := pcm.size() / 4
 	frames.resize(n)
@@ -1164,6 +1181,8 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 		frames[i] = Vector2(l, r)
 	if _audio_playback != null and is_instance_valid(_audio_playback):
 		_audio_playback.push_buffer(frames)
+		if _audio_received_count <= 5:
+			print("[audio] push_buffer ok (%d frames)" % frames.size())
 
 # Crée le lecteur de flux audio distant au premier paquet reçu. Le buffer du
 # générateur (0.5 s) absorbe la gigue réseau ; push_buffer laisse tomber les
@@ -1442,6 +1461,7 @@ func _sync_video_config(wid: int, codec: String, width: int, height: int) -> voi
 	_video_configs[from][wid] = {"codec": codec, "w": width, "h": height}
 	print("[video] config reçue peer=%d wid=%d codec=%s %dx%d" % [from, wid, codec, width, height])
 	compositor.video_decoder_configure(_video_key(from, wid), codec, width, height)
+	print("[video] video_decoder_configure appelée key=%s" % _video_key(from, wid))
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = -1
@@ -1506,6 +1526,9 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 		_request_video_keyframe(from, wid)
 		return
 	var img: Image = compositor.video_decoder_feed(_video_key(from, wid), data, keyframe)
+	if _video_diag_first_rx < 8:
+		print("[video] rx feed key=%s ret=%s empty=%s" % [
+			_video_key(from, wid), "null" if img == null else "image", "empty" if (img != null and img.is_empty()) else "non-empty"])
 	if img == null or img.is_empty():
 		_video_diag_feed_fail += 1
 		if not keyframe:
@@ -1515,6 +1538,8 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
 	var tex: Texture2D = ImageTexture.create_from_image(img)
+	if _video_diag_first_rx < 8:
+		print("[video] rx texture créée wid=%d seq=%d (%dx%d)" % [wid, seq, img.get_width(), img.get_height()])
 	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
 	if not _pending_remote_textures.has(from):

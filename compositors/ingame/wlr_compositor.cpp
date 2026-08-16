@@ -359,6 +359,7 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::video_decoder_feed);
     ClassDB::bind_method(D_METHOD("video_decoder_reset", "key"), &WlrCompositor::video_decoder_reset);
     ClassDB::bind_method(D_METHOD("video_decoder_clear_all"), &WlrCompositor::video_decoder_clear_all);
+    ClassDB::bind_method(D_METHOD("video_diag_version"), &WlrCompositor::video_diag_version);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("get_window_pid", "window_id"), &WlrCompositor::get_window_pid);
@@ -5508,6 +5509,10 @@ void WlrCompositor::video_decoder_reset(const String &key) {
 
 void WlrCompositor::video_decoder_clear_all() {
     video_share.decoder_clear_all();
+}
+
+String WlrCompositor::video_diag_version() {
+    return video_share.diag_version();
 }
 
 void WlrCompositor::submit_video_frame(CaptureCache &cache) {

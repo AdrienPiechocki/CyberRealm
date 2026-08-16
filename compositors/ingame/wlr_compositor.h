@@ -1001,6 +1001,7 @@ public:
     Ref<Image> video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe);
     void video_decoder_reset(const String &key);
     void video_decoder_clear_all();
+    String video_diag_version();
 
     // Soumet le DMA-BUF d'une fenêtre à l'encodeur (hook après le render +
     // wait_for_dmabuf_gpu_writes). No-op si le partage vidéo est inactif ou
