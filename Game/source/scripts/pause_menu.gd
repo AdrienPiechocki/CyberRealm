@@ -807,12 +807,12 @@ func _show_lan() -> void:
 	join_row.add_child(join_btn)
 	container.add_child(join_row)
 
-	var discover_btn := _make_btn("Discover LAN games")
-	discover_btn.pressed.connect(func():
+	var find_btn := _make_btn("Find LAN games")
+	find_btn.pressed.connect(func():
 		_save_lan_name(name_edit)
 		lan_discover_requested.emit()
 	)
-	container.add_child(discover_btn)
+	container.add_child(find_btn)
 
 	_lan_results_box = VBoxContainer.new()
 	_lan_results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
