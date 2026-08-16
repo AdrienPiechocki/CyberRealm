@@ -892,7 +892,7 @@ void VideoShare::va_cleanup() {
 // ---------------------------------------------------------------------------
 
 String VideoShare::diag_version() const {
-	return "2026-08-16-refcount-diag-v3";
+	return "2026-08-16-refcount-diag-v4-canary";
 }
 
 void VideoShare::decoder_configure(const std::string &key, const String &codec, int width, int height) {
@@ -1020,9 +1020,20 @@ Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
 	}
 	if (!d->sws) return Ref<Image>();
 
+	// Diagnostic v4 : canari de 64 octets autour du buffer de destination de
+	// sws_scale. Certaines conversions SIMD peuvent écrire quelques octets
+	// au-delà de la dernière ligne ; le buffer Godot (exactement w*h*4, sans
+	// padding) serait alors corrompu → "double free or corruption (!prev)"
+	// détecté au free suivant (pba/libération de l'Image). Le harness ASAN a
+	// été propre, mais ce canari vérifie le comportement du processus réel
+	// avec le vrai flux. On vérifie la garde, on tronque à w*h*4, puis on
+	// crée l'Image.
+	const int guard = 64;
+	const int64_t data_size = (int64_t)w * h * 4;
 	PackedByteArray pba;
-	pba.resize((int64_t)w * h * 4);
+	pba.resize(data_size + guard);
 	uint8_t *dst = pba.ptrw();
+	memset(dst + data_size, 0xAB, guard);
 	// Source = frame décodée (plans YUV), destination = buffer RGBA.
 	const uint8_t *slines[4] = { d->frame->data[0], d->frame->data[1],
 		d->frame->data[2], d->frame->data[3] };
@@ -1031,7 +1042,33 @@ Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
 	uint8_t *dlines[4] = { dst, nullptr, nullptr, nullptr };
 	const int dls[4] = { w * 4, 0, 0, 0 };
 	sws_scale(d->sws, slines, sls, 0, h, dlines, dls);
-	return Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, pba);
+
+	int overrun = 0;
+	for (int i = 0; i < guard; i++) {
+		if (dst[data_size + i] != 0xAB) overrun++;
+	}
+	if (overrun > 0) {
+		printf("[video] decode sws OVERRUN %d octets (w=%d h=%d fmt=%d)\n",
+			overrun, w, h, (int)src_fmt);
+	}
+
+	// Log des premières frames décodées : dimensions/format/linesizes réels
+	// du flux reçu, pour comparer avec les hypothèses du harness ASAN.
+	if (d->diag_first_decoded < 4) {
+		const AVPixFmtDescriptor *pd = av_pix_fmt_desc_get(src_fmt);
+		printf("[video] decode frame w=%d h=%d fmt=%s lines=%d/%d/%d guard=%s\n",
+			w, h, pd ? pd->name : "?", sls[0], sls[1], sls[2],
+			overrun > 0 ? "CORROMPUE" : "ok");
+		d->diag_first_decoded++;
+	}
+
+	pba.resize(data_size);
+	Ref<Image> img = Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, pba);
+	if (d->diag_first_decoded <= 4 && img.is_valid()) {
+		printf("[video] decode image créée w=%d h=%d data=%d\n",
+			w, h, (int)img->get_data().size());
+	}
+	return img;
 }
 
 void VideoShare::decoder_reset(const std::string &key) {

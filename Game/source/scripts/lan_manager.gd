@@ -1571,15 +1571,14 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
-	# Diagnostic refcount : unreference() renvoie true si la référence GDScript
-	# était la SEULE (refcount == 1, marshaling équilibré). false → le refcount
-	# est > 1 (fuite/référence cachée) ou l'objet est déjà tombé à 0 (dangling).
-	# Après la mesure, img est à refcount 0 : on s'arrête (ne pas réutiliser).
+	# Diagnostic refcount NON destructif : get_reference_count() renvoie le
+	# refcount sans libérer l'objet (unreference() libérait l'objet puis le
+	# Variant img appelait unref() sur la mémoire libérée → use-after-free →
+	# corruption de heap). refcount == 1 → marshaling équilibré. On logue puis
+	# on continue le chemin normal (texture) pour tester le vrai parcours.
 	if _video_diag_first_decoded_refs < 3:
 		_video_diag_first_decoded_refs += 1
-		var last := img.unreference()
-		print("[diag] image décodée wid=%d seq=%d unreference_last=%s" % [wid, seq, last])
-		return
+		print("[diag] image décodée wid=%d seq=%d refcount=%d" % [wid, seq, img.get_reference_count()])
 	if OS.get_environment("CYBERREALM_SKIP_TEX") == "1":
 		if _video_diag_first_rx < 8:
 			print("[video] rx SKIP_TEX (décode sans texture) wid=%d seq=%d" % [wid, seq])
