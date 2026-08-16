@@ -2,7 +2,7 @@
 import os
 import subprocess
 
-env = SConscript("godot-cpp/SConstruct")
+env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 
 env.Append(CPPPATH=["compositors/ingame/"])
 sources = Glob("compositors/ingame/*.cpp") + Glob("compositors/ingame/*.c")
