@@ -247,10 +247,11 @@ func _video_so_probe() -> void:
 	# manquants s'expliquent (déploiement partiel) au lieu d'une régression.
 	var has_cfg := compositor != null and compositor.has_method("video_decoder_configure")
 	var has_feed := compositor != null and compositor.has_method("video_decoder_feed")
+	var has_ver := compositor != null and compositor.has_method("video_diag_version")
 	var ver := ""
-	if compositor != null and compositor.has_method("video_diag_version"):
+	if has_ver:
 		ver = String(compositor.video_diag_version())
-	print("[video] .so probe: has_configure=%s has_feed=%s version=%s" % [has_cfg, has_feed, ver])
+	print("[video] .so probe: has_configure=%s has_feed=%s has_version=%s version=%s" % [has_cfg, has_feed, has_ver, ver])
 
 func host_game() -> bool:
 	if session_active:
@@ -1545,8 +1546,16 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	if not _pending_remote_textures.has(from):
 		_pending_remote_textures[from] = {}
 	_pending_remote_textures[from][wid] = tex
-	if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
-		_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
+	var _q: Variant = _remote_window_quads.get(from, {}).get(wid, null)
+	if _video_diag_first_rx < 8:
+		print("[video] rx quad: has_quads=%s has_wid=%s quad_valid=%s skip_quad=%s" % [
+			_remote_window_quads.has(from), _remote_window_quads.has(from) and _remote_window_quads[from].has(wid),
+			"valid" if (_q != null and is_instance_valid(_q)) else "invalid",
+			OS.get_environment("CYBERREALM_SKIP_QUAD") == "1"])
+	if _q != null and is_instance_valid(_q) and OS.get_environment("CYBERREALM_SKIP_QUAD") != "1":
+		_set_remote_quad_texture(_q, tex)
+		if _video_diag_first_rx < 8:
+			print("[video] rx quad appliquée OK")
 	# ACK en lot (vidé par _flush_video_acks au prochain tick).
 	if not _video_ack_pending.has(from):
 		_video_ack_pending[from] = {}
@@ -1761,9 +1770,14 @@ func _sync_remote_quad_collision(quad: MeshInstance3D) -> void:
 # quad revient au noir (placeholder, SHARE OFF). Quand une texture est posée,
 # on répercute aussi sur les PiP (pins) et l'overlay focus distant (vue seule).
 func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
+	var diag := _video_diag_first_rx < 8
+	if diag:
+		print("[video] quad set début (quad_valid=%s)" % ("valid" if is_instance_valid(quad) else "invalid"))
 	if quad == null or not is_instance_valid(quad):
 		return
 	var mat: StandardMaterial3D = quad.material_override
+	if diag:
+		print("[video] quad set mat=%s" % ("null" if mat == null else "ok"))
 	if mat == null:
 		return
 	if tex == null:
@@ -1771,14 +1785,24 @@ func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
 		mat.albedo_color = Color.BLACK
 	else:
 		mat.albedo_texture = tex
+		if diag:
+			print("[video] quad set albedo_texture OK")
 		mat.albedo_color = Color.WHITE
 		var peer: int = int(quad.get_meta("remote_peer", -1))
 		var wid: int = int(quad.get_meta("remote_wid", -1))
+		if diag:
+			print("[video] quad set meta peer=%d wid=%d" % [peer, wid])
 		if peer >= 0 and wid >= 0:
 			if pins != null:
 				pins.on_remote_texture_updated(peer, wid, tex)
+				if diag:
+					print("[video] quad set pins OK")
 			if focus != null:
 				focus.on_remote_texture_updated(peer, wid, tex)
+				if diag:
+					print("[video] quad set focus OK")
+	if diag:
+		print("[video] quad set fin")
 
 # Renvoie la texture actuellement affichée sur un quad distant (null si la
 # fenêtre n'est pas partagée / pas de frames reçues). Pour les PiP/overlays.
