@@ -52,6 +52,11 @@ var _remote_shared: Dictionary = {} # peer_id -> {wid -> bool} (partage en cours
 # pas encore marquée `shared` par l'état (course 1re frame vs état). Réappliquée
 # par _apply_remote_windows quand le quad est recréé/que l'état arrive.
 var _pending_remote_textures: Dictionary = {}
+# peer_id -> {wid -> ImageTexture} : textures REUTILISÉES du récepteur. Chaque
+# frame décodée est appliquée en place (tex.update) au lieu d'allouer une
+# nouvelle ImageTexture + upload GPU complet à chaque frame → moins de churn
+# GPU, la vidéo distante est moins saccadée.
+var _remote_textures: Dictionary = {}
 var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
 var _last_windows_texture_send := 0.0
@@ -926,7 +931,7 @@ func _drain_decoded_frames() -> void:
 			_last_applied_version[from] = {}
 		_last_applied_version[from][wid] = version
 		acked_senders[from] = true
-		var tex: Texture2D = ImageTexture.create_from_image(img)
+		var tex: Texture2D = _make_or_update_remote_texture(from, wid, img)
 		# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 		# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
 		if not _pending_remote_textures.has(from):
@@ -1492,7 +1497,7 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
-	var tex: Texture2D = ImageTexture.create_from_image(img)
+	var tex: Texture2D = _make_or_update_remote_texture(from, wid, img)
 	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
 	if not _pending_remote_textures.has(from):
@@ -1653,6 +1658,8 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		if is_instance_valid(q):
 			q.queue_free()
 		quads.erase(wid)
+		if _remote_textures.has(peer_id):
+			_remote_textures[peer_id].erase(wid)
 		if pins != null:
 			pins.unpin_remote(peer_id, wid)
 		if focus != null:
@@ -1739,6 +1746,25 @@ func get_remote_window_texture(peer_id: int, wid: int) -> Texture2D:
 				return mat.albedo_texture
 	return null
 
+# Réutilise l'ImageTexture de la fenêtre distante (update en place) quand la
+# taille/format ne change pas, sinon en crée une nouvelle. Évite d'allouer une
+# texture GPU + upload complet à CHAQUE frame décodée (30/s pour une vidéo) :
+# le churn GPU est la cause principale de la saccade de la vidéo distante.
+func _make_or_update_remote_texture(from: int, wid: int, img: Image) -> Texture2D:
+	if img == null or img.is_empty():
+		return null
+	var tex: ImageTexture = _remote_textures.get(from, {}).get(wid, null)
+	if tex == null or not is_instance_valid(tex) \
+			or tex.get_width() != img.get_width() or tex.get_height() != img.get_height() \
+			or tex.get_format() != img.get_format():
+		tex = ImageTexture.create_from_image(img)
+		if not _remote_textures.has(from):
+			_remote_textures[from] = {}
+		_remote_textures[from][wid] = tex
+	else:
+		tex.update(img)
+	return tex
+
 func _clear_remote_windows(peer_id: int) -> void:
 	var container: Node3D = _remote_windows.get(peer_id)
 	if container != null and is_instance_valid(container):
@@ -1747,6 +1773,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 	_remote_window_quads.erase(peer_id)
 	_remote_shared.erase(peer_id)
 	_pending_remote_textures.erase(peer_id)
+	_remote_textures.erase(peer_id)
 	_last_applied_version.erase(peer_id)
 	# Libère les décodeurs vidéo des flux de ce peer.
 	if compositor != null and compositor.has_method("video_decoder_reset"):
