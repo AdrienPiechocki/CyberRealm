@@ -74,6 +74,17 @@ var _frame_fingerprint_last: Dictionary = {}
 # from -> {wid -> version} : dernière version que le peer distante a CONFIRMÉ
 # avoir appliquée (via _ack_window_versions). Flow control de l'émetteur.
 var _last_acked_version: Dictionary = {}
+# ── Curseur du propriétaire (remote focus) ─────────────────────────
+# wid -> dernier état {inside, x, y} envoyé : on n'émet _sync_window_pointer
+# qu'en cas de changement ou à ~30/s tant que le pointeur est dans la fenêtre.
+var _last_cursor_pointer_send: Dictionary = {}
+# wid -> serial du dernier curseur custom envoyé (-1 si aucun) : on n'émet
+# _sync_window_cursor_image que quand le client change son curseur (rare).
+var _last_cursor_image_send: Dictionary = {}
+var _cursor_send_timer := 0.0
+# peer_id -> {wid -> {inside, x, y, serial, hidden, hotspot, tex}} : état du
+# curseur du propriétaire reçu pour les fenêtres distantes (remote focus).
+var _remote_cursor_state: Dictionary = {}
 # ── Diagnostics (latence du stream) ────────────────────────────────────
 # pid -> {wid -> {version: msec}} : historique des frames envoyées, pour
 # mesurer le RTT ACK (l'ACK accuse une version passée, pas la dernière).
@@ -1652,6 +1663,7 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		if not shared:
 			_set_remote_quad_texture(quad, null)
 			_reset_video_stream(peer_id, wid)
+			_erase_remote_cursor_state(peer_id, wid)
 		else:
 			# Course 1re frame vs état : si une texture a déjà été reçue,
 			# l'appliquer maintenant (le quad vient peut-être d'être recréé).
@@ -1671,6 +1683,7 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			pins.unpin_remote(peer_id, wid)
 		if focus != null:
 			focus.handle_remote_window_removed(peer_id, wid)
+		_erase_remote_cursor_state(peer_id, wid)
 	if quads.is_empty():
 		_clear_remote_windows(peer_id)
 
@@ -1782,6 +1795,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 	_pending_remote_textures.erase(peer_id)
 	_remote_textures.erase(peer_id)
 	_last_applied_version.erase(peer_id)
+	_remote_cursor_state.erase(peer_id)
 	# Libère les décodeurs vidéo des flux de ce peer.
 	if compositor != null and compositor.has_method("video_decoder_reset"):
 		if _video_configs.has(peer_id):
@@ -1796,6 +1810,14 @@ func _clear_remote_windows(peer_id: int) -> void:
 		pins.unpin_peer(peer_id)
 	if focus != null:
 		focus.handle_peer_removed(peer_id)
+
+func _erase_remote_cursor_state(peer_id: int, wid: int) -> void:
+	if _remote_cursor_state.has(peer_id):
+		_remote_cursor_state[peer_id].erase(wid)
+		if _remote_cursor_state[peer_id].is_empty():
+			_remote_cursor_state.erase(peer_id)
+	if focus != null:
+		focus.set_remote_cursor_state(peer_id, wid, null)
 
 func _clear_all_remote_windows() -> void:
 	for peer_id in _remote_windows.keys().duplicate():
@@ -1887,6 +1909,133 @@ func _process(_delta: float) -> void:
 		_poll_responder()
 	if _scanner:
 		_poll_scanner()
+	_sync_cursor_state(_delta)
+
+# Diffuse le curseur du propriétaire pour chaque fenêtre partagée visible :
+# position du pointeur (rpc léger non fiable) + image du curseur custom quand
+# le client en pose une (rpc rare). Le récepteur affiche ce curseur par-dessus
+# l'overlay focus distant de la fenêtre quand le propriétaire le survole.
+func _sync_cursor_state(delta: float) -> void:
+	if not session_active or multiplayer.get_unique_id() == 0:
+		return
+	if compositor == null or not compositor.has_method("get_window_pointer"):
+		return
+	if not windows_provider.is_valid():
+		return
+	var list: Array = windows_provider.call()
+	if list.is_empty():
+		return
+	_cursor_send_timer += delta
+	for item in list:
+		if not item is Dictionary:
+			continue
+		if not bool(item.get("shared", false)):
+			continue
+		if not bool(item.get("visible", true)):
+			continue
+		var wid := int(item.get("wid", -1))
+		if wid < 0:
+			continue
+		# Position du pointeur (coordonnées surface) → coordonnées du contenu
+		# vidéo (la texture partagée est découpée à la window_geometry).
+		var ptr: Dictionary = compositor.get_window_pointer(wid)
+		var inside: bool = bool(ptr.get("inside", false))
+		var px := float(ptr.get("x", 0.0))
+		var py := float(ptr.get("y", 0.0))
+		if inside and compositor.has_method("get_window_geometry"):
+			var geo: Dictionary = compositor.get_window_geometry(wid)
+			px -= float(geo.get("x", 0.0))
+			py -= float(geo.get("y", 0.0))
+			var cw := float(geo.get("width", 0))
+			var ch := float(geo.get("height", 0))
+			if cw > 0.0 and ch > 0.0:
+				if px < 0.0 or py < 0.0 or px >= cw or py >= ch:
+					inside = false
+		var last: Dictionary = _last_cursor_pointer_send.get(wid, {})
+		var changed := bool(last.get("inside", false)) != inside \
+			or absf(float(last.get("x", -1e9)) - px) > 0.5 \
+			or absf(float(last.get("y", -1e9)) - py) > 0.5
+		# Émettre si changement, ou à ~30/s tant que le pointeur est dedans
+		# (pour les clients qui se connectent en cours de route).
+		if changed or (inside and _cursor_send_timer >= 0.033):
+			_last_cursor_pointer_send[wid] = {"inside": inside, "x": px, "y": py}
+			_sync_window_pointer.rpc(wid, inside, px, py)
+		# Image du curseur custom (wl_pointer.set_cursor) : seulement quand le
+		# client en pose une nouvelle (serial change) ou masque/restaure.
+		if compositor.has_method("get_window_cursor"):
+			var ci: Dictionary = compositor.get_window_cursor(wid)
+			var serial := int(ci.get("serial", -1))
+			var hidden := bool(ci.get("hidden", false))
+			var last_serial := int(_last_cursor_image_send.get(wid, -2))
+			if last_serial != serial:
+				_last_cursor_image_send[wid] = serial if not hidden else -1
+				var img: Image = ci.get("image")
+				var bytes := PackedByteArray()
+				var iw := 0
+				var ih := 0
+				if img != null and not img.is_empty():
+					bytes = img.get_data()
+					iw = img.get_width()
+					ih = img.get_height()
+				_sync_window_cursor_image.rpc(wid, serial, hidden,
+					int(ci.get("hotspot_x", 0)), int(ci.get("hotspot_y", 0)),
+					iw, ih, bytes)
+	if _cursor_send_timer >= 0.033:
+		_cursor_send_timer = 0.0
+
+# RPC émetteur → récepteurs : position du curseur du propriétaire dans la
+# fenêtre (coordonnées du contenu, y vers le bas). Non fiable et minuscule.
+@rpc("any_peer", "unreliable")
+func _sync_window_pointer(wid: int, inside: bool, x: float, y: float) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or from == multiplayer.get_unique_id():
+		return
+	if wid < 0:
+		return
+	if not _remote_cursor_state.has(from):
+		_remote_cursor_state[from] = {}
+	if not _remote_cursor_state[from].has(wid):
+		_remote_cursor_state[from][wid] = {
+			"inside": false, "x": 0.0, "y": 0.0,
+			"serial": -1, "hidden": false,
+			"hotspot": Vector2.ZERO, "tex": null,
+		}
+	var st: Dictionary = _remote_cursor_state[from][wid]
+	st["inside"] = inside
+	st["x"] = x
+	st["y"] = y
+	if focus != null:
+		focus.set_remote_cursor_state(from, wid, st)
+
+# RPC émetteur → récepteurs : image du curseur custom du propriétaire (serial
+# change quand le client en pose une nouvelle ; bytes vide si aucun curseur
+# custom, ex. curseur système). Rare (≈ curseur posé une fois par app).
+@rpc("any_peer", "reliable")
+func _sync_window_cursor_image(wid: int, serial: int, hidden: bool, hx: int, hy: int, w: int, h: int, bytes: PackedByteArray) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or from == multiplayer.get_unique_id():
+		return
+	if wid < 0:
+		return
+	if not _remote_cursor_state.has(from):
+		_remote_cursor_state[from] = {}
+	if not _remote_cursor_state[from].has(wid):
+		_remote_cursor_state[from][wid] = {
+			"inside": false, "x": 0.0, "y": 0.0,
+			"serial": -1, "hidden": false,
+			"hotspot": Vector2.ZERO, "tex": null,
+		}
+	var st: Dictionary = _remote_cursor_state[from][wid]
+	st["serial"] = serial
+	st["hidden"] = hidden
+	st["hotspot"] = Vector2(hx, hy)
+	st["tex"] = null
+	if w > 0 and h > 0 and not bytes.is_empty():
+		var img := Image.create_from_data(w, h, false, Image.FORMAT_RGBA8, bytes)
+		if not img.is_empty():
+			st["tex"] = ImageTexture.create_from_image(img)
+	if focus != null:
+		focus.set_remote_cursor_state(from, wid, st)
 
 # Répondeur du host : répond aux requêtes de découverte sur le port fixe.
 func _start_responder() -> void:

@@ -370,6 +370,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_audio_share_pids", "pids"), &WlrCompositor::set_audio_share_pids);
     ClassDB::bind_method(D_METHOD("is_drag_active"), &WlrCompositor::is_drag_active);
     ClassDB::bind_method(D_METHOD("get_window_cursor", "window_id"), &WlrCompositor::get_window_cursor);
+    ClassDB::bind_method(D_METHOD("get_window_pointer", "window_id"), &WlrCompositor::get_window_pointer);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
@@ -4645,6 +4646,21 @@ void WlrCompositor::set_window_pointer(int window_id, double x, double y, bool i
     ws->pointer_inside = true;
     ws->pointer_x = x;
     ws->pointer_y = y;
+}
+
+Dictionary WlrCompositor::get_window_pointer(int window_id) {
+    Dictionary result;
+    result["inside"] = false;
+    result["x"] = 0.0;
+    result["y"] = 0.0;
+    WindowState *ws = find_window(window_id);
+    if (!ws) {
+        return result;
+    }
+    result["inside"] = ws->pointer_inside;
+    result["x"] = ws->pointer_x;
+    result["y"] = ws->pointer_y;
+    return result;
 }
 
 static bool cursor_debug_enabled() {
