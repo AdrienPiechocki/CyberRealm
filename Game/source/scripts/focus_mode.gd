@@ -102,10 +102,10 @@ const REMOTE_CURSOR_BITMAP := [
 	"111111111.......",
 	"1111111111......",
 	"11111111111.....",
-	"111111.....1111.",
-	"111111......111.",
-	"111111.......11.",
-	"111111........1.",
+	"1111111111......",
+	"111111111.......",
+	"11111111........",
+	"1111111.........",
 	"111111..........",
 ]
 
@@ -350,7 +350,8 @@ func _update_remote_cursor() -> void:
 		_hide_remote_cursor()
 		return
 	if not bool(remote_cursor_state.get("inside", false)) \
-			or bool(remote_cursor_state.get("hidden", false)):
+			or bool(remote_cursor_state.get("hidden", false)) \
+			or bool(remote_cursor_state.get("captured", false)):
 		_hide_remote_cursor()
 		return
 	if remote_focus_rect == null or not is_instance_valid(remote_focus_rect):
