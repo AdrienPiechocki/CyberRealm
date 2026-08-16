@@ -755,6 +755,14 @@ class WlrCompositor : public Node {
     // (requis pour mmap). Appelé une fois après l'init du renderer.
     bool check_dmabuf_linear_available();
 
+    // Valide le pipeline dmabuf → Vulkan par une VRAIE sonde (allocation d'un
+    // petit buffer LINEAR + import Vulkan). `check_dmabuf_linear_available()`
+    // ne fait que lire les formats annoncés : certains environnements (VM sans
+    // accélération 3D, virtio-gpu, lavapipe) annoncent le dmabuf mais échouent
+    // ensuite à gbm_bo_create / vkAllocateMemory (VK_ERROR_INCOMPATIBLE_DRIVER).
+    // Appelé une fois après la création du renderer GPU.
+    bool probe_dmabuf_vulkan_import();
+
     bool dmabuf_available = false;
 
     // --- Vulkan zero-copy DMA-BUF pipeline ----------------------------

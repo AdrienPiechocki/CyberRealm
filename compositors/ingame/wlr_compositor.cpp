@@ -651,6 +651,77 @@ bool WlrCompositor::check_dmabuf_linear_available() {
 }
 
 // =====================================================================
+// probe_dmabuf_vulkan_import — Valide le pipeline complet
+// dmabuf → import Vulkan avant de l'activer.
+// =====================================================================
+// `check_dmabuf_linear_available()` ne fait que QUERY les formats annoncés
+// par le renderer. Certains drivers annoncent le dmabuf mais échouent à
+// l'utilisation réelle — typiquement les VMs sans accélération 3D
+// (virtio-gpu sans virgl/venus) ou les pilotes logiciels (lavapipe) :
+// gbm_bo_create échoue, et l'import dans le Vulkan de Godot renvoie
+// VK_ERROR_INCOMPATIBLE_DRIVER. Sans sonde, le jeu démarre alors sur le
+// pipeline GPU cassé et boucle sur ces erreurs, sans jamais afficher de
+// fenêtre (les fallbacks dmabuf/mmap et data_ptr échouent aussi car le
+// buffer reste un dmabuf GPU).
+//
+// La sonde alloue ici un petit buffer LINEAR ABGR8888 via l'allocateur et
+// tente un vrai import Vulkan dessus. Si ça échoue, le renderer GPU est
+// abandonné au profit du renderer Pixman (CPU, fallback).
+// =====================================================================
+
+bool WlrCompositor::probe_dmabuf_vulkan_import() {
+    if (!renderer || !allocator) return false;
+
+    RenderingDevice *vrd = RenderingServer::get_singleton()->get_rendering_device();
+    if (!vrd) return false;
+
+    // Initialise les handles Vulkan depuis le RenderingDevice de Godot. En
+    // cas d'échec, vulkan_import reste indisponible et on retombe sur Pixman.
+    if (!vulkan_import.initialize(vrd)) {
+        UtilityFunctions::print("waylandgodot: sonde dmabuf: Vulkan non initialisé");
+        return false;
+    }
+
+    static constexpr int PROBE_W = 16;
+    static constexpr int PROBE_H = 16;
+
+    uint64_t linear_mod = DRM_FORMAT_MOD_LINEAR;
+    struct wlr_drm_format linear_fmt = {};
+    linear_fmt.format = DRM_FORMAT_ABGR8888;
+    linear_fmt.modifiers = &linear_mod;
+    linear_fmt.len = 1;
+
+    wlr_buffer *probe_buf = wlr_allocator_create_buffer(allocator, PROBE_W, PROBE_H, &linear_fmt);
+    if (!probe_buf) {
+        UtilityFunctions::print("waylandgodot: sonde dmabuf: gbm_bo_create a échoué");
+        return false;
+    }
+
+    wlr_dmabuf_attributes attribs = {};
+    if (!wlr_buffer_get_dmabuf(probe_buf, &attribs) || attribs.n_planes != 1) {
+        UtilityFunctions::print("waylandgodot: sonde dmabuf: pas de dmabuf mono-plan");
+        wlr_buffer_drop(probe_buf);
+        return false;
+    }
+
+    VulkanDmaBufTexture vt = vulkan_import.import_dma_buf(
+        attribs.fd[0], PROBE_W, PROBE_H, DRM_FORMAT_ABGR8888);
+
+    if (vt.vk_image == VK_NULL_HANDLE) {
+        UtilityFunctions::print("waylandgodot: sonde dmabuf: import Vulkan échoué "
+            "(pilote incapable d'importer le dmabuf)");
+        wlr_buffer_drop(probe_buf);
+        return false;
+    }
+
+    // Pipeline validé — libère les ressources de test (déférées d'une frame).
+    vulkan_import.release_texture(vt);
+    wlr_buffer_drop(probe_buf);
+    UtilityFunctions::print("waylandgodot: sonde dmabuf: import Vulkan OK");
+    return true;
+}
+
+// =====================================================================
 // CaptureCache — libération du buffer/mapping mis en cache
 // =====================================================================
 
@@ -3145,18 +3216,27 @@ void WlrCompositor::start_headless() {
         UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU, forcé)");
     }
 
-    // Try GPU renderer first — enables DMA-BUF + Vulkan zero-copy.
+    // Try GPU renderer first — enables DMA-BUF + Vulkan zero-copy. Le
+    // pipeline est validé par une VRAIE sonde (buffer dmabuf + import
+    // Vulkan) : certains environnements (VM sans accélération 3D,
+    // virtio-gpu, lavapipe) annoncent le dmabuf mais échouent ensuite à
+    // gbm_bo_create / vkAllocateMemory (VK_ERROR_INCOMPATIBLE_DRIVER) →
+    // boucle d'erreurs et fenêtres noires. La sonde détecte ça dès le
+    // démarrage et on bascule alors sur Pixman.
     if (!renderer) {
         renderer = wlr_renderer_autocreate(backend);
         if (renderer) {
             allocator = wlr_allocator_autocreate(backend, renderer);
-            if (check_dmabuf_linear_available()) {
+            if (check_dmabuf_linear_available() && probe_dmabuf_vulkan_import()) {
                 dmabuf_available = true;
-                UtilityFunctions::print("waylandgodot: renderer GPU (GLES2/GBM), ",
-                    "dmabuf linéaire disponible");
+                gpu_pipeline_active = true;
+                UtilityFunctions::print("waylandgodot: renderer GPU (GLES2/GBM), "
+                    "pipeline Vulkan zero-copy actif (DMA-BUF → VkImage → Texture2DRD)");
             } else {
-                UtilityFunctions::print("waylandgodot: renderer GPU créé mais ",
-                    "dmabuf linéaire indisponible");
+                dmabuf_available = false;
+                gpu_pipeline_active = false;
+                UtilityFunctions::print("waylandgodot: renderer GPU créé mais pipeline "
+                    "dmabuf/Vulkan inutilisable (sonde échouée), fallback Pixman");
             }
         }
     }
@@ -3168,6 +3248,9 @@ void WlrCompositor::start_headless() {
             wlr_renderer_destroy(renderer);
             renderer = nullptr;
             allocator = nullptr;
+            // La sonde a pu laisser vulkan_import initialisé (init OK mais
+            // import échoué) : on remet tout à zéro avant de repartir en CPU.
+            vulkan_import.cleanup();
         }
         setenv("WLR_RENDERER", "pixman", 1);
         renderer = wlr_renderer_autocreate(backend);
@@ -3178,6 +3261,7 @@ void WlrCompositor::start_headless() {
         }
         allocator = wlr_allocator_autocreate(backend, renderer);
         dmabuf_available = false;
+        gpu_pipeline_active = false;
         UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU, fallback)");
     }
 
@@ -3196,20 +3280,9 @@ void WlrCompositor::start_headless() {
     // inutile.
 
     // --- Initialiser le pipeline Vulkan zero-copy si possible ---------
-    //     Si VK_KHR_external_memory_fd est supporté par le pilote GPU,
-    //     on pourra importer les DMA-BUF directement comme VkImage dans
-    //     le RenderingDevice de Godot, sans passer par le mmap + copie CPU.
-    if (dmabuf_available) {
-        RenderingDevice *vrd = RenderingServer::get_singleton()->get_rendering_device();
-        if (vulkan_import.initialize(vrd)) {
-            gpu_pipeline_active = true;
-            UtilityFunctions::print("waylandgodot: pipeline Vulkan zero-copy actif "
-                "(DMA-BUF → VkImage → Texture2DRD)");
-        } else {
-            UtilityFunctions::print("waylandgodot: Vulkan DMA-BUF import indisponible, "
-                "utilisation du fallback mmap CPU");
-        }
-    }
+    //     Déjà fait par probe_dmabuf_vulkan_import() pendant la sélection
+    //     du renderer : la sonde a validé l'import réel d'un dmabuf dans
+    //     le RenderingDevice de Godot avant d'activer le pipeline.
 
     wlr_output *fake_output = wlr_headless_add_output(backend, 1280, 720);
     if (fake_output) {
