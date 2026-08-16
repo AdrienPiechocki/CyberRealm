@@ -132,6 +132,12 @@ void VideoShare::stop() {
 	{
 		std::lock_guard<std::mutex> g(windows_mutex);
 		for (auto *w : windows) {
+			// Ferme un éventuel fd en attente de traitement (le worker a pu
+			// s'arrêter avant de l'encoder — sinon il serait déjà à -1).
+			if (w->fd >= 0) {
+				close(w->fd);
+				w->fd = -1;
+			}
 			destroy_encoder(w);
 			delete w;
 		}
@@ -173,15 +179,19 @@ void VideoShare::set_encode_windows(const std::vector<int> &wids) {
 
 bool VideoShare::window_ready(int wid) const {
 	if (!active.load()) return true;
-	std::vector<VideoEncodeWindow *> ws;
-	{
-		std::lock_guard<std::mutex> g(windows_mutex);
-		ws = windows;
-	}
-	for (auto *w : ws) {
+	// windows_mutex tenu pendant encode_mutex (ordre cohérent avec
+	// submit_dmabuf/reconcile_windows) : le pointeur w ne peut pas être
+	// libéré en cours de route (use-after-free → gel).
+	std::lock_guard<std::mutex> g(windows_mutex);
+	for (auto *w : windows) {
 		if (w->wid == wid) {
-			std::lock_guard<std::mutex> g(w->encode_mutex);
-			return !w->busy && !w->stop_encoding;
+			std::lock_guard<std::mutex> wg(w->encode_mutex);
+			// backpressured = la file de sortie est pleine (réseau/encodeur en
+			// retard) : re-rendre la fenêtre sur le thread principal ne servirait
+			// à rien (submit_dmabuf la refuserait) et fait lagger la fenêtre
+			// partagée + le jeu. On la saute jusqu'à ce que poll_packets lève la
+			// backpressure.
+			return !w->busy && !w->stop_encoding && !w->backpressured;
 		}
 	}
 	return true; // fenêtre non partagée → capture normale
@@ -189,27 +199,41 @@ bool VideoShare::window_ready(int wid) const {
 
 bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc,
 		int alloc_w, int alloc_h, int content_w, int content_h) {
-	if (!active.load()) return false;
-	if (fd < 0 || stride == 0) return false;
-
-	std::vector<VideoEncodeWindow *> ws;
-	{
-		std::lock_guard<std::mutex> g(windows_mutex);
-		ws = windows;
+	// PRÉ-CONDITION : submit_dmabuf PREND POSSESSION de `fd` (l'appelant a
+	// passé un dup() de son buffer de capture). Sur TOUT chemin de sortie, le
+	// fd est soit stocké dans w->fd (le worker le ferme après lecture), soit
+	// fermé ici. Avant ce fix, le fd n'était JAMAIS fermé : une fenêtre vidéo
+	// (~30 captures/s) fuyait ~30 fds/s → épuisement de la table de fds du
+	// processus (~1 min pour 1024) → tous les opens/dups/sockets échouent →
+	// gel silencieux du jeu.
+	if (!active.load()) {
+		if (fd >= 0) close(fd);
+		return false;
 	}
+	if (fd < 0 || stride == 0) {
+		if (fd >= 0) close(fd);
+		return false;
+	}
+
+	// windows_mutex est tenu pendant encode_mutex : l'ordre de verrouillage
+	// windows_mutex → encode_mutex est le même partout (reconcile_windows
+	// détruit les fenêtres sous ce même verrou). Sans ce verrou, le pointeur
+	// w pouvait être libéré par reconcile_windows entre la copie du vecteur
+	// et le lock d'encode_mutex → use-after-free (verrou détruit = gel).
+	std::lock_guard<std::mutex> g(windows_mutex);
 	VideoEncodeWindow *w = nullptr;
-	for (auto *x : ws) {
+	for (auto *x : windows) {
 		if (x->wid == wid) { w = x; break; }
 	}
-	if (!w) return false;
-
-	int dupfd = dup(fd);
-	if (dupfd < 0) return false;
+	if (!w) {
+		close(fd);
+		return false;
+	}
 
 	{
-		std::lock_guard<std::mutex> g(w->encode_mutex);
+		std::lock_guard<std::mutex> wg(w->encode_mutex);
 		if (w->busy || w->backpressured || w->stop_encoding) {
-			close(dupfd);
+			close(fd);
 			return false;
 		}
 		size_t q;
@@ -218,10 +242,10 @@ bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc
 			q = out_queue.size();
 		}
 		if (q >= out_max) {
-			close(dupfd);
+			close(fd);
 			return false;
 		}
-		w->fd = dupfd;
+		w->fd = fd;
 		w->stride = stride;
 		w->fourcc = fourcc;
 		w->content_w = content_w > 0 ? content_w : alloc_w;
@@ -235,14 +259,11 @@ bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc
 
 void VideoShare::request_keyframe(int wid) {
 	if (!active.load()) return;
-	std::vector<VideoEncodeWindow *> ws;
-	{
-		std::lock_guard<std::mutex> g(windows_mutex);
-		ws = windows;
-	}
-	for (auto *w : ws) {
+	// windows_mutex tenu pendant encode_mutex (cf. window_ready).
+	std::lock_guard<std::mutex> g(windows_mutex);
+	for (auto *w : windows) {
 		if (w->wid == wid) {
-			std::lock_guard<std::mutex> g(w->encode_mutex);
+			std::lock_guard<std::mutex> wg(w->encode_mutex);
 			w->force_keyframe = true;
 			return;
 		}
@@ -279,13 +300,10 @@ Array VideoShare::poll_packets() {
 		sz = out_queue.size();
 	}
 	if (sz < out_low) {
-		std::vector<VideoEncodeWindow *> ws;
-		{
-			std::lock_guard<std::mutex> g(windows_mutex);
-			ws = windows;
-		}
-		for (auto *w : ws) {
-			std::lock_guard<std::mutex> g(w->encode_mutex);
+		// windows_mutex tenu pendant encode_mutex (cf. window_ready).
+		std::lock_guard<std::mutex> g(windows_mutex);
+		for (auto *w : windows) {
+			std::lock_guard<std::mutex> wg(w->encode_mutex);
 			if (w->backpressured) {
 				w->backpressured = false;
 				w->busy = false;
@@ -320,7 +338,12 @@ void VideoShare::worker_loop() {
 				if (w->stop_encoding) continue;
 				if (w->queued) {
 					w->queued = false;
+					// Réclame le fd immédiatement : pendant encode_window,
+					// w->fd est à -1, donc destroy_encoder / stop() /
+					// reconcile ne risquent jamais de fermer le fd en cours
+					// de lecture (double close).
 					fd = w->fd;
+					w->fd = -1;
 					stride = w->stride;
 					fourcc = w->fourcc;
 					aw = w->content_w;
@@ -374,39 +397,47 @@ void VideoShare::worker_loop() {
 }
 
 void VideoShare::reconcile_windows() {
-	std::vector<VideoEncodeWindow *> to_delete;
-	{
-		std::lock_guard<std::mutex> g(windows_mutex);
-		std::unordered_set<int> wanted(target_wids.begin(), target_wids.end());
+	// windows_mutex est tenu PENDANT la destruction (encode_mutex pris avant
+	// le delete) : c'est lui qui garantit la durée de vie des pointeurs
+	// VideoEncodeWindow vis-à-vis des consommateurs (window_ready,
+	// submit_dmabuf, request_keyframe, poll_packets) qui le tiennent aussi.
+	// Avant ce fix, la destruction se faisait HORS verrou : un consommateur
+	// pouvait déréférencer une fenêtre déjà supprimée (use-after-free → gel).
+	std::lock_guard<std::mutex> g(windows_mutex);
+	std::unordered_set<int> wanted(target_wids.begin(), target_wids.end());
 
-		for (auto it = windows.begin(); it != windows.end();) {
-			VideoEncodeWindow *w = *it;
-			if (wanted.count(w->wid) == 0) {
-				{
-					std::lock_guard<std::mutex> wg(w->encode_mutex);
-					w->stop_encoding = true;
-				}
-				to_delete.push_back(w);
-				it = windows.erase(it);
-			} else {
-				++it;
+	for (auto it = windows.begin(); it != windows.end();) {
+		VideoEncodeWindow *w = *it;
+		if (wanted.count(w->wid) == 0) {
+			{
+				std::lock_guard<std::mutex> wg(w->encode_mutex);
+				w->stop_encoding = true;
 			}
-		}
-		std::unordered_set<int> have;
-		for (auto *w : windows) have.insert(w->wid);
-		for (int wid : target_wids) {
-			if (have.count(wid)) continue;
-			auto *w = new VideoEncodeWindow();
-			w->wid = wid;
-			windows.push_back(w);
+			// encode_mutex pris pour attendre toute soumission (thread
+			// principal) encore en cours avant de libérer la fenêtre. Un fd
+			// encore en attente de traitement (jamais réclamé par le worker)
+			// est fermé ici.
+			{
+				std::lock_guard<std::mutex> wg(w->encode_mutex);
+				if (w->fd >= 0) {
+					close(w->fd);
+					w->fd = -1;
+				}
+				destroy_encoder(w);
+				delete w;
+			}
+			it = windows.erase(it);
+		} else {
+			++it;
 		}
 	}
-	// Suppression hors du lock windows_mutex : on prend encode_mutex pour
-	// attendre toute soumission (thread principal) encore en cours.
-	for (auto *w : to_delete) {
-		std::lock_guard<std::mutex> g(w->encode_mutex);
-		destroy_encoder(w);
-		delete w;
+	std::unordered_set<int> have;
+	for (auto *w : windows) have.insert(w->wid);
+	for (int wid : target_wids) {
+		if (have.count(wid)) continue;
+		auto *w = new VideoEncodeWindow();
+		w->wid = wid;
+		windows.push_back(w);
 	}
 }
 
