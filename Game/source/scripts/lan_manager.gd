@@ -186,6 +186,8 @@ var _video_diag_nack := 0
 var _video_diag_rx_calls := 0
 var _video_diag_first_rx := 0
 var _video_diag_first_sent := 0
+var _video_diag_selftest_done := false
+var _video_diag_first_decoded_refs := 0
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -253,11 +255,41 @@ func _video_so_probe() -> void:
 		ver = String(compositor.video_diag_version())
 	print("[video] .so probe: has_configure=%s has_feed=%s has_version=%s version=%s" % [has_cfg, has_feed, has_ver, ver])
 
+# Diagnostic différentiel du crash "double free" du récepteur vidéo. Les
+# méthodes video_diag_small_image / video_diag_big_image retournent un
+# Ref<Image> par une méthode liée SANS aucun décodage : si ces boucles
+# crashent, le bug est dans le marshaling du Ref<Image> (indépendant de la
+# taille/de la chaîne de décodage). Si elles passent, le crash vient des
+# données décodées (sws / create_from_data sur buffer issu du décodeur).
+func _run_video_refcount_selftest() -> void:
+	if _video_diag_selftest_done or compositor == null:
+		return
+	if not compositor.has_method("video_diag_small_image"):
+		print("[diag] self-test impossible : .so trop ancien (manque video_diag_small_image)")
+		_video_diag_selftest_done = true
+		return
+	_video_diag_selftest_done = true
+	var ok_small := true
+	for i in 50:
+		var im: Image = compositor.video_diag_small_image()
+		if im == null or im.is_empty():
+			ok_small = false
+			break
+	print("[diag] self-test Ref<Image> 1x1 (50 iterations) : %s" % ("OK" if ok_small else "ECHEC"))
+	var ok_big := true
+	for i in 5:
+		var im2: Image = compositor.video_diag_big_image(1000, 600)
+		if im2 == null or im2.is_empty():
+			ok_big = false
+			break
+	print("[diag] self-test Ref<Image> 1000x600 (5 iterations) : %s" % ("OK" if ok_big else "ECHEC"))
+
 func host_game() -> bool:
 	if session_active:
 		_set_status("Déjà en session LAN")
 		return false
 	_video_so_probe()
+	_run_video_refcount_selftest()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
 	if err != OK:
@@ -285,6 +317,7 @@ func join_game(ip: String) -> bool:
 	if ip == "":
 		return false
 	_video_so_probe()
+	_run_video_refcount_selftest()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
@@ -1538,6 +1571,15 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
+	# Diagnostic refcount : unreference() renvoie true si la référence GDScript
+	# était la SEULE (refcount == 1, marshaling équilibré). false → le refcount
+	# est > 1 (fuite/référence cachée) ou l'objet est déjà tombé à 0 (dangling).
+	# Après la mesure, img est à refcount 0 : on s'arrête (ne pas réutiliser).
+	if _video_diag_first_decoded_refs < 3:
+		_video_diag_first_decoded_refs += 1
+		var last := img.unreference()
+		print("[diag] image décodée wid=%d seq=%d unreference_last=%s" % [wid, seq, last])
+		return
 	if OS.get_environment("CYBERREALM_SKIP_TEX") == "1":
 		if _video_diag_first_rx < 8:
 			print("[video] rx SKIP_TEX (décode sans texture) wid=%d seq=%d" % [wid, seq])

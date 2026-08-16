@@ -1002,6 +1002,10 @@ public:
     void video_decoder_reset(const String &key);
     void video_decoder_clear_all();
     String video_diag_version();
+    // Diagnostics différentiels du crash "double free" (retour Ref<Image> :
+    // image 1x1 vs image 1000x600 sans aucun décodage).
+    Ref<Image> video_diag_small_image();
+    Ref<Image> video_diag_big_image(int width, int height);
 
     // Soumet le DMA-BUF d'une fenêtre à l'encodeur (hook après le render +
     // wait_for_dmabuf_gpu_writes). No-op si le partage vidéo est inactif ou

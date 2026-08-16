@@ -892,7 +892,7 @@ void VideoShare::va_cleanup() {
 // ---------------------------------------------------------------------------
 
 String VideoShare::diag_version() const {
-	return "2026-08-16-decode-diag-v2";
+	return "2026-08-16-refcount-diag-v3";
 }
 
 void VideoShare::decoder_configure(const std::string &key, const String &codec, int width, int height) {

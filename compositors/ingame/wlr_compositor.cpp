@@ -360,6 +360,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("video_decoder_reset", "key"), &WlrCompositor::video_decoder_reset);
     ClassDB::bind_method(D_METHOD("video_decoder_clear_all"), &WlrCompositor::video_decoder_clear_all);
     ClassDB::bind_method(D_METHOD("video_diag_version"), &WlrCompositor::video_diag_version);
+    ClassDB::bind_method(D_METHOD("video_diag_small_image"), &WlrCompositor::video_diag_small_image);
+    ClassDB::bind_method(D_METHOD("video_diag_big_image", "width", "height"), &WlrCompositor::video_diag_big_image);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("get_window_pid", "window_id"), &WlrCompositor::get_window_pid);
@@ -5500,6 +5502,30 @@ void WlrCompositor::video_decoder_configure(const String &key, const String &cod
 Ref<Image> WlrCompositor::video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe) {
     std::string k = key.utf8().get_data();
     return video_share.decoder_feed(k, packet, keyframe);
+}
+
+Ref<Image> WlrCompositor::video_diag_small_image() {
+    // Ref<Image> 1x1 RGBA, sans décodage : isole le retour de Ref<Image>
+    // par méthode liée de toute la chaîne de décodage.
+    PackedByteArray pba;
+    pba.resize(4);
+    uint8_t *dst = pba.ptrw();
+    dst[0] = 255;
+    dst[1] = 0;
+    dst[2] = 0;
+    dst[3] = 255;
+    return Image::create_from_data(1, 1, false, Image::FORMAT_RGBA8, pba);
+}
+
+Ref<Image> WlrCompositor::video_diag_big_image(int width, int height) {
+    // Même taille que le vrai flux (1000x600), buffer memset (pas de sws) :
+    // isole un éventuel effet de TAILLE sur le retour de Ref<Image>.
+    if (width <= 0 || height <= 0) return Ref<Image>();
+    PackedByteArray pba;
+    pba.resize((int64_t)width * height * 4);
+    uint8_t *dst = pba.ptrw();
+    memset(dst, 0, (size_t)width * height * 4);
+    return Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, pba);
 }
 
 void WlrCompositor::video_decoder_reset(const String &key) {
