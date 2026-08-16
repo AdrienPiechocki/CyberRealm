@@ -662,11 +662,19 @@ bool AudioShare::poll_opus_packet(PackedByteArray &r_out) {
 	}
 	// Mélange : somme des rings de tous les streams actifs, clampé. Un stream
 	// qui n'a pas encore 20 ms (démarrage) est compté comme silence.
+	// try_lock : si le thread PW détient streams_mutex (apply_targets fait des
+	// appels PipeWire bloquants), on NE bloque PAS le thread principal — on
+	// saute ce paquet (un beat audio sauté est imperceptible, un main thread
+	// figé gèle tout le jeu). Le mutex n'est presque jamais pris (réconcile
+	// 250 ms), donc try_lock réussit dans la quasi-totalité des frames.
 	std::vector<float> frames(OPUS_FRAME_SIZE * AUDIO_CHANNELS, 0.0f);
 	bool have_any = false;
 	bool have_data = false;
 	{
-		std::lock_guard<std::mutex> lk(streams_mutex);
+		std::unique_lock<std::mutex> lk(streams_mutex, std::try_to_lock);
+		if (!lk.owns_lock()) {
+			return false;
+		}
 		for (AudioCaptureStream *s : streams) {
 			have_any = true;
 			std::lock_guard<std::mutex> rlk(s->ring_mutex);

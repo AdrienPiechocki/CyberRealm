@@ -108,7 +108,7 @@ const WINDOW_MAX_AHEAD := 3 # flow control : au plus 3 frames non appliquées en
 # saute une capture si l'encodeur lit encore le buffer), les keyframes
 # resynchronisent.
 const VIDEO_BITRATE := 12_000_000 # débit cible par fenêtre (bits/s) ; réseau local → la qualité prime (CQP/CRF côté C++)
-const VIDEO_CODEC_PREF := ["av1", "h264"] # essai dans cet ordre ; av1 = matériel seulement (pas de fallback logiciel)
+const VIDEO_CODEC_PREF := ["h264", "av1"] # essai dans cet ordre ; h264 matériel (VAAPI) est stable sur radeonsi, av1 VAAPI est expérimental (dérive + gel GPU sur RDNA3)
 const VIDEO_PACKET_SINGLE_MAX := 40000 # paquet ≤ ceci : 1 RPC (≤ 32 fragments ENet, 1 vague)
 const VIDEO_CHUNK_SIZE := 30000 # au-delà : découpage, chaque morceau ≤ 1 vague ENet
 const VIDEO_CHUNK_STALE_MSEC := 2000 # purge des assemblages de chunks incomplets

@@ -481,7 +481,12 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		frames->width = w->content_w;
 		frames->height = w->content_h;
 		frames->sw_format = AV_PIX_FMT_NV12;
-		frames->initial_pool_size = 4;
+		// Pool généreux : av_hwframe_get_buffer BLOQUE tant que toutes les
+		// surfaces sont prises (frames de référence + frame courante). Avec un
+		// pool de 4, un encodeur qui garde des références peut mettre le worker
+		// en attente (dégradation du débit). 8 = marge confortable, la surface
+		// d'un frame rendu est libérée dès l'avcodec_send_frame.
+		frames->initial_pool_size = 8;
 		if (av_hwframe_ctx_init(frames_ref) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_ctx_init a échoué");
 			av_buffer_unref(&frames_ref);
@@ -508,7 +513,11 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		ctx->hw_frames_ctx = av_buffer_ref(frames_ref);
 		ctx->bit_rate = bitrate;
 		ctx->gop_size = 60;
-		ctx->max_b_frames = hw_av1 ? 0 : 2;
+		// Pas de B-frames : pour du contenu d'écran (texte fin, UI), le gain de
+		// débit est marginal et cela double les surfaces retenues par le driver
+		// (références) + la latence d'ordonnancement. IPPP pur = moins de
+		// pression sur le pool et un flux plus réactif.
+		ctx->max_b_frames = 0;
 		// Qualité : sur un réseau local le débit n'est pas limité, c'est la
 		// qualité perçue qui prime (jeux : texte net, pas d'artefacts).
 		//   - h264_vaapi : CQP (qualité constante) — le débit réel s'adapte au
