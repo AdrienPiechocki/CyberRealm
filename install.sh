@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 GAME="$SCRIPT_DIR/Game/build/CyberRealm.x86_64"
 
-sudo pacman -S --needed base-devel wayland wayland-protocols pixman libdrm xwayland-satellite \
+sudo pacman -S --needed base-devel godot wayland wayland-protocols pixman libdrm xwayland-satellite \
                libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr
 
 # wlroots 0.19 n'est plus dans les dépôts officiels d'Arch (retiré au profit de
@@ -58,6 +58,28 @@ else
 fi
 ninja -C "$PORTAL_SRC/build"
 meson install -C "$PORTAL_SRC/build"
+
+# --- Template d'export Godot (Linux) ---------------------------------------
+# Le paquet `godot` d'Arch fournit l'éditeur mais PAS les templates d'export,
+# et `godot-export-templates` n'est pas dans les dépôts officiels. On compile
+# donc le template Linux depuis les sources godot, à la version exacte de
+# l'éditeur installé, et on l'installe dans le dossier export_templates que
+# `godot --export-release` cherche (~/.local/share/godot/export_templates/).
+GODOT_VER="$(godot --version | cut -d. -f1-4)"
+GODOT_TAG="$(godot --version | cut -d. -f1-3)-$(godot --version | cut -d. -f4)"
+TEMPLATES_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
+if [[ ! -f "$TEMPLATES_DIR/linux.x86_64" ]]; then
+    echo "install: build du template Linux Godot $GODOT_VER (scons platform=linuxbsd target=template_release) ..."
+    GODOT_SRC="$SCRIPT_DIR/build/godot-src"
+    if [[ ! -d "$GODOT_SRC" ]]; then
+        git clone --depth 1 --branch "$GODOT_TAG" https://github.com/godotengine/godot.git "$GODOT_SRC"
+    fi
+    (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release)
+    mkdir -p "$TEMPLATES_DIR"
+    install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux.x86_64"
+else
+    echo "install: template Linux Godot $GODOT_VER déjà présent, rien à faire."
+fi
 
 # --- Export du jeu Godot ---------------------------------------------------
 # L'extension GDExtension (libwaylandgodot) est déjà compilée par scons
