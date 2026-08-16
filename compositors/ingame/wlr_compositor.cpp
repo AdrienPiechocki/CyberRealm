@@ -15,6 +15,7 @@
 #include <fstream>
 #include <algorithm>
 #include <vector>
+#include <unordered_set>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -352,6 +353,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_video_share_windows", "wids"), &WlrCompositor::set_video_share_windows);
     ClassDB::bind_method(D_METHOD("video_share_poll"), &WlrCompositor::video_share_poll);
     ClassDB::bind_method(D_METHOD("video_share_request_keyframe", "window_id"), &WlrCompositor::video_share_request_keyframe);
+    ClassDB::bind_method(D_METHOD("video_share_window_size", "window_id"), &WlrCompositor::video_share_window_size);
     ClassDB::bind_method(D_METHOD("video_share_pending"), &WlrCompositor::video_share_pending);
     ClassDB::bind_method(D_METHOD("video_decoder_configure", "key", "codec", "width", "height"),
         &WlrCompositor::video_decoder_configure);
@@ -822,33 +824,34 @@ CaptureCache::~CaptureCache() {
 // =====================================================================
 
 bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
-    static bool printed_path = false;
+    // Chemin de capture logué UNE fois PAR fenêtre (cache.wid est posé par
+    // l'appelant juste avant capture_surface) : le chemin global "-> vulkan"
+    // unique au processus ne permettait pas de distinguer le chemin réellement
+    // utilisé par une fenêtre précise (ex. une fenêtre Dolphin qui ne
+    // streamerait que via le chemin pixels → pas de partage vidéo → noir).
+    static std::unordered_set<int> logged_wids;
+    int cwid = cache.wid;
+    auto log_path = [&](const char *which, bool ok) {
+        if (cwid >= 0 && logged_wids.find(cwid) == logged_wids.end()) {
+            logged_wids.insert(cwid);
+            UtilityFunctions::print("waylandgodot: [diag] capture wid=", cwid, " -> ", which,
+                ok ? "" : " (échec)", " gpu=", gpu_pipeline_active, " dmabuf=", dmabuf_available);
+        }
+    };
     // Essayer d'abord le chemin Vulkan zero-copy (GPU→GPU, pas de CPU readback).
     if (gpu_pipeline_active && dmabuf_available &&
         capture_surface_vulkan(surface, tex, out_w, out_h, cache)) {
-        if (!printed_path) {
-            UtilityFunctions::print("waylandgodot: [diag] capture -> vulkan (gpu=", gpu_pipeline_active,
-                " dmabuf=", dmabuf_available, ")");
-            printed_path = true;
-        }
+        log_path("vulkan", true);
         return true;
     }
     // Fallback : dmabuf + mmap CPU readback.
     if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h, cache)) {
-        if (!printed_path) {
-            UtilityFunctions::print("waylandgodot: [diag] capture -> dmabuf (gpu=", gpu_pipeline_active,
-                " dmabuf=", dmabuf_available, ")");
-            printed_path = true;
-        }
+        log_path("dmabuf", true);
         return true;
     }
     // Dernier recours : Pixman (rendu logiciel, buffer en RAM).
     bool ok = capture_surface_pixels(surface, tex, out_w, out_h, cache);
-    if (!printed_path) {
-        UtilityFunctions::print("waylandgodot: [diag] capture -> pixels ok=", ok,
-            " (gpu=", gpu_pipeline_active, " dmabuf=", dmabuf_available, ")");
-        printed_path = true;
-    }
+    log_path("pixels", ok);
     return ok;
 }
 
@@ -5488,6 +5491,16 @@ Array WlrCompositor::video_share_poll() {
 
 void WlrCompositor::video_share_request_keyframe(int window_id) {
     video_share.request_keyframe(window_id);
+}
+
+Dictionary WlrCompositor::video_share_window_size(int window_id) {
+    Dictionary result;
+    int w = 0, h = 0;
+    if (video_share.window_size(window_id, w, h)) {
+        result["width"] = w;
+        result["height"] = h;
+    }
+    return result;
 }
 
 int WlrCompositor::video_share_pending() {

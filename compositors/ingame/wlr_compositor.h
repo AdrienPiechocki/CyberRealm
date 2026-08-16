@@ -996,6 +996,7 @@ public:
     void set_video_share_windows(const PackedInt32Array &wids);
     Array video_share_poll();
     void video_share_request_keyframe(int window_id);
+    Dictionary video_share_window_size(int window_id);
     int video_share_pending();
     void video_decoder_configure(const String &key, const String &codec, int width, int height);
     Ref<Image> video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe);

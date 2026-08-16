@@ -74,6 +74,14 @@ AVPixelFormat target_pix_fmt(bool hw) {
 	return hw ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P;
 }
 
+// Pendant un resize interactif, la taille du contenu change à chaque commit du
+// client. Recréer l'encodeur à chaque changement = freeze du flux (le worker
+// est occupé, les captures sont sautées, les frames réordonnées perdues) puis
+// reprise décalée. On débounce : on garde l'encodeur à sa taille actuelle et
+// on SCALE le contenu via swscale tant que la taille bouge ; on ne recrée
+// l'encodeur qu'une fois la taille stable pendant ce délai.
+constexpr int64_t VIDEO_RESIZE_SETTLE_US = 200 * 1000; // 200 ms
+
 } // namespace
 
 VideoShare::VideoShare() {
@@ -203,6 +211,32 @@ bool VideoShare::window_ready(int wid) const {
 		}
 	}
 	return true; // fenêtre non partagée → capture normale
+}
+
+bool VideoShare::window_size(int wid, int &w, int &h) const {
+	if (!active.load()) return false;
+	std::vector<VideoEncodeWindow *> ws;
+	{
+		std::lock_guard<std::mutex> g(windows_mutex);
+		ws = windows;
+	}
+	for (auto *x : ws) {
+		if (x->wid == wid) {
+			std::lock_guard<std::mutex> g(x->encode_mutex);
+			// Dimensions du flux réellement émis : l'encodeur courant (s'il
+			// existe), sinon le dernier contenu soumis (en attendant la
+			// première frame).
+			if (x->avctx) {
+				w = x->enc_w;
+				h = x->enc_h;
+			} else {
+				w = x->content_w;
+				h = x->content_h;
+			}
+			return (w > 0 && h > 0);
+		}
+	}
+	return false;
 }
 
 bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc,
@@ -491,13 +525,37 @@ void VideoShare::push_packet(int wid, uint64_t seq, bool keyframe, const uint8_t
 	out_cv.notify_all();
 }
 
-bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
+bool VideoShare::ensure_encoder(VideoEncodeWindow *w, int64_t now_us) {
 	if (w->avctx && w->enc_w == w->content_w && w->enc_h == w->content_h) {
+		w->resize_pending = false;
 		return true;
 	}
+	if (w->avctx) {
+		// Encodeur existant mais taille du contenu différente (resize) : on ne
+		// détruit PAS l'encodeur tout de suite (freeze du flux + perte des
+		// frames réordonnées). Debounce : on note la taille en cours et on
+		// scale le contenu à la taille de l'encodeur tant qu'elle bouge ;
+		// quand elle reste stable pendant VIDEO_RESIZE_SETTLE_US, on recrée
+		// l'encodeur à la nouvelle taille (une seule fois par resize).
+		if (!w->resize_pending || w->resize_w != w->content_w || w->resize_h != w->content_h) {
+			w->resize_w = w->content_w;
+			w->resize_h = w->content_h;
+			w->resize_since_us = now_us;
+			w->resize_pending = true;
+			return true;
+		}
+		if (now_us - w->resize_since_us < VIDEO_RESIZE_SETTLE_US) {
+			return true; // toujours en cours de resize : scale à l'ancienne taille
+		}
+		// Stabilisé → recréer à la nouvelle taille (fallthrough).
+	}
 	destroy_encoder(w);
-	w->enc_w = w->content_w;
-	w->enc_h = w->content_h;
+	{
+		std::lock_guard<std::mutex> g(w->encode_mutex);
+		w->enc_w = w->content_w;
+		w->enc_h = w->content_h;
+	}
+	w->resize_pending = false;
 
 	if (hw_mode) {
 		AVBufferRef *frames_ref = av_hwframe_ctx_alloc((AVBufferRef *)hw_device_ctx);
@@ -642,7 +700,16 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	// compositor (stride). Les paramètres restent dans la signature pour
 	// tracer d'éventuelles évolutions (encode de la zone pleine).
 
-	if (!ensure_encoder(w)) {
+	using sclock = std::chrono::steady_clock;
+	auto t_mm = sclock::now();
+	auto t_sw = t_mm;
+	auto t_up = t_mm;
+	auto t_end = t_mm;
+
+	// now_us (steady_clock) pour le debounce de resize de l'encodeur.
+	int64_t now_us = (int64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+		t_mm.time_since_epoch()).count();
+	if (!ensure_encoder(w, now_us)) {
 		UtilityFunctions::printerr("waylandgodot: video_share: échec de création de l'encodeur "
 			"(wid=", w->wid, ")");
 		close(fd);
@@ -664,12 +731,6 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	// Diagnostic par étape : si une frame dépasse ~25 ms (pilote VAAPI RDNA3
 	// suspecté de plafonner à ~130 ms/frame), on veut le détail du coût :
 	// lecture DMA-BUF + conversion, upload VAAPI, ou encode lui-même.
-	using sclock = std::chrono::steady_clock;
-	auto t_mm = sclock::now();
-	auto t_sw = t_mm;
-	auto t_up = t_mm;
-	auto t_end = t_mm;
-
 	long page_size = sysconf(_SC_PAGE_SIZE);
 	off_t plane_offset = 0; // buffers GBM single-plane → offset 0
 	off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
@@ -689,13 +750,19 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	AVPixelFormat src_fmt = drm_fourcc_to_avfmt(fourcc);
 	AVPixelFormat dst_fmt = target_pix_fmt(hw_mode);
 
-	// Re-création du contexte swscale au changement de format/taille.
-	if (!w->sws || w->sws_w != content_w || w->sws_h != content_h || w->sws_fourcc != fourcc) {
+	// Re-création du contexte swscale au changement de format/taille. Pendant
+	// un resize débouncé, la SOURCE (contenu) change mais la DESTINATION reste
+	// celle de l'encodeur courant : sws scale le contenu à la taille stable.
+	int enc_w = w->enc_w, enc_h = w->enc_h;
+	if (!w->sws || w->sws_w != content_w || w->sws_h != content_h ||
+		w->sws_dw != enc_w || w->sws_dh != enc_h || w->sws_fourcc != fourcc) {
 		if (w->sws) sws_freeContext(w->sws);
 		w->sws = sws_getContext(content_w, content_h, src_fmt,
-			content_w, content_h, dst_fmt, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
+			enc_w, enc_h, dst_fmt, SWS_FAST_BILINEAR, nullptr, nullptr, nullptr);
 		w->sws_w = content_w;
 		w->sws_h = content_h;
+		w->sws_dw = enc_w;
+		w->sws_dh = enc_h;
 		w->sws_fourcc = fourcc;
 	}
 	if (!w->sws) {
@@ -707,12 +774,13 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		return;
 	}
 
-	// Frame sysmem cible (NV12 ou YUV420P), allouée/redimensionnée au besoin.
-	if (frame->format != dst_fmt || frame->width != content_w || frame->height != content_h) {
+	// Frame sysmem cible (NV12 ou YUV420P), allouée aux DIMENSIONS DE
+	// L'ENCODEUR (stables pendant le resize — sws scale le contenu dedans).
+	if (frame->format != dst_fmt || frame->width != enc_w || frame->height != enc_h) {
 		av_frame_unref(frame);
 		frame->format = dst_fmt;
-		frame->width = content_w;
-		frame->height = content_h;
+		frame->width = enc_w;
+		frame->height = enc_h;
 		if (av_frame_get_buffer(frame, 32) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: av_frame_get_buffer a échoué (wid=", w->wid, ")");
 			sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
@@ -892,7 +960,7 @@ void VideoShare::va_cleanup() {
 // ---------------------------------------------------------------------------
 
 String VideoShare::diag_version() const {
-	return "2026-08-16-refcount-diag-v4-canary";
+	return "2026-08-16-refcount-diag-v4-canary+resize-debounce";
 }
 
 void VideoShare::decoder_configure(const std::string &key, const String &codec, int width, int height) {
