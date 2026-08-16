@@ -242,12 +242,12 @@ func get_players_roster() -> Array:
 
 func host_game() -> bool:
 	if session_active:
-		_set_status("Déjà en session LAN")
+		_set_status("Already in a LAN session")
 		return false
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
 	if err != OK:
-		_set_status("Erreur hôte : " + error_string(err))
+		_set_status("Host error: " + error_string(err))
 		return false
 	multiplayer.multiplayer_peer = peer
 	session_active = true
@@ -257,7 +257,7 @@ func host_game() -> bool:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	_start_responder()
-	_set_status("Hébergement sur %s:%d — ouvrez le port UDP %d (et %d) dans le pare-feu si un client ne se connecte pas" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
+	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
 	return true
 
@@ -265,7 +265,7 @@ func host_game() -> bool:
 
 func join_game(ip: String) -> bool:
 	if session_active:
-		_set_status("Déjà en session LAN")
+		_set_status("Already in a LAN session")
 		return false
 	ip = ip.strip_edges()
 	if ip == "":
@@ -273,13 +273,13 @@ func join_game(ip: String) -> bool:
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
-		_set_status("Erreur connexion : " + error_string(err))
+		_set_status("Connection error: " + error_string(err))
 		return false
 	multiplayer.multiplayer_peer = peer
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
 	multiplayer.server_disconnected.connect(_on_server_disconnected)
-	_set_status("Connexion à %s:%d…" % [ip, PORT])
+	_set_status("Connecting to %s:%d…" % [ip, PORT])
 	return true
 
 func disconnect_session() -> void:
@@ -292,18 +292,18 @@ func _on_connected_to_server() -> void:
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	# Timeouts ENet généreux côté client (voir _on_peer_connected).
 	_set_peer_timeout(1)
-	_set_status("Connecté au serveur")
+	_set_status("Connected to server")
 	_emit_players()
 	# S'annoncer : le serveur va re-broadcaster le spawn de tous les avatars.
 	_register_player.rpc_id(1, player_name, player_color)
 
 func _on_connection_failed() -> void:
 	_disconnect_session()
-	_set_status("Connexion échouée — IP inaccessible. Vérifiez : même réseau, pare-feu (UDP %d/%d ouvert côté hôte), isolation AP du routeur." % [PORT, DISCOVERY_PORT])
+	_set_status("Connection failed — IP unreachable. Check: same network, host firewall (UDP %d/%d open), router AP isolation." % [PORT, DISCOVERY_PORT])
 
 func _on_server_disconnected() -> void:
 	_disconnect_session()
-	_set_status("Déconnecté du serveur")
+	_set_status("Disconnected from server")
 
 # ── Spawn / despawn des avatars ──────────────────────────────────────
 
@@ -316,7 +316,7 @@ func _register_player(pname: String, color: Color) -> void:
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
 		return
 	_players[from] = {"name": pname, "color": color}
-	_set_status("Joueur %d (%s) a rejoint" % [from, pname])
+	_set_status("Player %d (%s) joined" % [from, pname])
 	for id in _players:
 		var entry: Dictionary = _players[id]
 		_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
@@ -350,7 +350,7 @@ func _remove_player(peer_id: int) -> void:
 
 func _on_peer_connected(id: int) -> void:
 	if is_host:
-		_set_status("Joueur %d connecté…" % id)
+		_set_status("Player %d connected…" % id)
 		# Timeouts ENet généreux : pendant un stream partagé (vidéo/audio), le
 		# thread principal fait de l'encodage/décodage JPEG par frame ; un à-coup
 		# de quelques secondes ne doit pas faire tomber la session (défaut ENet :
@@ -377,16 +377,16 @@ func _receive_level(scene_text: String) -> void:
 	var tmp := "user://lan_level.tscn"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
-		_set_status("Impossible d'écrire le niveau de l'hôte")
+		_set_status("Could not write the host's level")
 		return
 	f.store_string(scene_text)
 	f.close()
 	var scene: PackedScene = load(tmp)
 	if scene == null:
-		_set_status("Niveau de l'hôte illisible (assets manquants ?), niveau local conservé")
+		_set_status("Host level unreadable (missing assets?), kept local level")
 		return
 	level_apply_requested.emit(scene)
-	_set_status("Niveau de l'hôte chargé")
+	_set_status("Host level loaded")
 
 # Appelé par wayland_room après avoir remplacé le niveau : bascule la racine
 # et déplace les avatars distants vers un nouveau conteneur (l'ancien niveau
@@ -446,7 +446,7 @@ func _on_peer_disconnected(id: int) -> void:
 	_video_acked.erase(id)
 	_video_config_sent.erase(id)
 	_video_ack_pending.erase(id)
-	_set_status("Joueur %d déconnecté" % id)
+	_set_status("Player %d disconnected" % id)
 
 func _has_streaming_window() -> bool:
 	if not windows_provider.is_valid():
@@ -1817,13 +1817,13 @@ func discover_games() -> void:
 		_scanner.close()
 		_scanner = null
 		_scanning = false
-		_set_status("Erreur scan réseau")
+		_set_status("Network scan error")
 		return
 	# Requête en unicast sur tout le /24 (fiable, et teste le même chemin
 	# réseau que le join) + broadcasts, renvoyés plusieurs fois (UDP non fiable).
+	_set_status("Searching for games…")
 	_send_unicast_sweep(_scanner)
 	_send_broadcast_queries(_scanner)
-	_set_status("Recherche de parties…")
 	var elapsed := 0.0
 	while elapsed < DISCOVERY_TIMEOUT:
 		await get_tree().create_timer(DISCOVERY_RETRY_INTERVAL).timeout
@@ -1835,9 +1835,9 @@ func discover_games() -> void:
 	_scanner = null
 	_scanning = false
 	if _scan_results.is_empty():
-		_set_status("Aucune partie trouvée — vérifiez que les 2 PC sont sur le même réseau (pare-feu, isolation AP du routeur)")
+		_set_status("No games found — make sure both PCs are on the same network (firewall, router AP isolation)")
 	else:
-		_set_status("%d partie(s) trouvée(s)" % _scan_results.size())
+		_set_status("%d game(s) found" % _scan_results.size())
 	discovery_results.emit(_scan_results.duplicate())
 
 func _send_unicast_sweep(udp: PacketPeerUDP) -> void:
