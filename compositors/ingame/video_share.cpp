@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_set>
 
@@ -95,8 +96,17 @@ bool VideoShare::start(const String &codec, int bitrate) {
 	codec_name = (codec == "av1") ? "av1" : "h264";
 	hw_av1 = (codec_name == "av1");
 
-	if (va_init()) {
-		hw_mode = true;
+	// Encodage MATÉRIEL désactivé par défaut : sur cette machine (RDNA3 /
+	// radeonsi) le chemin VAAPI est peu fiable — h264_vaapi comme av1_vaapi
+	// plafonnent à ~8 img/s (~130 ms/frame, coût hors lecture DMA-BUF) puis
+	// gèlent le GPU (freeze total du jeu). On encode donc en logiciel
+	// (libx264, thread worker) par défaut ; l'accélération VAAPI reste
+	// accessible à des fins de test via CYBERREALM_VIDEO_HW=1.
+	const char *hw_env = getenv("CYBERREALM_VIDEO_HW");
+	bool want_hw = hw_env && strcmp(hw_env, "1") == 0;
+
+	if (want_hw) {
+		hw_mode = va_init();
 	} else {
 		hw_mode = false;
 	}
@@ -104,10 +114,11 @@ bool VideoShare::start(const String &codec, int bitrate) {
 	if (!hw_mode) {
 		if (hw_av1) {
 			// AV1 matériel seulement : pas de fallback logiciel dans cette
-			// version (libsvtav1 non lié).
+			// version (libsvtav1 non lié). L'appelant retente avec le codec
+			// suivant de la préférence (h264 → libx264).
 			va_cleanup();
-			UtilityFunctions::print("waylandgodot: video_share: AV1 matériel indisponible, "
-				"pas de fallback logiciel — partage vidéo désactivé");
+			UtilityFunctions::print("waylandgodot: video_share: AV1 sans accélération VAAPI "
+				"(CYBERREALM_VIDEO_HW=1 requis) et pas de fallback logiciel — partage vidéo désactivé");
 			return false;
 		}
 		const AVCodec *c = avcodec_find_encoder_by_name("libx264");
@@ -649,6 +660,16 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	// mais hors thread principal). Le buffer est garanti synchronisé par le
 	// compositeur avant la soumission (wait_for_dmabuf_gpu_writes) ; on
 	// ré-invalide quand même le cache CPU pour lire les données fraîches.
+	//
+	// Diagnostic par étape : si une frame dépasse ~25 ms (pilote VAAPI RDNA3
+	// suspecté de plafonner à ~130 ms/frame), on veut le détail du coût :
+	// lecture DMA-BUF + conversion, upload VAAPI, ou encode lui-même.
+	using sclock = std::chrono::steady_clock;
+	auto t_mm = sclock::now();
+	auto t_sw = t_mm;
+	auto t_up = t_mm;
+	auto t_end = t_mm;
+
 	long page_size = sysconf(_SC_PAGE_SIZE);
 	off_t plane_offset = 0; // buffers GBM single-plane → offset 0
 	off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
@@ -706,6 +727,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	const int src_linesize[4] = { (int)stride, 0, 0, 0 };
 	sws_scale(w->sws, src_slices, src_linesize, 0, content_h,
 		frame->data, frame->linesize);
+	t_sw = sclock::now();
 
 	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
 	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
@@ -743,6 +765,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 			input = nullptr;
 		}
 	}
+	t_up = sclock::now();
 
 	if (input) {
 		int ret = avcodec_send_frame(ctx, input);
@@ -767,6 +790,25 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		// L'échec d'upload laisse une frame sans encodage → demande une
 		// keyframe pour resynchroniser le récepteur sur la suivante.
 		request_keyframe(w->wid);
+	}
+	t_end = sclock::now();
+
+	// Frame lente (> 25 ms) : détail du coût, throttlé à 1 ligne/s pour ne
+	// pas noyer le log (un worker bloqué à 8 img/s = ~8 lignes par seconde
+	// sans throttle).
+	double d_read = std::chrono::duration<double, std::milli>(t_sw - t_mm).count();
+	double d_upload = std::chrono::duration<double, std::milli>(t_up - t_sw).count();
+	double d_enc = std::chrono::duration<double, std::milli>(t_end - t_up).count();
+	if (d_read + d_upload + d_enc > 25.0) {
+		static auto last_slow = sclock::time_point{};
+		if (sclock::now() - last_slow >= std::chrono::seconds(1)) {
+			last_slow = sclock::now();
+			UtilityFunctions::print("waylandgodot: [video] frame lente: total ",
+				String::num(d_read + d_upload + d_enc, 1), " ms (lecture+conv ",
+				String::num(d_read, 1), " ms, upload ", String::num(d_upload, 1),
+				" ms, encode ", String::num(d_enc, 1), " ms) ", w->content_w, "x",
+				w->content_h, " hw=", hw_mode ? "1" : "0");
+		}
 	}
 }
 
