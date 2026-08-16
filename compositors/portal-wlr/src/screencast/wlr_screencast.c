@@ -16,6 +16,7 @@
 #include <sys/param.h>
 #include <sys/stat.h>
 #include <assert.h>
+#include <unistd.h>
 #include <wayland-client-protocol.h>
 #include <xf86drm.h>
 
