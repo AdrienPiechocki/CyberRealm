@@ -656,9 +656,11 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		return;
 	}
 	const uint8_t *src = static_cast<const uint8_t *>(map) + map_delta;
+	auto t_mmap = clock::now();
 	struct dma_buf_sync sync = {};
 	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
 	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+	auto t_sync = clock::now();
 
 	AVPixelFormat src_fmt = drm_fourcc_to_avfmt(fourcc);
 	AVPixelFormat dst_fmt = target_pix_fmt(hw_mode);
@@ -763,19 +765,19 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 			}
 		}
 		auto t_enc1 = clock::now();
-		double d_sws = std::chrono::duration<double, std::milli>(t_sws1 - t_sws0).count();
 		double d_xfer = std::chrono::duration<double, std::milli>(t_xfer1 - t_xfer0).count();
 		double d_enc = std::chrono::duration<double, std::milli>(t_enc1 - t_enc0).count();
 		// Diagnostic throttlé (≤ 1/s) : localise le goulot d'étranglement
-		// (lecture+swscale / transfert GPU / encodage GPU) quand le worker
-		// dépasse le budget (~15 ms pour viser 60 ips).
+		// (mmap / sync dma-buf / swscale / transfert GPU / encodage GPU)
+		// quand le worker dépasse le budget (~15 ms pour viser 60 ips).
 		static std::mutex diag_m;
 		static double last_diag = 0.0;
 		bool do_print = false;
 		{
 			std::lock_guard<std::mutex> g(diag_m);
 			double now = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
-			if (d_sws + d_xfer + d_enc > 15.0 && now - last_diag > 1.0) {
+			if (std::chrono::duration<double, std::milli>(t_sws1 - t_sws0).count() + d_xfer + d_enc > 15.0
+				&& now - last_diag > 1.0) {
 				last_diag = now;
 				do_print = true;
 			}
@@ -783,7 +785,10 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		if (do_print) {
 			UtilityFunctions::print("waylandgodot: video_share: [diag] encode ", w->wid, "x", w->sws_h,
 				" hw=", hw_mode, " codec=", (hw_av1 ? "av1" : "h264"),
-				" lecture+sws=", d_sws, "ms transfert=", d_xfer, "ms encodage=", d_enc, "ms");
+				" mmap=", std::chrono::duration<double, std::milli>(t_mmap - t_sws0).count(),
+				"ms sync=", std::chrono::duration<double, std::milli>(t_sync - t_mmap).count(),
+				"ms sws=", std::chrono::duration<double, std::milli>(t_sws1 - t_sync).count(),
+				"ms transfert=", d_xfer, "ms encodage=", d_enc, "ms");
 		}
 	} else {
 		// L'échec d'upload laisse une frame sans encodage → demande une
@@ -890,6 +895,15 @@ void VideoShare::decoder_configure(const std::string &key, const String &codec, 
 	d->pkt = av_packet_alloc();
 	d->width = width;
 	d->height = height;
+	if (d->avctx) {
+		// PAS de frame-threading (h264 décodeur = threads auto par défaut,
+		// contrairement à dav1d) : avec avcodec_flush_buffers à chaque
+		// keyframe (NACK après EAGAIN/échec), le thread pool h264 libère des
+		// buffers pendant qu'un thread de décodage y accède encore → double
+		// free / corruption de tas (crash récepteur, corrélé au passage
+		// av1→h264). Thread unique : send/receive/flush sont synchrones.
+		d->avctx->thread_count = 1;
+	}
 	if (!d->avctx || !d->frame || !d->pkt ||
 		avcodec_open2(d->avctx, cd, nullptr) < 0) {
 		decoder_destroy(d);
