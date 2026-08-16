@@ -1695,7 +1695,12 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     uint8_t *dst = cache.bytes.ptrw();
     const uint8_t *src = static_cast<const uint8_t *>(pixels);
 
-    // DRM_FORMAT_ARGB8888 = BGRA en mémoire (little-endian) → swizzle RGBA
+    // DRM_FORMAT_ARGB8888 = BGRA en mémoire (little-endian) → swizzle RGBA.
+    // L'alpha du buffer est préservée : le shader 3D discard les pixels à
+    // alpha ≈ 0, donc forcer A=0 rendait TOUTES les fenêtres transparentes
+    // dans ce chemin de secours CPU (alors que les chemins Vulkan/DMABUF
+    // conservent l'alpha réel). Une fenêtre opaque rend A=255 ; seules les
+    // zones réellement transparentes (coins arrondis, ombres CSD) restent à 0.
     timespec t_copy_start, t_copy_end;
     clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
     for (int y = 0; y < h; y++) {
@@ -1704,7 +1709,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
             dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
             dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
             dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
-            dst[(y * w + x) * 4 + 3] = 0; // Alpha initialisé à 0 (transparent)
+            dst[(y * w + x) * 4 + 3] = row[x * 4 + 3]; // A <- A (ARGB8888)
         }
     }
     clock_gettime(CLOCK_MONOTONIC, &t_copy_end);
