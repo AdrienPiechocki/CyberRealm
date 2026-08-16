@@ -52,6 +52,11 @@ var _remote_shared: Dictionary = {} # peer_id -> {wid -> bool} (partage en cours
 # pas encore marquée `shared` par l'état (course 1re frame vs état). Réappliquée
 # par _apply_remote_windows quand le quad est recréé/que l'état arrive.
 var _pending_remote_textures: Dictionary = {}
+# peer_id -> {wid -> ImageTexture} : textures REUTILISÉES du récepteur. Chaque
+# frame décodée est appliquée en place (tex.update) au lieu d'allouer une
+# nouvelle ImageTexture + upload GPU complet à chaque frame → moins de churn
+# GPU, la vidéo distante est moins saccadée.
+var _remote_textures: Dictionary = {}
 var _windows_dirty := false # un changement d'état de fenêtre est en attente
 var _last_windows_send := 0.0
 var _last_windows_texture_send := 0.0
@@ -107,12 +112,12 @@ const WINDOW_MAX_AHEAD := 3 # flow control : au plus 3 frames non appliquées en
 # petites (P-frames) mais dépendantes : pas de drop possible (le compositeur
 # saute une capture si l'encodeur lit encore le buffer), les keyframes
 # resynchronisent.
-const VIDEO_BITRATE := 12_000_000 # débit cible par fenêtre (bits/s) ; réseau local → la qualité prime (CQP/CRF côté C++)
-const VIDEO_CODEC_PREF := ["h264", "av1"] # essai dans cet ordre ; h264 matériel (VAAPI) est stable sur radeonsi, av1 VAAPI est expérimental (dérive + gel GPU sur RDNA3)
+const VIDEO_BITRATE := 4_000_000 # débit cible par fenêtre (bits/s) ; total = n_fenêtres × ceci
+const VIDEO_CODEC_PREF := ["av1", "h264"] # essai dans cet ordre ; av1 = matériel seulement (pas de fallback logiciel)
 const VIDEO_PACKET_SINGLE_MAX := 40000 # paquet ≤ ceci : 1 RPC (≤ 32 fragments ENet, 1 vague)
 const VIDEO_CHUNK_SIZE := 30000 # au-delà : découpage, chaque morceau ≤ 1 vague ENet
 const VIDEO_CHUNK_STALE_MSEC := 2000 # purge des assemblages de chunks incomplets
-const VIDEO_MAX_AHEAD := 6 # flow control : ≤ 6 frames non appliquées en vol par peer (RTT LAN + batching tick ~2-3 frames de latence ACK)
+const VIDEO_MAX_AHEAD := 4 # flow control : ≤ 4 frames non appliquées en vol par peer
 const VIDEO_NACK_GAP_MSEC := 500 # demande de keyframe (NACK) au plus 2×/s par fenêtre
 
 # ── Encodage JPEG sur un thread de travail ───────────────────────────
@@ -180,15 +185,6 @@ var _video_diag_sent := 0
 var _video_diag_bytes := 0
 var _video_diag_last_applied := 0
 var _video_diag_applied := 0
-var _video_diag_feed_fail := 0
-var _video_diag_noconfig := 0
-var _video_diag_nack := 0
-var _video_diag_rx_calls := 0
-var _video_diag_first_rx := 0
-var _video_diag_first_rx_wid := {} # {wid: n} premières frames reçues PAR fenêtre
-var _video_diag_first_sent := 0
-var _video_diag_selftest_done := false
-var _video_diag_first_decoded_refs := 0
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -244,53 +240,10 @@ func get_players_roster() -> Array:
 
 # ── Host ─────────────────────────────────────────────────────────────
 
-func _video_so_probe() -> void:
-	# Vérifie depuis GDScript quelle version du .so est réellement chargée :
-	# si le récepteur affiche une version != source courante, les logs C++
-	# manquants s'expliquent (déploiement partiel) au lieu d'une régression.
-	var has_cfg := compositor != null and compositor.has_method("video_decoder_configure")
-	var has_feed := compositor != null and compositor.has_method("video_decoder_feed")
-	var has_ver := compositor != null and compositor.has_method("video_diag_version")
-	var ver := ""
-	if has_ver:
-		ver = String(compositor.video_diag_version())
-	print("[video] .so probe: has_configure=%s has_feed=%s has_version=%s version=%s" % [has_cfg, has_feed, has_ver, ver])
-
-# Diagnostic différentiel du crash "double free" du récepteur vidéo. Les
-# méthodes video_diag_small_image / video_diag_big_image retournent un
-# Ref<Image> par une méthode liée SANS aucun décodage : si ces boucles
-# crashent, le bug est dans le marshaling du Ref<Image> (indépendant de la
-# taille/de la chaîne de décodage). Si elles passent, le crash vient des
-# données décodées (sws / create_from_data sur buffer issu du décodeur).
-func _run_video_refcount_selftest() -> void:
-	if _video_diag_selftest_done or compositor == null:
-		return
-	if not compositor.has_method("video_diag_small_image"):
-		print("[diag] self-test impossible : .so trop ancien (manque video_diag_small_image)")
-		_video_diag_selftest_done = true
-		return
-	_video_diag_selftest_done = true
-	var ok_small := true
-	for i in 50:
-		var im: Image = compositor.video_diag_small_image()
-		if im == null or im.is_empty():
-			ok_small = false
-			break
-	print("[diag] self-test Ref<Image> 1x1 (50 iterations) : %s" % ("OK" if ok_small else "ECHEC"))
-	var ok_big := true
-	for i in 5:
-		var im2: Image = compositor.video_diag_big_image(1000, 600)
-		if im2 == null or im2.is_empty():
-			ok_big = false
-			break
-	print("[diag] self-test Ref<Image> 1000x600 (5 iterations) : %s" % ("OK" if ok_big else "ECHEC"))
-
 func host_game() -> bool:
 	if session_active:
 		_set_status("Déjà en session LAN")
 		return false
-	_video_so_probe()
-	_run_video_refcount_selftest()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
 	if err != OK:
@@ -317,8 +270,6 @@ func join_game(ip: String) -> bool:
 	ip = ip.strip_edges()
 	if ip == "":
 		return false
-	_video_so_probe()
-	_run_video_refcount_selftest()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
@@ -980,13 +931,13 @@ func _drain_decoded_frames() -> void:
 			_last_applied_version[from] = {}
 		_last_applied_version[from][wid] = version
 		acked_senders[from] = true
-		var tex: Texture2D = ImageTexture.create_from_image(img)
+		var tex: Texture2D = _make_or_update_remote_texture(from, wid, img)
 		# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 		# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
 		if not _pending_remote_textures.has(from):
 			_pending_remote_textures[from] = {}
 		_pending_remote_textures[from][wid] = tex
-		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid) and OS.get_environment("CYBERREALM_SKIP_QUAD") != "1":
+		if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
 			_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
 	# ACK immédiat de la version appliquée (fiables, minuscules) : l'émetteur
 	# sait presque en temps réel où en est le récepteur → flow control précis.
@@ -1202,10 +1153,6 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 		_audio_first_printed = true
 		print("[audio] premier paquet reçu et décodé (%d frames)" % (pcm.size() / 4))
 	_ensure_audio_player()
-	if _audio_received_count <= 5:
-		print("[audio] _ensure_audio_player ok (player=%s playback=%s)" % [
-			"valid" if (_audio_player != null and is_instance_valid(_audio_player)) else "null",
-			"valid" if (_audio_playback != null and is_instance_valid(_audio_playback)) else "null"])
 	var frames := PackedVector2Array()
 	var n := pcm.size() / 4
 	frames.resize(n)
@@ -1216,8 +1163,6 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 		frames[i] = Vector2(l, r)
 	if _audio_playback != null and is_instance_valid(_audio_playback):
 		_audio_playback.push_buffer(frames)
-		if _audio_received_count <= 5:
-			print("[audio] push_buffer ok (%d frames)" % frames.size())
 
 # Crée le lecteur de flux audio distant au premier paquet reçu. Le buffer du
 # générateur (0.5 s) absorbe la gigue réseau ; push_buffer laisse tomber les
@@ -1343,25 +1288,9 @@ func _announce_video_configs(force: bool) -> void:
 			or not compositor.has_method("get_window_geometry"):
 		return
 	for wid in _video_windows_sent:
-		# La config doit refléter le flux RÉELLEMENT émis : la taille de
-		# l'encodeur (C++), pas la géométrie de la fenêtre. Pendant un resize
-		# débouncé, l'encodeur garde son ancienne taille (le contenu est mis à
-		# l'échelle) : annoncer la géométrie tout de suite forcerait le
-		# récepteur à recréer son décodeur alors que les frames sont encore à
-		# l'ancienne taille → boucle de NACK + décalage. La config ne change
-		# donc qu'une fois l'encodeur réellement recréé (resize stabilisé).
-		var w := 0
-		var h := 0
-		if compositor.has_method("video_share_window_size"):
-			var enc: Dictionary = compositor.video_share_window_size(wid)
-			w = int(enc.get("width", 0))
-			h = int(enc.get("height", 0))
-		if w <= 0 or h <= 0:
-			# Fenêtre pas encore soumise à l'encodeur (première frame en vol) :
-			# fallback sur la géométrie, réessayé au prochain tick.
-			var geo: Dictionary = compositor.get_window_geometry(wid)
-			w = int(geo.get("width", 0))
-			h = int(geo.get("height", 0))
+		var geo: Dictionary = compositor.get_window_geometry(wid)
+		var w := int(geo.get("width", 0))
+		var h := int(geo.get("height", 0))
 		if w <= 0 or h <= 0:
 			# Fenêtre pas encore géométrée (X11/xwayland sans window_geometry) :
 			# on ne peut pas créer le décodeur côté récepteur. Réessayé au prochain
@@ -1423,10 +1352,6 @@ func _drain_video_packets() -> void:
 				# inutile d'envoyer des frames qu'il ne peut pas décoder.
 				_announce_video_configs(false)
 				continue
-			if _video_diag_first_sent < 5:
-				_video_diag_first_sent += 1
-				print("[video] env paquet n°%d pid=%d wid=%d seq=%d bytes=%d keyframe=%s" % [
-					_video_diag_first_sent, pid, wid, seq, data.size(), keyframe])
 			_send_video_packet(pid, wid, seq, keyframe, data)
 			sent[wid] = seq
 			_video_diag_sent += 1
@@ -1435,10 +1360,9 @@ func _drain_video_packets() -> void:
 	if now - _video_diag_last_log >= 1000:
 		_video_diag_last_log = now
 		if _video_diag_sent > 0:
-			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d (%s) fps=%d" % [
+			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d" % [
 				_video_diag_sent, float(_video_diag_bytes) / 1024.0,
-				compositor.video_share_pending(), _video_windows_sent.size(),
-				", ".join(PackedStringArray(_video_windows_sent)), int(Engine.get_frames_per_second())])
+				compositor.video_share_pending(), _video_windows_sent.size()])
 		_video_diag_sent = 0
 		_video_diag_bytes = 0
 
@@ -1510,9 +1434,7 @@ func _sync_video_config(wid: int, codec: String, width: int, height: int) -> voi
 	if not _video_configs.has(from):
 		_video_configs[from] = {}
 	_video_configs[from][wid] = {"codec": codec, "w": width, "h": height}
-	print("[video] config reçue peer=%d wid=%d codec=%s %dx%d" % [from, wid, codec, width, height])
 	compositor.video_decoder_configure(_video_key(from, wid), codec, width, height)
-	print("[video] video_decoder_configure appelée key=%s" % _video_key(from, wid))
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = -1
@@ -1528,7 +1450,6 @@ func _video_need_keyframe(wid: int) -> void:
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
 	if _video_mode and compositor != null and compositor.has_method("video_share_request_keyframe"):
-		print("[video] NACK reçu wid=%d (keyframe demandée)" % wid)
 		compositor.video_share_request_keyframe(wid)
 
 # ACK du récepteur : dernières seq appliquées par fenêtre (petits, fiables,
@@ -1553,20 +1474,6 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
-	# Compteur de diagnostics : un appel ici prouve qu'un paquet vidéo arrive
-	# (avant tout early-return). Les 5 premiers appels globaux et les 3
-	# premiers PAR fenêtre sont logués en détail (utile quand un flux n'arrive
-	# pas : on voit si c'est l'émission, la réception ou le décodage).
-	_video_diag_rx_calls += 1
-	if _video_diag_first_rx < 5:
-		_video_diag_first_rx += 1
-		print("[video] rx frame n°%d wid=%d seq=%d idx=%d/%d bytes=%d keyframe=%s" % [
-			_video_diag_first_rx, wid, seq, index, total, bytes.size(), keyframe])
-	var _wrx := int(_video_diag_first_rx_wid.get(wid, 0))
-	if _wrx < 3:
-		_video_diag_first_rx_wid[wid] = _wrx + 1
-		print("[video] rx frame (wid=%d) n°%d seq=%d idx=%d/%d bytes=%d keyframe=%s" % [
-			wid, _wrx + 1, seq, index, total, bytes.size(), keyframe])
 	if wid < 0 or seq < 0 or total < 1 or bytes.is_empty():
 		return
 	if compositor == null or not compositor.has_method("video_decoder_feed"):
@@ -1580,59 +1487,29 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 			return # assemblage incomplet
 	if not _video_configs.get(from, {}).has(wid):
 		# Course config/frame (canaux différents) : on ne peut pas décoder.
-		_video_diag_noconfig += 1
 		_request_video_keyframe(from, wid)
 		return
 	var img: Image = compositor.video_decoder_feed(_video_key(from, wid), data, keyframe)
-	if _video_diag_first_rx < 8:
-		print("[video] rx feed key=%s ret=%s empty=%s" % [
-			_video_key(from, wid), "null" if img == null else "image", "empty" if (img != null and img.is_empty()) else "non-empty"])
 	if img == null or img.is_empty():
-		_video_diag_feed_fail += 1
 		if not keyframe:
 			_request_video_keyframe(from, wid)
 		return
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
-	# Diagnostic refcount NON destructif : get_reference_count() renvoie le
-	# refcount sans libérer l'objet (unreference() libérait l'objet puis le
-	# Variant img appelait unref() sur la mémoire libérée → use-after-free →
-	# corruption de heap). refcount == 1 → marshaling équilibré. On logue puis
-	# on continue le chemin normal (texture) pour tester le vrai parcours.
-	if _video_diag_first_decoded_refs < 3:
-		_video_diag_first_decoded_refs += 1
-		print("[diag] image décodée wid=%d seq=%d refcount=%d" % [wid, seq, img.get_reference_count()])
-	if OS.get_environment("CYBERREALM_SKIP_TEX") == "1":
-		if _video_diag_first_rx < 8:
-			print("[video] rx SKIP_TEX (décode sans texture) wid=%d seq=%d" % [wid, seq])
-		_video_diag_applied += 1
-		return
-	var tex: Texture2D = ImageTexture.create_from_image(img)
-	if _video_diag_first_rx < 8:
-		print("[video] rx texture créée wid=%d seq=%d (%dx%d)" % [wid, seq, img.get_width(), img.get_height()])
+	var tex: Texture2D = _make_or_update_remote_texture(from, wid, img)
 	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
 	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
 	if not _pending_remote_textures.has(from):
 		_pending_remote_textures[from] = {}
 	_pending_remote_textures[from][wid] = tex
-	var _q: Variant = _remote_window_quads.get(from, {}).get(wid, null)
-	if _video_diag_first_rx < 8:
-		print("[video] rx quad: has_quads=%s has_wid=%s quad_valid=%s skip_quad=%s" % [
-			_remote_window_quads.has(from), _remote_window_quads.has(from) and _remote_window_quads[from].has(wid),
-			"valid" if (_q != null and is_instance_valid(_q)) else "invalid",
-			OS.get_environment("CYBERREALM_SKIP_QUAD") == "1"])
-	if _q != null and is_instance_valid(_q) and OS.get_environment("CYBERREALM_SKIP_QUAD") != "1":
-		_set_remote_quad_texture(_q, tex)
-		if _video_diag_first_rx < 8:
-			print("[video] rx quad appliquée OK")
+	if _remote_window_quads.has(from) and _remote_window_quads[from].has(wid):
+		_set_remote_quad_texture(_remote_window_quads[from][wid], tex)
 	# ACK en lot (vidé par _flush_video_acks au prochain tick).
 	if not _video_ack_pending.has(from):
 		_video_ack_pending[from] = {}
 	_video_ack_pending[from][wid] = seq
 	_video_diag_applied += 1
-	if _video_diag_first_rx < 8:
-		print("[video] rx frame traité wid=%d seq=%d (handler complet)" % [wid, seq])
 
 # Accumule les morceaux d'un paquet chunké ; renvoie le paquet complet une
 # fois tous les morceaux reçus (canal fiable → pas de perte, l'ordre intra-
@@ -1674,8 +1551,6 @@ func _flush_video_acks() -> void:
 		return
 	for from in _video_ack_pending:
 		if from in multiplayer.get_peers():
-			if _video_diag_first_rx < 8:
-				print("[video] rx ack flush vers %d (%d entrées)" % [from, (_video_ack_pending[from] as Dictionary).size()])
 			_ack_video_seq.rpc_id(from, _video_ack_pending[from])
 	_video_ack_pending.clear()
 
@@ -1686,13 +1561,9 @@ func _process_video_receiver() -> void:
 	_purge_video_chunks()
 	if Time.get_ticks_msec() - _video_diag_last_applied >= 1000:
 		_video_diag_last_applied = Time.get_ticks_msec()
-		print("[video] diag rx: appliquées/s=%d feed_fail/s=%d noconfig/s=%d nack/s=%d rx_calls/s=%d" % [
-			_video_diag_applied, _video_diag_feed_fail, _video_diag_noconfig, _video_diag_nack, _video_diag_rx_calls])
+		if _video_diag_applied > 0:
+			print("[video] diag rx: appliquées/s=%d" % _video_diag_applied)
 		_video_diag_applied = 0
-		_video_diag_feed_fail = 0
-		_video_diag_noconfig = 0
-		_video_diag_nack = 0
-		_video_diag_rx_calls = 0
 
 # Demande une keyframe à l'émetteur (décodeur désynchronisé, config manquante
 # ou changée). Throttlé pour ne pas flooder (au plus 2×/s par fenêtre).
@@ -1703,7 +1574,6 @@ func _request_video_keyframe(from: int, wid: int) -> void:
 	if now - int(_video_nack_last[from].get(wid, -999999)) < VIDEO_NACK_GAP_MSEC:
 		return
 	_video_nack_last[from][wid] = now
-	_video_diag_nack += 1
 	if from in multiplayer.get_peers():
 		_video_need_keyframe.rpc_id(from, wid)
 
@@ -1779,7 +1649,7 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			# Course 1re frame vs état : si une texture a déjà été reçue,
 			# l'appliquer maintenant (le quad vient peut-être d'être recréé).
 			var pending: Dictionary = _pending_remote_textures.get(peer_id, {})
-			if pending.has(wid) and OS.get_environment("CYBERREALM_SKIP_QUAD") != "1":
+			if pending.has(wid):
 				_set_remote_quad_texture(quad, pending[wid])
 	for wid in quads.keys():
 		if seen.has(wid):
@@ -1788,6 +1658,8 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 		if is_instance_valid(q):
 			q.queue_free()
 		quads.erase(wid)
+		if _remote_textures.has(peer_id):
+			_remote_textures[peer_id].erase(wid)
 		if pins != null:
 			pins.unpin_remote(peer_id, wid)
 		if focus != null:
@@ -1844,14 +1716,9 @@ func _sync_remote_quad_collision(quad: MeshInstance3D) -> void:
 # quad revient au noir (placeholder, SHARE OFF). Quand une texture est posée,
 # on répercute aussi sur les PiP (pins) et l'overlay focus distant (vue seule).
 func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
-	var diag := _video_diag_first_rx < 8
-	if diag:
-		print("[video] quad set début (quad_valid=%s)" % ("valid" if is_instance_valid(quad) else "invalid"))
 	if quad == null or not is_instance_valid(quad):
 		return
 	var mat: StandardMaterial3D = quad.material_override
-	if diag:
-		print("[video] quad set mat=%s" % ("null" if mat == null else "ok"))
 	if mat == null:
 		return
 	if tex == null:
@@ -1859,24 +1726,14 @@ func _set_remote_quad_texture(quad: MeshInstance3D, tex: Texture2D) -> void:
 		mat.albedo_color = Color.BLACK
 	else:
 		mat.albedo_texture = tex
-		if diag:
-			print("[video] quad set albedo_texture OK")
 		mat.albedo_color = Color.WHITE
 		var peer: int = int(quad.get_meta("remote_peer", -1))
 		var wid: int = int(quad.get_meta("remote_wid", -1))
-		if diag:
-			print("[video] quad set meta peer=%d wid=%d" % [peer, wid])
 		if peer >= 0 and wid >= 0:
 			if pins != null:
 				pins.on_remote_texture_updated(peer, wid, tex)
-				if diag:
-					print("[video] quad set pins OK")
 			if focus != null:
 				focus.on_remote_texture_updated(peer, wid, tex)
-				if diag:
-					print("[video] quad set focus OK")
-	if diag:
-		print("[video] quad set fin")
 
 # Renvoie la texture actuellement affichée sur un quad distant (null si la
 # fenêtre n'est pas partagée / pas de frames reçues). Pour les PiP/overlays.
@@ -1889,6 +1746,25 @@ func get_remote_window_texture(peer_id: int, wid: int) -> Texture2D:
 				return mat.albedo_texture
 	return null
 
+# Réutilise l'ImageTexture de la fenêtre distante (update en place) quand la
+# taille/format ne change pas, sinon en crée une nouvelle. Évite d'allouer une
+# texture GPU + upload complet à CHAQUE frame décodée (30/s pour une vidéo) :
+# le churn GPU est la cause principale de la saccade de la vidéo distante.
+func _make_or_update_remote_texture(from: int, wid: int, img: Image) -> Texture2D:
+	if img == null or img.is_empty():
+		return null
+	var tex: ImageTexture = _remote_textures.get(from, {}).get(wid, null)
+	if tex == null or not is_instance_valid(tex) \
+			or tex.get_width() != img.get_width() or tex.get_height() != img.get_height() \
+			or tex.get_format() != img.get_format():
+		tex = ImageTexture.create_from_image(img)
+		if not _remote_textures.has(from):
+			_remote_textures[from] = {}
+		_remote_textures[from][wid] = tex
+	else:
+		tex.update(img)
+	return tex
+
 func _clear_remote_windows(peer_id: int) -> void:
 	var container: Node3D = _remote_windows.get(peer_id)
 	if container != null and is_instance_valid(container):
@@ -1897,6 +1773,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 	_remote_window_quads.erase(peer_id)
 	_remote_shared.erase(peer_id)
 	_pending_remote_textures.erase(peer_id)
+	_remote_textures.erase(peer_id)
 	_last_applied_version.erase(peer_id)
 	# Libère les décodeurs vidéo des flux de ce peer.
 	if compositor != null and compositor.has_method("video_decoder_reset"):
