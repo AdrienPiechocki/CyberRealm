@@ -129,7 +129,7 @@ mkdir -p "$HOME/.local/share/applications"
 cat > "$HOME/.local/share/applications/cyberrealm.desktop" <<EOF
 [Desktop Entry]
 Name=CyberRealm
-Comment=Open CyberRealm (3D evironment desktop)
+Comment=Open CyberRealm (3D environment desktop)
 Exec=$GAME
 Type=Application
 Categories=Game;
