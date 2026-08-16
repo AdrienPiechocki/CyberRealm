@@ -187,6 +187,18 @@ bool VideoShare::window_ready(int wid) const {
 	return true; // fenêtre non partagée → capture normale
 }
 
+bool VideoShare::is_encode_window(int wid) const {
+	std::vector<VideoEncodeWindow *> ws;
+	{
+		std::lock_guard<std::mutex> g(windows_mutex);
+		ws = windows;
+	}
+	for (auto *w : ws) {
+		if (w->wid == wid) return true;
+	}
+	return false;
+}
+
 bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc,
 		int alloc_w, int alloc_h, int content_w, int content_h) {
 	if (!active.load()) return false;
@@ -484,6 +496,21 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		ctx->bit_rate = bitrate;
 		ctx->gop_size = 60;
 		ctx->max_b_frames = hw_av1 ? 0 : 2;
+		// Qualité : sur un réseau local le débit n'est pas limité, c'est la
+		// qualité perçue qui prime (jeux : texte net, pas d'artefacts).
+		//   - h264_vaapi : CQP (qualité constante) — le débit réel s'adapte au
+		//     contenu (~8 Mbps à qp 24 sur un 1080p test pattern).
+		//   - av1_vaapi : n'expose PAS d'option qp (pas de CQP contrôlable, le
+		//     CQP par défaut encode à un débit non maîtrisé) → VBR avec un
+		//     débit généreux (12 Mbps) : qualité sans artefacts pour du 1080p.
+		// En cas d'échec de av_opt_set (pilote trop ancien), on retombe
+		// silencieusement sur le VBR paramétré par ctx->bit_rate.
+		if (hw_av1) {
+			av_opt_set(ctx->priv_data, "rc_mode", "VBR", 0);
+		} else {
+			av_opt_set(ctx->priv_data, "rc_mode", "CQP", 0);
+			av_opt_set(ctx->priv_data, "qp", "24", 0);
+		}
 		if (avcodec_open2(ctx, codec, nullptr) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(", name, ") a échoué");
 			av_buffer_unref(&frames_ref);
@@ -507,13 +534,16 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 	ctx->time_base = (AVRational){1, 60};
 	ctx->framerate = (AVRational){60, 1};
 	ctx->pix_fmt = AV_PIX_FMT_YUV420P;
-	ctx->bit_rate = bitrate;
 	ctx->gop_size = 60;
 	ctx->max_b_frames = 2;
 	av_opt_set(ctx->priv_data, "preset", "veryfast", 0);
 	// SPS/PPS devant chaque keyframe : le récepteur peut se synchroniser à
 	// n'importe quelle IDR sans recevoir d'extradata séparé.
 	av_opt_set(ctx->priv_data, "x264-params", "repeat-headers=1", 0);
+	// Qualité constante (CRF 20) comme en matériel (CQP) : le débit cible
+	// (ctx->bit_rate) est ignoré en CRF — sur LAN la qualité prime.
+	ctx->bit_rate = 0;
+	av_opt_set(ctx->priv_data, "crf", "20", 0);
 	if (avcodec_open2(ctx, codec, nullptr) < 0) {
 		UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(libx264) a échoué");
 		avcodec_free_context(&ctx);
