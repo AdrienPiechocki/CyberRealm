@@ -766,6 +766,16 @@ class WlrCompositor : public Node {
     AudioShare audio_share;
     bool gpu_pipeline_active = false;
 
+    // Vrai quand le client (partage LAN) a besoin de la copie CPU synchrone
+    // des fenêtres (get_window_cpu_image). Sur le chemin Vulkan zero-copy,
+    // l'AFFICHAGE des quads passe par le VkImage importé — la copie CPU
+    // (DMA_BUF_SYNC + memcpy/swizzle) ne sert QU'AU partage LAN. Elle coûte
+    // 30-50 ms bloqués sur le thread principal par capture (attente du GPU)
+    // pour une fenêtre 1920×1080 : sans session LAN c'est du gaspillage pur
+    // qui écrase le FPS. Désactivée par défaut, activée par lan_manager dès
+    // qu'une fenêtre partagée est réellement streamée.
+    bool cpu_capture_requested = false;
+
     // --- Portal backend (XDG_CURRENT_DESKTOP) ---------------------------
     // "dwl:wlr" : le daemon xdg-desktop-portal split sur ':' et cherche
     // "<desktop>-portals.conf" pour chaque entrée. "dwl" seul ne matche
@@ -931,6 +941,11 @@ public:
     // façon fiable pour le partage LAN, contrairement au readback RD différé
     // qui peut lire un buffer réutilisé). Renvoie null si aucune capture.
     Ref<Image> get_window_cpu_image(int window_id);
+
+    // Active/désactive la copie CPU synchrone des fenêtres (voir
+    // cpu_capture_requested). Appelé par lan_manager selon la présence d'une
+    // session avec au moins une fenêtre partagée.
+    void set_cpu_capture_requested(bool requested);
 
     // --- Partage audio (stream LAN) -----------------------------------
     // L'audio partagé est le monitor du sink PipeWire par défaut de la

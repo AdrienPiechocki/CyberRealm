@@ -419,6 +419,7 @@ func _sync_player_transform(pos: Vector3, yaw: float) -> void:
 	_remote_players[from].apply_transform(pos, yaw)
 
 func _physics_process(delta: float) -> void:
+	_update_cpu_capture_request()
 	if not session_active or _level_root == null:
 		return
 	if multiplayer.get_peers().is_empty():
@@ -432,6 +433,25 @@ func _physics_process(delta: float) -> void:
 	_drain_encoded_frames()
 	_sync_audio_state()
 	_drain_decoded_frames()
+
+# Active/désactive la copie CPU synchrone des fenêtres dans le compositeur.
+# Celle-ci (DMA_BUF_SYNC + memcpy/swizzle) ne sert QU'au stream LAN ; sur le
+# chemin Vulkan zero-copy l'affichage des quads passe par le VkImage importé.
+# Sans session ou sans fenêtre partagée, elle ne doit PAS tourner : elle
+# coûte 30-50 ms par capture 1920×1080 sur le thread principal (chute de FPS
+# dès qu'une fenêtre animée est ouverte).
+func _update_cpu_capture_request() -> void:
+	if compositor == null or not compositor.has_method("set_cpu_capture_requested"):
+		return
+	var need := false
+	if session_active and windows_provider.is_valid() and not multiplayer.get_peers().is_empty():
+		for item in windows_provider.call():
+			if not item is Dictionary:
+				continue
+			if bool(item.get("shared", false)) and bool(item.get("visible", true)):
+				need = true
+				break
+	compositor.set_cpu_capture_requested(need)
 
 # ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
 
