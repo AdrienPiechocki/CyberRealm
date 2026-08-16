@@ -185,6 +185,7 @@ var _video_diag_noconfig := 0
 var _video_diag_nack := 0
 var _video_diag_rx_calls := 0
 var _video_diag_first_rx := 0
+var _video_diag_first_rx_wid := {} # {wid: n} premières frames reçues PAR fenêtre
 var _video_diag_first_sent := 0
 var _video_diag_selftest_done := false
 var _video_diag_first_decoded_refs := 0
@@ -1342,9 +1343,25 @@ func _announce_video_configs(force: bool) -> void:
 			or not compositor.has_method("get_window_geometry"):
 		return
 	for wid in _video_windows_sent:
-		var geo: Dictionary = compositor.get_window_geometry(wid)
-		var w := int(geo.get("width", 0))
-		var h := int(geo.get("height", 0))
+		# La config doit refléter le flux RÉELLEMENT émis : la taille de
+		# l'encodeur (C++), pas la géométrie de la fenêtre. Pendant un resize
+		# débouncé, l'encodeur garde son ancienne taille (le contenu est mis à
+		# l'échelle) : annoncer la géométrie tout de suite forcerait le
+		# récepteur à recréer son décodeur alors que les frames sont encore à
+		# l'ancienne taille → boucle de NACK + décalage. La config ne change
+		# donc qu'une fois l'encodeur réellement recréé (resize stabilisé).
+		var w := 0
+		var h := 0
+		if compositor.has_method("video_share_window_size"):
+			var enc: Dictionary = compositor.video_share_window_size(wid)
+			w = int(enc.get("width", 0))
+			h = int(enc.get("height", 0))
+		if w <= 0 or h <= 0:
+			# Fenêtre pas encore soumise à l'encodeur (première frame en vol) :
+			# fallback sur la géométrie, réessayé au prochain tick.
+			var geo: Dictionary = compositor.get_window_geometry(wid)
+			w = int(geo.get("width", 0))
+			h = int(geo.get("height", 0))
 		if w <= 0 or h <= 0:
 			# Fenêtre pas encore géométrée (X11/xwayland sans window_geometry) :
 			# on ne peut pas créer le décodeur côté récepteur. Réessayé au prochain
@@ -1418,10 +1435,10 @@ func _drain_video_packets() -> void:
 	if now - _video_diag_last_log >= 1000:
 		_video_diag_last_log = now
 		if _video_diag_sent > 0:
-			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d fps=%d" % [
+			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d (%s) fps=%d" % [
 				_video_diag_sent, float(_video_diag_bytes) / 1024.0,
 				compositor.video_share_pending(), _video_windows_sent.size(),
-				int(Engine.get_frames_per_second())])
+				", ".join(PackedStringArray(_video_windows_sent)), int(Engine.get_frames_per_second())])
 		_video_diag_sent = 0
 		_video_diag_bytes = 0
 
@@ -1537,12 +1554,19 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
 	# Compteur de diagnostics : un appel ici prouve qu'un paquet vidéo arrive
-	# (avant tout early-return). Les 5 premiers appels sont logués en détail.
+	# (avant tout early-return). Les 5 premiers appels globaux et les 3
+	# premiers PAR fenêtre sont logués en détail (utile quand un flux n'arrive
+	# pas : on voit si c'est l'émission, la réception ou le décodage).
 	_video_diag_rx_calls += 1
 	if _video_diag_first_rx < 5:
 		_video_diag_first_rx += 1
 		print("[video] rx frame n°%d wid=%d seq=%d idx=%d/%d bytes=%d keyframe=%s" % [
 			_video_diag_first_rx, wid, seq, index, total, bytes.size(), keyframe])
+	var _wrx := int(_video_diag_first_rx_wid.get(wid, 0))
+	if _wrx < 3:
+		_video_diag_first_rx_wid[wid] = _wrx + 1
+		print("[video] rx frame (wid=%d) n°%d seq=%d idx=%d/%d bytes=%d keyframe=%s" % [
+			wid, _wrx + 1, seq, index, total, bytes.size(), keyframe])
 	if wid < 0 or seq < 0 or total < 1 or bytes.is_empty():
 		return
 	if compositor == null or not compositor.has_method("video_decoder_feed"):

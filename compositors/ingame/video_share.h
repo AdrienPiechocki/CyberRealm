@@ -78,11 +78,17 @@ struct VideoEncodeWindow {
 	AVFrame *sw_frame = nullptr;         // NV12/YUV420P sysmem (conversion swscale)
 	AVFrame *hw_frame = nullptr;         // surface VAAPI NV12 (pool, upload via transfer_data)
 	SwsContext *sws = nullptr;           // conversion RGBA→NV12/YUV420P
-	int sws_w = 0;                       // dimensions du dernier ctx sws (re-créé au changement)
+	int sws_w = 0;                       // dims SOURCE du dernier ctx sws (re-créé au changement)
 	int sws_h = 0;
+	int sws_dw = 0;                      // dims DESTINATION (dims de l'encodeur, fixes pendant un resize)
+	int sws_dh = 0;
 	uint32_t sws_fourcc = 0;
-	int enc_w = 0;                       // dimensions du dernier encodeur (re-créé au changement)
+	int enc_w = 0;                       // dimensions du dernier encodeur (recréé en debounce au resize)
 	int enc_h = 0;
+	bool resize_pending = false;         // un resize est en cours (contenu ≠ encodeur, en attente de stabilisation)
+	int resize_w = 0;                    // dernier contenu vu pendant le resize (pour détecter le changement)
+	int resize_h = 0;
+	int64_t resize_since_us = 0;         // horodatage du dernier changement de taille (steady_clock)
 	void *va_frames_ctx = nullptr;       // AVBufferRef* pool VAAPI NV12 (taille = contenu)
 	void *packet = nullptr;              // AVPacket* (tampon d'encodage réutilisé)
 	int64_t frame_index = 0;
@@ -120,6 +126,12 @@ public:
 	// d'encodage en cours). Appelé par le compositeur AVANT le render pass.
 	bool window_ready(int wid) const;
 
+	// Dimensions ACTUELLES du flux encodé pour une fenêtre (dims de l'encodeur,
+	// pas la géométrie du buffer) : la config annoncée au récepteur doit
+	// correspondre au flux réellement émis (debounce de resize). Renvoie false
+	// si la fenêtre n'est pas (encore) partagée.
+	bool window_size(int wid, int &w, int &h) const;
+
 	// Soumet un DMA-BUF (main thread, juste après le render + sync GPU) pour
 	// encodage. Le fd est dupliqué : le worker en garde une référence propre,
 	// le buffer peut être réutilisé par le compositeur après le rendu suivant.
@@ -155,7 +167,7 @@ private:
 	// Backend encodeur (thread worker uniquement).
 	void worker_loop();
 	void reconcile_windows();
-	bool ensure_encoder(VideoEncodeWindow *w);
+	bool ensure_encoder(VideoEncodeWindow *w, int64_t now_us);
 	void destroy_encoder(VideoEncodeWindow *w);
 	// Traite un job soumis (lit le buffer, convertit, encode, remplit la file).
 	void encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, uint32_t fourcc,
