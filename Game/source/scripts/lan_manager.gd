@@ -113,7 +113,7 @@ const WINDOW_MAX_AHEAD := 3 # flow control : au plus 3 frames non appliquées en
 # saute une capture si l'encodeur lit encore le buffer), les keyframes
 # resynchronisent.
 const VIDEO_BITRATE := 6_000_000 # débit cible par fenêtre (bits/s) ; total = n_fenêtres × ceci. 6 Mb/s à 60 ips ≈ 12,5 KB/frame, tenable en LAN et suffisant pour du 1080p fluide
-const VIDEO_CODEC_PREF := ["av1", "h264"] # essai dans cet ordre ; av1 = matériel seulement (pas de fallback logiciel)
+const VIDEO_CODEC_PREF := ["h264", "av1"] # essai dans cet ordre. h264 VAAPI d'abord : l'encodeur AV1 matériel de Mesa est lent/instable sur RDNA3 (le worker VAAPI tombait à ~6 ips alors que h264_vaapi encodera confortablement le 1080p à 60 ips). av1 = matériel seulement (pas de fallback logiciel)
 const VIDEO_PACKET_SINGLE_MAX := 40000 # paquet ≤ ceci : 1 RPC (≤ 32 fragments ENet, 1 vague)
 const VIDEO_CHUNK_SIZE := 30000 # au-delà : découpage, chaque morceau ≤ 1 vague ENet
 const VIDEO_CHUNK_STALE_MSEC := 2000 # purge des assemblages de chunks incomplets

@@ -356,7 +356,24 @@ void VideoShare::worker_loop() {
 			if (!have) continue;
 			any = true;
 
+			auto enc_t0 = std::chrono::steady_clock::now();
 			encode_window(w, fd, stride, fourcc, aw, ah, cw, ch);
+			auto enc_t1 = std::chrono::steady_clock::now();
+			// Diag : temps d'encodage d'une frame. > 16,7 ms = le worker ne
+			// suit pas la cadence 60 ips (encodeur lent / swscale / transfer
+			// VAAPI) → le compositeur saute des captures (window_ready busy).
+			double enc_ms = std::chrono::duration<double, std::milli>(enc_t1 - enc_t0).count();
+			if (enc_ms > 15.0) {
+				static uint64_t enc_last_log_us = 0;
+				auto now_us = std::chrono::duration_cast<std::chrono::microseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count();
+				if ((uint64_t)now_us - enc_last_log_us >= 1'000'000) {
+					enc_last_log_us = (uint64_t)now_us;
+					UtilityFunctions::print("waylandgodot: video_share: [diag] encode lente: ",
+						enc_ms, " ms (wid=", w->wid, " ", w->content_w, "x", w->content_h,
+						" hw=", hw_mode, " codec=", codec_name.c_str(), ")");
+				}
+			}
 
 			// Lecture terminée → le buffer peut être re-rendu. Si la file de
 			// sortie est pleine (réseau lent), on retient la fenêtre en
