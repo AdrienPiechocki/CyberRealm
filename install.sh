@@ -6,7 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 GAME="$SCRIPT_DIR/Game/build/CyberRealm.x86_64"
 
 sudo pacman -S --needed base-devel godot wayland wayland-protocols pixman libdrm xwayland-satellite \
-               libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr
+               libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr \
+               ffmpeg libva-mesa-driver libva
 
 # wlroots 0.19 n'est plus dans les dépôts officiels d'Arch (retiré au profit de
 # wlroots0.20) alors que le compositeur du jeu est codé contre son API. Si

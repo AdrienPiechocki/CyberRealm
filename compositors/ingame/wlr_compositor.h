@@ -6,6 +6,7 @@
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include <unordered_map>
@@ -15,6 +16,7 @@
 
 #include "vulkan_dmauf.h"
 #include "audio_share.h"
+#include "video_share.h"
 
 extern "C" {
 #include <wayland-server-core.h>
@@ -93,6 +95,10 @@ struct CaptureCache {
     int alloc_height = 0;
     PackedByteArray bytes; // tampon CPU réutilisé (évite un malloc/frame)
     bool debug_sampled = false; // diagnostic temporaire : pixels déjà échantillonnés
+    // Id de la fenêtre à laquelle ce cache appartient (>= 0 pour les fenêtres
+    // partagées). Utilisé par submit_video_frame pour router la soumission
+    // vidéo vers VideoShare ; -1 pour les caches non-fenêtres (popups, layers).
+    int wid = -1;
 
     // --- Vulkan zero-copy DMA-BUF import ------------------------------
     // Ces champs sont utilisés lorsque le pipeline GPU Vulkan est actif.
@@ -772,6 +778,13 @@ class WlrCompositor : public Node {
     // partage LAN. Encodage OPUS à la demande (poll_opus_packet) et décodage
     // côté récepteur.
     AudioShare audio_share;
+
+    // Capture vidéo inter-frame des fenêtres partagées pour le partage LAN
+    // (encodeur H.264/AV1 VAAPI matériel ou libx264 logiciel, remplace le
+    // JPEG par-frame). Le DMA-BUF de chaque fenêtre est soumis après le
+    // render + sync GPU (submit_video_frame) ; l'encodage tourne sur un
+    // thread worker. Voir video_share.h.
+    VideoShare video_share;
     bool gpu_pipeline_active = false;
 
     // Vrai quand le client (partage LAN) a besoin de la copie CPU synchrone
@@ -965,6 +978,34 @@ public:
     void stop_audio_share();
     Dictionary poll_audio_packet();
     PackedByteArray audio_decode(const PackedByteArray &packet);
+
+    // --- Partage vidéo (stream LAN) ------------------------------------
+    // VideoShare (encodeur vidéo inter-frame, remplacement du JPEG par-frame).
+    // video_share_start lance le pipeline (codec "h264" | "av1", bitrate en
+    // bits/s) sur le thread worker ; video_share_poll vide la file de paquets
+    // encodés (Array de { wid, seq, keyframe, data }) pour l'envoi ENet ;
+    // video_share_submit est appelé en interne par le compositeur (hook dans
+    // capture_surface_vulkan/dmabuf). Côté récepteur : video_decoder_configure
+    // initialise un flux (clé (from, wid)) puis video_decoder_feed décode un
+    // paquet en Image RGBA.
+    bool video_share_start(const String &codec, int bitrate);
+    void video_share_stop();
+    bool video_share_active();
+    bool video_share_hardware();
+    String video_share_codec();
+    void set_video_share_windows(const PackedInt32Array &wids);
+    Array video_share_poll();
+    void video_share_request_keyframe(int window_id);
+    int video_share_pending();
+    void video_decoder_configure(const String &key, const String &codec, int width, int height);
+    Ref<Image> video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe);
+    void video_decoder_reset(const String &key);
+    void video_decoder_clear_all();
+
+    // Soumet le DMA-BUF d'une fenêtre à l'encodeur (hook après le render +
+    // wait_for_dmabuf_gpu_writes). No-op si le partage vidéo est inactif ou
+    // si la fenêtre n'est pas dans l'ensemble partagé.
+    void submit_video_frame(CaptureCache &cache);
 
     // Taille de l'output virtuel (viewport Godot) pour le layout des layer
     // surfaces. À appeler par le script dès qu'il connaît sa taille réelle
