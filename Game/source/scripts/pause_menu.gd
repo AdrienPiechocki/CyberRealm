@@ -807,25 +807,17 @@ func _show_lan() -> void:
 	join_row.add_child(join_btn)
 	container.add_child(join_row)
 
-	var discover_btn := _make_btn("Discover LAN games")
-	discover_btn.pressed.connect(func():
+	var find_btn := _make_btn("Find LAN games")
+	find_btn.pressed.connect(func():
 		_save_lan_name(name_edit)
 		lan_discover_requested.emit()
 	)
-	container.add_child(discover_btn)
+	container.add_child(find_btn)
 
 	_lan_results_box = VBoxContainer.new()
 	_lan_results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_lan_results_box.add_theme_constant_override("separation", 4)
 	container.add_child(_lan_results_box)
-
-	var lan_hint := Label.new()
-	lan_hint.text = "Astuce : si un PC ne voit pas l'autre, vérifiez qu'ils sont sur le même réseau, que le pare-feu de l'hôte laisse passer UDP 7777/9999, et désactivez l'isolation AP du routeur."
-	lan_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lan_hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	lan_hint.add_theme_font_size_override("font_size", 11)
-	lan_hint.add_theme_color_override("font_color", Color(0.5, 0.55, 0.65))
-	container.add_child(lan_hint)
 
 	_lan_status_label = Label.new()
 	_lan_status_label.text = _lan_status_text

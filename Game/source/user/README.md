@@ -32,3 +32,26 @@ trouve est ignoré par git et remplace le niveau par défaut du jeu au démarrag
 
 Supprimez (ou renommez) `res://user/level.tscn`. Le jeu utilisera alors
 `res://scenes/level.tscn`.
+
+## Multijoueur LAN
+
+Votre niveau custom est **jouable en LAN même avec des builds différents** :
+l'hôte sérialise son niveau en un blob binaire auto-suffisant (meshes,
+matériaux et textures embarqués) et l'envoie aux joueurs qui rejoignent.
+Les clients n'ont donc pas besoin de `res://user/` sur leur machine.
+
+Limites à connaître :
+
+- **Pas de scripts custom** : les meshes/matériaux/textures des maps sont
+  embarqués dans le blob, mais les **scripts** ne le sont pas. Une map LAN ne
+  doit pas attacher de scripts situés dans `res://user/` (les scripts du jeu,
+  `res://scripts/`, fonctionnent normalement).
+- Les nodes ajoutés **à la volée pendant la partie** (sous le niveau, sans
+  `owner`) ne sont pas transmis — uniquement le contenu de la scène.
+- Le **joueur** (`Player`) n'est pas transmis : chaque machine garde son
+  propre joueur, le spawn de l'hôte est appliqué côté client.
+- Le niveau est envoyé quand un joueur rejoint. Si vous changez de niveau,
+  les prochains arrivants recevront le nouveau.
+- Grosses maps : le blob est compressé (ZSTD) et envoyé en chunks, mais un
+  niveau très lourd (plusieurs centaines de Mo d'assets) mettra du temps à
+  charger côté client.

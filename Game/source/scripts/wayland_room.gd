@@ -25,6 +25,8 @@ var fx: Node3D
 var presenter: Node3D # présente le viewport à l'output headless pour OBS
 var lan: Node # multijoueur LAN (hôte/join, avatars)
 
+const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
+
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
 
@@ -78,20 +80,22 @@ func _load_level() -> void:
 	level.name = "Level"
 	add_child(level)
 
-# Texte brut de la scène Level chargée (envoyé par le host aux clients LAN).
-func get_level_scene_text() -> String:
-	if _level_path == "" or not FileAccess.file_exists(_level_path):
-		return ""
-	var f := FileAccess.open(_level_path, FileAccess.READ)
-	if f == null:
-		return ""
-	return f.get_as_text()
+# Blob baked du niveau courant pour le LAN (LevelBaker) : meshes/matériaux/
+# textures embarqués → le client peut charger la map même sans ses assets
+# (maps custom `res://user/` jouables en LAN). Le Player est exclu du blob
+# (chaque machine réutilise son joueur local) ; le spawn est transmis à part.
+func _bake_level_for_lan() -> Dictionary:
+	var level := get_node_or_null("Level") as Node3D
+	if level == null:
+		return {}
+	return LEVEL_BAKER.bake(level)
 
-# Applique le niveau de l'hôte (reçu via le LAN) : on instancie sa scène mais
-# on RÉUTILISE le Player local (et son UI/menus) — tout le câblage du jeu
-# (managers, signaux) référence ce node. Seul l'environnement change ; le
-# joueur est repositionné au spawn défini dans le niveau de l'hôte.
-func apply_host_level(scene: PackedScene) -> bool:
+# Applique le niveau de l'hôte (reçu via le LAN, sous forme de blob baked) :
+# on instancie sa scène mais on RÉUTILISE le Player local (et son UI/menus) —
+# tout le câblage du jeu (managers, signaux) référence ce node. Seul
+# l'environnement change ; le joueur est repositionné au spawn de l'hôte
+# (transmis explicitement — le blob baked exclut le Player).
+func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO) -> bool:
 	if scene == null:
 		return false
 	var old_level := get_node_or_null("Level") as Node3D
@@ -102,8 +106,7 @@ func apply_host_level(scene: PackedScene) -> bool:
 		return false
 	var old_player := old_level.get_node_or_null("Player")
 	var host_player := new_level.get_node_or_null("Player")
-	var spawn_pos := Vector3.ZERO
-	if host_player is Node3D:
+	if host_player is Node3D and spawn_pos == Vector3.ZERO:
 		spawn_pos = (host_player as Node3D).position
 	if old_player != null:
 		if host_player != null:
@@ -252,7 +255,7 @@ func _ready() -> void:
 	lan.set_script(preload("res://scripts/lan_manager.gd"))
 	add_child(lan)
 	lan.setup($Level, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
-	lan.level_text_provider = get_level_scene_text
+	lan.level_bake_provider = _bake_level_for_lan
 	lan.level_apply_requested.connect(apply_host_level)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_host_requested.connect(lan.host_game)

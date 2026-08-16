@@ -79,6 +79,36 @@ var cursor_overlay: TextureRect
 var cursor_overlay_tex: ImageTexture
 var cursor_overlay_serial := -1
 
+# Curseur du propriétaire affiché par-dessus le focus DISTANT (vue seule) :
+# réplique la position et l'apparence du curseur du joueur qui possède la
+# fenêtre, tant qu'il la survole. État reçu de lan_manager via
+# set_remote_cursor_state (position ~30/s, image quand le client la change).
+var remote_cursor_overlay: TextureRect
+var remote_cursor_state: Dictionary = {}
+var remote_cursor_fallback_tex: ImageTexture
+
+# Bitmap 16×16 de la flèche de secours (pointe vers le coin haut-gauche,
+# hotspot (0,0)) : affichée quand l'application du propriétaire utilise le
+# curseur système (aucun set_cursor custom) — le cas le plus courant.
+const REMOTE_CURSOR_BITMAP := [
+	"1...............",
+	"11..............",
+	"111.............",
+	"1111............",
+	"11111...........",
+	"111111..........",
+	"1111111.........",
+	"11111111........",
+	"111111111.......",
+	"1111111111......",
+	"11111111111.....",
+	"1111111111......",
+	"111111111.......",
+	"11111111........",
+	"1111111.........",
+	"111111..........",
+]
+
 # Focus d'une fenêtre DISTANTE (streamée par un autre joueur) : affichage plein
 # écran VUE SEULE. Aucun input (clavier/souris) n'est forwardé, pas de kill.
 # focus_stack est vide (aucune fenêtre du compositeur local), _active_id() et
@@ -103,6 +133,32 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	cursor_overlay.z_index = FOCUS_POPUP_Z + 50
 	cursor_overlay.visible = false
 	ui.add_child(cursor_overlay)
+
+	remote_cursor_overlay = TextureRect.new()
+	remote_cursor_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	remote_cursor_overlay.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	remote_cursor_overlay.z_index = FOCUS_POPUP_Z + 51
+	remote_cursor_overlay.visible = false
+	ui.add_child(remote_cursor_overlay)
+	remote_cursor_fallback_tex = _make_remote_cursor_fallback()
+
+func _make_remote_cursor_fallback() -> ImageTexture:
+	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	for y in range(16):
+		for x in range(16):
+			if REMOTE_CURSOR_BITMAP[y][x] != "1":
+				continue
+			for oy in range(2):
+				for ox in range(2):
+					# Ombre portée décalée d'un pixel en bas-droite (clampée aux
+					# bords de l'image 32×32)
+					var sx := x * 2 + ox + 1
+					var sy := y * 2 + oy + 1
+					if sx < 32 and sy < 32:
+						img.set_pixel(sx, sy, Color(0, 0, 0, 0.6))
+					img.set_pixel(x * 2 + ox, y * 2 + oy, Color(1, 1, 1, 1))
+	return ImageTexture.create_from_image(img)
 
 func is_active() -> bool:
 	return focus_mode
@@ -216,7 +272,7 @@ func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
 	ui.add_child(rect)
 	remote_focus_rect = rect
 	player.focus_mode_active = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 
 func exit_focus() -> void:
 	if not focus_mode:
@@ -269,6 +325,72 @@ func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> vo
 	if remote_focus_peer != peer_id or remote_focus_wid != wid:
 		return
 	remote_focus_rect.texture = texture
+	_update_remote_cursor()
+
+# Nouvel état du curseur du propriétaire de la fenêtre affichée (position
+# ~30/s, image/hidden quand ils changent). state == null : la fenêtre n'est
+# plus partagée/visible → masquer le curseur. Appelé par lan_manager.
+func set_remote_cursor_state(peer_id: int, wid: int, state) -> void:
+	if state == null:
+		if remote_focus and remote_focus_peer == peer_id and remote_focus_wid == wid:
+			_hide_remote_cursor()
+		return
+	if not remote_focus or remote_focus_peer != peer_id or remote_focus_wid != wid:
+		return
+	remote_cursor_state = state
+	_update_remote_cursor()
+
+# Positionne le curseur du propriétaire sur la zone affichée du focus distant :
+# coordonnées du contenu (x/y) → écran via la même zone STRETCH_KEEP_ASPECT_
+# CENTERED que le TextureRect, image custom si dispo sinon flèche de secours.
+func _update_remote_cursor() -> void:
+	if not remote_focus or remote_cursor_overlay == null:
+		return
+	if remote_cursor_state.is_empty():
+		_hide_remote_cursor()
+		return
+	if not bool(remote_cursor_state.get("inside", false)) \
+			or bool(remote_cursor_state.get("hidden", false)) \
+			or bool(remote_cursor_state.get("captured", false)):
+		_hide_remote_cursor()
+		return
+	if remote_focus_rect == null or not is_instance_valid(remote_focus_rect):
+		_hide_remote_cursor()
+		return
+	var tex := remote_focus_rect.texture
+	if tex == null:
+		_hide_remote_cursor()
+		return
+	var tex_size := tex.get_size()
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		_hide_remote_cursor()
+		return
+	var rrect := remote_focus_rect.get_global_rect()
+	var aspect := tex_size.x / tex_size.y
+	var rect_aspect := rrect.size.x / maxf(rrect.size.y, 0.001)
+	var displayed: Vector2
+	if aspect > rect_aspect:
+		displayed = Vector2(rrect.size.x, rrect.size.x / aspect)
+	else:
+		displayed = Vector2(rrect.size.y * aspect, rrect.size.y)
+	var offset := rrect.position + (rrect.size - displayed) / 2.0
+	var scale := Vector2(displayed.x / tex_size.x, displayed.y / tex_size.y)
+	var custom: Texture2D = remote_cursor_state.get("tex")
+	var img_tex: Texture2D = custom if custom != null else remote_cursor_fallback_tex
+	var img_size := img_tex.get_size()
+	remote_cursor_overlay.texture = img_tex
+	var hotspot: Vector2 = remote_cursor_state.get("hotspot", Vector2.ZERO)
+	var px := float(remote_cursor_state.get("x", 0.0))
+	var py := float(remote_cursor_state.get("y", 0.0))
+	remote_cursor_overlay.size = img_size * scale
+	remote_cursor_overlay.position = offset \
+		+ Vector2(px / tex_size.x, py / tex_size.y) * displayed \
+		- hotspot * scale
+	remote_cursor_overlay.visible = true
+
+func _hide_remote_cursor() -> void:
+	if remote_cursor_overlay:
+		remote_cursor_overlay.visible = false
 
 # Une fenêtre distante a été retirée (fermée par le joueur distant) : sortir
 # du focus si c'était celle affichée.
@@ -586,6 +708,8 @@ func _reset_focus_ui() -> void:
 	remote_focus_peer = -1
 	remote_focus_wid = -1
 	remote_focus_rect = null
+	remote_cursor_state.clear()
+	_hide_remote_cursor()
 	# Restaurer le curseur système (l'overlay custom de la fenêtre focalisée
 	# ne doit pas survivre à la sortie du mode focus).
 	_hide_cursor_overlay()
