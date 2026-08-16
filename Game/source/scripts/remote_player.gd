@@ -18,7 +18,7 @@ var _target_yaw := 0.0
 
 const LERP_SPEED := 20.0
 # Distance (m) en dessous de laquelle l'avatar commence à s'estomper.
-const FADE_DISTANCE := 1.0
+const FADE_DISTANCE := 2.0
 
 var _body_mat: StandardMaterial3D = null
 var _head_mat: StandardMaterial3D = null
