@@ -133,6 +133,10 @@ public:
 	// Demande une keyframe (IDR) pour une fenêtre (nouveau pair, latence, ...).
 	void request_keyframe(int wid);
 
+	// Numéro de build du module vidéo (permet de vérifier depuis GDScript que
+	// le .so déployé sur le récepteur correspond bien à la source courante).
+	String diag_version() const;
+
 	// Nombre de paquets en attente d'envoi (pour la backpressure / debounce).
 	int pending_count() const;
 
