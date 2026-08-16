@@ -370,6 +370,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_audio_share_pids", "pids"), &WlrCompositor::set_audio_share_pids);
     ClassDB::bind_method(D_METHOD("is_drag_active"), &WlrCompositor::is_drag_active);
     ClassDB::bind_method(D_METHOD("get_window_cursor", "window_id"), &WlrCompositor::get_window_cursor);
+    ClassDB::bind_method(D_METHOD("get_window_pointer", "window_id"), &WlrCompositor::get_window_pointer);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
@@ -802,13 +803,25 @@ static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 
 // Intervalle minimum entre deux recaptures d'une fenêtre dirty. Une vidéo
 // est dirty à CHAQUE frame : la recapturer à chaque frame coûte un render
-// pass GL + une sync GPU bloquante + une copie CPU + un import Vulkan par
-// frame sur le thread principal → surcharge (lag du partage LAN, risque de
-// déconnexion ENet). 33 ms ≈ 30 FPS de recapture : fluide pour les quads 3D
-// ET pour le stream LAN (qui n'encode de toute façon qu'à ~13 ips). C'est un
-// intervalle de TEMPS (pas un décompte de frames) : le taux de recapture
-// reste ~30/s quel que soit le max_fps du jeu (à 60 Hz comme à 120 Hz).
-static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US = 33 * 1000;
+// pass GL + une sync GPU bloquante + un import Vulkan par frame sur le
+// thread principal → surcharge (lag du partage LAN, risque de déconnexion
+// ENet). En mode partage vidéo inter-frame, la copie CPU est supprimée (le
+// worker encode le DMA-BUF en mmap) : le coût par capture est un render pass
+// + une sync (poll court) + un submit, tenable à 60/s pour un stream fluide.
+//
+// DEUX cadences : 60/s (16 667 µs) pour les fenêtres ACTUELLEMENT partagées
+// en vidéo (le stream en a besoin pour être fluide), 30/s (33 333 µs) pour
+// les autres fenêtres dirty — elles ne servent qu'à rafraîchir leurs quads
+// 3D, 30/s est suffisant et moitié moins de render passes libère le GPU et
+// la mémoire (des captures non partagées à 60/s saturaient le GPU : sws
+// lents → encodeur à ~6 ips au lieu de 60). Ce sont des intervalles de TEMPS
+// (pas un décompte de frames) : le taux reste ~60/s (resp. ~30/s) quel que
+// soit le max_fps du jeu. Si une fenêtre est en backpressure (réseau/encodeur
+// en retard), window_ready renvoie false et on saute la capture → la cadence
+// réelle retombe sans accumuler de retard, jamais plus vite que la vidéo ne
+// peut être livrée.
+static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US_FAST = 16'667; // ~60/s (fenêtres partagées vidéo)
+static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US_SLOW = 33'333;  // ~30/s (autres fenêtres dirty)
 
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
@@ -883,10 +896,12 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd) {
         // ne signale pas (pilote/stall GPU pathologique), on NE bloque PAS le
         // thread principal indéfiniment — sinon le service réseau n'est plus
         // appelé et ENet finit par déconnecter le peer (timeout).
-        // À 30 captures/s max (WINDOW_CAPTURE_INTERVAL), le pire cas reste
-        // 0,75 s de blocage par seconde ; un cap plus haut ferait saturer la
-        // boucle. Au pire on lit un buffer pas encore synchronisé → artefact
-        // visuel transitoire, jamais un gel/disconnexion durable.
+        // À 60 captures/s max (WINDOW_CAPTURE_INTERVAL), le pire cas reste
+        // 1,5 s de blocage par seconde — mais ce borne ne s'atteint qu'en
+        // cas de stall GPU pathologique ; en fonctionnement normal le poll
+        // rend en <1 ms dès que le render pass est terminé. Au pire on lit
+        // un buffer pas encore synchronisé → artefact visuel transitoire,
+        // jamais un gel/disconnexion durable.
         poll(&pfd, 1, 25);
         close(export_args.fd);
         return;
@@ -3699,8 +3714,16 @@ void WlrCompositor::_process(double delta) {
             // vidéo → surcharge du thread principal → lag du partage LAN,
             // risque de déconnexion.
             uint64_t now_us = (uint64_t)now.tv_sec * 1000000u + (uint64_t)(now.tv_nsec / 1000);
+            // Cadence par fenêtre : 60/s pour les fenêtres partagées vidéo
+            // (le stream doit rester fluide), 30/s pour les autres dirty
+            // (rafraîchissement des quads 3D, moitié moins de render passes →
+            // GPU et mémoire libres pour l'encodeur VAAPI).
+            uint64_t interval = WINDOW_CAPTURE_INTERVAL_US_SLOW;
+            if (video_share.is_shared(ws.id)) {
+                interval = WINDOW_CAPTURE_INTERVAL_US_FAST;
+            }
             bool due = ws.dirty &&
-                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= WINDOW_CAPTURE_INTERVAL_US);
+                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= interval);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
                 // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
@@ -3709,7 +3732,7 @@ void WlrCompositor::_process(double delta) {
                 // re-rend PAS — un nouveau render pass écraserait les données
                 // pendant l'encodage → corruption vidéo. On saute cette frame
                 // (la texture locale garde le contenu précédent, un frame
-                // sautée à ~30 fps est imperceptible).
+                // sautée à ~60 fps est imperceptible).
                 ws.capture_cache.wid = ws.id;
                 if (video_share.is_active() && !video_share.window_ready(ws.id)) {
                     // Worker occupé : on NE réarme PAS le timer de recapture
@@ -4623,6 +4646,21 @@ void WlrCompositor::set_window_pointer(int window_id, double x, double y, bool i
     ws->pointer_inside = true;
     ws->pointer_x = x;
     ws->pointer_y = y;
+}
+
+Dictionary WlrCompositor::get_window_pointer(int window_id) {
+    Dictionary result;
+    result["inside"] = false;
+    result["x"] = 0.0;
+    result["y"] = 0.0;
+    WindowState *ws = find_window(window_id);
+    if (!ws) {
+        return result;
+    }
+    result["inside"] = ws->pointer_inside;
+    result["x"] = ws->pointer_x;
+    result["y"] = ws->pointer_y;
+    return result;
 }
 
 static bool cursor_debug_enabled() {

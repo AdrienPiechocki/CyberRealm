@@ -68,7 +68,7 @@ func _physics_process(delta: float) -> void:
 func _update_transparency() -> void:
 	if local_player == null or not is_instance_valid(local_player):
 		return
-	var dist := global_position.distance_to(local_player.global_position)
+	var dist := global_position.distance_to(local_player.global_position) - 1
 	var alpha := clampf(dist / FADE_DISTANCE, 0.0, 1.0)
 	if _body_mat != null:
 		_body_mat.albedo_color.a = alpha
