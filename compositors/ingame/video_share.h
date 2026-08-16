@@ -165,6 +165,9 @@ private:
 	struct DecoderCtx;
 	void decoder_destroy(DecoderCtx *d);
 	Ref<Image> decode_to_image(DecoderCtx *d);
+	// Log throttlé (1×/s) des erreurs send_packet/receive_frame pour savoir si
+	// le décodeur est alimenté mais en échec, ou jamais atteint.
+	void diag_decode_error(const char *stage, int err);
 
 	// Mode actif (fixé au start, immuable pendant l'activité).
 	bool hw_mode = false;
@@ -219,6 +222,10 @@ private:
 		int sws_fmt = -1; // format source du dernier ctx sws (recréé s'il change)
 	};
 	std::unordered_map<std::string, DecoderCtx *> decoders;
+	// Diagnostics du décodage, protégés par dec_mutex.
+	uint64_t diag_last_err_ms = 0;
+	unsigned diag_send_err = 0;
+	unsigned diag_recv_err = 0;
 };
 
 } // namespace godot

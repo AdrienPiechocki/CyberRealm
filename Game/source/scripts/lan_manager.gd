@@ -180,6 +180,9 @@ var _video_diag_sent := 0
 var _video_diag_bytes := 0
 var _video_diag_last_applied := 0
 var _video_diag_applied := 0
+var _video_diag_feed_fail := 0
+var _video_diag_noconfig := 0
+var _video_diag_nack := 0
 
 var _responder: PacketPeerUDP = null # host : répond aux requêtes de découverte
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
@@ -1483,10 +1486,12 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 			return # assemblage incomplet
 	if not _video_configs.get(from, {}).has(wid):
 		# Course config/frame (canaux différents) : on ne peut pas décoder.
+		_video_diag_noconfig += 1
 		_request_video_keyframe(from, wid)
 		return
 	var img: Image = compositor.video_decoder_feed(_video_key(from, wid), data, keyframe)
 	if img == null or img.is_empty():
+		_video_diag_feed_fail += 1
 		if not keyframe:
 			_request_video_keyframe(from, wid)
 		return
@@ -1557,9 +1562,12 @@ func _process_video_receiver() -> void:
 	_purge_video_chunks()
 	if Time.get_ticks_msec() - _video_diag_last_applied >= 1000:
 		_video_diag_last_applied = Time.get_ticks_msec()
-		if _video_diag_applied > 0:
-			print("[video] diag rx: appliquées/s=%d" % _video_diag_applied)
+		print("[video] diag rx: appliquées/s=%d feed_fail/s=%d noconfig/s=%d nack/s=%d" % [
+			_video_diag_applied, _video_diag_feed_fail, _video_diag_noconfig, _video_diag_nack])
 		_video_diag_applied = 0
+		_video_diag_feed_fail = 0
+		_video_diag_noconfig = 0
+		_video_diag_nack = 0
 
 # Demande une keyframe à l'émetteur (décodeur désynchronisé, config manquante
 # ou changée). Throttlé pour ne pas flooder (au plus 2×/s par fenêtre).
@@ -1570,6 +1578,7 @@ func _request_video_keyframe(from: int, wid: int) -> void:
 	if now - int(_video_nack_last[from].get(wid, -999999)) < VIDEO_NACK_GAP_MSEC:
 		return
 	_video_nack_last[from][wid] = now
+	_video_diag_nack += 1
 	if from in multiplayer.get_peers():
 		_video_need_keyframe.rpc_id(from, wid)
 
