@@ -699,8 +699,23 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		}
 	}
 
-	const uint8_t *src_slices[4] = { src, nullptr, nullptr, nullptr };
-	const int src_linesize[4] = { (int)stride, 0, 0, 0 };
+	// Lecture GPU → CPU : memcpy serré ligne par ligne (stride → w*4) avant
+	// swscale. Lire le DMA-BUF directement depuis sws_scale coûte ~65 Mo/s
+	// (mapping GPU lente, accès SIMD par blocs) → 35 ms en 600p, 130-180 ms
+	// en 1080p. Un memcpy simple atteint ~166 Mo/s (même chemin que la copie
+	// CPU du compositeur) : 2,4 Mo en ~14 ms → le swscale suivant lit de la
+	// mémoire CPU rapide. C'est le goulot qui plafonnait l'émetteur à ~25 ips.
+	if (w->readbuf.size() < (size_t)content_w * content_h * 4) {
+		w->readbuf.resize((size_t)content_w * content_h * 4);
+	}
+	uint8_t *rd = w->readbuf.data();
+	for (int y = 0; y < content_h; y++) {
+		memcpy(rd + (size_t)y * content_w * 4, src + (size_t)y * stride,
+			(size_t)content_w * 4);
+	}
+
+	const uint8_t *src_slices[4] = { rd, nullptr, nullptr, nullptr };
+	const int src_linesize[4] = { content_w * 4, 0, 0, 0 };
 	sws_scale(w->sws, src_slices, src_linesize, 0, content_h,
 		frame->data, frame->linesize);
 	auto t_sws1 = clock::now();
@@ -783,12 +798,12 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 			}
 		}
 		if (do_print) {
-			UtilityFunctions::print("waylandgodot: video_share: [diag] encode ", w->wid, "x", w->sws_h,
-				" hw=", hw_mode, " codec=", (hw_av1 ? "av1" : "h264"),
-				" mmap=", std::chrono::duration<double, std::milli>(t_mmap - t_sws0).count(),
-				"ms sync=", std::chrono::duration<double, std::milli>(t_sync - t_mmap).count(),
-				"ms sws=", std::chrono::duration<double, std::milli>(t_sws1 - t_sync).count(),
-				"ms transfert=", d_xfer, "ms encodage=", d_enc, "ms");
+UtilityFunctions::print("waylandgodot: video_share: [diag] encode ", w->wid, "x", w->sws_h,
+			" hw=", hw_mode, " codec=", (hw_av1 ? "av1" : "h264"),
+			" mmap=", std::chrono::duration<double, std::milli>(t_mmap - t_sws0).count(),
+			"ms sync=", std::chrono::duration<double, std::milli>(t_sync - t_mmap).count(),
+			"ms copie+sws=", std::chrono::duration<double, std::milli>(t_sws1 - t_sync).count(),
+			"ms transfert=", d_xfer, "ms encodage=", d_enc, "ms");
 		}
 	} else {
 		// L'échec d'upload laisse une frame sans encodage → demande une
@@ -959,7 +974,13 @@ Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
 	if (!d->sws) return Ref<Image>();
 
 	PackedByteArray pba;
-	pba.resize((int64_t)w * h * 4);
+	// sws_scale (SIMD) écrit jusqu'à 32-64 octets APRÈS le dernier pixel de
+	// la dernière ligne quand la destination n'est pas alignée au vecteur
+	// (vérifié empiriquement : 1000x600 déborde de 32 octets, 1920x1080 non).
+	// Allouer pile w*h*4 → corruption du tas à CHAQUE frame décodée (le
+	// crash récepteur "malloc(): invalid size (unsorted)"). On alloue une
+	// marge puis on tronque au format exact attendu par create_from_data.
+	pba.resize((int64_t)w * h * 4 + 128);
 	uint8_t *dst = pba.ptrw();
 	// Source = frame décodée (plans YUV), destination = buffer RGBA.
 	const uint8_t *slines[4] = { d->frame->data[0], d->frame->data[1],
@@ -969,6 +990,7 @@ Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
 	uint8_t *dlines[4] = { dst, nullptr, nullptr, nullptr };
 	const int dls[4] = { w * 4, 0, 0, 0 };
 	sws_scale(d->sws, slines, sls, 0, h, dlines, dls);
+	pba.resize((int64_t)w * h * 4);
 	return Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, pba);
 }
 
