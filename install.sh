@@ -5,8 +5,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 GAME="$SCRIPT_DIR/Game/build/CyberRealm.x86_64"
 
-sudo pacman -S --needed wlroots0.19 wayland wayland-protocols pixman libdrm xwayland-satellite \
+sudo pacman -S --needed base-devel wayland wayland-protocols pixman libdrm xwayland-satellite \
                libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr
+
+# wlroots 0.19 n'est plus dans les dépôts officiels d'Arch (retiré au profit de
+# wlroots0.20) alors que le compositeur du jeu est codé contre son API. Si
+# pkg-config ne le trouve pas, on compile le paquet AUR wlroots0.19 (0.19.3)
+# avec makepkg puis on l'installe avec pacman -U.
+if ! pkg-config --exists wlroots-0.19; then
+    echo "install: wlroots-0.19 absent des dépôts officiels — build depuis AUR ..."
+    WLR_AUR="$(mktemp -d)"
+    git clone --depth 1 https://aur.archlinux.org/wlroots0.19.git "$WLR_AUR/wlroots0.19"
+    (cd "$WLR_AUR/wlroots0.19" && makepkg -s --noconfirm)
+    sudo pacman -U --noconfirm "$WLR_AUR"/wlroots0.19/wlroots0.19-*.pkg.tar.zst
+    rm -rf "$WLR_AUR"
+fi
 
 if [[ ! -d "$SCRIPT_DIR/godot-cpp" ]]; then
     git clone https://github.com/godotengine/godot-cpp.git
