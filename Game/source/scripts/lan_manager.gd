@@ -1355,9 +1355,10 @@ func _drain_video_packets() -> void:
 	if now - _video_diag_last_log >= 1000:
 		_video_diag_last_log = now
 		if _video_diag_sent > 0:
-			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d" % [
+			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d fps=%d" % [
 				_video_diag_sent, float(_video_diag_bytes) / 1024.0,
-				compositor.video_share_pending(), _video_windows_sent.size()])
+				compositor.video_share_pending(), _video_windows_sent.size(),
+				int(Engine.get_frames_per_second())])
 		_video_diag_sent = 0
 		_video_diag_bytes = 0
 

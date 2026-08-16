@@ -119,11 +119,6 @@ public:
 	// d'encodage en cours). Appelé par le compositeur AVANT le render pass.
 	bool window_ready(int wid) const;
 
-	// true si la fenêtre fait partie de l'ensemble partagé (encodeur actif
-	// pour elle). Le compositeur s'en sert pour choisir l'intervalle de
-	// recapture (plus court pour le flux vidéo) et le cadrage.
-	bool is_encode_window(int wid) const;
-
 	// Soumet un DMA-BUF (main thread, juste après le render + sync GPU) pour
 	// encodage. Le fd est dupliqué : le worker en garde une référence propre,
 	// le buffer peut être réutilisé par le compositeur après le rendu suivant.

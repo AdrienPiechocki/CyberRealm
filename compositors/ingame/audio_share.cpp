@@ -147,6 +147,19 @@ bool AudioShare::start() {
 	pw_registry_add_listener((pw_registry *)registry,
 			(struct spa_hook *)registry_hook, &g_registry_events, this);
 
+	// Timer périodique de réconcile (250 ms) : sur le thread PipeWire, il
+	// aligne les streams de capture sur target_pids. C'est LE seul endroit
+	// (avec les callbacks node/client) où apply_targets est exécuté : le
+	// thread du jeu ne prend plus jamais pw_thread_loop_lock, donc ne peut
+	// plus rester bloqué si la boucle PW est occupée.
+	struct pw_loop *pw_loop = pw_thread_loop_get_loop((pw_thread_loop *)thread_loop);
+	timer = pw_loop_add_timer(pw_loop, AudioShare::reconcile_timer_cb, this);
+	if (timer) {
+		struct timespec value = { 0, 250 * 1000000 };
+		struct timespec interval = { 0, 250 * 1000000 };
+		pw_loop_update_timer(pw_loop, (struct spa_source *)timer, &value, &interval, false);
+	}
+
 	if (pw_thread_loop_start((pw_thread_loop *)thread_loop) < 0) {
 		UtilityFunctions::printerr("waylandgodot: audio: pw_thread_loop_start a échoué");
 		stop();
@@ -160,6 +173,13 @@ bool AudioShare::start() {
 void AudioShare::stop() {
 	if (thread_loop) {
 		pw_thread_loop_stop((pw_thread_loop *)thread_loop);
+	}
+	// La boucle est arrêtée (thread PW joint) : le timer n'est plus dispatché,
+	// on peut le détruire depuis le thread du jeu.
+	if (timer) {
+		pw_loop_destroy_source(pw_thread_loop_get_loop((pw_thread_loop *)thread_loop),
+				(struct spa_source *)timer);
+		timer = nullptr;
 	}
 	{
 		std::lock_guard<std::mutex> lk(streams_mutex);
@@ -412,12 +432,24 @@ void AudioShare::set_target_pids(const std::vector<int> &pids) {
 	if (!thread_loop) {
 		return;
 	}
-	// Sous pw_thread_loop_lock, les callbacks PW (registry, process) sont
-	// suspendus : la réconciliation est atomique et ne court contre rien.
-	pw_thread_loop_lock((pw_thread_loop *)thread_loop);
-	target_pids = pids;
-	apply_targets();
-	pw_thread_loop_unlock((pw_thread_loop *)thread_loop);
+	// NON-bloquant : on mémorise les PIDs et c'est le timer de réconcile de la
+	// boucle PW (250 ms) qui fera le travail (apply_targets sur le thread PW).
+	// PAS de pw_thread_loop_lock ici : il attendrait que la boucle devienne
+	// inactive, or la boucle peut être occupée par apply_targets qui fait des
+	// appels PipeWire bloquants (pw_stream_new/connect) → blocage du thread du
+	// jeu, puis du jeu entier.
+	{
+		std::lock_guard<std::mutex> g(target_mutex);
+		target_pids = pids;
+	}
+}
+
+// Timer périodique (thread PipeWire) : réconcilie les streams avec
+// target_pids sans jamais impliquer le thread du jeu.
+void AudioShare::reconcile_timer_cb(void *user_data, uint64_t expirations) {
+	AudioShare *self = static_cast<AudioShare *>(user_data);
+	(void)expirations;
+	self->apply_targets();
 }
 
 AudioCaptureStream *AudioShare::find_stream_for_pid(int pid) const {
@@ -443,11 +475,18 @@ void AudioShare::apply_targets() {
 	// create_stream_for / les frees supposent le verrou pris (poll_opus_packet
 	// du thread du jeu itère le même vecteur sous ce mutex).
 	std::lock_guard<std::mutex> lk(streams_mutex);
+	// Snapshot de target_pids sous target_mutex (set_target_pids peut courir
+	// en parallèle sur le thread du jeu).
+	std::vector<int> targets;
+	{
+		std::lock_guard<std::mutex> g(target_mutex);
+		targets = target_pids;
+	}
 	// 1. On détruit les streams dont le PID n'est plus ciblé.
 	for (auto it = streams.begin(); it != streams.end();) {
 		AudioCaptureStream *s = *it;
 		bool wanted = false;
-		for (int pid : target_pids) {
+		for (int pid : targets) {
 			if (pid == s->pid) {
 				wanted = true;
 				break;
@@ -463,7 +502,7 @@ void AudioShare::apply_targets() {
 		delete s;
 	}
 	// 2. On connecte un stream pour chaque PID ciblé dont un node est connu.
-	for (int pid : target_pids) {
+	for (int pid : targets) {
 		if (find_stream_for_pid(pid) != nullptr) {
 			continue; // déjà capturé
 		}

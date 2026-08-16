@@ -805,15 +805,6 @@ static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 // reste ~30/s quel que soit le max_fps du jeu (à 60 Hz comme à 120 Hz).
 static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US = 33 * 1000;
 
-// Intervalle de recapture d'une fenêtre partagée en vidéo inter-frame. Le
-// rendu du DMA-BUF + la sync GPU restent sur le thread principal, mais c'est
-// l'encodeur (thread worker) qui borne réellement le débit : le drapeau busy
-// (window_ready) saute les captures tant que le worker lit le buffer, donc
-// l'intervalle ci-dessous n'est qu'un PLAFOND (16 ms ≈ 60 fps). Une fenêtre
-// 1920×1080 (~20 ms de worker) se retrouve naturellement à ~30 fps, une
-// fenêtre 1000×600 (~5 ms) peut atteindre ~50-60 fps.
-static constexpr uint64_t WINDOW_VIDEO_CAPTURE_INTERVAL_US = 16 * 1000;
-
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
 // pinch_end si aucun update n'arrive pendant cette durée.
@@ -3702,15 +3693,8 @@ void WlrCompositor::_process(double delta) {
             // vidéo → surcharge du thread principal → lag du partage LAN,
             // risque de déconnexion.
             uint64_t now_us = (uint64_t)now.tv_sec * 1000000u + (uint64_t)(now.tv_nsec / 1000);
-            // En mode vidéo inter-frame, la fenêtre partagée est recapturée à
-            // plus haute cadence (plafond 60 fps) : la backpressure du worker
-            // (window_ready) throttle naturellement au débit d'encodage réel.
-            // Les autres fenêtres gardent l'intervalle classique.
-            uint64_t cap_interval = video_share.is_active() &&
-                    video_share.is_encode_window(ws.id)
-                ? WINDOW_VIDEO_CAPTURE_INTERVAL_US : WINDOW_CAPTURE_INTERVAL_US;
             bool due = ws.dirty &&
-                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= cap_interval);
+                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= WINDOW_CAPTURE_INTERVAL_US);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
                 // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
