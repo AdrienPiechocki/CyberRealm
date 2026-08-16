@@ -175,6 +175,7 @@ var _video_chunks := {}
 var _video_nack_last := {}
 # Diagnostics du flux vidéo.
 var _video_diag_last_log := 0
+var _video_geom_warn_last := 0
 var _video_diag_sent := 0
 var _video_diag_bytes := 0
 var _video_diag_last_applied := 0
@@ -1286,6 +1287,14 @@ func _announce_video_configs(force: bool) -> void:
 		var w := int(geo.get("width", 0))
 		var h := int(geo.get("height", 0))
 		if w <= 0 or h <= 0:
+			# Fenêtre pas encore géométrée (X11/xwayland sans window_geometry) :
+			# on ne peut pas créer le décodeur côté récepteur. Réessayé au prochain
+			# tick (dès que la géométrie est connue, la config part et les frames
+			# reprennent). Diagnostic throttlé pour ne pas spammer.
+			var now2 := Time.get_ticks_msec()
+			if now2 - _video_geom_warn_last >= 2000:
+				_video_geom_warn_last = now2
+				print("[video] wid=%d : géométrie indisponible (%dx%d) — config différée" % [wid, w, h])
 			continue
 		var cfg := [_video_codec, w, h]
 		var changed: bool = _video_config_last.get(wid, []) != cfg

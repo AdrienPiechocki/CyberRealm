@@ -5361,7 +5361,36 @@ Dictionary WlrCompositor::get_window_geometry(int window_id) {
     // la zone réelle du contenu sans les ombres/décorations transparentes.
     // x,y = décalage du contenu dans la surface (marge d'ombre).
     // width,height = taille du contenu (sans ombres).
+    // NB : les clients X11/xwayland (jeux, apps X11) n'appellent JAMAIS
+    // set_window_geometry → current.geometry reste (0,0,0,0) → les consom-
+    // mateurs (partage vidéo, focus mode, UV des quads) recevaient une
+    // géométrie vide. Fallback identique au chemin de capture : géométrie
+    // xdg calculée par wlroots (xdg->geometry, intersection de la window_
+    // geometry avec les extents de la surface), puis taille logique de la
+    // surface, puis taille de la texture.
+    wlr_surface *surface = ws->toplevel->base->surface;
     wlr_box geo = ws->toplevel->base->current.geometry;
+    if (geo.width <= 0 || geo.height <= 0) {
+        wlr_xdg_surface *xdg = surface ? wlr_xdg_surface_try_from_wlr_surface(surface) : nullptr;
+        if (xdg && xdg->geometry.width > 0 && xdg->geometry.height > 0) {
+            geo = xdg->geometry;
+        }
+    }
+    if (surface && (geo.width <= 0 || geo.height <= 0)) {
+        geo.x = 0;
+        geo.y = 0;
+        geo.width = surface->current.width;
+        geo.height = surface->current.height;
+    }
+    if (surface && (geo.width <= 0 || geo.height <= 0)) {
+        wlr_texture *tex = wlr_surface_get_texture(surface);
+        if (tex) {
+            geo.x = 0;
+            geo.y = 0;
+            geo.width = (int)tex->width;
+            geo.height = (int)tex->height;
+        }
+    }
     result["x"] = geo.x;
     result["y"] = geo.y;
     result["width"] = geo.width;
