@@ -1940,6 +1940,7 @@ func _sync_cursor_state(delta: float) -> void:
 		# vidéo (la texture partagée est découpée à la window_geometry).
 		var ptr: Dictionary = compositor.get_window_pointer(wid)
 		var inside: bool = bool(ptr.get("inside", false))
+		var captured := Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 		var px := float(ptr.get("x", 0.0))
 		var py := float(ptr.get("y", 0.0))
 		if inside and compositor.has_method("get_window_geometry"):
@@ -1953,13 +1954,14 @@ func _sync_cursor_state(delta: float) -> void:
 					inside = false
 		var last: Dictionary = _last_cursor_pointer_send.get(wid, {})
 		var changed := bool(last.get("inside", false)) != inside \
+			or bool(last.get("captured", false)) != captured \
 			or absf(float(last.get("x", -1e9)) - px) > 0.5 \
 			or absf(float(last.get("y", -1e9)) - py) > 0.5
 		# Émettre si changement, ou à ~30/s tant que le pointeur est dedans
 		# (pour les clients qui se connectent en cours de route).
 		if changed or (inside and _cursor_send_timer >= 0.033):
-			_last_cursor_pointer_send[wid] = {"inside": inside, "x": px, "y": py}
-			_sync_window_pointer.rpc(wid, inside, px, py)
+			_last_cursor_pointer_send[wid] = {"inside": inside, "captured": captured, "x": px, "y": py}
+			_sync_window_pointer.rpc(wid, inside, captured, px, py)
 		# Image du curseur custom (wl_pointer.set_cursor) : seulement quand le
 		# client en pose une nouvelle (serial change) ou masque/restaure.
 		if compositor.has_method("get_window_cursor"):
@@ -1984,9 +1986,11 @@ func _sync_cursor_state(delta: float) -> void:
 		_cursor_send_timer = 0.0
 
 # RPC émetteur → récepteurs : position du curseur du propriétaire dans la
-# fenêtre (coordonnées du contenu, y vers le bas). Non fiable et minuscule.
+# fenêtre (coordonnées du contenu, y vers le bas) + `captured` (le propriétaire
+# a capturé sa souris → ne pas afficher de curseur fantôme). Non fiable et
+# minuscule.
 @rpc("any_peer", "unreliable")
-func _sync_window_pointer(wid: int, inside: bool, x: float, y: float) -> void:
+func _sync_window_pointer(wid: int, inside: bool, captured: bool, x: float, y: float) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -1996,12 +2000,13 @@ func _sync_window_pointer(wid: int, inside: bool, x: float, y: float) -> void:
 		_remote_cursor_state[from] = {}
 	if not _remote_cursor_state[from].has(wid):
 		_remote_cursor_state[from][wid] = {
-			"inside": false, "x": 0.0, "y": 0.0,
+			"inside": false, "captured": false, "x": 0.0, "y": 0.0,
 			"serial": -1, "hidden": false,
 			"hotspot": Vector2.ZERO, "tex": null,
 		}
 	var st: Dictionary = _remote_cursor_state[from][wid]
 	st["inside"] = inside
+	st["captured"] = captured
 	st["x"] = x
 	st["y"] = y
 	if focus != null:
@@ -2021,7 +2026,7 @@ func _sync_window_cursor_image(wid: int, serial: int, hidden: bool, hx: int, hy:
 		_remote_cursor_state[from] = {}
 	if not _remote_cursor_state[from].has(wid):
 		_remote_cursor_state[from][wid] = {
-			"inside": false, "x": 0.0, "y": 0.0,
+			"inside": false, "captured": false, "x": 0.0, "y": 0.0,
 			"serial": -1, "hidden": false,
 			"hotspot": Vector2.ZERO, "tex": null,
 		}
