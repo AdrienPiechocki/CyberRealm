@@ -197,6 +197,12 @@ bool VideoShare::window_ready(int wid) const {
 	return true; // fenêtre non partagée → capture normale
 }
 
+bool VideoShare::is_shared(int wid) const {
+	if (!active.load()) return false;
+	std::lock_guard<std::mutex> g(windows_mutex);
+	return std::find(target_wids.begin(), target_wids.end(), wid) != target_wids.end();
+}
+
 bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc,
 		int alloc_w, int alloc_h, int content_w, int content_h) {
 	// PRÉ-CONDITION : submit_dmabuf PREND POSSESSION de `fd` (l'appelant a
@@ -504,7 +510,12 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		frames->width = w->content_w;
 		frames->height = w->content_h;
 		frames->sw_format = AV_PIX_FMT_NV12;
-		frames->initial_pool_size = 4;
+		// Pool initial de surfaces : 4 était trop juste — avec la ré-utilisation
+		// de surfaces par l'encodeur (frames en cours + B-frames en attente de
+		// ré-ordonnancement), av_hwframe_get_buffer BLOCQUAIT jusqu'à la
+		// libération d'une surface → encode_window mesuré à 40 ms/frame → le
+		// compositeur sautait presque toutes les captures (6 ips au lieu de 60).
+		frames->initial_pool_size = 8;
 		if (av_hwframe_ctx_init(frames_ref) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_ctx_init a échoué");
 			av_buffer_unref(&frames_ref);
@@ -531,7 +542,11 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		ctx->hw_frames_ctx = av_buffer_ref(frames_ref);
 		ctx->bit_rate = bitrate;
 		ctx->gop_size = 60;
-		ctx->max_b_frames = hw_av1 ? 0 : 2;
+		// Pas de B-frames (même réglage que AV1) : supprime l'attente de
+		// ré-ordonnancement qui retient des surfaces du pool et retarde la
+		// sortie des paquets. Pour du streaming LAN temps réel, le gain de
+		// latence vaut mieux que les ~10-15 % de compression des B-frames.
+		ctx->max_b_frames = 0;
 		if (avcodec_open2(ctx, codec, nullptr) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(", name, ") a échoué");
 			av_buffer_unref(&frames_ref);
@@ -615,6 +630,8 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		close(fd);
 		return;
 	}
+	using clock = std::chrono::steady_clock;
+	auto t_sws0 = clock::now();
 	AVCodecContext *ctx = w->avctx;
 	AVFrame *frame = w->sw_frame;
 	if (!frame) frame = w->sw_frame = av_frame_alloc();
@@ -684,6 +701,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	const int src_linesize[4] = { (int)stride, 0, 0, 0 };
 	sws_scale(w->sws, src_slices, src_linesize, 0, content_h,
 		frame->data, frame->linesize);
+	auto t_sws1 = clock::now();
 
 	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
 	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
@@ -704,6 +722,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 
 	// Envoi : VAAPI via surface NV12 du pool (upload GPU), logiciel direct.
 	AVFrame *input = frame;
+	auto t_xfer0 = clock::now();
 	if (hw_mode) {
 		if (!w->hw_frame) w->hw_frame = av_frame_alloc();
 		if (w->hw_frame && av_hwframe_get_buffer((AVBufferRef *)w->va_frames_ctx, w->hw_frame, 0) == 0) {
@@ -722,7 +741,9 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		}
 	}
 
+	auto t_xfer1 = clock::now();
 	if (input) {
+		auto t_enc0 = clock::now();
 		int ret = avcodec_send_frame(ctx, input);
 		av_frame_unref(input);
 		if (ret < 0) {
@@ -740,6 +761,29 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 				push_packet(w->wid, seq, kf, pkt->data, pkt->size);
 				av_packet_unref(pkt);
 			}
+		}
+		auto t_enc1 = clock::now();
+		double d_sws = std::chrono::duration<double, std::milli>(t_sws1 - t_sws0).count();
+		double d_xfer = std::chrono::duration<double, std::milli>(t_xfer1 - t_xfer0).count();
+		double d_enc = std::chrono::duration<double, std::milli>(t_enc1 - t_enc0).count();
+		// Diagnostic throttlé (≤ 1/s) : localise le goulot d'étranglement
+		// (lecture+swscale / transfert GPU / encodage GPU) quand le worker
+		// dépasse le budget (~15 ms pour viser 60 ips).
+		static std::mutex diag_m;
+		static double last_diag = 0.0;
+		bool do_print = false;
+		{
+			std::lock_guard<std::mutex> g(diag_m);
+			double now = std::chrono::duration<double>(clock::now().time_since_epoch()).count();
+			if (d_sws + d_xfer + d_enc > 15.0 && now - last_diag > 1.0) {
+				last_diag = now;
+				do_print = true;
+			}
+		}
+		if (do_print) {
+			UtilityFunctions::print("waylandgodot: video_share: [diag] encode ", w->wid, "x", w->sws_h,
+				" hw=", hw_mode, " codec=", (hw_av1 ? "av1" : "h264"),
+				" lecture+sws=", d_sws, "ms transfert=", d_xfer, "ms encodage=", d_enc, "ms");
 		}
 	} else {
 		// L'échec d'upload laisse une frame sans encodage → demande une

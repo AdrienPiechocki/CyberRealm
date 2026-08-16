@@ -807,14 +807,20 @@ static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 // ENet). En mode partage vidéo inter-frame, la copie CPU est supprimée (le
 // worker encode le DMA-BUF en mmap) : le coût par capture est un render pass
 // + une sync (poll court) + un submit, tenable à 60/s pour un stream fluide.
-// 16 667 µs ≈ 60 FPS de recapture — la cadence d'encodage demandée pour le
-// stream LAN. C'est un intervalle de TEMPS (pas un décompte de frames) : le
-// taux de recapture reste ~60/s quel que soit le max_fps du jeu (à 60 Hz
-// comme à 120 Hz). Si une fenêtre est en backpressure (réseau/encodeur en
-// retard), window_ready renvoie false et on saute la capture → la cadence
-// réelle retombe à ~30/s sans accumuler de retard, jamais plus vite que la
-// vidéo ne peut être livrée.
-static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US = 16'667;
+//
+// DEUX cadences : 60/s (16 667 µs) pour les fenêtres ACTUELLEMENT partagées
+// en vidéo (le stream en a besoin pour être fluide), 30/s (33 333 µs) pour
+// les autres fenêtres dirty — elles ne servent qu'à rafraîchir leurs quads
+// 3D, 30/s est suffisant et moitié moins de render passes libère le GPU et
+// la mémoire (des captures non partagées à 60/s saturaient le GPU : sws
+// lents → encodeur à ~6 ips au lieu de 60). Ce sont des intervalles de TEMPS
+// (pas un décompte de frames) : le taux reste ~60/s (resp. ~30/s) quel que
+// soit le max_fps du jeu. Si une fenêtre est en backpressure (réseau/encodeur
+// en retard), window_ready renvoie false et on saute la capture → la cadence
+// réelle retombe sans accumuler de retard, jamais plus vite que la vidéo ne
+// peut être livrée.
+static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US_FAST = 16'667; // ~60/s (fenêtres partagées vidéo)
+static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US_SLOW = 33'333;  // ~30/s (autres fenêtres dirty)
 
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
@@ -3707,8 +3713,16 @@ void WlrCompositor::_process(double delta) {
             // vidéo → surcharge du thread principal → lag du partage LAN,
             // risque de déconnexion.
             uint64_t now_us = (uint64_t)now.tv_sec * 1000000u + (uint64_t)(now.tv_nsec / 1000);
+            // Cadence par fenêtre : 60/s pour les fenêtres partagées vidéo
+            // (le stream doit rester fluide), 30/s pour les autres dirty
+            // (rafraîchissement des quads 3D, moitié moins de render passes →
+            // GPU et mémoire libres pour l'encodeur VAAPI).
+            uint64_t interval = WINDOW_CAPTURE_INTERVAL_US_SLOW;
+            if (video_share.is_shared(ws.id)) {
+                interval = WINDOW_CAPTURE_INTERVAL_US_FAST;
+            }
             bool due = ws.dirty &&
-                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= WINDOW_CAPTURE_INTERVAL_US);
+                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= interval);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
                 // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
