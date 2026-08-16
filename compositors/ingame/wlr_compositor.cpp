@@ -344,6 +344,21 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("stop_audio_share"), &WlrCompositor::stop_audio_share);
     ClassDB::bind_method(D_METHOD("poll_audio_packet"), &WlrCompositor::poll_audio_packet);
     ClassDB::bind_method(D_METHOD("audio_decode", "packet"), &WlrCompositor::audio_decode);
+    ClassDB::bind_method(D_METHOD("video_share_start", "codec", "bitrate"), &WlrCompositor::video_share_start);
+    ClassDB::bind_method(D_METHOD("video_share_stop"), &WlrCompositor::video_share_stop);
+    ClassDB::bind_method(D_METHOD("video_share_active"), &WlrCompositor::video_share_active);
+    ClassDB::bind_method(D_METHOD("video_share_hardware"), &WlrCompositor::video_share_hardware);
+    ClassDB::bind_method(D_METHOD("video_share_codec"), &WlrCompositor::video_share_codec);
+    ClassDB::bind_method(D_METHOD("set_video_share_windows", "wids"), &WlrCompositor::set_video_share_windows);
+    ClassDB::bind_method(D_METHOD("video_share_poll"), &WlrCompositor::video_share_poll);
+    ClassDB::bind_method(D_METHOD("video_share_request_keyframe", "window_id"), &WlrCompositor::video_share_request_keyframe);
+    ClassDB::bind_method(D_METHOD("video_share_pending"), &WlrCompositor::video_share_pending);
+    ClassDB::bind_method(D_METHOD("video_decoder_configure", "key", "codec", "width", "height"),
+        &WlrCompositor::video_decoder_configure);
+    ClassDB::bind_method(D_METHOD("video_decoder_feed", "key", "packet", "keyframe"),
+        &WlrCompositor::video_decoder_feed);
+    ClassDB::bind_method(D_METHOD("video_decoder_reset", "key"), &WlrCompositor::video_decoder_reset);
+    ClassDB::bind_method(D_METHOD("video_decoder_clear_all"), &WlrCompositor::video_decoder_clear_all);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("get_window_pid", "window_id"), &WlrCompositor::get_window_pid);
@@ -1176,6 +1191,12 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     // le memcpy peut lire des données partiellement écrites par le GPU.
     wait_for_dmabuf_gpu_writes(cache.dma_fd);
 
+    // Partage vidéo inter-frame : soumet le DMA-BUF à l'encodeur (thread
+    // worker). Le buffer vient d'être rendu et synchronisé — c'est le point
+    // idéal pour le capture, sans copie CPU sur le thread principal (le
+    // worker lit le fd en mmap). No-op si le partage vidéo est inactif.
+    submit_video_frame(cache);
+
     // Synchronisation CPU/GPU: DMA_BUF_IOCTL_SYNC invalide le cache
     // CPU pour que mmap lise les données fraîches du GPU.
     timespec t_sync1_start, t_sync1_end;
@@ -1527,6 +1548,11 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     // jusqu'à leur achèvement. C'est la seule synchronisation fiable
     // entre deux API GPU (EGL wlroots ↔ Vulkan Godot).
     wait_for_dmabuf_gpu_writes(cache.dma_fd);
+
+    // Partage vidéo inter-frame : soumet le DMA-BUF à l'encodeur (thread
+    // worker), juste après le rendu et la synchronisation GPU — aucun
+    // memcpy sur le thread principal (contrairement au chemin JPEG).
+    submit_video_frame(cache);
     clock_gettime(CLOCK_MONOTONIC, &t_r1);
     t_c0 = t_r1;
 
@@ -3672,6 +3698,17 @@ void WlrCompositor::_process(double delta) {
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
                 ws.last_capture_us = now_us;
+                // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
+                // réutilisé à chaque capture (même mémoire GPU). Si l'encodeur
+                // (thread worker) est encore en train de le lire, on ne le
+                // re-rend PAS — un nouveau render pass écraserait les données
+                // pendant l'encodage → corruption vidéo. On saute cette frame
+                // (la texture locale garde le contenu précédent, un frame
+                // sautée à ~30 fps est imperceptible).
+                ws.capture_cache.wid = ws.id;
+                if (video_share.is_active() && !video_share.window_ready(ws.id)) {
+                    continue;
+                }
                 if (capture_surface(ws.toplevel->base->surface,
                         ws.texture, ws.width, ws.height, ws.capture_cache)) {
                     ws.dirty = false;
@@ -5373,6 +5410,79 @@ Dictionary WlrCompositor::poll_audio_packet() {
 
 PackedByteArray WlrCompositor::audio_decode(const PackedByteArray &packet) {
     return audio_share.decode_opus_packet(packet);
+}
+
+// ---------------------------------------------------------------------
+// Partage vidéo (stream LAN) : encodeur inter-frame (VideoShare).
+// ---------------------------------------------------------------------
+
+bool WlrCompositor::video_share_start(const String &codec, int bitrate) {
+    return video_share.start(codec, bitrate);
+}
+
+void WlrCompositor::video_share_stop() {
+    video_share.stop();
+}
+
+bool WlrCompositor::video_share_active() {
+    return video_share.is_active();
+}
+
+bool WlrCompositor::video_share_hardware() {
+    return video_share.is_hardware();
+}
+
+String WlrCompositor::video_share_codec() {
+    return video_share.active_codec();
+}
+
+void WlrCompositor::set_video_share_windows(const PackedInt32Array &wids) {
+    std::vector<int> ids;
+    for (int i = 0; i < wids.size(); i++) {
+        ids.push_back(wids[i]);
+    }
+    video_share.set_encode_windows(ids);
+}
+
+Array WlrCompositor::video_share_poll() {
+    return video_share.poll_packets();
+}
+
+void WlrCompositor::video_share_request_keyframe(int window_id) {
+    video_share.request_keyframe(window_id);
+}
+
+int WlrCompositor::video_share_pending() {
+    return video_share.pending_count();
+}
+
+void WlrCompositor::video_decoder_configure(const String &key, const String &codec, int width, int height) {
+    std::string k = key.utf8().get_data();
+    video_share.decoder_configure(k, codec, width, height);
+}
+
+Ref<Image> WlrCompositor::video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe) {
+    std::string k = key.utf8().get_data();
+    return video_share.decoder_feed(k, packet, keyframe);
+}
+
+void WlrCompositor::video_decoder_reset(const String &key) {
+    std::string k = key.utf8().get_data();
+    video_share.decoder_reset(k);
+}
+
+void WlrCompositor::video_decoder_clear_all() {
+    video_share.decoder_clear_all();
+}
+
+void WlrCompositor::submit_video_frame(CaptureCache &cache) {
+    if (!video_share.is_active() || cache.wid < 0 || cache.dma_fd < 0 ||
+        cache.stride == 0) {
+        return;
+    }
+    video_share.submit_dmabuf(cache.wid, dup(cache.dma_fd), cache.stride,
+        cache.format, cache.alloc_width, cache.alloc_height,
+        cache.width, cache.height);
 }
 
 bool WlrCompositor::popup_accepts_input(int popup_id) {
