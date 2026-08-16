@@ -7,7 +7,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed(roster: Array)
 signal discovery_results(results: Array)
-signal level_apply_requested(scene: PackedScene)
+signal level_apply_requested(scene: PackedScene, spawn: Vector3)
 
 const PORT := 7777
 const DISCOVERY_PORT := 9999
@@ -16,13 +16,21 @@ const DISCOVERY_TIMEOUT := 1.6
 const DISCOVERY_RETRY_INTERVAL := 0.4
 const DISCOVERY_QUERY := "CYBERREALM_DISCOVER"
 
+# ── Transfert du niveau de l'hôte (maps custom jouables en LAN) ──────
+# L'hôte bake son niveau (LevelBaker) en un blob binaire auto-suffisant
+# (assets embarqués → pas besoin de builds identiques), le compresse en ZSTD
+# puis l'envoie en chunks fiables (canal 0). Un chunk ≤ 24 Ko reste dans une
+# vague ENet (32 fragments ≈ 44 KB) sans retomber en 2-3 vagues d'ACK.
+const LEVEL_CHUNK_SIZE := 24000
+const LEVEL_CHUNKS_PER_TICK := 24
+
 const REMOTE_PLAYER_SCENE := preload("res://scenes/remote_player.tscn")
 
 var session_active := false
 var is_host := false
 var player_name := ""
 var player_color := Color(0.2, 0.6, 1.0)
-var level_text_provider: Callable = Callable() # host : renvoie le texte de la scène Level
+var level_bake_provider: Callable = Callable() # host : renvoie le blob baked du niveau {bytes, spawn}
 var windows_provider: Callable = Callable() # renvoie la liste des fenêtres locales (world)
 var windows_moving_provider: Callable = Callable() # true si le joueur déplace/redimensionne une fenêtre
 var window_image_provider: Callable = Callable() # Callable(window_id) -> Image (contenu réel, stream partage)
@@ -41,6 +49,13 @@ var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
 var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
 var _last_status := ""
+# peer_id -> {bytes, spawn, total, sent} : blob baked du niveau en cours
+# d'envoi vers un client qui vient de se connecter.
+var _level_send_queue: Dictionary = {}
+# Réception (client) du blob de l'hôte : {data, spawn, total, next}.
+var _level_bake_receive: Dictionary = {}
+# Cache (host) du blob baked : re-baké uniquement quand le niveau change.
+var _level_baked_cache: Dictionary = {}
 
 # Fenêtres des autres joueurs, rendues en quads noirs dans le MONDE (pas
 # dans le repère du niveau) : chaque machine diffuse son propre état.
@@ -370,39 +385,96 @@ func _on_peer_connected(id: int) -> void:
 		_send_level_to(id)
 
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
-# rejoint : le texte de la scène, ré-écrit côté client puis instancié.
+# rejoint : le blob binaire auto-suffisant produit par LevelBaker (meshes/
+# matériaux/textures embarqués → jouable même avec des builds différents),
+# compressé en ZSTD puis envoyé en chunks fiables. Le blob est mis en cache :
+# re-baké seulement si le niveau change (on_level_swapped).
 func _send_level_to(id: int) -> void:
-	if not level_text_provider.is_valid():
+	if not level_bake_provider.is_valid():
 		return
-	var text := String(level_text_provider.call())
-	if text.is_empty():
+	if _level_baked_cache.is_empty():
+		_level_baked_cache = level_bake_provider.call()
+	var data: Dictionary = _level_baked_cache
+	if data.is_empty():
 		return
-	_receive_level.rpc_id(id, text)
+	var bytes: PackedByteArray = data.get("bytes", PackedByteArray())
+	if bytes.is_empty():
+		return
+	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
+	if compressed.is_empty():
+		compressed = bytes
+	_level_send_queue[id] = {
+		"bytes": compressed,
+		"spawn": data.get("spawn", Vector3.ZERO),
+		"size": bytes.size(),
+		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
+		"sent": 0,
+	}
+	_set_status("Sending host level to %d (%d KB)…" % [id, compressed.size() / 1024])
+
+# Pousse quelques chunks du niveau vers les peers qui viennent de se connecter,
+# étalé sur plusieurs ticks (pas de flood ENet d'un seul coup). Chaque chunk
+# reste dans une vague fiable ENet (~24 Ko) ; le canal fiable garantit l'ordre.
+func _drain_level_send() -> void:
+	if _level_send_queue.is_empty():
+		return
+	for id in _level_send_queue.keys():
+		var entry: Dictionary = _level_send_queue[id]
+		for i in LEVEL_CHUNKS_PER_TICK:
+			var sent: int = int(entry["sent"])
+			var total: int = int(entry["total"])
+			if sent >= total:
+				_level_send_queue.erase(id)
+				break
+			var bytes: PackedByteArray = entry["bytes"]
+			var start := sent * LEVEL_CHUNK_SIZE
+			var end := mini(start + LEVEL_CHUNK_SIZE, bytes.size())
+			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], bytes.slice(start, end))
+			entry["sent"] = sent + 1
 
 @rpc("any_peer", "reliable")
-func _receive_level(scene_text: String) -> void:
+func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn: Vector3, chunk: PackedByteArray) -> void:
 	if is_host or multiplayer.get_remote_sender_id() != 1:
 		return
-	if scene_text.is_empty():
+	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
 		return
-	var tmp := "user://lan_level.tscn"
+	# Nouveau transfert (le blob baked diffère d'une session à l'autre) : on
+	# repart de zéro. Le canal fiable garantit l'ordre intra-transfert.
+	if not _level_bake_receive.has("total") or int(_level_bake_receive.get("total", -1)) != total:
+		_level_bake_receive = {"data": PackedByteArray(), "spawn": spawn, "size": uncompressed_size, "total": total, "next": 0}
+	if index < int(_level_bake_receive.get("next", 0)):
+		return
+	(_level_bake_receive["data"] as PackedByteArray).append_array(chunk)
+	_level_bake_receive["next"] = index + 1
+	if index + 1 < total:
+		return
+	var raw: PackedByteArray = _level_bake_receive["data"]
+	var recv_spawn: Vector3 = _level_bake_receive["spawn"]
+	var recv_size: int = int(_level_bake_receive["size"])
+	_level_bake_receive.clear()
+	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
+	if bytes.is_empty() or bytes.size() != recv_size:
+		_set_status("Host level corrupted (decompress failed) — kept local level")
+		return
+	var tmp := "user://lan_level.scn"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
 		_set_status("Could not write the host's level")
 		return
-	f.store_string(scene_text)
+	f.store_buffer(bytes)
 	f.close()
 	var scene: PackedScene = load(tmp)
 	if scene == null:
-		_set_status("Host level unreadable (missing assets?), kept local level")
+		_set_status("Host level unreadable — kept local level")
 		return
-	level_apply_requested.emit(scene)
-	_set_status("Host level loaded")
+	level_apply_requested.emit(scene, recv_spawn)
+	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
 
 # Appelé par wayland_room après avoir remplacé le niveau : bascule la racine
 # et déplace les avatars distants vers un nouveau conteneur (l'ancien niveau
 # est sur le point d'être libéré).
 func on_level_swapped(new_level_root: Node3D) -> void:
+	_level_baked_cache.clear()
 	_level_root = new_level_root
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
@@ -448,8 +520,11 @@ func _on_peer_disconnected(id: int) -> void:
 	if is_host:
 		_players.erase(id)
 		_remove_player.rpc(id)
+		_level_send_queue.erase(id)
 	else:
 		_remove_player(id)
+		if id == 1:
+			_level_bake_receive.clear()
 	_last_texture_versions.erase(id)
 	_last_applied_version.erase(id)
 	_last_acked_version.erase(id)
@@ -487,6 +562,7 @@ func _sync_player_transform(pos: Vector3, yaw: float) -> void:
 
 func _physics_process(delta: float) -> void:
 	_update_cpu_capture_request()
+	_drain_level_send()
 	if not session_active or _level_root == null:
 		return
 	if multiplayer.get_peers().is_empty():
@@ -2099,6 +2175,9 @@ func _clear_remote_players() -> void:
 func _disconnect_session() -> void:
 	_stop_audio_share()
 	_stop_video_share()
+	_level_send_queue.clear()
+	_level_bake_receive.clear()
+	_level_baked_cache.clear()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):
 		compositor.video_decoder_clear_all()
 	_video_configs.clear()
