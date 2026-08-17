@@ -1638,16 +1638,19 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 // =====================================================================
 
 bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
-    wlr_texture *texture = wlr_surface_get_texture(surface);
-    if (!texture) return false;
+    if (!renderer || !allocator) return false;
 
-    int w = (int)texture->width;
-    int h = (int)texture->height;
-    if (w <= 0 || h <= 0) return false;
+    wlr_texture *root_texture = wlr_surface_get_texture(surface);
+    // Ne pas retourner false si root_texture est NULL : Firefox (entre
+    // autres) dessine son contenu WebRender dans des sous-surfaces et peut
+    // ne committer aucun buffer sur la surface racine (popups, menus en
+    // cascade). wlr_surface_for_each_surface itérera quand même sur les
+    // sous-surfaces (même logique que le chemin dmabuf).
 
-    // Recadre sur la géométrie xdg effective (même logique que les paths
-    // dmabuf/vulkan).
+    // Recadre sur la géométrie xdg effective (window_geometry) EN PREMIER
+    // (même logique que les chemins dmabuf/vulkan).
     int geo_x = 0, geo_y = 0;
+    int w = 0, h = 0;
     wlr_box crop;
     if (capture_crop_box(surface, crop)) {
         geo_x = crop.x;
@@ -1655,6 +1658,17 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         w = crop.width;
         h = crop.height;
     }
+
+    // Taille LOGIQUE de la surface (surface->current.width/height), pas la
+    // taille brute du buffer (root_texture->width/height) : sur un client
+    // HiDPI (buffer_scale > 1) le buffer physique est plus grand que la
+    // taille affichée. Fallback quand la géométrie xdg n'est pas disponible
+    // (fenêtres sans CSD, surfaces sans set_window_geometry).
+    if (w <= 0 || h <= 0) {
+        w = surface->current.width > 0 ? surface->current.width : (root_texture ? (int)root_texture->width : 0);
+        h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
+    }
+    if (w <= 0 || h <= 0) return false;
 
     // Recrée le buffer offscreen si le backend ne correspond pas ou si la
     // capacité est dépassée.
@@ -1705,13 +1719,53 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     clear.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
     wlr_render_pass_add_rect(pass, &clear);
 
-    wlr_render_texture_options opts = {};
-    opts.texture = texture;
-    opts.dst_box.x = -geo_x;
-    opts.dst_box.y = -geo_y;
-    opts.dst_box.width = texture->width;
-    opts.dst_box.height = texture->height;
-    wlr_render_pass_add_texture(pass, &opts);
+    // ---- Render pass: racine + sous-surfaces → buffer offscreen --------
+    // Firefox (entre autres) dessine son contenu WebRender dans une
+    // sous-surface enfant distincte de la surface racine (qui ne porte que
+    // le chrome/CSD) : sans l'itération ci-dessous, seule la barre de titre
+    // est capturée et le reste reste vide. Le chemin dmabuf/vulkan le fait
+    // déjà ; ce chemin pixels (fallback CPU, utilisé en WSL/VM sans GPU)
+    // doit faire pareil sinon le contenu des sous-surfaces disparaît.
+    struct SubSurfaceInstance {
+        wlr_surface *surface;
+        int sx, sy;
+    };
+    std::vector<SubSurfaceInstance> instances;
+
+    wlr_surface_for_each_surface(surface,
+        +[](wlr_surface *sub, int sx, int sy, void *data) {
+            auto *out = static_cast<std::vector<SubSurfaceInstance> *>(data);
+            out->push_back({sub, sx, sy});
+        }, &instances);
+
+    int blitted = 0;
+    for (auto &inst : instances) {
+        wlr_texture *sub_texture = wlr_surface_get_texture(inst.surface);
+        if (!sub_texture) continue;
+
+        int sub_w = inst.surface->current.width > 0
+            ? inst.surface->current.width : (int)sub_texture->width;
+        int sub_h = inst.surface->current.height > 0
+            ? inst.surface->current.height : (int)sub_texture->height;
+
+        // Décale dst_box de (-geo_x, -geo_y) pour ne rasteriser que la zone
+        // de contenu (window_geometry). Les pixels d'ombre CSD en dehors de
+        // cette zone tombent en dehors du buffer et sont clipés par le
+        // render pass.
+        wlr_render_texture_options opts = {};
+        opts.texture = sub_texture;
+        opts.dst_box.x = inst.sx - geo_x;
+        opts.dst_box.y = inst.sy - geo_y;
+        opts.dst_box.width = sub_w;
+        opts.dst_box.height = sub_h;
+        wlr_render_pass_add_texture(pass, &opts);
+        blitted++;
+    }
+
+    if (blitted == 0) {
+        wlr_render_pass_submit(pass);
+        return false;
+    }
 
     timespec t_render_start, t_render_end;
     clock_gettime(CLOCK_MONOTONIC, &t_render_start);
