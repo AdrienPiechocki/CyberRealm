@@ -34,6 +34,12 @@ func setup(id: int, name: String, color: Color) -> void:
 	# sont triées par profondeur réelle au lieu du painter's algorithm (tri par
 	# centre) — sans pré-pass la tête "traversait" le corps (pas de profondeur).
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+	# depth_write : la face avant écrit sa profondeur pendant le rendu
+	# transparent. Sans ça, quand l'avatar s'estompe (alpha < 1) on voit
+	# l'intérieur du personnage : la tête à travers le corps, et les faces
+	# arrière à travers les faces avant. Avec l'écriture de profondeur, ce qui
+	# est derrière une face avant est occulté au lieu d'être mélangé.
+	mat.depth_write = true
 	($MeshInstance3D as MeshInstance3D).material_override = mat
 	_body_mat = mat
 	# La tête (CSGSphere3D) : dupliquer son matériau pour ne pas muter le
@@ -43,6 +49,7 @@ func setup(id: int, name: String, color: Color) -> void:
 	if head_mat != null:
 		head_mat = head_mat.duplicate() as StandardMaterial3D
 		head_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+		head_mat.depth_write = true
 		($CSGSphere3D as CSGPrimitive3D).material = head_mat
 		_head_mat = head_mat
 	_label = $NameLabel as Label3D
