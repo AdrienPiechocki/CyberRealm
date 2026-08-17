@@ -63,6 +63,7 @@ var _custom_is_mouse := false
 var _custom_mods: Dictionary = {} # {"ctrl": bool, "shift": bool, "alt": bool, "super": bool}
 var _custom_key_btn: Button = null
 var _custom_cmd_edit: LineEdit = null
+var _editing_index := -1 # index du custom bind en cours d'édition, -1 = aucun
 var _quit_btn: Button = null
 var _play_time := 0.0
 # Page LAN
@@ -218,6 +219,7 @@ func _show_main() -> void:
 	_clear()
 	_waiting_action = ""
 	_current_view = "main"
+	_editing_index = -1
 
 	container.add_child(_make_title("MAIN MENU"))
 
@@ -390,9 +392,17 @@ func _show_custom_binds() -> void:
 	_waiting_action = ""
 	_current_view = "custom"
 	_custom_key_waiting = false
-	_custom_keycode = 0
-	_custom_is_mouse = false
-	_custom_mods = {}
+	var binds: Array = _settings.get("custom_binds", [])
+	if _editing_index >= 0 and _editing_index < binds.size():
+		var edit_bind: Dictionary = binds[_editing_index]
+		_custom_is_mouse = String(edit_bind.get("type", "key")) == "mouse"
+		_custom_keycode = int(edit_bind.get("code", 0))
+		_custom_mods = edit_bind.get("mods", {})
+	else:
+		_editing_index = -1
+		_custom_keycode = 0
+		_custom_is_mouse = false
+		_custom_mods = {}
 
 	container.add_child(_make_title("CUSTOM BINDS"))
 
@@ -412,7 +422,6 @@ func _show_custom_binds() -> void:
 	scroll.add_child(list)
 	container.add_child(scroll)
 
-	var binds: Array = _settings.get("custom_binds", [])
 	if binds.is_empty():
 		var empty_label := Label.new()
 		empty_label.text = "(no custom binds)"
@@ -440,8 +449,14 @@ func _show_custom_binds() -> void:
 			launch_btn.pressed.connect(_launch_app.bind(String(bind.get("command", ""))))
 			row.add_child(launch_btn)
 
+			var edit_btn := _make_btn("Edit", Color(0.1, 0.25, 0.15, 0.9))
+			edit_btn.custom_minimum_size = Vector2(90, 36)
+			edit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			edit_btn.pressed.connect(_edit_custom_bind.bind(i))
+			row.add_child(edit_btn)
+
 			var remove_btn := _make_btn("Remove", Color(0.25, 0.1, 0.1, 0.9))
-			remove_btn.custom_minimum_size = Vector2(100, 36)
+			remove_btn.custom_minimum_size = Vector2(90, 36)
 			remove_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			remove_btn.pressed.connect(_remove_custom_bind.bind(i))
 			row.add_child(remove_btn)
@@ -459,12 +474,14 @@ func _show_custom_binds() -> void:
 
 	_custom_cmd_edit = _make_line_edit()
 	_custom_cmd_edit.placeholder_text = "command to launch"
+	if _editing_index >= 0 and _editing_index < binds.size():
+		_custom_cmd_edit.text = String(binds[_editing_index].get("command", ""))
 	_custom_cmd_edit.text_submitted.connect(func(_t: String):
 		_add_custom_bind()
 	)
 	add_row.add_child(_custom_cmd_edit)
 
-	var add_btn := _make_btn("Add")
+	var add_btn := _make_btn("Save" if _editing_index >= 0 else "Add")
 	add_btn.custom_minimum_size = Vector2(80, 36)
 	add_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	add_btn.pressed.connect(_add_custom_bind)
@@ -982,14 +999,23 @@ func _add_custom_bind() -> void:
 	if not _custom_cmd_edit or not _custom_keycode or _custom_cmd_edit.text.strip_edges() == "":
 		return
 	var binds: Array = _settings.get("custom_binds", [])
-	binds.append({
+	var entry := {
 		"type": "mouse" if _custom_is_mouse else "key",
 		"code": _custom_keycode,
 		"mods": _custom_mods,
 		"command": _custom_cmd_edit.text.strip_edges(),
-	})
+	}
+	if _editing_index >= 0 and _editing_index < binds.size():
+		binds[_editing_index] = entry
+	else:
+		binds.append(entry)
 	_settings["custom_binds"] = binds
+	_editing_index = -1
 	_save_settings()
+	_show_custom_binds()
+
+func _edit_custom_bind(index: int) -> void:
+	_editing_index = index
 	_show_custom_binds()
 
 func _remove_custom_bind(index: int) -> void:
@@ -997,6 +1023,7 @@ func _remove_custom_bind(index: int) -> void:
 	if index >= 0 and index < binds.size():
 		binds.remove_at(index)
 	_settings["custom_binds"] = binds
+	_editing_index = -1
 	_save_settings()
 	_show_custom_binds()
 
