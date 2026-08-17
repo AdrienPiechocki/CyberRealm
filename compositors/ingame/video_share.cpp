@@ -28,7 +28,6 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <unordered_set>
 
@@ -831,6 +830,17 @@ UtilityFunctions::print("waylandgodot: video_share: [diag] encode ", w->wid, "x"
 // ---------------------------------------------------------------------------
 
 bool VideoShare::va_init() {
+	// WORKAROUND iHD (Intel) : le display VAAPI est créé une seule fois et
+	// JAMAIS terminé — c'est le "display singleton". Le crash "free(): invalid
+	// size" dans iHD_drv_video.so apparaît au teardown (vaTerminate) ET à la
+	// ré-initialisation (2e vaInitialize d'un même processus, locale d'iHD
+	// corrompue) : en réutilisant le display existant, on n'appelle ni l'un ni
+	// l'autre. Les contextes/surfaces VAAPI restent créés/détruits par session
+	// (ensure_encoder/destroy_encoder). Voir va_cleanup.
+	if (va_display && hw_device_ctx) {
+		return true;
+	}
+
 	// Vérifie que l'encodeur matériel existe AVANT d'ouvrir le display.
 	const char *probe_name = hw_av1 ? "av1_vaapi" : "h264_vaapi";
 	if (!avcodec_find_encoder_by_name(probe_name)) {
@@ -887,17 +897,18 @@ bool VideoShare::va_init() {
 }
 
 void VideoShare::va_cleanup() {
-	// WORKAROUND testable : avec WAYLANDGODOT_SKIP_VATERMINATE=1, on ne
-	// termine jamais le display VAAPI. Le crash "free(): invalid size" dans
-	// iHD_drv_video.so (Intel, teardown) apparaît pile à vaTerminate ; le
-	// VADisplay et son fd fuient volontairement mais le Terminate d'iHD n'est
-	// plus appelé. À ne garder que pour diagnostiquer — à retirer une fois le
-	// vrai correctif trouvé.
-	static const bool skip_terminate = getenv("WAYLANDGODOT_SKIP_VATERMINATE") != nullptr;
+	// WORKAROUND iHD (Intel) : un display pleinement initialisé N'EST JAMAIS
+	// libéré (singleton de la durée du processus). Le VADisplay, son fd et le
+	// hwdevice FFmpeg fuient volontairement — récupérés par l'OS à la sortie.
+	// Ce n'est que sur un échec PARTIEL de va_init (display ouvert mais
+	// hwdevice non construit) qu'on libère réellement.
+	if (va_display && hw_device_ctx) {
+		return;
+	}
 	if (hw_device_ctx) {
-		// Détache le display du hwdevice : sinon la free callback de FFmpeg
-		// (vaapi_device_free) appelle elle-même vaTerminate et on le ferait 2
-		// fois (le 2e est un no-op côté libva, mais autant n'en garder qu'un).
+		// Échec partiel : détache le display pour que la free callback de
+		// FFmpeg (vaapi_device_free) ne fasse PAS vaTerminate, puis libère le
+		// hwdevice. vaTerminate sera fait explicitement ci-dessous.
 		AVHWDeviceContext *hwdev = (AVHWDeviceContext *)((AVBufferRef *)hw_device_ctx)->data;
 		AVVAAPIDeviceContext *va = (AVVAAPIDeviceContext *)hwdev->hwctx;
 		va->display = nullptr;
@@ -905,13 +916,11 @@ void VideoShare::va_cleanup() {
 		hw_device_ctx = nullptr;
 	}
 	if (va_display) {
-		if (!skip_terminate)
-			vaTerminate((VADisplay)va_display);
+		vaTerminate((VADisplay)va_display);
 		va_display = nullptr;
 	}
 	if (va_drm_fd >= 0) {
-		if (!skip_terminate)
-			close(va_drm_fd);
+		close(va_drm_fd);
 		va_drm_fd = -1;
 	}
 }
