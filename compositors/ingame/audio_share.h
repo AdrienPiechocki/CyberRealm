@@ -23,8 +23,12 @@
 //
 // Le lien fenêtre → flux audio se fait par PID : le PID du client Wayland de
 // la fenêtre (compositeur) doit égaler application.process.id du node PW.
-// Limitation connue : les apps X11 (via xwayland) ont un PID de client
-// Wayland différent (le satellite), le matching par PID ne les trouve pas.
+// Pour les fenêtres X11 (via xwayland-satellite), le client Wayland est le
+// satellite et son PID ne correspond à aucun node : le compositeur résout le
+// vrai PID de l'application sur le serveur X (_NET_WM_PID, voir
+// x11_pid_resolver.h) et le transmet ici — l'app X11 est elle-même un client
+// PipeWire (natif ou via pipewire-pulse) avec son propre PID. Seules les apps
+// sans _NET_WM_PID restent non capturées.
 
 // Forward-declaration du type spa au scope global : sans elle, "struct spa_dict"
 // à l'intérieur du namespace godot serait résolu en un type godot::spa_dict

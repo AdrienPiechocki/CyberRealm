@@ -26,6 +26,11 @@ env.ParseConfig("pkg-config --cflags --libs libpipewire-0.3 libspa-0.2 opus")
 # fallback logiciel (libx264) est fourni par libavcodec lui-même.
 env.ParseConfig("pkg-config --cflags --libs libavcodec libavutil libswscale libva")
 
+# X11 (Xlib) pour le partage audio des fenêtres X11 (xwayland) : le vrai PID
+# d'une app X11 est lu via la propriété EWMH _NET_WM_PID sur le serveur X du
+# satellite (xwayland-satellite), puis matché contre les nodes PipeWire.
+env.ParseConfig("pkg-config --cflags --libs x11")
+
 # dbus-1 pour le daemon de notification (optionnel)
 if subprocess.call(["pkg-config", "--exists", "dbus-1"]) == 0:
     env.ParseConfig("pkg-config --cflags --libs dbus-1")
