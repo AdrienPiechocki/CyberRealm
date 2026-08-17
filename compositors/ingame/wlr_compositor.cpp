@@ -746,11 +746,27 @@ void CaptureCache::reset(RenderingDevice *rd) {
     // wrappe un VkImageView qui référence le VkImage, lequel est backing
     // par le même fd DMA-BUF que le wlr_buffer.  Tant que le RID existe,
     // Godot peut encore interroger le VkImage.
-    if (vulkan_rid.is_valid() && rd) {
+    if (vulkan_import && (vk_image != VK_NULL_HANDLE || vulkan_rid.is_valid())) {
+        // Chemin Vulkan : libère le VkImage + VkDeviceMemory + RID via
+        // release_texture() (destruction différée au prochain flush_pending,
+        // après vkDeviceWaitIdle — le GPU peut encore référencer l'image).
+        // Avant ce fix, le reset d'une fenêtre en backend VULKAN libérait le
+        // RID (seulement si `rd` était non-null) mais JAMAIS vkDestroyImage /
+        // vkFreeMemory : chaque fermeture de fenêtre partagée fuyait le VkImage
+        // et sa mémoire GPU.
+        VulkanDmaBufTexture tex;
+        tex.rid = vulkan_rid;
+        tex.texture = rd_texture;
+        tex.vk_image = vk_image;
+        tex.vk_memory = vk_memory;
+        vulkan_import->release_texture(tex);
+    } else if (vulkan_rid.is_valid() && rd) {
         rd->free_rid(vulkan_rid);
-        vulkan_rid = RID();
     }
-    rd_texture.unref();
+    vulkan_rid = RID();
+    rd_texture = Ref<Texture2DRD>();
+    vk_image = VK_NULL_HANDLE;
+    vk_memory = VK_NULL_HANDLE;
 
     if (map_base && map_base != MAP_FAILED) {
         munmap(map_base, map_size);
@@ -1449,6 +1465,7 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
         cache.format = chosen_format;
         cache.dma_fd = attribs.fd[0];
         cache.backend = CaptureCache::Backend::VULKAN;
+        cache.vulkan_import = &vulkan_import;
 
         // Libérer les anciennes ressources (détruit VkImage, VkDeviceMemory,
         // RID, et wlr_buffer). vkDeviceWaitIdle est appelé dedans pour

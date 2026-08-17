@@ -109,6 +109,11 @@ struct CaptureCache {
     Ref<Texture2DRD> rd_texture;
     VkImage vk_image = VK_NULL_HANDLE;
     VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+    // Gestionnaire d'import Vulkan du compositeur, nécessaire à la libération
+    // différée de vk_image/vk_memory (release_texture → flush_pending). Renseigné
+    // quand le cache passe en backend VULKAN ; nullptr sinon (le reset n'a alors
+    // que le RID à libérer, via `rd`).
+    VulkanDmaBufImport *vulkan_import = nullptr;
 
     // Démappe et libère le buffer courant, remet le cache à zéro. Appelé
     // avant de recréer un buffer à une nouvelle taille, et depuis le
