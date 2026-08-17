@@ -85,5 +85,3 @@ func _update_transparency() -> void:
 		_body_mat.albedo_color.a = alpha
 	if _head_mat != null:
 		_head_mat.albedo_color.a = alpha
-	if _label != null:
-		_label.modulate.a = alpha
