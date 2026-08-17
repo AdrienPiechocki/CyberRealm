@@ -17,6 +17,7 @@
 #include "vulkan_dmauf.h"
 #include "audio_share.h"
 #include "video_share.h"
+#include "x11_pid_resolver.h"
 
 extern "C" {
 #include <wayland-server-core.h>
@@ -143,7 +144,14 @@ struct WindowState {
     // wl_client_get_credentials). Sert à retrouver le node audio PipeWire de
     // l'application (application.process.id) pour le partage audio
     // « fenêtres seules ». -1 si indisponible.
+    // NB : pour les fenêtres X11 (xwayland-satellite), ce PID est celui du
+    // satellite, PAS de l'application — get_window_pid() résout alors le vrai
+    // PID via le serveur X (_NET_WM_PID, voir x11_pid_resolver).
     pid_t pid = -1;
+
+    // true si la fenêtre appartient au client xwayland-satellite (déterminé
+    // au map via /proc/<pid>/comm). Voir is_window_xwayland().
+    bool xwayland = false;
 
     wl_listener map_listener{};
     wl_listener unmap_listener{};
@@ -779,6 +787,11 @@ class WlrCompositor : public Node {
     // côté récepteur.
     AudioShare audio_share;
 
+    // Résolution du vrai PID des fenêtres X11 (xwayland-satellite) pour le
+    // partage audio : interroge le serveur X du satellite (_NET_WM_PID) sur
+    // un thread dédié. Démarrée au set_x11_display. Voir x11_pid_resolver.h.
+    X11PidResolver x11_resolver;
+
     // Capture vidéo inter-frame des fenêtres partagées pour le partage LAN
     // (encodeur H.264/AV1 VAAPI matériel ou libx264 logiciel, remplace le
     // JPEG par-frame). Le DMA-BUF de chaque fenêtre est soumis après le
@@ -938,7 +951,10 @@ public:
 
     // PID du client Wayland de la fenêtre (-1 si inconnu). Utilisé pour le
     // partage audio « fenêtres seules » : le node audio PipeWire de l'app a
-    // la même valeur dans application.process.id.
+    // la même valeur dans application.process.id. Pour les fenêtres X11
+    // (client xwayland-satellite) le PID résolu est le VRAI PID de
+    // l'application (lu sur le serveur X du satellite via _NET_WM_PID), car
+    // le client Wayland n'est que le satellite.
     int get_window_pid(int window_id);
 
     // Remplace l'ensemble des PIDs des fenêtres partagées dont l'audio doit

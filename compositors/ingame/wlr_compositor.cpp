@@ -1994,6 +1994,25 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
         ws->pid = pid;
     }
 
+    // true si la fenêtre vient du client xwayland-satellite (toutes les apps
+    // X11 de la session). /proc/<pid>/comm est limité à TASK_COMM_LEN (15
+    // caractères + NUL) : "xwayland-satellite" (18) apparaît donc comme
+    // "xwayland-satell".
+    ws->xwayland = false;
+    if (ws->pid > 0) {
+        std::string comm_path = "/proc/" + std::to_string((long)ws->pid) + "/comm";
+        std::ifstream comm_file(comm_path);
+        std::string comm;
+        if (comm_file.is_open() && std::getline(comm_file, comm)) {
+            ws->xwayland = (comm == "xwayland-satell");
+        }
+    }
+
+    // Une nouvelle fenêtre (surtout X11) : le vrai PID sera lu sur le serveur
+    // X ; on réveille le résolveur pour qu'il ré-énumère sans attendre le
+    // throttling interne de get_window_pid().
+    self->x11_resolver.request_refresh();
+
     // Handle ext-foreign-toplevel-list-v1 : c'est ce que le chooser de
     // portal-wlr liste pour proposer la "capture fenêtre" à OBS.
     if (self->foreign_toplevel_list) {
@@ -2021,6 +2040,8 @@ void WlrCompositor::on_toplevel_unmap(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, unmap_listener);
     WlrCompositor *self = ws->owner;
     self->emit_signal("window_unmapped", ws->id);
+    // Fenêtre fermée : rafraîchit le snapshot X11 (fenêtres/apps retirées).
+    self->x11_resolver.request_refresh();
 }
 
 void WlrCompositor::on_toplevel_set_title(wl_listener *listener, void *data) {
@@ -2041,6 +2062,11 @@ void WlrCompositor::on_toplevel_set_title(wl_listener *listener, void *data) {
     // après le map) : le jeu met à jour l'étiquette de sa barre de titre.
     self->emit_signal("window_title_changed", ws->id,
         ws->toplevel->title ? String::utf8(ws->toplevel->title) : String());
+    // Le matching fenêtre X11 → PID (audio) se fait sur le titre : un
+    // changement de titre doit rafraîchir le snapshot.
+    if (ws->xwayland) {
+        self->x11_resolver.request_refresh();
+    }
 }
 
 void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
@@ -4516,29 +4542,27 @@ bool WlrCompositor::is_window_pointer_locked(int window_id) const {
 
 bool WlrCompositor::is_window_xwayland(int window_id) {
     WindowState *ws = find_window(window_id);
-    if (!ws || !ws->toplevel || !ws->toplevel->base || !ws->toplevel->base->surface) {
-        return false;
-    }
-    wl_client *client = wl_resource_get_client(ws->toplevel->base->surface->resource);
-    if (!client) return false;
-    pid_t pid = 0;
-    uid_t uid = 0;
-    gid_t gid = 0;
-    wl_client_get_credentials(client, &pid, &uid, &gid);
-    if (pid <= 0) return false;
-    std::string comm_path = "/proc/" + std::to_string((long)pid) + "/comm";
-    std::ifstream comm_file(comm_path);
-    if (!comm_file.is_open()) return false;
-    std::string comm;
-    std::getline(comm_file, comm);
-    // /proc/<pid>/comm est limité à TASK_COMM_LEN (15 caractères + NUL) :
-    // "xwayland-satellite" (18) apparaît donc comme "xwayland-satell".
-    return comm == "xwayland-satell";
+    if (!ws) return false;
+    // Déterminé une fois au map (lecture de /proc/<pid>/comm) — voir
+    // on_toplevel_map. "xwayland-satellite" est tronqué en "xwayland-satell".
+    return ws->xwayland;
 }
 
 int WlrCompositor::get_window_pid(int window_id) {
     WindowState *ws = find_window(window_id);
     if (!ws) return -1;
+    if (ws->xwayland) {
+        // Le PID du client Wayland est celui du satellite, pas de l'app.
+        // Résout le vrai PID de l'application X11 via le serveur X du
+        // satellite (_NET_WM_PID, matching sur titre + WM_CLASS). -1 tant que
+        // le résolveur n'a pas le snapshot (le refresh est déclenché au map /
+        // au changement de titre / périodiquement par resolve()).
+        std::string app_id = ws->toplevel && ws->toplevel->app_id
+            ? ws->toplevel->app_id : "";
+        std::string title = ws->toplevel && ws->toplevel->title
+            ? ws->toplevel->title : "";
+        return x11_resolver.resolve(app_id, title);
+    }
     return (int)ws->pid;
 }
 
@@ -5436,6 +5460,10 @@ void WlrCompositor::set_window_fullscreen(int window_id, bool fullscreen) {
 
 void WlrCompositor::set_x11_display(const String &display_name) {
     setenv("DISPLAY", display_name.utf8().get_data(), 1);
+    // Résolveur du vrai PID des fenêtres X11 (audio LAN) : le serveur X du
+    // satellite est démarré, on lance la résolution asynchrone.
+    x11_resolver.set_display(display_name.utf8().get_data());
+    x11_resolver.start();
 }
 
 Dictionary WlrCompositor::get_window_geometry(int window_id) {
