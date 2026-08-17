@@ -372,7 +372,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	bar_label.text = title
 	bar_label.double_sided = true
 	bar_label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-	bar_label.font_size = 4
+	bar_label.font_size = 6
 	bar_label.outline_size = 0
 	bar_label.modulate = TITLEBAR_FG
 	bar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
