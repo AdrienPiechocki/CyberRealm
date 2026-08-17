@@ -23,8 +23,8 @@ const WINDOW_QUAD_SCALE := 2.0
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
 # qui crashe si on lui laisse dessiner ses barres) ne dessinent rien, c'est
 # le jeu qui affiche la barre au-dessus du contenu de chaque fenêtre.
-const TITLEBAR_HEIGHT = 0.03
-const VIRTUAL_TITLEBAR_HEIGHT = 10 # px
+const TITLEBAR_HEIGHT = 0.06
+const VIRTUAL_TITLEBAR_HEIGHT = 20 # px
 const TITLEBAR_BG = Color(0.13, 0.15, 0.22)
 const TITLEBAR_FG = Color(0.85, 0.88, 0.96)
 # Boutons de la barre de titre (droite) : fermer / réduire / agrandir.
@@ -560,7 +560,12 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 		if vh > 0.0:
 			current_h = float(height) / vh
 		current_h = max(current_h, 0.05)
-	mesh.size = Vector2(current_h * aspect, current_h) * WINDOW_QUAD_SCALE
+		# WINDOW_QUAD_SCALE s'applique uniquement à la hauteur calculée
+		# depuis les pixels. Pour une fenêtre user_sized, current_h est
+		# déjà une hauteur monde échelonnée (mesh.size.y) : la re-multiplier
+		# doublerait la fenêtre à chaque texture_updated → croissance infinie.
+		current_h *= WINDOW_QUAD_SCALE
+	mesh.size = Vector2(current_h * aspect, current_h)
 
 	# La CollisionShape3D doit suivre la même taille que le mesh, sinon le
 	# raycast teste une zone qui ne correspond plus à ce qui est affiché.
@@ -995,7 +1000,7 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 		var aspect = vp_size.x / max(vp_size.y, 1.0)
 		
 		# Standardized 3D height facing camera (1.0 meter high)
-		mesh.size = Vector2(1.0 * aspect, 1.0)
+		mesh.size = Vector2(1.0 * aspect, 1.0) * WINDOW_QUAD_SCALE
 		
 		# Update collision shape to match mesh size
 		var col: CollisionShape3D = body.get_child(0)
