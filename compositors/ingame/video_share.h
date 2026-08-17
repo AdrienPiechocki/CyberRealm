@@ -127,11 +127,11 @@ public:
 	// d'encodage en cours). Appelé par le compositeur AVANT le render pass.
 	bool window_ready(int wid) const;
 
-	// Dimensions ACTUELLES du flux encodé pour une fenêtre (dims de l'encodeur,
-	// pas la géométrie du buffer) : la config annoncée au récepteur doit
-	// correspondre au flux réellement émis (debounce de resize). Renvoie false
-	// si la fenêtre n'est pas (encore) partagée.
-	bool window_size(int wid, int &w, int &h) const;
+	// true si la fenêtre fait partie de l'ensemble actuellement partagé
+	// (target_wids). Le compositeur s'en sert pour choisir la cadence de
+	// recapture : 60/s pour les fenêtres partagées (stream vidéo), 30/s pour
+	// les autres (mise à jour des quads 3D uniquement).
+	bool is_shared(int wid) const;
 
 	// Soumet un DMA-BUF (main thread, juste après le render + sync GPU) pour
 	// encodage. Le fd est dupliqué : le worker en garde une référence propre,
