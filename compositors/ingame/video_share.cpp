@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_set>
 
@@ -886,16 +887,31 @@ bool VideoShare::va_init() {
 }
 
 void VideoShare::va_cleanup() {
+	// WORKAROUND testable : avec WAYLANDGODOT_SKIP_VATERMINATE=1, on ne
+	// termine jamais le display VAAPI. Le crash "free(): invalid size" dans
+	// iHD_drv_video.so (Intel, teardown) apparaît pile à vaTerminate ; le
+	// VADisplay et son fd fuient volontairement mais le Terminate d'iHD n'est
+	// plus appelé. À ne garder que pour diagnostiquer — à retirer une fois le
+	// vrai correctif trouvé.
+	static const bool skip_terminate = getenv("WAYLANDGODOT_SKIP_VATERMINATE") != nullptr;
 	if (hw_device_ctx) {
+		// Détache le display du hwdevice : sinon la free callback de FFmpeg
+		// (vaapi_device_free) appelle elle-même vaTerminate et on le ferait 2
+		// fois (le 2e est un no-op côté libva, mais autant n'en garder qu'un).
+		AVHWDeviceContext *hwdev = (AVHWDeviceContext *)((AVBufferRef *)hw_device_ctx)->data;
+		AVVAAPIDeviceContext *va = (AVVAAPIDeviceContext *)hwdev->hwctx;
+		va->display = nullptr;
 		av_buffer_unref((AVBufferRef **)&hw_device_ctx);
 		hw_device_ctx = nullptr;
 	}
 	if (va_display) {
-		vaTerminate((VADisplay)va_display);
+		if (!skip_terminate)
+			vaTerminate((VADisplay)va_display);
 		va_display = nullptr;
 	}
 	if (va_drm_fd >= 0) {
-		close(va_drm_fd);
+		if (!skip_terminate)
+			close(va_drm_fd);
 		va_drm_fd = -1;
 	}
 }
