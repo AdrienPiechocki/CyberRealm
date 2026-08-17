@@ -15,7 +15,6 @@ signal menu_closed()
 @onready var tabs_container: HBoxContainer = $VBox/TopBar/Tabs
 @onready var preview_rect: TextureRect = $VBox/Content/Preview
 @onready var actions_container: VBoxContainer = $VBox/Content/Actions
-@onready var title_label: Label = $VBox/Content/Preview/TitleLabel
 
 var compositor: WlrCompositor
 var selected_window_id := -1
@@ -171,7 +170,6 @@ func _refresh_tabs() -> void:
 		tabs_container.add_child(empty_label)
 		selected_window_id = -1
 		preview_rect.texture = null
-		title_label.text = ""
 		return
 
 	# Sélectionner la première fenêtre par défaut
@@ -252,24 +250,11 @@ func _on_tab_pressed(wid: int) -> void:
 func _update_preview() -> void:
 	if selected_window_id == -1 or not _get_texture_func:
 		preview_rect.texture = null
-		title_label.text = ""
 		_update_share_label()
 		return
 	var tex: Texture2D = _get_texture_func.call(selected_window_id)
 	preview_rect.texture = tex
 	_update_share_label()
-	# Mettre à jour le titre
-	if compositor:
-		var window_list: Array = compositor.get_window_list()
-		for entry in window_list:
-			if entry["id"] == selected_window_id:
-				var t: String = entry["title"]
-				var a: String = entry["app_id"]
-				title_label.text = t if t != "" else a
-				if title_label.text == "":
-					title_label.text = "Fenêtre #" + str(selected_window_id)
-				return
-	title_label.text = "Fenêtre #" + str(selected_window_id)
 
 func refresh_preview() -> void:
 	if visible:
