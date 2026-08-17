@@ -14,6 +14,10 @@ const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionne
 const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARGIN
 						 # pour rester cliquable via raycast) = redimensionnement diagonal
 const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
+# Multiplicateur de taille des quads en unités monde : agrandit l'affichage
+# 3D des fenêtres sans toucher à la résolution de l'image (les pixels par
+# unité monde sont divisés d'autant, l'échantillonnage reste le même).
+const WINDOW_QUAD_SCALE := 2.0
 
 # Barre de titre du jeu (décorations server-side). Le compositeur répond
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
@@ -134,8 +138,8 @@ func next_spawn_pos() -> Vector3:
 	var camera: Camera3D = _camera()
 	var cam_pos: Vector3 = camera.global_position
 	var cam_forward: Vector3 = -camera.global_basis.z
-	# Position de base : 1 m devant la caméra.
-	var base_pos := cam_pos + cam_forward
+	# Position de base : 2 m devant la caméra.
+	var base_pos := cam_pos + cam_forward * 2.0
 	# Compter les fenêtres visibles déjà à cet endroit : chaque fenêtre dans
 	# le rayon SPAWN_STACK_RADIUS du point de spawn décale la nouvelle de
 	# STACK_Z_OFFSET derrière la précédente.
@@ -304,7 +308,7 @@ func toggle_hide(id: int) -> void:
 func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	var quad := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
-	mesh.size = Vector2(1.6, 1.0) # ratio ajusté au premier texture_updated
+	mesh.size = Vector2(1.6, 1.0) * WINDOW_QUAD_SCALE # ratio ajusté au premier texture_updated
 	quad.mesh = mesh
 
 	var shader := _window_shader()
@@ -556,7 +560,7 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 		if vh > 0.0:
 			current_h = float(height) / vh
 		current_h = max(current_h, 0.05)
-	mesh.size = Vector2(current_h * aspect, current_h)
+	mesh.size = Vector2(current_h * aspect, current_h) * WINDOW_QUAD_SCALE
 
 	# La CollisionShape3D doit suivre la même taille que le mesh, sinon le
 	# raycast teste une zone qui ne correspond plus à ce qui est affiché.
