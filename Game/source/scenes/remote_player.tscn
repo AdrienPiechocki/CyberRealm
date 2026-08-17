@@ -1,0 +1,32 @@
+[gd_scene format=3 uid="uid://qod8yxdgi26e"]
+
+[ext_resource type="Script" uid="uid://beamlslooas0m" path="res://scripts/remote_player.gd" id="1_remote"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_avatar"]
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_body"]
+
+[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_bj1mr"]
+metallic = 1.0
+roughness = 0.5
+
+[node name="RemotePlayer" type="Node3D" unique_id=1200275872]
+script = ExtResource("1_remote")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1683922496]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+material_override = SubResource("StandardMaterial3D_avatar")
+mesh = SubResource("CapsuleMesh_body")
+
+[node name="NameLabel" type="Label3D" parent="." unique_id=959669778]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
+billboard = 1
+text = "Player"
+font_size = 48
+outline_size = 6
+
+[node name="CSGSphere3D" type="CSGSphere3D" parent="." unique_id=1409371660]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, -0.1)
+radial_segments = 64
+rings = 8
+material = SubResource("StandardMaterial3D_bj1mr")
