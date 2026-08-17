@@ -31,9 +31,13 @@ static void wlr_frame_capture_start(struct xdpw_screencast_instance *cast) {
 	fps_limit_measure_start(&cast->fps_limit, cast->framerate);
 	if (cast->ctx->ext_image_copy_capture_manager
 			&& cast->ctx->ext_output_image_capture_source_manager) {
+		logprint(TRACE, "wlr: frame capture via ext_image_copy (target_type=%d)", cast->target->type);
 		xdpw_ext_ic_frame_capture(cast);
 	} else if (cast->ctx->screencopy_manager) {
+		logprint(TRACE, "wlr: frame capture via wlr_screencopy (target_type=%d)", cast->target->type);
 		xdpw_wlr_sc_frame_capture(cast);
+	} else {
+		logprint(ERROR, "wlr: no capture protocol available!");
 	}
 }
 

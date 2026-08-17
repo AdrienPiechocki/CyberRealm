@@ -93,6 +93,8 @@ void WlrCompositor::toplevel_source_copy_frame(wlr_ext_image_capture_source_v1 *
     // directement : il est pad'dé à 64px alors que copy_buffer exige des
     // tailles identiques (BUFFER_CONSTRAINTS sinon).
     if (!ws || !source->capture_buffer) {
+        UtilityFunctions::printerr("waylandgodot: toplevel_source_copy_frame FAIL: ws=",
+            (intptr_t)ws, " capture_buffer=", (intptr_t)source->capture_buffer);
         wlr_ext_image_copy_capture_frame_v1_fail(frame,
             EXT_IMAGE_COPY_CAPTURE_FRAME_V1_FAILURE_REASON_STOPPED);
         return;
@@ -2239,6 +2241,10 @@ void WlrCompositor::blit_toplevel_capture(WlrCompositorToplevelSource *source) {
     if (source->capture_buffer->width != ws->width ||
             source->capture_buffer->height != ws->height) {
         update_toplevel_source_constraints(source);
+        // update_toplevel_source_constraints peut libérer capture_buffer (drop)
+        // sans réussir à en allouer un neuf (formats indisponibles, échec
+        // d'allocation) : ne pas passer un buffer NULL à begin_buffer_pass.
+        if (!source->capture_buffer) return;
     }
 
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(

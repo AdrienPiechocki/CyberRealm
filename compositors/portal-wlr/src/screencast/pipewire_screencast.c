@@ -391,9 +391,10 @@ static void pwr_handle_stream_state_changed(void *data,
 	struct xdpw_screencast_instance *cast = data;
 	cast->node_id = pw_stream_get_node_id(cast->stream);
 
-	logprint(INFO, "pipewire: stream state changed to \"%s\"",
-		pw_stream_state_as_string(state));
-	logprint(INFO, "pipewire: node id is %d", (int)cast->node_id);
+	logprint(INFO, "pipewire: stream state changed \"%s\" -> \"%s\" node_id=%d",
+		pw_stream_state_as_string(old),
+		pw_stream_state_as_string(state),
+		(int)cast->node_id);
 
 	switch (state) {
 	case PW_STREAM_STATE_STREAMING:
@@ -731,7 +732,8 @@ static void on_core_error(void *data, uint32_t id, int seq, int res, const char*
 	// If our pipewire connection drops then we won't be able to actually
 	// do a screencast.  Exit the process so someone restarts us and the
 	// new xdpw can reconnect to pipewire.
-	logprint(ERROR, "pipewire: fatal error event from core");
+	logprint(ERROR, "pipewire: fatal error event from core id=%u seq=%d res=%d msg=%s",
+		id, seq, res, message);
 	exit(1);
 }
 
