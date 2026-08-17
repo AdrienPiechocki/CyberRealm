@@ -573,9 +573,9 @@ func _physics_process(delta: float) -> void:
 	if multiplayer.get_peers().is_empty():
 		return
 	var player := _level_root.get_node_or_null("Player") as Node3D
-	var camera := player.get_node_or_null("Camera3D") as Camera3D
 	if player == null:
 		return
+	var camera := player.get_node_or_null("Camera3D") as Camera3D
 	if camera == null:
 		return
 	_sync_player_transform.rpc(player.position, player.rotation.y, camera.rotation.x)
