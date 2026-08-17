@@ -4,6 +4,15 @@ import subprocess
 
 env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 
+# ASAN_BUILD=1 → compile l'extension avec AddressSanitizer (debug uniquement).
+# Temporel : utilisé pour tracer la corruption de tas "free(): invalid size".
+# Retirer ce bloc une fois le bug identifié.
+if os.environ.get("ASAN_BUILD") == "1":
+    env.Append(CCFLAGS=["-fsanitize=address", "-fno-omit-frame-pointer", "-g"])
+    env.Append(LINKFLAGS=["-fsanitize=address"])
+    env.Append(CPPDEFINES=["ASAN_ENABLED"])
+    print("ASAN_BUILD=1 : extension instrumentée avec AddressSanitizer")
+
 env.Append(CPPPATH=["compositors/ingame/"])
 sources = Glob("compositors/ingame/*.cpp") + Glob("compositors/ingame/*.c")
 
