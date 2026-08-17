@@ -22,10 +22,10 @@ Vulkan DMA-BUF import**.
   pointer constraints, primary selection and data drag-and-drop are forwarded
   between the game and the apps.
 - **3D windows** — each mapped window becomes a raycastable quad in the scene.
-  Grab (`G`), move, resize from any edge, or point and click into it.
-- **Focus mode** (`F`) — pull any window to the front as a fullscreen 2D overlay
+  Grab (`SUPER+G`), move, resize from any edge, or point and click into it.
+- **Focus mode** (`SUPER+F`) — pull any window to the front as a fullscreen 2D overlay
   for real work; press the same key again to release it back into the 3D world.
-- **Picture-in-picture** (`P`) — pin windows as small overlays that stay on top
+- **Picture-in-picture** (`SUPER+P`) — pin windows as small overlays that stay on top
   while you keep interacting with the world.
 - **Layer surfaces** — waybar, rofi and friends are rendered as screen-anchored
   2D overlays inside the 3D view, with proper keyboard-interactive focus
@@ -38,7 +38,7 @@ Vulkan DMA-BUF import**.
   target with an in-game selector UI.
 - **Effects** — X-RAY finder highlights any window's quad; windows flash when
   they open.
-- **Navigation menu** (`B`) — a window switcher with live previews (grab, focus,
+- **Navigation menu** (`SUPER+SHIFT+B`) — a window switcher with live previews (grab, focus,
   hide, find, pin, close) and a **SHARE** action to stream a window to the other
   players.
 - **Pause menu** (`Esc`) — remappable keybinds, startup apps, custom keybinds
@@ -226,8 +226,8 @@ cyberrealm-launch firefox
 4. When you join, the host's current level is streamed to you, so you always
    stand in the same room — even with custom maps and different builds.
 
-Remote windows are view-only: `F` opens a fullscreen view of them (with the
-owner's cursor overlaid), `P` pins them as PiP. You cannot type or click into
+Remote windows are view-only: `SUPER+F` opens a fullscreen view of them (with the
+owner's cursor overlaid), `SUPER+P` pins them as PiP. You cannot type or click into
 them.
 
 ## Controls
