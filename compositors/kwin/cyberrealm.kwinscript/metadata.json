@@ -1,0 +1,16 @@
+{
+    "KPlugin": {
+        "Id": "cyberrealm",
+        "Name": "CyberRealm",
+        "Version": "1.0",
+        "Description": "Met CyberRealm en plein écran quand il est lancé depuis Plasma et bloque tous les raccourcis globaux KDE tant que la fenêtre du jeu détient le focus.",
+        "Category": "Window Management",
+        "License": "GPL-2.0-or-later",
+        "Authors": [
+            { "Name": "CyberRealm" }
+        ]
+    },
+    "KPackageStructure": "KWin/Script",
+    "X-Plasma-API": "javascript",
+    "X-Plasma-MainScript": "code/main.js"
+}
