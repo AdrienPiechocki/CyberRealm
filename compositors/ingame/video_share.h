@@ -12,7 +12,6 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 // Capture vidéo des fenêtres partagées et streaming inter-frame (le
@@ -78,17 +77,11 @@ struct VideoEncodeWindow {
 	AVFrame *sw_frame = nullptr;         // NV12/YUV420P sysmem (conversion swscale)
 	AVFrame *hw_frame = nullptr;         // surface VAAPI NV12 (pool, upload via transfer_data)
 	SwsContext *sws = nullptr;           // conversion RGBA→NV12/YUV420P
-	int sws_w = 0;                       // dims SOURCE du dernier ctx sws (re-créé au changement)
+	int sws_w = 0;                       // dimensions du dernier ctx sws (re-créé au changement)
 	int sws_h = 0;
-	int sws_dw = 0;                      // dims DESTINATION (dims de l'encodeur, fixes pendant un resize)
-	int sws_dh = 0;
 	uint32_t sws_fourcc = 0;
-	int enc_w = 0;                       // dimensions du dernier encodeur (recréé en debounce au resize)
+	int enc_w = 0;                       // dimensions du dernier encodeur (re-créé au changement)
 	int enc_h = 0;
-	bool resize_pending = false;         // un resize est en cours (contenu ≠ encodeur, en attente de stabilisation)
-	int resize_w = 0;                    // dernier contenu vu pendant le resize (pour détecter le changement)
-	int resize_h = 0;
-	int64_t resize_since_us = 0;         // horodatage du dernier changement de taille (steady_clock)
 	void *va_frames_ctx = nullptr;       // AVBufferRef* pool VAAPI NV12 (taille = contenu)
 	void *packet = nullptr;              // AVPacket* (tampon d'encodage réutilisé)
 	int64_t frame_index = 0;
@@ -146,10 +139,6 @@ public:
 	// Demande une keyframe (IDR) pour une fenêtre (nouveau pair, latence, ...).
 	void request_keyframe(int wid);
 
-	// Numéro de build du module vidéo (permet de vérifier depuis GDScript que
-	// le .so déployé sur le récepteur correspond bien à la source courante).
-	String diag_version() const;
-
 	// Nombre de paquets en attente d'envoi (pour la backpressure / debounce).
 	int pending_count() const;
 
@@ -168,7 +157,7 @@ private:
 	// Backend encodeur (thread worker uniquement).
 	void worker_loop();
 	void reconcile_windows();
-	bool ensure_encoder(VideoEncodeWindow *w, int64_t now_us);
+	bool ensure_encoder(VideoEncodeWindow *w);
 	void destroy_encoder(VideoEncodeWindow *w);
 	// Traite un job soumis (lit le buffer, convertit, encode, remplit la file).
 	void encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, uint32_t fourcc,
@@ -183,9 +172,6 @@ private:
 	struct DecoderCtx;
 	void decoder_destroy(DecoderCtx *d);
 	Ref<Image> decode_to_image(DecoderCtx *d);
-	// Log throttlé (1×/s) des erreurs send_packet/receive_frame pour savoir si
-	// le décodeur est alimenté mais en échec, ou jamais atteint.
-	void diag_decode_error(const char *stage, int err);
 
 	// Mode actif (fixé au start, immuable pendant l'activité).
 	bool hw_mode = false;
@@ -200,14 +186,6 @@ private:
 	mutable std::mutex windows_mutex;
 	std::vector<int> target_wids;
 	std::vector<VideoEncodeWindow *> windows;
-
-	// Fenêtres retirées du partage : jamais delete pendant l'activité. Les
-	// threads du jeu (window_ready, submit_dmabuf, request_keyframe,
-	// poll_packets) copient `windows` sous windows_mutex puis verrouillent
-	// encode_mutex sur ces pointeurs bruts — un delete libérerait un mutex
-	// encore en vol (UAF → corruption du tas). Détruites à stop(), après
-	// join() du thread worker.
-	std::vector<VideoEncodeWindow *> retired_windows;
 
 	// File de sortie (worker → poll_packets).
 	mutable std::mutex out_mutex;
@@ -238,16 +216,8 @@ private:
 		int width = 0;
 		int height = 0;
 		int sws_fmt = -1; // format source du dernier ctx sws (recréé s'il change)
-		// Diagnostic v4 : compteur de frames décodées pour loguer les
-		// premières (dimensions/format réels du flux reçu).
-		int diag_first_decoded = 0;
 	};
 	std::unordered_map<std::string, DecoderCtx *> decoders;
-	// Diagnostics du décodage, protégés par dec_mutex.
-	uint64_t diag_last_err_ms = 0;
-	unsigned diag_send_err = 0;
-	unsigned diag_recv_err = 0;
-	std::unordered_set<std::string> diag_fed_keys;
 };
 
 } // namespace godot

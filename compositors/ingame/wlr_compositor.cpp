@@ -15,7 +15,6 @@
 #include <fstream>
 #include <algorithm>
 #include <vector>
-#include <unordered_set>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -353,7 +352,6 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_video_share_windows", "wids"), &WlrCompositor::set_video_share_windows);
     ClassDB::bind_method(D_METHOD("video_share_poll"), &WlrCompositor::video_share_poll);
     ClassDB::bind_method(D_METHOD("video_share_request_keyframe", "window_id"), &WlrCompositor::video_share_request_keyframe);
-    ClassDB::bind_method(D_METHOD("video_share_window_size", "window_id"), &WlrCompositor::video_share_window_size);
     ClassDB::bind_method(D_METHOD("video_share_pending"), &WlrCompositor::video_share_pending);
     ClassDB::bind_method(D_METHOD("video_decoder_configure", "key", "codec", "width", "height"),
         &WlrCompositor::video_decoder_configure);
@@ -361,9 +359,6 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::video_decoder_feed);
     ClassDB::bind_method(D_METHOD("video_decoder_reset", "key"), &WlrCompositor::video_decoder_reset);
     ClassDB::bind_method(D_METHOD("video_decoder_clear_all"), &WlrCompositor::video_decoder_clear_all);
-    ClassDB::bind_method(D_METHOD("video_diag_version"), &WlrCompositor::video_diag_version);
-    ClassDB::bind_method(D_METHOD("video_diag_small_image"), &WlrCompositor::video_diag_small_image);
-    ClassDB::bind_method(D_METHOD("video_diag_big_image", "width", "height"), &WlrCompositor::video_diag_big_image);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
     ClassDB::bind_method(D_METHOD("get_window_pid", "window_id"), &WlrCompositor::get_window_pid);
@@ -837,34 +832,33 @@ CaptureCache::~CaptureCache() {
 // =====================================================================
 
 bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
-    // Chemin de capture logué UNE fois PAR fenêtre (cache.wid est posé par
-    // l'appelant juste avant capture_surface) : le chemin global "-> vulkan"
-    // unique au processus ne permettait pas de distinguer le chemin réellement
-    // utilisé par une fenêtre précise (ex. une fenêtre Dolphin qui ne
-    // streamerait que via le chemin pixels → pas de partage vidéo → noir).
-    static std::unordered_set<int> logged_wids;
-    int cwid = cache.wid;
-    auto log_path = [&](const char *which, bool ok) {
-        if (cwid >= 0 && logged_wids.find(cwid) == logged_wids.end()) {
-            logged_wids.insert(cwid);
-            UtilityFunctions::print("waylandgodot: [diag] capture wid=", cwid, " -> ", which,
-                ok ? "" : " (échec)", " gpu=", gpu_pipeline_active, " dmabuf=", dmabuf_available);
-        }
-    };
+    static bool printed_path = false;
     // Essayer d'abord le chemin Vulkan zero-copy (GPU→GPU, pas de CPU readback).
     if (gpu_pipeline_active && dmabuf_available &&
         capture_surface_vulkan(surface, tex, out_w, out_h, cache)) {
-        log_path("vulkan", true);
+        if (!printed_path) {
+            UtilityFunctions::print("waylandgodot: [diag] capture -> vulkan (gpu=", gpu_pipeline_active,
+                " dmabuf=", dmabuf_available, ")");
+            printed_path = true;
+        }
         return true;
     }
     // Fallback : dmabuf + mmap CPU readback.
     if (dmabuf_available && capture_surface_dmabuf(surface, tex, out_w, out_h, cache)) {
-        log_path("dmabuf", true);
+        if (!printed_path) {
+            UtilityFunctions::print("waylandgodot: [diag] capture -> dmabuf (gpu=", gpu_pipeline_active,
+                " dmabuf=", dmabuf_available, ")");
+            printed_path = true;
+        }
         return true;
     }
     // Dernier recours : Pixman (rendu logiciel, buffer en RAM).
     bool ok = capture_surface_pixels(surface, tex, out_w, out_h, cache);
-    log_path("pixels", ok);
+    if (!printed_path) {
+        UtilityFunctions::print("waylandgodot: [diag] capture -> pixels ok=", ok,
+            " (gpu=", gpu_pipeline_active, " dmabuf=", dmabuf_available, ")");
+        printed_path = true;
+    }
     return ok;
 }
 
@@ -3726,6 +3720,7 @@ void WlrCompositor::_process(double delta) {
                 (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= interval);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
+                ws.last_capture_us = now_us;
                 // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
                 // réutilisé à chaque capture (même mémoire GPU). Si l'encodeur
                 // (thread worker) est encore en train de le lire, on ne le
@@ -3735,15 +3730,8 @@ void WlrCompositor::_process(double delta) {
                 // sautée à ~60 fps est imperceptible).
                 ws.capture_cache.wid = ws.id;
                 if (video_share.is_active() && !video_share.window_ready(ws.id)) {
-                    // Worker occupé : on NE réarme PAS le timer de recapture
-                    // (last_capture_us reste ancien). Dès que le worker libère
-                    // le buffer, la capture reprend à la frame suivante au lieu
-                    // d'attendre un nouveau cycle de l'intervalle — un encodeur
-                    // occupé ~20 ms/frame divisait le débit réel par deux
-                    // (~15 fps au lieu de ~30) à cause du timer réarmé au skip.
                     continue;
                 }
-                ws.last_capture_us = now_us;
                 if (capture_surface(ws.toplevel->base->surface,
                         ws.texture, ws.width, ws.height, ws.capture_cache)) {
                     ws.dirty = false;
@@ -5531,16 +5519,6 @@ void WlrCompositor::video_share_request_keyframe(int window_id) {
     video_share.request_keyframe(window_id);
 }
 
-Dictionary WlrCompositor::video_share_window_size(int window_id) {
-    Dictionary result;
-    int w = 0, h = 0;
-    if (video_share.window_size(window_id, w, h)) {
-        result["width"] = w;
-        result["height"] = h;
-    }
-    return result;
-}
-
 int WlrCompositor::video_share_pending() {
     return video_share.pending_count();
 }
@@ -5555,30 +5533,6 @@ Ref<Image> WlrCompositor::video_decoder_feed(const String &key, const PackedByte
     return video_share.decoder_feed(k, packet, keyframe);
 }
 
-Ref<Image> WlrCompositor::video_diag_small_image() {
-    // Ref<Image> 1x1 RGBA, sans décodage : isole le retour de Ref<Image>
-    // par méthode liée de toute la chaîne de décodage.
-    PackedByteArray pba;
-    pba.resize(4);
-    uint8_t *dst = pba.ptrw();
-    dst[0] = 255;
-    dst[1] = 0;
-    dst[2] = 0;
-    dst[3] = 255;
-    return Image::create_from_data(1, 1, false, Image::FORMAT_RGBA8, pba);
-}
-
-Ref<Image> WlrCompositor::video_diag_big_image(int width, int height) {
-    // Même taille que le vrai flux (1000x600), buffer memset (pas de sws) :
-    // isole un éventuel effet de TAILLE sur le retour de Ref<Image>.
-    if (width <= 0 || height <= 0) return Ref<Image>();
-    PackedByteArray pba;
-    pba.resize((int64_t)width * height * 4);
-    uint8_t *dst = pba.ptrw();
-    memset(dst, 0, (size_t)width * height * 4);
-    return Image::create_from_data(width, height, false, Image::FORMAT_RGBA8, pba);
-}
-
 void WlrCompositor::video_decoder_reset(const String &key) {
     std::string k = key.utf8().get_data();
     video_share.decoder_reset(k);
@@ -5586,10 +5540,6 @@ void WlrCompositor::video_decoder_reset(const String &key) {
 
 void WlrCompositor::video_decoder_clear_all() {
     video_share.decoder_clear_all();
-}
-
-String WlrCompositor::video_diag_version() {
-    return video_share.diag_version();
 }
 
 void WlrCompositor::submit_video_frame(CaptureCache &cache) {
