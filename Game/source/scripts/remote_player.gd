@@ -42,15 +42,19 @@ func setup(id: int, name: String, color: Color) -> void:
 	mat.depth_write = true
 	($MeshInstance3D as MeshInstance3D).material_override = mat
 	_body_mat = mat
-	# La tête (Helm) : dupliquer son matériau pour ne pas muter le
-	# sub_resource partagé de la scène (une modification affecterait toutes
-	# les instances).
-	var head_mat := ($Helm as CSGPrimitive3D).material as StandardMaterial3D
+	# La tête (Helm, MeshInstance3D custom) : dupliquer son matériau pour ne
+	# pas muter le sub_resource partagé de la scène (une modification
+	# affecterait toutes les instances). Le matériau de surface du mesh est
+	# appliqué en material_override (dupliqué), comme pour le corps.
+	var helm := $Helm as MeshInstance3D
+	var head_mat := helm.material_override as StandardMaterial3D
+	if head_mat == null:
+		head_mat = helm.get_active_material(0) as StandardMaterial3D
 	if head_mat != null:
 		head_mat = head_mat.duplicate() as StandardMaterial3D
 		head_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
 		head_mat.depth_write = true
-		($Helm as CSGPrimitive3D).material = head_mat
+		helm.material_override = head_mat
 		_head_mat = head_mat
 	_label = $NameLabel as Label3D
 	_label.text = name
