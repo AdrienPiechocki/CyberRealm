@@ -1,8 +1,0 @@
-[gd_scene format=3 uid="uid://drgt1wfckhxn1"]
-
-[ext_resource type="Script" uid="uid://cvnwx1ogibjkf" path="res://scripts/wayland_room.gd" id="1_6b3vc"]
-
-[node name="WaylandRoom" type="Node3D" unique_id=1667866772]
-script = ExtResource("1_6b3vc")
-
-[node name="WlrCompositor" type="WlrCompositor" parent="." unique_id=601710621]
