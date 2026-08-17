@@ -477,18 +477,31 @@ void VideoShare::push_packet(int wid, uint64_t seq, bool keyframe, const uint8_t
 	if (size > 0 && data) {
 		memcpy(p->data.ptrw(), data, (size_t)size);
 	}
-	std::lock_guard<std::mutex> g(out_mutex);
-	if (out_queue.size() < out_max) {
-		out_queue.push_back(p);
-	} else {
-		// Ne devrait pas arriver (backpressure), mais un drop casserait la
-		// chaîne de P-frames → on force une keyframe pour la resynchronisation.
-		delete p;
-		UtilityFunctions::print("waylandgodot: video_share: paquet vidéo dropé (file pleine), "
-			"keyframe demandée");
+	bool dropped = false;
+	{
+		std::lock_guard<std::mutex> g(out_mutex);
+		if (out_queue.size() < out_max) {
+			out_queue.push_back(p);
+		} else {
+			// Ne devrait pas arriver (backpressure), mais un drop casserait la
+			// chaîne de P-frames → on force une keyframe pour la resynchronisation.
+			dropped = true;
+			delete p;
+			UtilityFunctions::print("waylandgodot: video_share: paquet vidéo dropé (file pleine), "
+				"keyframe demandée");
+		}
+		out_cv.notify_all();
+	}
+	if (dropped) {
+		// request_keyframe prend windows_mutex → encode_mutex. L'appeler sous
+		// out_mutex créerait un ABBA : le thread principal (submit_dmabuf)
+		// tient windows_mutex → encode_mutex puis prend out_mutex pendant que
+		// le worker tient out_mutex et attend windows_mutex → interblocage.
+		// Ordre garanti : out_mutex toujours feuille (jamais tenu pendant
+		// l'acquisition de windows_mutex/encode_mutex), et
+		// windows_mutex → encode_mutex chaîné.
 		request_keyframe(wid);
 	}
-	out_cv.notify_all();
 }
 
 bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
