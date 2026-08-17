@@ -64,13 +64,9 @@ public:
 	bool is_active() const;
 
 	// Nouvel ensemble de PIDs à capturer (les fenêtres partagées). Appelé
-	// depuis le thread du jeu : on ne fait QUE mémoriser les PIDs (sous
-	// target_mutex) ; la réconciliation (création/destruction de streams)
-	// est exécutée sur le thread PipeWire par un timer périodique. Le thread
-	// du jeu ne prend JAMAIS pw_thread_loop_lock ici : ce lock attend que la
-	// boucle PW devienne inactive, or apply_targets (dans la boucle) fait des
-	// appels PipeWire bloquants → le thread du jeu peut rester bloqué
-	// indéfiniment (freeze du jeu entier).
+	// depuis le thread du jeu ; la réconciliation (création/destruction de
+	// streams) est exécutée directement sous pw_thread_loop_lock (les
+	// callbacks PW sont suspendus → atomique, cf. set_target_pids).
 	void set_target_pids(const std::vector<int> &pids);
 
 	// Encode un paquet OPUS (20 ms, stéréo 48 kHz) mélangé depuis tous les
@@ -91,10 +87,6 @@ public:
 	static void registry_global_remove_cb(void *user_data, uint32_t id);
 	static void node_info_cb(void *user_data, const struct pw_node_info *info);
 	static void client_info_cb(void *user_data, const struct pw_client_info *info);
-	// Timer périodique de la boucle PW : réconcilie les streams avec
-	// target_pids sur le thread PipeWire (jamais sous pw_thread_loop_lock
-	// depuis le thread du jeu, cf. set_target_pids).
-	static void reconcile_timer_cb(void *user_data, uint64_t expirations);
 
 private:
 	void on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props);
@@ -118,10 +110,9 @@ private:
 	std::unordered_map<uint32_t, int> client_pids;
 
 	// Aligne les streams sur target_pids (détruit ceux dont le PID n'est plus
-	// ciblé, connecte ceux qui manquent). Exécutée sous streams_mutex, TOUJOURS
-	// sur le thread PipeWire (timer de réconcile ou callbacks on_node_info /
-	// on_client_info). Jamais depuis le thread du jeu (pas de pw_thread_loop_lock
-	// requis) : les appels PipeWire bloquants restent dans la boucle.
+	// ciblé, connecte ceux qui manquent). Exécutée sous streams_mutex, depuis
+	// le thread du jeu (set_target_pids sous lock de la boucle) ou depuis un
+	// callback PW (on_node_info / on_client_info, sur le thread de la boucle).
 	void apply_targets();
 	AudioCaptureStream *find_stream_for_pid(int pid) const;
 	AudioCaptureStream *find_stream_for_node(uint32_t node_id) const;
@@ -134,15 +125,14 @@ private:
 	void *core = nullptr;        // pw_core*
 	void *registry = nullptr;    // pw_registry*
 	void *registry_hook = nullptr; // spa_hook* (persistant)
-	void *timer = nullptr;       // spa_source* : timer PW (réconcile)
 
 	// node_id -> application.process.id (vus au registry). Lu/écrit sur le
-	// thread PipeWire (callbacks registry/node/client).
+	// thread PipeWire (callbacks registry/node/client) ou sous
+	// pw_thread_loop_lock (set_target_pids → apply_targets).
 	std::unordered_map<uint32_t, int> node_pids;
-	// PIDs ciblés (fenêtres partagées). Protégé par target_mutex : écrits par
-	// set_target_pids (thread du jeu), lus par apply_targets (thread PW).
+	// PIDs ciblés (fenêtres partagées). Protégé par le lock de la boucle PW ;
+	// poll_opus_packet ne le lit pas.
 	std::vector<int> target_pids;
-	std::mutex target_mutex;
 	// Streams actifs, indexés par node_id. Protégé par streams_mutex
 	// (poll_opus_packet du thread du jeu les lit pour mélanger).
 	std::vector<AudioCaptureStream *> streams;

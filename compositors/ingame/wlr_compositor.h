@@ -1002,17 +1002,11 @@ public:
     void set_video_share_windows(const PackedInt32Array &wids);
     Array video_share_poll();
     void video_share_request_keyframe(int window_id);
-    Dictionary video_share_window_size(int window_id);
     int video_share_pending();
     void video_decoder_configure(const String &key, const String &codec, int width, int height);
     Ref<Image> video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe);
     void video_decoder_reset(const String &key);
     void video_decoder_clear_all();
-    String video_diag_version();
-    // Diagnostics différentiels du crash "double free" (retour Ref<Image> :
-    // image 1x1 vs image 1000x600 sans aucun décodage).
-    Ref<Image> video_diag_small_image();
-    Ref<Image> video_diag_big_image(int width, int height);
 
     // Soumet le DMA-BUF d'une fenêtre à l'encodeur (hook après le render +
     // wait_for_dmabuf_gpu_writes). No-op si le partage vidéo est inactif ou
