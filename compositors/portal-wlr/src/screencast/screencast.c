@@ -104,6 +104,14 @@ void xdpw_screencast_instance_destroy(struct xdpw_screencast_instance *cast) {
 		}
 	}
 
+	// Détruire le stream PipeWire AVANT la session ext : des process
+	// callbacks de PipeWire surviennent pendant les transitions
+	// streaming→paused→unconnected et tenteraient de capturer un frame
+	// sur la session ext déjà détruite → "session already has a frame
+	// object" → crash Wayland. Désabonner d'abord le stream pour que
+	// pw_loop_iterate ne génère plus de callbacks.
+	xdpw_pwr_stream_destroy(cast);
+
 	xdpw_wlr_session_close(cast);
 
 	assert(cast->refcount == 0); // Fails assert if called by screencast_finish
@@ -120,7 +128,6 @@ void xdpw_screencast_instance_destroy(struct xdpw_screencast_instance *cast) {
 
 	free(cast->target);
 	wl_list_remove(&cast->link);
-	xdpw_pwr_stream_destroy(cast);
 	assert(wl_list_length(&cast->buffer_list) == 0);
 	wl_array_release(&cast->current_frame.damage);
 
@@ -233,12 +240,17 @@ bool setup_target(struct xdpw_screencast_context *ctx, struct xdpw_session *sess
 
 static int start_screencast(struct xdpw_screencast_instance *cast) {
 	int ret;
+	logprint(INFO, "xdpw: start_screencast type=%d with_cursor=%d with_cursor_meta=%d",
+		cast->target->type, cast->target->with_cursor, cast->target->with_cursor_meta);
 	ret = xdpw_wlr_session_init(cast);
 	if (ret < 0) {
+		logprint(ERROR, "xdpw: start_screencast: session_init FAILED ret=%d", ret);
 		return ret;
 	}
+	logprint(INFO, "xdpw: start_screencast: session_init OK");
 
 	xdpw_pwr_stream_create(cast);
+	logprint(INFO, "xdpw: start_screencast: stream created");
 
 	cast->initialized = true;
 	return 0;
@@ -495,6 +507,10 @@ static int method_screencast_select_sources(sd_bus_message *msg, void *data,
 	if (ret < 0) {
 		return ret;
 	}
+
+	logprint(INFO, "dbus: select_sources resolved: types=0x%x cursor_mode=%u persist_mode=%u app_id=%s",
+		type_mask, sess->screencast_data.cursor_mode,
+		sess->screencast_data.persist_mode, app_id);
 
 	bool selection_canceled = !setup_target(ctx, sess, restore_data.version > 0 ? &restore_data : NULL, type_mask);
 

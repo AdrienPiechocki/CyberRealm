@@ -189,6 +189,12 @@ func _ready() -> void:
 	win3d.window_created.connect(fx.on_window_created)
 
 	compositor.start_headless()
+	# Purge un éventuel handshake de capture périmé : si le jeu ou portal-wlr
+	# s'est terminé pendant l'attente d'un choix (cyberrealm-capture-pending),
+	# le fichier reste dans $XDG_RUNTIME_DIR entre deux sessions. Sans purge,
+	# _poll_capture_pending() ouvrirait le sélecteur au lancement suivant alors
+	# qu'aucune source OBS ne demande de capture.
+	_cleanup_stale_capture_files()
 	# Portails de capture pour OBS : xdg-desktop-portal (backend wlr) +
 	# xdg-desktop-portal-wlr, dans la session du jeu (socket cyberrealm-0).
 	# IMPORTANT : sans set_portal_backend, XDG_CURRENT_DESKTOP hérite de
@@ -695,6 +701,20 @@ func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # ── Sélecteur de capture OBS ─────────────────────────────────────────
+
+# Supprime les fichiers du handshake de capture (pending + choice) laissés par
+# une session précédente. Appelé au démarrage, avant launch_portals() : aucune
+# source OBS ne peut être en cours de capture à ce moment, les fichiers sont
+# donc forcément périmés.
+func _cleanup_stale_capture_files() -> void:
+	var rt := OS.get_environment("XDG_RUNTIME_DIR")
+	if rt.is_empty():
+		return
+	for name: String in ["cyberrealm-capture-pending", "cyberrealm-capture-choice"]:
+		var path := rt + "/" + name
+		if FileAccess.file_exists(path):
+			DirAccess.remove_absolute(path)
+	_selector_waiting = false
 
 func _poll_capture_pending() -> void:
 	var rt := OS.get_environment("XDG_RUNTIME_DIR")

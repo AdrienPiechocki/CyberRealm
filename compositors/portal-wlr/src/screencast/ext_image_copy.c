@@ -121,7 +121,7 @@ static void ext_session_done(void *data,
 		struct ext_image_copy_capture_session_v1 *ext_image_copy_capture_session_v1) {
 	struct xdpw_screencast_instance *cast = data;
 
-	logprint(TRACE, "ext: done handler");
+	logprint(INFO, "ext: done handler initialized=%d", cast->initialized);
 
 	// We can only calculate the stride now we have both formats and width
 	struct xdpw_shm_format *fmt;
@@ -147,6 +147,8 @@ static void ext_session_stopped(void *data,
 		struct ext_image_copy_capture_session_v1 *ext_image_copy_capture_session_v1) {
 	struct xdpw_screencast_instance *cast = data;
 
+	logprint(INFO, "ext: session_stopped (target_type=%d, initialized=%d)",
+		cast->target ? cast->target->type : 0, cast->initialized);
 	xdpw_screencast_instance_destroy(cast);
 	logprint(TRACE, "ext: session_stopped handler");
 }
@@ -221,6 +223,9 @@ static void ext_frame_failed(void *data,
 		struct ext_image_copy_capture_frame_v1 *ext_image_copy_capture_frame_v1,
 		uint32_t reason) {
 	struct xdpw_screencast_instance *cast = data;
+
+	logprint(ERROR, "ext: FRAME FAILED reason=%u target_type=%d",
+		reason, cast->target ? cast->target->type : 0);
 
 	if (cast->ext_session.frame) {
 		ext_image_copy_capture_frame_v1_destroy(cast->ext_session.frame);
@@ -609,6 +614,8 @@ void xdpw_ext_ic_cursor_session_close(struct xdpw_screencast_instance *cast) {
 
 static int ext_register_session_cb(struct xdpw_screencast_instance *cast) {
 	struct ext_image_capture_source_v1 *source = NULL;
+	logprint(INFO, "ext: register_session target_type=%d with_cursor=%d with_cursor_meta=%d",
+		cast->target->type, cast->target->with_cursor, cast->target->with_cursor_meta);
 	switch (cast->target->type) {
 	case MONITOR:
 		if (cast->ctx->ext_output_image_capture_source_manager == NULL) {
@@ -639,7 +646,8 @@ static int ext_register_session_cb(struct xdpw_screencast_instance *cast) {
 			&ext_session_listener, cast);
 
 	if (cast->target->with_cursor_meta && !cast->cursor) {
-		xdpw_ext_ic_cursor_session_init(cast);
+		int cret = xdpw_ext_ic_cursor_session_init(cast);
+		logprint(INFO, "ext: cursor session init result=%d cursor=%p", cret, (void*)cast->cursor);
 	}
 	logprint(TRACE, "ext: session callbacks registered");
 	return 0;
@@ -647,10 +655,19 @@ static int ext_register_session_cb(struct xdpw_screencast_instance *cast) {
 
 static void ext_register_frame_cb(struct xdpw_screencast_instance *cast) {
 	if (!cast->ext_session.capture_session) {
+		logprint(INFO, "ext: register_frame_cb: no capture_session, registering session first");
 		if (ext_register_session_cb(cast) != 0) {
 			logprint(ERROR, "ext: failed to register session");
 			return;
 		}
+	}
+	// Détruire un frame éventuel non complété (resté du frame précédent quand
+	// le buffer n'était pas encore prêt). Sans cela, create_frame sur la même
+	// session provoque "session already has a frame object" → crash Wayland.
+	if (cast->ext_session.frame) {
+		logprint(INFO, "ext: register_frame_cb: destroying leftover frame before creating new one");
+		ext_image_copy_capture_frame_v1_destroy(cast->ext_session.frame);
+		cast->ext_session.frame = NULL;
 	}
 	// Frame curseur demandé AVANT le frame principal : le compositeur le sert
 	// en premier, donc image_valid est à jour quand le frame principal devient
@@ -661,6 +678,10 @@ static void ext_register_frame_cb(struct xdpw_screencast_instance *cast) {
 	ext_image_copy_capture_frame_v1_add_listener(cast->ext_session.frame,
 			&ext_frame_listener, cast);
 
+	if (!cast->current_frame.xdpw_buffer) {
+		logprint(ERROR, "ext: register_frame_cb: no xdpw_buffer!");
+		return;
+	}
 	ext_image_copy_capture_frame_v1_attach_buffer(cast->ext_session.frame,
 			cast->current_frame.xdpw_buffer->buffer);
 	struct xdpw_frame_damage *damage;
@@ -675,6 +696,10 @@ static void ext_register_frame_cb(struct xdpw_screencast_instance *cast) {
 
 void xdpw_ext_ic_frame_capture(struct xdpw_screencast_instance *cast) {
 	logprint(TRACE, "ext: start screencopy");
+	if (!cast->ext_session.capture_session) {
+		logprint(WARN, "ext: frame capture on destroyed session, skipping");
+		return;
+	}
 	if (cast->current_frame.xdpw_buffer == NULL) {
 		logprint(ERROR, "ext: started frame without buffer");
 		return;
