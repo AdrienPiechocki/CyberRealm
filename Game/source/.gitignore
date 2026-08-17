@@ -1,7 +1,0 @@
-# Godot 4+ specific ignores
-.godot/
-/android/
-
-# Niveaux/assets personnalisés par utilisateur (importés via l'éditeur Godot)
-/user/*
-!/user/README.md

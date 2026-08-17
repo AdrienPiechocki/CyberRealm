@@ -1,8 +1,0 @@
-[configuration]
-entry_symbol = "waylandgodot_init"
-compatibility_minimum = "4.2"
-reloadable = true
-
-[libraries]
-linux.debug.x86_64 = "res://bin/libwaylandgodot.linux.template_debug.x86_64.so"
-linux.release.x86_64 = "res://bin/libwaylandgodot.linux.template_release.x86_64.so"
