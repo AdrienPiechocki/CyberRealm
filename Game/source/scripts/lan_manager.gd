@@ -557,13 +557,13 @@ func _spawn_position(peer_id: int) -> Vector3:
 # ── Sync des transformations ─────────────────────────────────────────
 
 @rpc("any_peer", "unreliable")
-func _sync_player_transform(pos: Vector3, yaw: float) -> void:
+func _sync_player_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0:
 		return
 	if not _remote_players.has(from):
 		return
-	_remote_players[from].apply_transform(pos, yaw)
+	_remote_players[from].apply_transform(pos, yaw, pitch)
 
 func _physics_process(delta: float) -> void:
 	_update_cpu_capture_request()
@@ -573,9 +573,12 @@ func _physics_process(delta: float) -> void:
 	if multiplayer.get_peers().is_empty():
 		return
 	var player := _level_root.get_node_or_null("Player") as Node3D
+	var camera := _level_root.get_node_or_null("Camera3D") as Camera3D
 	if player == null:
 		return
-	_sync_player_transform.rpc(player.position, player.rotation.y)
+	if camera == null:
+		return
+	_sync_player_transform.rpc(player.position, player.rotation.y, camera.rotation.x)
 	_sync_windows_state(delta)
 	_sync_windows_textures(delta)
 	_sync_video_state()

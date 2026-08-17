@@ -13,8 +13,10 @@ var local_player: Node3D = null
 
 var _interp_pos := Vector3.ZERO
 var _interp_yaw := 0.0
+var _interp_pitch := 0.0
 var _target_pos := Vector3.ZERO
 var _target_yaw := 0.0
+var _target_pitch := 0.0
 
 const LERP_SPEED := 20.0
 # Distance (m) en dessous de laquelle l'avatar commence à s'estomper.
@@ -62,16 +64,19 @@ func setup(id: int, name: String, color: Color) -> void:
 	_target_pos = position
 	_target_yaw = rotation.y
 
-func apply_transform(pos: Vector3, yaw: float) -> void:
+func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	_target_pos = pos
 	_target_yaw = yaw
-
+	_target_pitch = pitch
+	
 func _physics_process(delta: float) -> void:
 	var k := minf(1.0, delta * LERP_SPEED)
 	_interp_pos = _interp_pos.lerp(_target_pos, k)
 	_interp_yaw = lerp_angle(_interp_yaw, _target_yaw, k)
+	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
+	rotation.x = _interp_pitch / 2
 	_update_transparency()
 
 # Alpha = distance / FADE_DISTANCE, clampé [0,1] : à 1 m et au-delà l'avatar
