@@ -243,13 +243,6 @@ func enter_focus(id: int) -> void:
 	# Bloquer le player à la première entrée en mode focus
 	if entering:
 		player.focus_mode_active = true
-		# Warp du curseur au centre UNIQUEMENT à l'entrée : la souris était
-		# capturée (3D) et get_mouse_position() reste figée au point de
-		# capture ; on la pose au centre de l'overlay. Quand la fenêtre
-		# active change EN COURS de focus (ex: une fenêtre s'ouvre depuis le
-		# mode focus), PAS de warp : le curseur reste où l'utilisateur l'a
-		# laissé.
-		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 
 	_activate_window(id)
 
