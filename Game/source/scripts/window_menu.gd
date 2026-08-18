@@ -164,6 +164,14 @@ func hide_menu() -> void:
 	visible = false
 	menu_closed.emit()
 
+# Une nouvelle fenêtre vient d'être ouverte : elle devient l'onglet
+# sélectionné à la prochaine ouverture du menu (ou immédiatement, avec
+# rafraîchissement des onglets, si le menu est déjà ouvert).
+func on_window_opened(id: int) -> void:
+	selected_window_id = id
+	if visible:
+		_refresh_tabs()
+
 func _refresh_tabs() -> void:
 	for child in tabs_container.get_children():
 		child.queue_free()
