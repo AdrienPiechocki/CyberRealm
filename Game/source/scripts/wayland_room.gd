@@ -293,6 +293,7 @@ func _ready() -> void:
 
 func _on_window_mapped(id: int, title: String, app_id: String) -> void:
 	win3d.on_window_mapped(id, title, app_id)
+	window_menu.on_window_opened(id)
 	# Une nouvelle fenêtre ouverte pendant le mode focus s'ouvre aussi en
 	# focus, par-dessus la/les fenêtre(s) précédente(s).
 	if focus.is_active():
