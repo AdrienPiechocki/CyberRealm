@@ -159,7 +159,7 @@ func handle_locked_input() -> void:
 # déverrouillage, si aucun autre mode ne gère déjà la souris.
 func recapture_if_needed() -> void:
 	if not _any_interactive_layer() \
-			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
+			and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED \
 			and not focus.is_active() and not pause_menu.visible and not window_menu.visible:
 		layer_interact_active = false
 		layer_interact_manual = false
@@ -201,16 +201,6 @@ func toggle_layer_interact() -> void:
 		layer_interact_manual = true
 		player.layer_pointer_active = true
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-
-# Positionne le curseur au centre d'une layer surface interactive (pour que
-# les événements pointer de Wayland lui soient routés par _layer_at).
-func _warp_pointer_to_layer(id: int) -> void:
-	var entry: Dictionary = layer_rects.get(id, {})
-	if entry.is_empty() or not is_instance_valid(entry.get("rect")):
-		return
-	var r: Rect2 = entry.rect.get_global_rect()
-	if r.size.x > 0.0 and r.size.y > 0.0:
-		Input.warp_mouse(r.get_center())
 
 func _remove_layer_popups_for(layer_id: int) -> void:
 	for pid in layer_popup_rects.keys():
@@ -254,14 +244,6 @@ func on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: in
 		layer_interact_active = true
 		player.layer_pointer_active = true
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		# Le warp de la souris sur la surface est DIFFÉRÉ : au moment du map,
-		# arrange_layer_surfaces peut n'avoir pas encore positionné la surface
-		# (elle n'est pas encore initialized), et le signal transporte alors
-		# x/y/w/h = (0,0,0,0) → le rect serait créé en (0,0) et la souris
-		# warpee au coin de l'écran. On pose le flag pending_warp : le curseur
-		# sera placé au centre réel dès que la géométrie sera connue (signal
-		# layer_surface_layout_changed / première texture).
-		layer_rects[id]["pending_warp"] = true
 
 func on_layer_surface_unmapped(id: int) -> void:
 	_remove_layer_popups_for(id)
@@ -293,15 +275,6 @@ func on_layer_surface_texture_updated(id: int, texture: Texture2D, width: int, h
 	# garde la position calculée par le compositeur, seules les dimensions
 	# servent à la conversion souris -> coordonnées de surface.
 	entry.rect.set_meta("surface_size", Vector2(width, height))
-	# Le positionnement (x/y/size) n'est pas fait ici : il est poussé par le
-	# signal layer_surface_layout_changed, émis par arrange_layer_surfaces
-	# seulement quand la boîte change. Évite un get_layer_surface_info()
-	# (allocation de Dictionary) à chaque frame de capture.
-	# Première texture reçue → la géométrie est enfin réelle : on pose le
-	# curseur au centre de la surface interactive qui vient de s'ouvrir.
-	if entry.get("pending_warp", false):
-		entry["pending_warp"] = false
-		_warp_pointer_to_layer(id)
 
 func on_layer_surface_layout_changed(id: int, x: int, y: int, w: int, h: int) -> void:
 	if not layer_rects.has(id):
@@ -309,13 +282,6 @@ func on_layer_surface_layout_changed(id: int, x: int, y: int, w: int, h: int) ->
 	var entry = layer_rects[id]
 	entry.rect.position = Vector2(x, y)
 	entry.rect.size = Vector2(max(w, 1), max(h, 1))
-	# La boîte vient d'être recalculée : si la surface vient de s'ouvrir et
-	# que le curseur n'a pas encore été posé dessus, le re-warp ici (et non
-	# au mapped) garantit qu'il vise le centre RÉEL, même si le map avait
-	# transporté une géométrie provisoire (0,0,0,0). Le flag est conservé :
-	# la première texture le consomme (voir _on_layer_surface_texture_updated).
-	if entry.get("pending_warp", false):
-		_warp_pointer_to_layer(id)
 
 func on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, w: int, h: int) -> void:
 	if not layer_rects.has(parent_layer_id):
