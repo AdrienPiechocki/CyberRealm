@@ -242,8 +242,10 @@ them.
 | `SUPER+G`            | Grab a window (drag it around)                    |
 | `SUPER+F`            | Focus a window (fullscreen 2D mode)               |
 | `SUPER+P`            | Pin / unpin a window (picture-in-picture)         |
+| `SUPER+H`            | Hide a window                                     |
+| `SUPER+S`            | Share a window for LAN multiplayer                |
 | `SUPER+Q`            | Close the focused window                          |
-| `SUPER+SHIFT+B`      | Window navigation menu (incl. SHARE for LAN)      |
+| `SUPER+SHIFT+B`      | Window navigation menu                            |
 | `SUPER+TAB`          | Hand the pointer to a layer overlay (waybar/rofi) |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
 
