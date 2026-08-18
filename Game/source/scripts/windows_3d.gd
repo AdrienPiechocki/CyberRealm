@@ -288,7 +288,26 @@ func _set_quad_interactive(quad: MeshInstance3D, enabled: bool) -> void:
 		elif child is MeshInstance3D:
 			_set_quad_interactive(child, enabled)
 
-func grab_window_from_menu(wid: int) -> void:
+# La fenêtre actuellement déplacée (grab menu), -1 si aucune.
+func get_grabbed_window_id() -> int:
+	return active_window_id if is_moving else -1
+
+func is_window_grabbed(wid: int) -> bool:
+	return is_moving and active_window_id == wid
+
+func release_window_grab(wid: int) -> void:
+	if not is_window_grabbed(wid):
+		return
+	is_moving = false
+	active_window_id = -1
+	windows_state_changed.emit()
+
+# Toggle grab depuis le menu fenêtres : reprend une fenêtre déjà en cours de
+# déplacement (is_moving) ou lâche la prise et la pose à sa position actuelle.
+func toggle_grab_window(wid: int) -> void:
+	if is_window_grabbed(wid):
+		release_window_grab(wid)
+		return
 	if not quads.has(wid) or not is_instance_valid(quads[wid]):
 		return
 	var quad: MeshInstance3D = quads[wid]
@@ -296,6 +315,7 @@ func grab_window_from_menu(wid: int) -> void:
 	active_window_id = wid
 	is_moving = true
 	move_depth = cam.global_position.distance_to(quad.global_position)
+	windows_state_changed.emit()
 
 func toggle_hide(id: int) -> void:
 	if not quads.has(id) or not is_instance_valid(quads[id]):

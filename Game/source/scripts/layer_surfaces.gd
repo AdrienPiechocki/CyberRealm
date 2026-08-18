@@ -158,12 +158,22 @@ func handle_locked_input() -> void:
 # Retour à la capture FPS après la fermeture d'un overlay interactif ou le
 # déverrouillage, si aucun autre mode ne gère déjà la souris.
 func recapture_if_needed() -> void:
-	if not layer_interact_manual and not _any_interactive_layer() \
+	if not _any_interactive_layer() \
 			and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
 			and not focus.is_active() and not pause_menu.visible and not window_menu.visible:
 		layer_interact_active = false
+		layer_interact_manual = false
 		player.layer_pointer_active = false
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+# Quitte le mode "interaction layer" : à appeler par wayland_room quand un
+# autre mode reprend la souris (focus, menu pause, menu fenêtres,
+# interact_mode...). Réinitialise l'état même si le joueur n'a pas repassé
+# Tab (layer_interact_manual) : quitter le mode layer doit le désactiver.
+func deactivate_layer_interact() -> void:
+	layer_interact_active = false
+	layer_interact_manual = false
+	player.layer_pointer_active = false
 
 func _any_interactive_layer() -> bool:
 	for lid in layer_rects:

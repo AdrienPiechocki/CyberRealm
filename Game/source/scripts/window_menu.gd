@@ -22,19 +22,22 @@ var selected_window_id := -1
 var tab_buttons: Dictionary = {} # window_id -> Button
 var action_buttons: Array[Button] = []
 var _share_button: Button
+var _grab_button: Button
 
 var _get_texture_func: Callable # Callable(window_id) -> Texture2D
 var _get_shared_func: Callable # Callable(window_id) -> bool
+var _get_grabbed_id_func: Callable # Callable() -> int (wid du grab en cours, -1 sinon)
 
 func _ready() -> void:
 	visible = false
 	_build_action_buttons()
 	_apply_styling()
 
-func setup(compositor_ref: WlrCompositor, get_texture: Callable, get_shared: Callable) -> void:
+func setup(compositor_ref: WlrCompositor, get_texture: Callable, get_shared: Callable, get_grabbed_id: Callable) -> void:
 	compositor = compositor_ref
 	_get_texture_func = get_texture
 	_get_shared_func = get_shared
+	_get_grabbed_id_func = get_grabbed_id
 
 func _apply_styling() -> void:
 	var bg := StyleBoxFlat.new()
@@ -111,6 +114,8 @@ func _build_action_buttons() -> void:
 		btn.pressed.connect(func(): _on_action(sig_name))
 		if sig_name == "action_share":
 			_share_button = btn
+		elif sig_name == "action_grab":
+			_grab_button = btn
 		actions_container.add_child(btn)
 		action_buttons.append(btn)
 
@@ -120,6 +125,7 @@ func _on_action(sig_name: String) -> void:
 	match sig_name:
 		"action_grab":
 			action_grab.emit(selected_window_id)
+			_update_grab_label()
 		"action_focus":
 			action_focus.emit(selected_window_id)
 		"action_toggle_hide":
@@ -145,6 +151,12 @@ func toggle_menu() -> void:
 
 func show_menu() -> void:
 	visible = true
+	# Si une fenêtre est en cours de déplacement (grab), la resélectionner
+	# d'office pour que le toggle GRAB la vise directement à la réouverture.
+	if _get_grabbed_id_func.is_valid():
+		var grabbed_id := int(_get_grabbed_id_func.call())
+		if grabbed_id != -1:
+			selected_window_id = grabbed_id
 	_refresh_tabs()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
@@ -172,9 +184,17 @@ func _refresh_tabs() -> void:
 		preview_rect.texture = null
 		return
 
-	# Sélectionner la première fenêtre par défaut
-	if selected_window_id == -1:
-		selected_window_id = window_list[0]["id"]
+	# Par défaut, sélectionner la dernière fenêtre ouverte (id le plus haut :
+	# next_window_id est incrémenté à chaque création côté compositeur).
+	# On vérifie aussi que l'id encore en mémoire existe toujours (une fenêtre
+	# a pu être fermée) avant de la garder.
+	var wid_in_list := false
+	for entry in window_list:
+		if int(entry["id"]) == selected_window_id:
+			wid_in_list = true
+			break
+	if selected_window_id == -1 or not wid_in_list:
+		selected_window_id = _last_opened_window_id(window_list)
 
 	for entry in window_list:
 		var wid: int = entry["id"]
@@ -223,6 +243,15 @@ func _refresh_tabs() -> void:
 
 	_update_preview()
 
+# Renvoie l'id de la fenêtre la plus récemment ouverte dans la liste.
+func _last_opened_window_id(window_list: Array) -> int:
+	var best_id := -1
+	for entry in window_list:
+		var wid: int = int(entry["id"])
+		if wid > best_id:
+			best_id = wid
+	return best_id
+
 func _on_tab_pressed(wid: int) -> void:
 	selected_window_id = wid
 	# Mettre à jour le style des onglets
@@ -251,14 +280,23 @@ func _update_preview() -> void:
 	if selected_window_id == -1 or not _get_texture_func:
 		preview_rect.texture = null
 		_update_share_label()
+		_update_grab_label()
 		return
 	var tex: Texture2D = _get_texture_func.call(selected_window_id)
 	preview_rect.texture = tex
 	_update_share_label()
+	_update_grab_label()
 
 func refresh_preview() -> void:
 	if visible:
 		_update_preview()
+
+# Affiche l'état de grab de la fenêtre sélectionnée (toggle ON/OFF).
+func _update_grab_label() -> void:
+	if _grab_button == null or not _get_grabbed_id_func.is_valid() or selected_window_id == -1:
+		return
+	var grabbed: bool = int(_get_grabbed_id_func.call()) == selected_window_id
+	_grab_button.text = "GRAB: ON" if grabbed else "GRAB: OFF"
 
 # Affiche l'état de partage (« screenshare ») de la fenêtre sélectionnée.
 func _update_share_label() -> void:

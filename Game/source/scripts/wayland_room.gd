@@ -226,7 +226,7 @@ func _ready() -> void:
 	for cmd in pause_menu.get_startup_apps():
 		compositor.launch_app(cmd)
 	# Setup du menu de navigation entre fenêtres
-	window_menu.setup(compositor, _get_window_texture, _get_window_shared)
+	window_menu.setup(compositor, _get_window_texture, _get_window_shared, win3d.get_grabbed_window_id)
 	window_menu.action_grab.connect(_on_window_menu_grab)
 	window_menu.action_focus.connect(_on_window_menu_focus)
 	window_menu.action_toggle_hide.connect(_on_window_menu_toggle_hide)
@@ -456,7 +456,14 @@ func _process(delta: float) -> void:
 	if capture_selector.visible:
 		return
 
+	# Menu pause ouvert : aucun input ne doit aller au monde — ni clics
+	# forwardés aux fenêtres, ni binds, ni raycast. Seul le menu pause est
+	# interactif (sa souris/clavier sont gérés par le Control lui-même).
+	if pause_menu.visible:
+		return
+
 	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
+		layers.deactivate_layer_interact()
 		window_menu.toggle_menu()
 
 	# Tab : bascule le mode "interaction layer" — libère la souris pour
@@ -502,6 +509,7 @@ func _process(delta: float) -> void:
 	# Une fenêtre DISTANTE entre aussi en focus mais en VUE SEULE (aucun
 	# input forwardé, pas de kill).
 	if Input.is_action_just_pressed("focus_window", true) and not interact_mode_active:
+		layers.deactivate_layer_interact()
 		var target := _raycast_window_target(_aim_pos())
 		if target.has("local"):
 			focus.enter_focus(target["local"])
@@ -529,9 +537,25 @@ func _process(delta: float) -> void:
 			compositor.close_window(target["local"])
 			return
 
+	# H en visant une fenêtre LOCALE → masquer/afficher (HIDE/SHOW)
+	if Input.is_action_just_pressed("hide_window", true) and not interact_mode_active:
+		var target := _raycast_window_target(_aim_pos())
+		if target.has("local"):
+			win3d.toggle_hide(target["local"])
+			return
+
+	# S en visant une fenêtre LOCALE → basculer le partage screenshare
+	# (visibilité chez les autres joueurs, aucune interaction distante).
+	if Input.is_action_just_pressed("share_window", true) and not interact_mode_active:
+		var target := _raycast_window_target(_aim_pos())
+		if target.has("local"):
+			win3d.set_window_shared(target["local"], not win3d.is_window_shared(target["local"]))
+			return
+
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
 	# (le clic molette sert au client en mode focus, pas au toggle du mode interaction).
 	if Input.is_action_just_pressed("interact_mode", true) and not focus.is_active():
+		layers.deactivate_layer_interact()
 		if interact_mode_active:
 			compositor.release_all_keys()
 		interact_mode_active = not interact_mode_active
@@ -666,9 +690,13 @@ func _get_window_shared(wid: int) -> bool:
 	return win3d.is_window_shared(wid)
 
 func _on_window_menu_grab(wid: int) -> void:
-	# Fermer le menu, sélectionner la fenêtre et initier le grab
-	window_menu.hide_menu()
-	win3d.grab_window_from_menu(wid)
+	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
+	# caméra ; grab OFF → relâcher la prise, le menu reste ouvert.
+	win3d.toggle_grab_window(wid)
+	if win3d.is_window_grabbed(wid):
+		window_menu.hide_menu()
+	else:
+		window_menu.refresh_preview()
 
 func _on_window_menu_focus(wid: int) -> void:
 	window_menu.hide_menu()
@@ -828,6 +856,8 @@ func _notification(what: int) -> void:
 
 func _on_pause_menu_visibility_changed() -> void:
 	if pause_menu.visible:
+		# Le menu pause reprend la souris : quitter le mode interaction layer.
+		layers.deactivate_layer_interact()
 		# Toujours libérer les touches enfoncées à l'ouverture du menu : le
 		# relâchement réel serait ignoré par _input (retour tôt) et laisserait
 		# une touche coincée côté xkbcommon. Inconditionnel : des touches
