@@ -433,7 +433,6 @@ func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
 	else:
 		st["mouse_captured"] = false
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 
 func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	if not focus_mode or not focus_rects.has(id):
