@@ -162,7 +162,6 @@ func show_menu() -> void:
 
 func hide_menu() -> void:
 	visible = false
-	selected_window_id = -1
 	menu_closed.emit()
 
 func _refresh_tabs() -> void:
@@ -183,6 +182,11 @@ func _refresh_tabs() -> void:
 		selected_window_id = -1
 		preview_rect.texture = null
 		return
+
+	# L'ordre renvoyé par le compositeur (std::unordered_map) n'est pas garanti :
+	# on trie explicitement par id décroissant pour que la fenêtre la plus
+	# récemment ouverte soit toujours le premier onglet.
+	window_list.sort_custom(func(a, b): return int(a["id"]) > int(b["id"]))
 
 	# Par défaut, sélectionner la dernière fenêtre ouverte (id le plus haut :
 	# next_window_id est incrémenté à chaque création côté compositeur).
@@ -242,6 +246,11 @@ func _refresh_tabs() -> void:
 		tab_buttons[wid] = btn
 
 	_update_preview()
+
+	# Donner le focus clavier à l'onglet sélectionné pour pouvoir naviguer
+	# immédiatement entre les fenêtres avec les flèches.
+	if tab_buttons.has(selected_window_id):
+		tab_buttons[selected_window_id].grab_focus()
 
 # Renvoie l'id de la fenêtre la plus récemment ouverte dans la liste.
 func _last_opened_window_id(window_list: Array) -> int:
