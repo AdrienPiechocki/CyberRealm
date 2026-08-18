@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# cyberrealm-run — lance le jeu CyberRealm dans un scope systemd utilisateur
+# et tue TOUT son cgroup quand le jeu se ferme (crash, SIGKILL, fermeture
+# normale…).
+#
+# Le jeu fait déjà un nettoyage propre via shutdown_apps() (SIGTERM → grâce →
+# SIGKILL sur tout l'arbre des descendants), mais il ne tourne que sur les
+# chemins « propres » (menu pause, WM_CLOSE_REQUEST, destructeur). Si le jeu
+# meurt d'un coup, ou si un daemon (setsid/double-fork) survit au scan,
+# ses sous-process sont orphelinés vers init. En exécutant le jeu dans un
+# cgroup systemd, on garantit que la fermeture du scope emporte tout ce qui
+# reste — y compris les daemons détachés — quel que soit le chemin de sortie.
+#
+# Usage :
+#   cyberrealm-run [chemin du binaire] [args...]
+#   Sans argument, cherche le binaire relatif à ce script.
+#
+# Le scope est nommé cyberrealm-<pid du shell> ; au retour de systemd-run
+# (process principal sorti) on arrête le scope → SIGTERM puis SIGKILL au
+# cgroup entier. Le code de retour du jeu est propagé.
+
+set -euo pipefail
+
+GAME="${1:-}"
+if [[ -n "$GAME" ]]; then
+    shift
+fi
+
+if [[ -z "$GAME" ]]; then
+    SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+    GAME="$SCRIPT_DIR/../../Game/build/CyberRealm.x86_64"
+fi
+
+if [[ ! -x "$GAME" ]]; then
+    echo "cyberrealm-run: binaire introuvable: $GAME" >&2
+    exit 1
+fi
+
+# Sans systemd utilisateur (session non-systemd), on lance directement : le
+# nettoyage interne shutdown_apps() reste la seule protection.
+if ! command -v systemd-run >/dev/null 2>&1; then
+    exec "$GAME" "$@"
+fi
+if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -S "$XDG_RUNTIME_DIR/systemd/private" ]]; then
+    exec "$GAME" "$@"
+fi
+
+UNIT="cyberrealm-$$"
+
+# --scope : le jeu tourne dans un cgroup dédié du manager utilisateur.
+# -p KillMode=control-group : SIGTERM puis (après TimeoutStopSec) SIGKILL à
+#   tout le cgroup, y compris les daemons détachés par setsid/double-fork.
+# -G --collect : l'unité est purgée dès qu'elle est vide.
+#
+# NB : pas de `set -e` actif ici — systemd-run propage le code de sortie du
+# jeu (137 pour un SIGKILL…). Il faut donc TOUJOURS exécuter le stop du scope
+# même quand le jeu sort en erreur, sinon un crash laisserait le cgroup vivre.
+rc=0
+systemd-run --user --scope --unit="$UNIT" -G \
+    -p KillMode=control-group \
+    -p TimeoutStopSec=2 \
+    -- "$GAME" "$@" || rc=$?
+
+# Le process principal (le jeu) est sorti. Tout ce qui reste dans le cgroup
+# (daemons orphelins ayant survécu à shutdown_apps()) est un résidu : on
+# arrête le scope pour tuer le cgroup entier.
+systemctl --user stop "$UNIT.scope" 2>/dev/null || true
+
+exit "$rc"
