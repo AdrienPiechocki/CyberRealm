@@ -48,8 +48,8 @@ var container: VBoxContainer
 const REMAPPABLE_ACTIONS := [
 	"forward", "back", "left", "right", "jump",
 	"interact_mode", "window_menu",
-	"grab", "focus_window", "pin_window", "kill_window", "layer_interact",
-	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
+	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
+	"layer_interact", "left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
 
 var _settings: Dictionary = {}
