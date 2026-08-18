@@ -344,7 +344,8 @@ func _show_startup_apps() -> void:
 		empty_label.add_theme_color_override("font_color", Color(0.5, 0.52, 0.58))
 		list.add_child(empty_label)
 	else:
-		for app in apps:
+		for i in apps.size():
+			var app := String(apps[i])
 			var row := HBoxContainer.new()
 			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
@@ -357,13 +358,19 @@ func _show_startup_apps() -> void:
 			row.add_child(label)
 
 			var launch_btn := _make_btn("Launch")
-			launch_btn.custom_minimum_size = Vector2(110, 36)
+			launch_btn.custom_minimum_size = Vector2(100, 36)
 			launch_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			launch_btn.pressed.connect(_launch_app.bind(app))
 			row.add_child(launch_btn)
 
+			var edit_btn := _make_btn("Edit", Color(0.1, 0.25, 0.15, 0.9))
+			edit_btn.custom_minimum_size = Vector2(90, 36)
+			edit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			edit_btn.pressed.connect(_edit_startup_app.bind(i))
+			row.add_child(edit_btn)
+
 			var remove_btn := _make_btn("Remove", Color(0.25, 0.1, 0.1, 0.9))
-			remove_btn.custom_minimum_size = Vector2(110, 36)
+			remove_btn.custom_minimum_size = Vector2(100, 36)
 			remove_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			remove_btn.pressed.connect(_remove_startup_app.bind(app))
 			row.add_child(remove_btn)
@@ -373,12 +380,16 @@ func _show_startup_apps() -> void:
 	var add_row := HBoxContainer.new()
 	add_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var le := _make_line_edit()
-	le.placeholder_text = "command (ex: firefox, konsole)"
+	if _editing_index >= 0 and _editing_index < apps.size():
+		le.text = String(apps[_editing_index])
+		le.placeholder_text = "edit command"
+	else:
+		le.placeholder_text = "command (ex: firefox, konsole)"
 	le.text_submitted.connect(func(text: String):
 		_add_startup_app(text.strip_edges())
 	)
 	add_row.add_child(le)
-	var add_btn := _make_btn("Add")
+	var add_btn := _make_btn("Save" if _editing_index >= 0 and _editing_index < apps.size() else "Add")
 	add_btn.custom_minimum_size = Vector2(90, 36)
 	add_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	add_btn.pressed.connect(_add_from_line_edit.bind(le))
@@ -911,12 +922,21 @@ func _launch_app(app: String) -> void:
 func _add_from_line_edit(le: LineEdit) -> void:
 	_add_startup_app(le.text.strip_edges())
 
+func _edit_startup_app(index: int) -> void:
+	_editing_index = index
+	_show_startup_apps()
+
 func _add_startup_app(cmd: String) -> void:
 	if cmd == "":
 		return
 	var apps: Array = _settings.get("startup_apps", [])
-	if not apps.has(cmd):
-		apps.append(cmd)
+	if _editing_index >= 0 and _editing_index < apps.size():
+		# Mode édition : remplace la commande à cet index.
+		apps[_editing_index] = cmd
+	else:
+		if not apps.has(cmd):
+			apps.append(cmd)
+	_editing_index = -1
 	_settings["startup_apps"] = apps
 	_save_settings()
 	_show_startup_apps()
@@ -925,6 +945,7 @@ func _remove_startup_app(cmd: String) -> void:
 	var apps: Array = _settings.get("startup_apps", [])
 	apps.erase(cmd)
 	_settings["startup_apps"] = apps
+	_editing_index = -1
 	_save_settings()
 	_show_startup_apps()
 
