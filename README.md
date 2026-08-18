@@ -145,8 +145,9 @@ transfer.
 │   │   ├── audio_share.*         OPUS capture of shared windows (PipeWire)
 │   │   └── register_types.cpp    GDExtension entry point
 │   ├── portal-wlr/       patches for xdg-desktop-portal-wlr (window capture)
-│   ├── kwin/             KWin script (fullscreen + block global shortcuts)
-│   │                     and the `cyberrealm-launch` app launcher wrapper
+│   ├── kwin/             KWin script (fullscreen + block global shortcuts),
+│   │                     the `cyberrealm-launch` app launcher wrapper and the
+│   │                     `cyberrealm-run` game launcher (systemd scope cleanup)
 │   └── protocols/        vendored/protocol-generated headers
 ├── godot-cpp/            godot-cpp dependency (built via SCons)
 ├── install.sh            one-shot build & install (Arch Linux)
@@ -198,6 +199,14 @@ Launch the game (from Plasma or any launcher):
 ```bash
 Game/build/CyberRealm.x86_64
 ```
+
+The preferred way is via the `cyberrealm-run` wrapper installed by
+`install.sh` (`~/.local/bin/cyberrealm-run`, also used by the
+`cyberrealm.desktop` launcher). It runs the game inside its own systemd user
+scope (cgroup) and, when the game process exits — for **any** reason, crash,
+SIGKILL or normal quit — it stops the scope, which kills every remaining
+process in the cgroup. This guarantees no daemon spawned inside the game
+(out of the `shutdown_apps()` tree, setsid/double-fork…) survives the game.
 
 On startup the game spawns its own compositor, starts XWayland on `:1`, and
 launches your configured startup apps inside the room. The KWin script puts the

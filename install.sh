@@ -125,13 +125,19 @@ qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
 # pour lancer des apps dans les quads 3D depuis Plasma.
 install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-launch" "$HOME/.local/bin/cyberrealm-launch"
 
+# --- Lanceur du jeu (cyberrealm-run) ---------------------------------------
+# Lance le jeu dans un scope systemd (cgroup) puis tue tout le cgroup quand le
+# jeu se ferme (crash, SIGKILL, fermeture normale…) : aucun daemon lancé dans
+# le jeu ne survit à sa fermeture. Installe aussi le .desktop dessus.
+install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-run" "$HOME/.local/bin/cyberrealm-run"
+
 # --- Lanceur .desktop du jeu ----------------------------------------------
 mkdir -p "$HOME/.local/share/applications"
 cat > "$HOME/.local/share/applications/cyberrealm.desktop" <<EOF
 [Desktop Entry]
 Name=CyberRealm
 Comment=Open CyberRealm (3D environment desktop)
-Exec=$GAME
+Exec=$HOME/.local/bin/cyberrealm-run "$GAME"
 Type=Application
 Categories=Game;
 StartupNotify=false
