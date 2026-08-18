@@ -24,7 +24,6 @@ const WINDOW_QUAD_SCALE := 2.0
 # qui crashe si on lui laisse dessiner ses barres) ne dessinent rien, c'est
 # le jeu qui affiche la barre au-dessus du contenu de chaque fenêtre.
 const TITLEBAR_HEIGHT = 0.06
-const VIRTUAL_TITLEBAR_HEIGHT = 20 # px
 const TITLEBAR_BG = Color(0.13, 0.15, 0.22)
 const TITLEBAR_FG = Color(0.85, 0.88, 0.96)
 # Boutons de la barre de titre (droite) : fermer / réduire / agrandir.
@@ -890,7 +889,13 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			content_size = win_size
 		var titlebar_px := uv.x * win_size.x
 		var titlebar_py := uv.y * win_size.y
-		var in_titlebar := titlebar_py >= 0 and titlebar_py < VIRTUAL_TITLEBAR_HEIGHT \
+		# La zone de drag "virtuelle" (haut du contenu) n'est utile que si la
+		# barre 3D n'est pas affichée. Depuis qu'elle l'est toujours (SSD et
+		# CSD), on la désactive : sinon le haut du contenu (ex. les onglets
+		# de Firefox en CSD) déclencherait un drag au lieu de cliquer l'app.
+		var titlebar3d: MeshInstance3D = quad.get_node_or_null("Titlebar")
+		var no_3d_titlebar := titlebar3d == null or not titlebar3d.visible
+		var in_titlebar := no_3d_titlebar and titlebar_py >= 0 and titlebar_py < (win_size.y * TITLEBAR_HEIGHT) \
 			and titlebar_px > 75 and titlebar_px < content_size.x - 75
 
 		if edge != "":
