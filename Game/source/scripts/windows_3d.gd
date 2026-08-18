@@ -496,9 +496,22 @@ func _set_titlebar_interactive(titlebar: MeshInstance3D, enabled: bool) -> void:
 				if shape_node is CollisionShape3D:
 					shape_node.disabled = not enabled
 
+# Montre/cache les boutons minimiser/maximiser/fermer de la barre de titre.
+func _set_titlebar_buttons(titlebar: MeshInstance3D, enabled: bool) -> void:
+	for btn_name in ["BtnClose", "BtnMaximize", "BtnMinimize"]:
+		var btn := titlebar.get_node_or_null(btn_name) as StaticBody3D
+		if btn == null:
+			continue
+		btn.visible = enabled
+		for shape_node in btn.get_children():
+			if shape_node is CollisionShape3D:
+				shape_node.disabled = not enabled
+
 # Montre/cache la barre de titre du jeu selon la décoration : SERVER_SIDE =>
-# le compositeur gère la décoration (le jeu la dessine) ; sinon le client
-# dessine la sienne (CSD) et la barre du jeu ne doit pas apparaître.
+# le compositeur gère la décoration (le jeu la dessine, boutons inclus) ;
+# sinon le client dessine la sienne (CSD, ex. Firefox) : on affiche quand
+# même la barre du jeu (titre + zone de drag) mais SANS les boutons, car le
+# client a déjà ses propres boutons dans son contenu.
 func on_window_decorations_changed(id: int, server_side: bool) -> void:
 	if not quads.has(id):
 		return
@@ -506,8 +519,9 @@ func on_window_decorations_changed(id: int, server_side: bool) -> void:
 	var titlebar: MeshInstance3D = quad.get_node_or_null("Titlebar")
 	if titlebar == null:
 		return
-	titlebar.visible = server_side
-	_set_titlebar_interactive(titlebar, server_side)
+	titlebar.visible = true
+	_set_titlebar_interactive(titlebar, true)
+	_set_titlebar_buttons(titlebar, server_side)
 
 func on_window_unmapped(id: int) -> void:
 	if focused_window_id == id:
