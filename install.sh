@@ -69,7 +69,7 @@ meson install -C "$PORTAL_SRC/build"
 GODOT_VER="$(godot --version | cut -d. -f1-4)"
 GODOT_TAG="$(godot --version | cut -d. -f1-3)-$(godot --version | cut -d. -f4)"
 TEMPLATES_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
-if [[ ! -f "$TEMPLATES_DIR/linux.x86_64" ]]; then
+if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
     echo "install: build du template Linux Godot $GODOT_VER (scons platform=linuxbsd target=template_release) ..."
     GODOT_SRC="$SCRIPT_DIR/build/godot-src"
     if [[ ! -d "$GODOT_SRC" ]]; then
@@ -77,7 +77,8 @@ if [[ ! -f "$TEMPLATES_DIR/linux.x86_64" ]]; then
     fi
     (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release)
     mkdir -p "$TEMPLATES_DIR"
-    install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux.x86_64"
+    install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_release.x86_64"
+    install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_debug.x86_64"
 else
     echo "install: template Linux Godot $GODOT_VER déjà présent, rien à faire."
 fi
