@@ -66,14 +66,16 @@ meson install -C "$PORTAL_SRC/build"
 # donc le template Linux depuis les sources godot, à la version exacte de
 # l'éditeur installé, et on l'installe dans le dossier export_templates que
 # `godot --export-release` cherche (~/.local/share/godot/export_templates/).
-GODOT_VER="$(godot --version | cut -d. -f1-4)"
-GODOT_TAG="$(godot --version | cut -d. -f1-3)-$(godot --version | cut -d. -f4)"
+GODOT_TAG="4.7.2-stable"
+GODOT_VER="4.7.2.stable"
 TEMPLATES_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
 if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
     echo "install: build du template Linux Godot $GODOT_VER (scons platform=linuxbsd target=template_release) ..."
     GODOT_SRC="$SCRIPT_DIR/build/godot-src"
     if [[ ! -d "$GODOT_SRC" ]]; then
         git clone --depth 1 --branch "$GODOT_TAG" https://github.com/godotengine/godot.git "$GODOT_SRC"
+    else
+        (cd "$GODOT_SRC" && git fetch --depth 1 origin tag "$GODOT_TAG" && git checkout "$GODOT_TAG")
     fi
     (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release)
     mkdir -p "$TEMPLATES_DIR"
