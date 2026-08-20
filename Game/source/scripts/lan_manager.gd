@@ -411,7 +411,7 @@ func _on_peer_connected(id: int) -> void:
 		# déconnexion après ~5 s sans ACK).
 		_set_peer_timeout(id)
 		_send_level_to(id)
-		#_send_avatar_to(id)
+		_send_avatar_to(id)
 
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
 # rejoint : le blob binaire auto-suffisant produit par LevelBaker (meshes/
