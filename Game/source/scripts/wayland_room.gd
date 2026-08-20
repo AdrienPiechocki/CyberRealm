@@ -24,8 +24,10 @@ var pins: Node3D
 var fx: Node3D
 var presenter: Node3D # présente le viewport à l'output headless pour OBS
 var lan: Node # multijoueur LAN (hôte/join, avatars)
+var cmd: Node # drone de commandes IPC (cyberrealm-exec)
 
 const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
+const COMMAND_NODE := preload("res://scripts/command_node.gd")
 
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
@@ -281,6 +283,13 @@ func _ready() -> void:
 	lan.local_player = player
 	win3d.windows_state_changed.connect(_on_windows_state_changed)
 
+	# Drone de commandes IPC : cyberrealm-exec peut envoyer des commandes
+	# au jeu en runtime (launch, windows, close, focus, etc.)
+	cmd = COMMAND_NODE.new()
+	cmd.name = "CommandNode"
+	add_child(cmd)
+	cmd.setup(compositor, win3d, focus, layers, pins, lan, player)
+
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
 	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
@@ -446,8 +455,15 @@ func _process(delta: float) -> void:
 	# Session verrouillée : tout le pointeur part vers la surface de
 	# verrouillage (le curseur y est visible), rien ne va au jeu.
 	if layers.is_locked():
+		player.session_locked = true
+		# Forcer la souris visible pendant le lock : si un event ou un autre
+		# mode a remis la souris en CAPTURED entre-temps, le lockscreen ne
+		# recevrait aucun input pointeur.
+		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		layers.handle_locked_input()
 		return
+	player.session_locked = false
 
 	# Sélecteur de cible de capture OBS : quand portal-wlr écrit
 	# cyberrealm-capture-pending (une source PipeWire ajoutée dans OBS), on

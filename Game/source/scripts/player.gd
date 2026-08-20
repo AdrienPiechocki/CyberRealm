@@ -16,6 +16,9 @@ var focus_mode_active := false
 # surface (waybar/rofi) en mode visible. Empêche le click de recapturer la
 # souris (FPS) pour laisser wayland_room forwarder le clic vers l'overlay.
 var layer_pointer_active := false
+# Positionné par wayland_room.gd : vrai tant que le session est verrouillé.
+# Empêche la recapture de la souris (MOUSE_MODE_CAPTURED) pendant le lockscreen.
+var session_locked := false
 # Référence paresseuse au compositeur, pour connaître la layer surface qui
 # détient le focus clavier (rofi, menu waybar...).
 var _compositor: WlrCompositor = null
@@ -77,6 +80,8 @@ func _input(event):
 	if $CaptureSelectorLayer/CaptureSelector.visible:
 		return
 	if event.is_action_pressed("pause_menu") and not interact_mode_active:
+		if session_locked:
+			return
 		if $WindowMenuLayer/WindowMenu.visible:
 			return
 		# Un overlay keyboard-interactive (rofi, menu waybar...) détient le
@@ -89,7 +94,7 @@ func _input(event):
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
 		if $WindowMenuLayer/WindowMenu.visible:
 			return
-		if layer_pointer_active:
+		if layer_pointer_active or session_locked:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
