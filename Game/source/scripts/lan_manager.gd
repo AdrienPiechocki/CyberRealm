@@ -61,6 +61,10 @@ var _level_bake_receive: Dictionary = {}
 # Cache (host) du blob baked : re-baké uniquement quand le niveau change.
 var _level_baked_cache: Dictionary = {}
 
+# Avatar chunked transfer (même pattern que les niveaux).
+var _avatar_send_queue: Dictionary = {} # peer_id -> {bytes, total, sent}
+var _avatar_receive: Dictionary = {}    # {data, from_id, total, next}
+
 # Fenêtres des autres joueurs, rendues en quads noirs dans le MONDE (pas
 # dans le repère du niveau) : chaque machine diffuse son propre état.
 var _remote_windows_root: Node3D = null
@@ -382,7 +386,8 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	avatar.name = str(peer_id)
 	avatar.setup(peer_id, pname, color)
 	avatar.local_player = local_player
-	avatar.position = _spawn_position(peer_id)
+	avatar.position = _spawn_position()
+	avatar.rotation = _spawn_rotation()
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar
 	_emit_players()
@@ -573,49 +578,69 @@ func _send_avatar_to(id: int) -> void:
 	var bytes := _bake_avatar()
 	if bytes.is_empty():
 		return
-	_avatar_send_blob.rpc_id(id, multiplayer.get_unique_id(), bytes)
+	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
+	if compressed.is_empty():
+		compressed = bytes
+	_avatar_send_queue[id] = {
+		"bytes": compressed,
+		"size": bytes.size(),
+		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
+		"sent": 0,
+	}
+	push_warning("LAN: envoi avatar vers peer %d — brut %d KB, compressé %d KB, %d chunks" % [id, bytes.size() / 1024, compressed.size() / 1024, ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE))])
+
+func _drain_avatar_send() -> void:
+	if _avatar_send_queue.is_empty():
+		return
+	for id in _avatar_send_queue.keys():
+		var entry: Dictionary = _avatar_send_queue[id]
+		for i in LEVEL_CHUNKS_PER_TICK:
+			var sent: int = int(entry["sent"])
+			var total: int = int(entry["total"])
+			if sent >= total:
+				_avatar_send_queue.erase(id)
+				break
+			var bytes: PackedByteArray = entry["bytes"]
+			var start := sent * LEVEL_CHUNK_SIZE
+			var end := mini(start + LEVEL_CHUNK_SIZE, bytes.size())
+			_avatar_recv_chunk.rpc_id(id, multiplayer.get_unique_id(), sent, total, entry["size"], bytes.slice(start, end))
+			entry["sent"] = sent + 1
+
+@rpc("any_peer", "reliable")
+func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size: int, chunk: PackedByteArray) -> void:
+	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
+		return
+	# Nouveau transfert : repart de zéro.
+	if not _avatar_receive.has("total") or int(_avatar_receive.get("total", -1)) != total or int(_avatar_receive.get("from_id", -1)) != from_id:
+		_avatar_receive = {"data": PackedByteArray(), "from_id": from_id, "size": uncompressed_size, "total": total, "next": 0}
+	if index < int(_avatar_receive.get("next", 0)):
+		return
+	var data: PackedByteArray = _avatar_receive["data"]
+	data.append_array(chunk)
+	_avatar_receive["data"] = data
+	_avatar_receive["next"] = index + 1
+	if index + 1 < total:
+		return
+	var raw: PackedByteArray = _avatar_receive["data"]
+	var recv_size: int = int(_avatar_receive["size"])
+	var recv_from: int = int(_avatar_receive["from_id"])
+	_avatar_receive.clear()
+	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
+	if bytes.is_empty() or bytes.size() != recv_size:
+		push_warning("LAN: avatar décompress échoué — reçu %d octets, attendu %d" % [bytes.size(), recv_size])
+		return
+	push_warning("LAN: avatar reçu de peer %d — %d KB" % [recv_from, bytes.size() / 1024])
+	_avatar_blobs[recv_from] = bytes
+	if _remote_players.has(recv_from):
+		var av: Node = _remote_players[recv_from]
+		av.queue_free()
+		_remote_players.erase(recv_from)
+	var entry: Dictionary = _players.get(recv_from, {})
+	_spawn_player(recv_from, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
 
 @rpc("any_peer", "reliable")
 func _avatar_send_blob(from_id: int, blob: PackedByteArray) -> void:
-	if blob.is_empty():
-		return
-	if is_host:
-		# L'hôte reçoit l'avatar d'un client : le stocke et le forward aux
-		# autres peers.
-		_avatar_blobs[from_id] = blob
-		for id in _players:
-			if id != from_id and id != multiplayer.get_unique_id():
-				_avatar_recv_blob.rpc_id(id, from_id, blob)
-		# Re-spawn localement l'avatar du client avec la bonne scène.
-		if _remote_players.has(from_id):
-			_remote_players[from_id].queue_free()
-			_remote_players.erase(from_id)
-		var entry: Dictionary = _players.get(from_id, {})
-		_spawn_player(from_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
-	else:
-		# Un client reçoit l'avatar d'un autre peer (forwardé par l'hôte).
-		_avatar_blobs[from_id] = blob
-		# Si l'avatar était déjà spawné avec la scène par défaut, le
-		# re-spawn avec la bonne scène.
-		if _remote_players.has(from_id):
-			var av: Node = _remote_players[from_id]
-			var pe: Node3D = av.get_parent()
-			av.queue_free()
-			_remote_players.erase(from_id)
-			var entry: Dictionary = _players.get(from_id, {})
-			_spawn_player(from_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
-
-@rpc("any_peer", "reliable")
-func _avatar_recv_blob(from_id: int, blob: PackedByteArray) -> void:
-	if blob.is_empty():
-		return
-	_avatar_blobs[from_id] = blob
-	if _remote_players.has(from_id):
-		var av: Node = _remote_players[from_id]
-		av.queue_free()
-		_remote_players.erase(from_id)
-		var entry: Dictionary = _players.get(from_id, {})
-		_spawn_player(from_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+	pass
 
 # Timeouts ENet généreux (limit, min, max) pour résister aux à-coups du
 # thread principal pendant un stream partagé. Défaut ENet (5000/30000 ms)
@@ -636,6 +661,7 @@ func _set_peer_timeout(id: int) -> void:
 
 func _on_peer_disconnected(id: int) -> void:
 	_avatar_blobs.erase(id)
+	_avatar_send_queue.erase(id)
 	# Diagnostique : la déconnexion survient pendant un partage vidéo. ENet
 	# déconnecte quand une commande reliable (ping/ACK) reste non-acknowledgée
 	# ≥15 s (timeout min) — soit un lien saturé, soit un thread principal
@@ -673,10 +699,15 @@ func _has_streaming_window() -> bool:
 			return true
 	return false
 
-func _spawn_position(peer_id: int) -> Vector3:
+func _spawn_position() -> Vector3:
 	var player := _level_root.get_node_or_null("Player") as Node3D
 	var base := player.position if player != null else Vector3.ZERO
-	return base + Vector3(float((peer_id - 1) % MAX_PLAYERS) * 1.5, 0.0, 3.0)
+	return base
+	
+func _spawn_rotation() -> Vector3:
+	var player := _level_root.get_node_or_null("Player") as Node3D
+	var base := player.rotation if player != null else Vector3.ZERO
+	return base
 
 # ── Sync des transformations ─────────────────────────────────────────
 
@@ -692,6 +723,7 @@ func _sync_player_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 func _physics_process(delta: float) -> void:
 	_update_cpu_capture_request()
 	_drain_level_send()
+	_drain_avatar_send()
 	if not session_active or _level_root == null:
 		return
 	if multiplayer.get_peers().is_empty():
@@ -2310,6 +2342,8 @@ func _disconnect_session() -> void:
 	_level_send_queue.clear()
 	_level_bake_receive.clear()
 	_level_baked_cache.clear()
+	_avatar_send_queue.clear()
+	_avatar_receive.clear()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):
 		compositor.video_decoder_clear_all()
 	_video_configs.clear()
