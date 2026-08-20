@@ -28,6 +28,7 @@ const CUSTOM_AVATAR_PATH := "res://user/avatar.tscn"
 const DEFAULT_AVATAR_PATH := "res://scenes/avatar.tscn"
 
 var _avatar_scene: PackedScene = null
+var _avatar_blobs: Dictionary = {} # peer_id -> PackedByteArray (scène binaire)
 
 var session_active := false
 var is_host := false
@@ -330,6 +331,8 @@ func _on_connected_to_server() -> void:
 	_emit_players()
 	# S'annoncer : le serveur va re-broadcaster le spawn de tous les avatars.
 	_register_player.rpc_id(1, player_name, player_color)
+	# Envoyer l'avatar custom au serveur (qui le forward aux autres).
+	_send_avatar_to(1)
 
 func _on_connection_failed() -> void:
 	_disconnect_session()
@@ -364,7 +367,18 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].setup(peer_id, pname, color)
 		return
-	var avatar := _avatar_scene.instantiate()
+	var scene := _avatar_scene
+	# Utiliser l'avatar reçu du peer si disponible.
+	if _avatar_blobs.has(peer_id):
+		var tmp := "user://avatar_peer_%d.tscn" % peer_id
+		var f := FileAccess.open(tmp, FileAccess.WRITE)
+		if f != null:
+			f.store_buffer(_avatar_blobs[peer_id])
+			f.close()
+			var loaded: PackedScene = load(tmp)
+			if loaded != null:
+				scene = loaded
+	var avatar := scene.instantiate()
 	avatar.name = str(peer_id)
 	avatar.setup(peer_id, pname, color)
 	avatar.local_player = local_player
@@ -391,6 +405,7 @@ func _on_peer_connected(id: int) -> void:
 		# déconnexion après ~5 s sans ACK).
 		_set_peer_timeout(id)
 		_send_level_to(id)
+		_send_avatar_to(id)
 
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
 # rejoint : le blob binaire auto-suffisant produit par LevelBaker (meshes/
@@ -510,6 +525,65 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 			p.remove_child(av)
 		_players_container.add_child(av)
 
+# ── Transfert des avatars custom ─────────────────────────────────────
+# Chaque joueur envoie sa scène avatar (custom ou défaut) aux autres
+# pour que chacun voie l'avatar réel de l'autre.
+
+func _bake_avatar() -> PackedByteArray:
+	if _avatar_scene == null:
+		return PackedByteArray()
+	var tmp := "user://avatar_send.tscn"
+	if ResourceSaver.save(_avatar_scene, tmp) != OK:
+		return PackedByteArray()
+	var f := FileAccess.open(tmp, FileAccess.READ)
+	if f == null:
+		return PackedByteArray()
+	var bytes := f.get_buffer(f.get_length())
+	f.close()
+	return bytes
+
+func _send_avatar_to(id: int) -> void:
+	var bytes := _bake_avatar()
+	if bytes.is_empty():
+		return
+	_avatar_send_blob.rpc_id(id, multiplayer.get_unique_id(), bytes)
+
+@rpc("any_peer", "reliable")
+func _avatar_send_blob(from_id: int, blob: PackedByteArray) -> void:
+	if blob.is_empty():
+		return
+	if is_host:
+		# L'hôte reçoit l'avatar d'un client : le stocke et le forward aux
+		# autres peers (y compris le sender pour confirmation).
+		_avatar_blobs[from_id] = blob
+		for id in _players:
+			if id != from_id:
+				_avatar_recv_blob.rpc_id(id, from_id, blob)
+	else:
+		# Un client reçoit l'avatar d'un autre peer (forwardé par l'hôte).
+		_avatar_blobs[from_id] = blob
+		# Si l'avatar était déjà spawné avec la scène par défaut, le
+		# re-spawn avec la bonne scène.
+		if _remote_players.has(from_id):
+			var av: Node = _remote_players[from_id]
+			var pe: Node3D = av.get_parent()
+			av.queue_free()
+			_remote_players.erase(from_id)
+			var entry: Dictionary = _players.get(from_id, {})
+			_spawn_player(from_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+
+@rpc("any_peer", "reliable")
+func _avatar_recv_blob(from_id: int, blob: PackedByteArray) -> void:
+	if blob.is_empty():
+		return
+	_avatar_blobs[from_id] = blob
+	if _remote_players.has(from_id):
+		var av: Node = _remote_players[from_id]
+		av.queue_free()
+		_remote_players.erase(from_id)
+		var entry: Dictionary = _players.get(from_id, {})
+		_spawn_player(from_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+
 # Timeouts ENet généreux (limit, min, max) pour résister aux à-coups du
 # thread principal pendant un stream partagé. Défaut ENet (5000/30000 ms)
 # coupe la session après ~5 s sans ACK, trop juste quand l'encodage/décodage
@@ -528,6 +602,7 @@ func _set_peer_timeout(id: int) -> void:
 	peer.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN, ENET_TIMEOUT_MAX)
 
 func _on_peer_disconnected(id: int) -> void:
+	_avatar_blobs.erase(id)
 	# Diagnostique : la déconnexion survient pendant un partage vidéo. ENet
 	# déconnecte quand une commande reliable (ping/ACK) reste non-acknowledgée
 	# ≥15 s (timeout min) — soit un lien saturé, soit un thread principal
