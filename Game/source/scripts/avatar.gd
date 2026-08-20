@@ -73,12 +73,13 @@ func setup(id: int, pname: String, color: Color) -> void:
 	_make_label_no_depth_test(_label)
 	_label.text = pname
 
-	# AnimationPlayer — enfant direct de la scène avatar.
-	_anim_player = _find_anim_player(self)
-	if _anim_player == null:
-		_anim_player = AnimationPlayer.new()
-		_anim_player.name = "AnimationPlayer"
-		add_child(_anim_player)
+	# AnimationPlayer — uniquement si au moins une animation est configurée.
+	if anim_idle != &"" or anim_walk != &"" or anim_jump != &"":
+		_anim_player = _find_anim_player(self)
+		if _anim_player == null:
+			_anim_player = AnimationPlayer.new()
+			_anim_player.name = "AnimationPlayer"
+			add_child(_anim_player)
 
 	_interp_pos = position
 	_target_pos = position
