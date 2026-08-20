@@ -36,11 +36,14 @@ static func bake(root: Node3D) -> Dictionary:
 		return {}
 	var f := FileAccess.open(BAKE_TMP_PATH, FileAccess.READ)
 	if f == null:
+		push_error("LevelBaker: impossible de lire le bake temporaire")
 		return {}
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
 	if bytes.is_empty():
+		push_error("LevelBaker: blob vide après lecture")
 		return {}
+	push_warning("LevelBaker: bake OK — %d KB" % [bytes.size() / 1024])
 	return {"bytes": bytes, "spawn": spawn}
 
 # Clone l'arbre en nœuds frais (ClassDB.instantiate) : un `duplicate()` de
