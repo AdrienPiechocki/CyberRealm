@@ -399,14 +399,17 @@ func _on_peer_connected(id: int) -> void:
 # re-baké seulement si le niveau change (on_level_swapped).
 func _send_level_to(id: int) -> void:
 	if not level_bake_provider.is_valid():
+		push_warning("LAN: level_bake_provider invalide")
 		return
 	if _level_baked_cache.is_empty():
 		_level_baked_cache = level_bake_provider.call()
 	var data: Dictionary = _level_baked_cache
 	if data.is_empty():
+		push_warning("LAN: bake du niveau vide — rien à envoyer")
 		return
 	var bytes: PackedByteArray = data.get("bytes", PackedByteArray())
 	if bytes.is_empty():
+		push_warning("LAN: blob du niveau vide")
 		return
 	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
 	if compressed.is_empty():
@@ -418,6 +421,7 @@ func _send_level_to(id: int) -> void:
 		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
 		"sent": 0,
 	}
+	push_warning("LAN: envoi niveau vers peer %d — brut %d KB, compressé %d KB, %d chunks" % [id, bytes.size() / 1024, compressed.size() / 1024, ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE))])
 	_set_status("Sending host level to %d (%d KB)…" % [id, compressed.size() / 1024])
 
 # Pousse quelques chunks du niveau vers les peers qui viennent de se connecter,
@@ -467,8 +471,10 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	_level_bake_receive.clear()
 	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
 	if bytes.is_empty() or bytes.size() != recv_size:
+		push_warning("LAN: décompress échoué — reçu %d octets, attendu %d" % [bytes.size(), recv_size])
 		_set_status("Host level corrupted (decompress failed) — kept local level")
 		return
+	push_warning("LAN: niveau reçu — %d KB décompressé" % [bytes.size() / 1024])
 	var tmp := "user://lan_level.scn"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
@@ -478,8 +484,10 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	f.close()
 	var scene: PackedScene = load(tmp)
 	if scene == null:
+		push_warning("LAN: impossible de charger la scène du niveau reçu (%s)" % tmp)
 		_set_status("Host level unreadable — kept local level")
 		return
+	push_warning("LAN: scène du niveau chargée OK")
 	level_apply_requested.emit(scene, recv_spawn)
 	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
 
