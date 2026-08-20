@@ -27,9 +27,15 @@ static func bake(root: Node3D) -> Dictionary:
 		return {}
 	var player := root.get_node_or_null("Player") as Node3D
 	var spawn := Vector3.ZERO
+	var spawn_rotation := Vector3.ZERO
+	var spawn_scale := Vector3.ONE
 	if player != null:
 		var stored = player.get("spawn_pos")
 		spawn = stored if stored is Vector3 else player.position
+		var r = player.get("spawn_rotation")
+		spawn_rotation = r if r is Vector3 else player.rotation
+		var s = player.get("spawn_scale")
+		spawn_scale = s if s is Vector3 else player.scale
 	var cache := {}
 	var clone := _clone(root, player, cache) as Node3D
 	if clone == null:
@@ -54,7 +60,7 @@ static func bake(root: Node3D) -> Dictionary:
 		push_error("LevelBaker: blob vide après lecture")
 		return {}
 	push_warning("LevelBaker: bake OK — %d KB" % [bytes.size() / 1024])
-	return {"bytes": bytes, "spawn": spawn}
+	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale}
 
 static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	var node := ClassDB.instantiate(orig.get_class()) as Node
