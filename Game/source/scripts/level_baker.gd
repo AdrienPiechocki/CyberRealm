@@ -99,6 +99,19 @@ static func _embed(r: Resource, cache: Dictionary) -> Resource:
 		return r
 	if cache.has(r):
 		return cache[r]
+	# Les textures importées (CompressedTexture2D) portent un resource_path
+	# vers un fichier que le client n'a PAS. On les convertit en ImageTexture
+	# avec les pixels embarqués pour que le blob soit auto-suffisant.
+	if r is Texture2D:
+		var img: Image = null
+		if r is CompressedTexture2D:
+			img = r.get_image()
+		elif r is ImageTexture:
+			img = r.get_image()
+		if img != null:
+			var emb := ImageTexture.create_from_image(img)
+			cache[r] = emb
+			return emb
 	var dup := r.duplicate(true)
 	cache[r] = dup
 	return dup
