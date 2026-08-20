@@ -13,6 +13,10 @@ extends RefCounted
 
 const BAKE_TMP_PATH := "user://lan_bake.scn"
 
+# Taille max des textures embarquées (0 = pas de limite). Positionné par
+# l'appelant avant le bake (ex: avatar = 512, level = 0).
+static var max_texture_size := 0
+
 static func bake(root: Node3D) -> Dictionary:
 	if root == null:
 		return {}
@@ -178,6 +182,12 @@ static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 	if img == null and not tex.resource_path.is_empty():
 		img = Image.load_from_file(tex.resource_path)
 	if img != null:
+		if max_texture_size > 0:
+			var w := img.get_width()
+			var h := img.get_height()
+			if w > max_texture_size or h > max_texture_size:
+				var ratio := minf(float(max_texture_size) / w, float(max_texture_size) / h)
+				img.resize(int(w * ratio), int(h * ratio), Image.INTERPOLATE_BILINEAR)
 		var emb := ImageTexture.create_from_image(img)
 		emb.resource_path = ""
 		cache[tex] = emb
