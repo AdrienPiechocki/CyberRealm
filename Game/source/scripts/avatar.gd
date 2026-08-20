@@ -40,11 +40,6 @@ var _prev_pos := Vector3.ZERO
 var _is_grounded := true
 var _current_anim: StringName = &""
 
-# Délai avant de rendre l'avatar visible — laisse le GPU stabiliser
-# après le chargement du level (captures Wayland + level = ~45ms GPU).
-const VISIBILITY_DELAY := 2.0
-var _visibility_timer := -1.0
-
 
 func setup(id: int, pname: String, color: Color) -> void:
 	peer_id = id
@@ -109,10 +104,6 @@ func setup(id: int, pname: String, color: Color) -> void:
 	_target_yaw = rotation.y
 	_prev_pos = position
 
-	# Rendre invisible pour laisser le GPU stabiliser après le level load.
-	_set_visible_recursive(false)
-	_visibility_timer = VISIBILITY_DELAY
-
 
 func _find_label(node: Node) -> Label3D:
 	if node is Label3D and node.name == "NameLabel":
@@ -147,11 +138,6 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	# Compteur de visibilité différée.
-	if _visibility_timer > 0.0:
-		_visibility_timer -= delta
-		if _visibility_timer <= 0.0:
-			_set_visible_recursive(true)
 	var k := minf(1.0, delta * LERP_SPEED)
 	_interp_pos = _interp_pos.lerp(_target_pos, k)
 	_interp_yaw = lerp_angle(_interp_yaw, _target_yaw, k)
@@ -200,7 +186,3 @@ func _collect_meshes(node: Node, result: Array[MeshInstance3D]) -> void:
 		result.append(node)
 	for child in node.get_children():
 		_collect_meshes(child, result)
-
-
-func _set_visible_recursive(vis: bool) -> void:
-	visible = vis
