@@ -90,6 +90,7 @@ fi
 # ci-dessus ; on exporte ensuite le projet (preset "Linux" de
 # export_presets.cfg) vers Game/build/CyberRealm.x86_64.
 echo "install: export du jeu (godot --headless) ..."
+mkdir -p Game/build
 godot --headless --path "$SCRIPT_DIR/Game/source" --export-release "Linux" "$GAME"
 if [[ ! -x "$GAME" ]]; then
     echo "install: échec de l'export Godot, binaire absent : $GAME" >&2
