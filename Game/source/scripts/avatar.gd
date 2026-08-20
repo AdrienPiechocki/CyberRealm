@@ -134,6 +134,14 @@ func _prewarm_gpu() -> void:
 	cam.current = true
 	cam.look_at_from_position(Vector3(0.0, 1.0, 5.0), Vector3(0.0, 1.0, 0.0))
 	vp.add_child(cam)
+	# Sans lumière, le SubViewport ne compile que les variants unlit des
+	# shaders. Le viewport principal rend l'avatar avec les lumières du level
+	# → variants lit compilés au premier rendu réel → crash. Ajouter une
+	# DirectionalLight (avec ombres) pour compiler les bons variants.
+	var light := DirectionalLight3D.new()
+	light.shadow_enabled = true
+	light.look_at_from_position(Vector3(2.0, 5.0, 3.0), Vector3(0.0, 1.0, 0.0))
+	vp.add_child(light)
 	for h in holders:
 		vp.add_child(h)
 	get_tree().root.add_child(vp)
