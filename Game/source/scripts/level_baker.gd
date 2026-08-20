@@ -132,6 +132,20 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 		dup.resource_path = ""
 		cache[r] = dup
 		return dup
+	# Quand keep_surface_format est actif (avatars FBX custom), dupliquer
+	# le mesh tel quel pour préserver exactement les attributs GPU (tangentes
+	# compressées, format d'index, etc.) — la reconstruction surface par
+	# surface via add_surface_from_arrays peut produire un mesh subtilement
+	# invalide qui crash au premier rendu.
+	if keep_surface_format:
+		var dup := r.duplicate(true) as ArrayMesh
+		dup.resource_path = ""
+		for i in dup.get_surface_count():
+			var mat = dup.surface_get_material(i)
+			if mat != null:
+				dup.surface_set_material(i, _embed(mat, cache))
+		cache[r] = dup
+		return dup
 	var new_mesh := ArrayMesh.new()
 	var count := r.get_surface_count()
 	for i in count:
@@ -140,10 +154,7 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 		var prim = r.surface_get_primitive_type(i)
 		if mat != null:
 			mat = _embed(mat, cache)
-		if keep_surface_format:
-			new_mesh.add_surface_from_arrays(prim, arrays, [], {}, r.surface_get_format(i))
-		else:
-			new_mesh.add_surface_from_arrays(prim, arrays)
+		new_mesh.add_surface_from_arrays(prim, arrays)
 		new_mesh.surface_set_material(new_mesh.get_surface_count() - 1, mat)
 	for i in r.get_blend_shape_count():
 		new_mesh.add_blend_shape(r.get_blend_shape_name(i))
