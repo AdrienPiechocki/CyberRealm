@@ -58,6 +58,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 	for mi in meshes:
 		if not mi.visible:
 			continue
+		_duplicate_material_for_fade(mi)
 		# Appliquer le tint couleur uniquement si le mesh n'a AUCUN matériau.
 		var has_any_mat := false
 		if mi.mesh != null:
@@ -251,6 +252,27 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 		if found != null:
 			return found
 	return null
+
+
+func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
+	if mi.mesh == null:
+		return
+	# Pour les meshes multi-matériaux, ne pas appliquer le fade de
+	# transparence — dupliquer chaque matériau en transparent génère trop
+	# de variantes de shaders et crash le GPU Vulkan.
+	if mi.mesh.get_surface_count() > 1:
+		return
+	var existing := mi.get_active_material(0)
+	if existing == null:
+		return
+	var dup := existing.duplicate()
+	if dup is StandardMaterial3D:
+		var smat := dup as StandardMaterial3D
+		smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+		smat.depth_write = true
+		mi.material_override = smat
+		_mesh_mats.append(smat)
+
 
 func _make_label_no_depth_test(label: Label3D) -> void:
 	var mat := StandardMaterial3D.new()
