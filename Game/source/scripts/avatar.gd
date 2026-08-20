@@ -71,7 +71,6 @@ func setup(id: int, pname: String, color: Color) -> void:
 			var mat := StandardMaterial3D.new()
 			mat.albedo_color = color
 			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
-			mat.depth_write = true
 			mi.material_override = mat
 			_mesh_mats.append(mat)
 
@@ -255,23 +254,24 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 
 
 func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
-	if mi.mesh == null:
+	if mi.mesh == null or mi.material_override != null:
 		return
-	# Pour les meshes multi-matériaux, ne pas appliquer le fade de
-	# transparence — dupliquer chaque matériau en transparent génère trop
-	# de variantes de shaders et crash le GPU Vulkan.
-	if mi.mesh.get_surface_count() > 1:
-		return
-	var existing := mi.get_active_material(0)
-	if existing == null:
-		return
-	var dup := existing.duplicate()
-	if dup is StandardMaterial3D:
-		var smat := dup as StandardMaterial3D
-		smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
-		smat.depth_write = true
-		mi.material_override = smat
-		_mesh_mats.append(smat)
+	# Avatar custom (FBX) : chaque surface a son propre matériau. On le duplique
+	# en transparent et on l'accroche en override de surface pour pouvoir le
+	# fondre à la proximité du joueur local (comme la capsule par défaut).
+	# Les variantes transparentes sont compilées par le prewarm hors viewport
+	# principal avant tout rendu réel : pas de TDR au 1er affichage.
+	for s in mi.mesh.get_surface_count():
+		var mat: Material = mi.get_surface_override_material(s)
+		if mat == null:
+			mat = mi.mesh.surface_get_material(s)
+		if mat == null or not mat is BaseMaterial3D:
+			continue
+		var dup: BaseMaterial3D = (mat as BaseMaterial3D).duplicate()
+		if dup.transparency == BaseMaterial3D.TRANSPARENCY_DISABLED:
+			dup.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+		mi.set_surface_override_material(s, dup)
+		_mesh_mats.append(dup)
 
 
 func _make_label_no_depth_test(label: Label3D) -> void:
