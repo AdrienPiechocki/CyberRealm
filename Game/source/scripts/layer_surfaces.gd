@@ -171,6 +171,7 @@ func recapture_if_needed() -> void:
 # interact_mode...). Réinitialise l'état même si le joueur n'a pas repassé
 # Tab (layer_interact_manual) : quitter le mode layer doit le désactiver.
 func deactivate_layer_interact() -> void:
+	Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 	layer_interact_active = false
 	layer_interact_manual = false
 	player.layer_pointer_active = false
