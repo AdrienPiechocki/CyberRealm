@@ -53,6 +53,13 @@ var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
 var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
 var _last_status := ""
+# Les avatars ne sont préchauffés (GPU, hors viewport principal) qu'une fois
+# le niveau stable : le chargement du niveau compile ses propres shaders, et
+# un prewarm + le 1er rendu de l'avatar simultanés font perdre le device
+# Vulkan (TDR) combinés aux captures Wayland. Faux au démarrage d'une session,
+# vrai une fois le niveau local appliqué/chargé.
+var _level_stable := false
+var _session_start_msec := 0 # filet de sécurité : si le niveau n'arrive jamais
 # peer_id -> {bytes, spawn, total, sent} : blob baked du niveau en cours
 # d'envoi vers un client qui vient de se connecter.
 var _level_send_queue: Dictionary = {}
@@ -291,6 +298,10 @@ func host_game() -> bool:
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
+	# L'hôte a déjà son niveau chargé (compilé au boot) : avatars immédiatement
+	# préchauffables.
+	_level_stable = true
+	_session_start_msec = Time.get_ticks_msec()
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	multiplayer.peer_connected.connect(_on_peer_connected)
@@ -327,6 +338,10 @@ func disconnect_session() -> void:
 func _on_connected_to_server() -> void:
 	session_active = true
 	is_host = false
+	# Le niveau de l'hôte arrive plus tard (chunks fiables) : les avatars
+	# restent invisibles jusqu'à mark_level_stable() (fin de apply_host_level).
+	_level_stable = false
+	_session_start_msec = Time.get_ticks_msec()
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	# Timeouts ENet généreux côté client (voir _on_peer_connected).
@@ -391,7 +406,26 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	avatar.scale = _spawn_scale()
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar
+	if _level_stable:
+		avatar.start_prewarm()
 	_emit_players()
+
+# Le niveau vient d'être appliqué (client : fin de apply_host_level ; l'hôte
+# est stable dès host_game). Quelques frames de latence pour laisser le
+# nouveau niveau compiler ses variants de shaders (le 1er rendu du SubViewport
+# du prewarm ne doit pas s'empiler dessus), puis tous les avatars distants
+# sont préchauffés hors viewport principal. Appelé sans await par le jeu :
+# le début est synchrone (_level_stable = true), la suite est différée.
+func mark_level_stable() -> void:
+	if _level_stable:
+		return
+	_level_stable = true
+	for _f in 5:
+		await get_tree().process_frame
+	for id in _remote_players:
+		var av: Node = _remote_players[id]
+		if is_instance_valid(av) and av.has_method("start_prewarm"):
+			av.start_prewarm()
 
 @rpc("any_peer", "reliable", "call_local")
 func _remove_player(peer_id: int) -> void:
@@ -765,6 +799,12 @@ func _physics_process(delta: float) -> void:
 	_drain_avatar_send()
 	if not session_active or _level_root == null:
 		return
+	# Filet de sécurité : si le niveau de l'hôte n'arrive jamais (bake ou
+	# transfert cassé), les avatars finiraient invisibles. Passé un délai, on
+	# les préchauffe quand même (le niveau local est déjà stable).
+	if not _level_stable and _session_start_msec > 0 \
+			and Time.get_ticks_msec() - _session_start_msec > 10000:
+		mark_level_stable()
 	if multiplayer.get_peers().is_empty():
 		return
 	var player := _level_root.get_node_or_null("Player") as Node3D

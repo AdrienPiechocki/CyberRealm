@@ -132,6 +132,12 @@ func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO) -> 
 	old_level.queue_free()
 	new_level.name = "Level"
 	add_child(new_level)
+	# Niveau appliqué : son 1er rendu compile les shaders. Les avatars distants
+	# restent invisibles jusqu'à ce que le niveau soit stable, puis sont
+	# préchauffés hors viewport principal (évite un TDR au 1er rendu d'un
+	# avatar skinné custom combiné aux captures Wayland).
+	if lan:
+		lan.mark_level_stable()
 	return true
 
 func _add_manager(script: Script, node_name: String) -> Node3D:

@@ -39,11 +39,18 @@ var _anim_player: AnimationPlayer = null
 var _prev_pos := Vector3.ZERO
 var _is_grounded := true
 var _current_anim: StringName = &""
+var _prewarm_ready := false
+var _prewarming := false
 
 
 func setup(id: int, pname: String, color: Color) -> void:
 	peer_id = id
 	player_name = pname
+	# Invisible tant que le prewarm GPU n'est pas terminé : le viewport
+	# principal ne doit jamais rendre l'avatar avant que tous les variants de
+	# shaders soient compilés hors-écran (sinon TDR pendant le chargement du
+	# niveau). La visibilité est restaurée par start_prewarm().
+	visible = false
 
 	# Collecter tous les MeshInstance3D et préparer les matériaux.
 	var meshes: Array[MeshInstance3D] = []
@@ -95,7 +102,29 @@ func setup(id: int, pname: String, color: Color) -> void:
 
 
 func _ready() -> void:
-	_prewarm_gpu()
+	# Le prewarm N'est PAS déclenché ici : _ready() se re-déclenche quand le
+	# lan_manager re-parente l'avatar (on_level_swapped), pendant le chargement
+	# du niveau — un prewarm à ce moment-là s'ajouterait à la compilation des
+	# shaders du niveau et provoquerait le TDR. Le lan_manager appelle
+	# start_prewarm() une fois le niveau stable.
+	pass
+
+
+# Déclenche le prewarm GPU une seule fois, quand le niveau est stable. Tant
+# que les variants de shaders ne sont pas compilés dans le SubViewport
+# hors-écran, l'avatar reste invisible. Idempotent : le 2e appel (avatar qui
+# spawn après coup, ou re-parenting) ne relance pas le prewarm.
+func start_prewarm() -> void:
+	if _prewarm_ready:
+		visible = true
+		return
+	if _prewarming:
+		return
+	_prewarming = true
+	await _prewarm_gpu()
+	_prewarm_ready = true
+	_prewarming = false
+	visible = true
 
 
 # Compile les shaders et uploade les meshes de l'avatar dans un SubViewport
@@ -174,8 +203,7 @@ func _prewarm_gpu() -> void:
 		await get_tree().process_frame
 	if is_instance_valid(vp):
 		vp.queue_free()
-	if is_instance_valid(self):
-		visible = true
+	# La visibilité est restaurée par start_prewarm() une fois tout prêt.
 
 
 func _find_skeleton(node: Node) -> Skeleton3D:
