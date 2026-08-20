@@ -51,7 +51,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 	for mi in meshes:
 		if not mi.visible:
 			continue
-		#_duplicate_material_for_fade(mi)
+		_duplicate_material_for_fade(mi)
 		# Appliquer le tint couleur uniquement si le mesh n'a AUCUN matériau.
 		var has_any_mat := false
 		if mi.mesh != null:
