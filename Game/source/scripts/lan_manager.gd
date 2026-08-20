@@ -388,6 +388,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	avatar.local_player = local_player
 	avatar.position = _spawn_position()
 	avatar.rotation = _spawn_rotation()
+	avatar.scale = _spawn_scale()
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar
 	_emit_players()
@@ -410,7 +411,7 @@ func _on_peer_connected(id: int) -> void:
 		# déconnexion après ~5 s sans ACK).
 		_set_peer_timeout(id)
 		_send_level_to(id)
-		_send_avatar_to(id)
+		#s_send_avatar_to(id)
 
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
 # rejoint : le blob binaire auto-suffisant produit par LevelBaker (meshes/
@@ -732,6 +733,12 @@ func _spawn_position() -> Vector3:
 func _spawn_rotation() -> Vector3:
 	var player := _level_root.get_node_or_null("Player") as Node3D
 	var base := player.rotation if player != null else Vector3.ZERO
+	return base
+
+
+func _spawn_scale() -> Vector3:
+	var player := _level_root.get_node_or_null("Player") as Node3D
+	var base := player.scale if player != null else Vector3.ONE
 	return base
 
 # ── Sync des transformations ─────────────────────────────────────────
