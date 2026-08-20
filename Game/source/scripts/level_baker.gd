@@ -98,6 +98,8 @@ static func _embed(r: Resource, cache: Dictionary) -> Resource:
 		var converted = _convert_texture(r, cache)
 		return converted
 	var dup := r.duplicate(true)
+	if dup != null:
+		dup.resource_path = ""
 	cache[r] = dup
 	return dup
 
@@ -107,13 +109,18 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 	if cache.has(r):
 		return cache[r]
 	# Les meshs primitifs (CapsuleMesh, BoxMesh…) n'ont pas de
-	# surface_get_arrays() : duplicate suffit.
+	# surface_get_arrays() : on duplique et on embed les matériaux manuellement.
 	if r is PrimitiveMesh:
-		var dup := r.duplicate(true) as Mesh
+		var dup := r.duplicate(true) as PrimitiveMesh
+		dup.resource_path = ""
+		var mat = dup.surface_get_material(0)
+		if mat != null:
+			dup.surface_set_material(0, _embed(mat, cache))
 		cache[r] = dup
 		return dup
 	if r is ArrayMesh == false:
 		var dup := r.duplicate(true) as Mesh
+		dup.resource_path = ""
 		cache[r] = dup
 		return dup
 	var new_mesh := ArrayMesh.new()
@@ -122,9 +129,10 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 		var arrays := r.surface_get_arrays(i)
 		var mat := r.surface_get_material(i)
 		var prim = r.surface_get_primitive_type(i)
+		var fmt = r.surface_get_format(i)
 		if mat != null:
 			mat = _embed(mat, cache)
-		new_mesh.add_surface_from_arrays(prim, arrays)
+		new_mesh.add_surface_from_arrays(prim, arrays, [], {}, fmt)
 		new_mesh.surface_set_material(new_mesh.get_surface_count() - 1, mat)
 	for i in r.get_blend_shape_count():
 		new_mesh.add_blend_shape(r.get_blend_shape_name(i))
@@ -140,6 +148,7 @@ static func _embed_material(r: Material, cache: Dictionary) -> Material:
 	if dup == null:
 		cache[r] = r
 		return r
+	dup.resource_path = ""
 	# Parcourir TOUTES les propriétés pour remplacer les textures.
 	for p in dup.get_property_list():
 		var pname := String(p.get("name"))

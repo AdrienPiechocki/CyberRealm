@@ -572,11 +572,17 @@ func _avatar_send_blob(from_id: int, blob: PackedByteArray) -> void:
 		return
 	if is_host:
 		# L'hôte reçoit l'avatar d'un client : le stocke et le forward aux
-		# autres peers (y compris le sender pour confirmation).
+		# autres peers.
 		_avatar_blobs[from_id] = blob
 		for id in _players:
 			if id != from_id and id != multiplayer.get_unique_id():
 				_avatar_recv_blob.rpc_id(id, from_id, blob)
+		# Re-spawn localement l'avatar du client avec la bonne scène.
+		if _remote_players.has(from_id):
+			_remote_players[from_id].queue_free()
+			_remote_players.erase(from_id)
+		var entry: Dictionary = _players.get(from_id, {})
+		_spawn_player(from_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
 	else:
 		# Un client reçoit l'avatar d'un autre peer (forwardé par l'hôte).
 		_avatar_blobs[from_id] = blob
