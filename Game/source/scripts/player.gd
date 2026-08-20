@@ -24,10 +24,14 @@ var session_locked := false
 var _compositor: WlrCompositor = null
 
 var spawn_pos: Vector3 = Vector3.ZERO
+var spawn_rotation: Vector3 = Vector3.ZERO
+var spawn_scale: Vector3 = Vector3.ONE
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	spawn_pos = position
+	spawn_rotation = rotation
+	spawn_scale = scale
 
 func _get_compositor() -> WlrCompositor:
 	if _compositor == null or not is_instance_valid(_compositor):

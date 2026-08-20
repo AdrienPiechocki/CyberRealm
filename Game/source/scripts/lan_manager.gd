@@ -60,6 +60,10 @@ var _last_status := ""
 # vrai une fois le niveau local appliqué/chargé.
 var _level_stable := false
 var _session_start_msec := 0 # filet de sécurité : si le niveau n'arrive jamais
+# Transform de spawn de la scène de l'HÔTE (transmis dans le blob du niveau :
+# le Player en est exclu). Une fois connu, _spawn_* l'utilise à la place du
+# Player de la scène locale d'origine. Vidé au début de chaque session.
+var _host_spawn_transform: Dictionary = {}
 # peer_id -> {bytes, spawn, total, sent} : blob baked du niveau en cours
 # d'envoi vers un client qui vient de se connecter.
 var _level_send_queue: Dictionary = {}
@@ -302,6 +306,7 @@ func host_game() -> bool:
 	# préchauffables.
 	_level_stable = true
 	_session_start_msec = Time.get_ticks_msec()
+	_host_spawn_transform.clear()
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	multiplayer.peer_connected.connect(_on_peer_connected)
@@ -342,6 +347,7 @@ func _on_connected_to_server() -> void:
 	# restent invisibles jusqu'à mark_level_stable() (fin de apply_host_level).
 	_level_stable = false
 	_session_start_msec = Time.get_ticks_msec()
+	_host_spawn_transform.clear()
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	# Timeouts ENet généreux côté client (voir _on_peer_connected).
@@ -472,6 +478,8 @@ func _send_level_to(id: int) -> void:
 	_level_send_queue[id] = {
 		"bytes": compressed,
 		"spawn": data.get("spawn", Vector3.ZERO),
+		"rotation": data.get("spawn_rotation", Vector3.ZERO),
+		"scale": data.get("spawn_scale", Vector3.ONE),
 		"size": bytes.size(),
 		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
 		"sent": 0,
@@ -496,11 +504,11 @@ func _drain_level_send() -> void:
 			var bytes: PackedByteArray = entry["bytes"]
 			var start := sent * LEVEL_CHUNK_SIZE
 			var end := mini(start + LEVEL_CHUNK_SIZE, bytes.size())
-			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], bytes.slice(start, end))
+			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], entry.get("rotation", Vector3.ZERO), entry.get("scale", Vector3.ONE), bytes.slice(start, end))
 			entry["sent"] = sent + 1
 
 @rpc("any_peer", "reliable")
-func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn: Vector3, chunk: PackedByteArray) -> void:
+func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3, chunk: PackedByteArray) -> void:
 	if is_host or multiplayer.get_remote_sender_id() != 1:
 		return
 	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
@@ -508,7 +516,7 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	# Nouveau transfert (le blob baked diffère d'une session à l'autre) : on
 	# repart de zéro. Le canal fiable garantit l'ordre intra-transfert.
 	if not _level_bake_receive.has("total") or int(_level_bake_receive.get("total", -1)) != total:
-		_level_bake_receive = {"data": PackedByteArray(), "spawn": spawn, "size": uncompressed_size, "total": total, "next": 0}
+		_level_bake_receive = {"data": PackedByteArray(), "spawn": spawn, "rotation": spawn_rotation, "scale": spawn_scale, "size": uncompressed_size, "total": total, "next": 0}
 	if index < int(_level_bake_receive.get("next", 0)):
 		return
 	# Passer par une variable locale : l'append_array sur un accès direct
@@ -522,6 +530,8 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 		return
 	var raw: PackedByteArray = _level_bake_receive["data"]
 	var recv_spawn: Vector3 = _level_bake_receive["spawn"]
+	var recv_rotation: Vector3 = _level_bake_receive["rotation"]
+	var recv_scale: Vector3 = _level_bake_receive["scale"]
 	var recv_size: int = int(_level_bake_receive["size"])
 	_level_bake_receive.clear()
 	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
@@ -543,6 +553,10 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 		_set_status("Host level unreadable — kept local level")
 		return
 	push_warning("LAN: scène du niveau chargée OK")
+	# Mémoriser le transform de spawn de la scène de l'hôte : les avatars
+	# distants sont spawnés selon LUI (pas le Player local de la scène
+	# d'origine), que le niveau soit déjà appliqué ou pas.
+	_host_spawn_transform = {"pos": recv_spawn, "rot": recv_rotation, "scale": recv_scale}
 	level_apply_requested.emit(scene, recv_spawn)
 	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
 
@@ -564,6 +578,13 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 		if p and p != _players_container:
 			p.remove_child(av)
 		_players_container.add_child(av)
+		# Les avatars déjà présents ont été spawnés selon la scène locale
+		# d'origine (le blob de l'hôte n'était pas encore appliqué) : recaler
+		# scale/rotation sur le spawn de l'hôte. La position est resynchronisée
+		# par _sync_player_transform, mais le scale n'est jamais re-synchronisé.
+		if not _host_spawn_transform.is_empty():
+			av.rotation = _spawn_rotation()
+			av.scale = _spawn_scale()
 
 # ── Transfert des avatars custom ─────────────────────────────────────
 # Chaque joueur envoie sa scène avatar (custom ou défaut) aux autres
@@ -766,21 +787,29 @@ func _has_streaming_window() -> bool:
 			return true
 	return false
 
+# Le transform de spawn des avatars distants vient de la scène de l'HÔTE
+# (importée via le blob — le Player en est exclu), pas de la scène locale
+# d'origine. Sur le client, _level_root pointe d'abord vers le niveau local
+# puis vers le niveau importé dont le Player est le joueur local réutilisé :
+# aucun des deux ne porte le vrai spawn de l'hôte → on utilise le transform
+# transmis dans le blob quand il est connu, sinon le Player local (hôte).
 func _spawn_position() -> Vector3:
+	if not _host_spawn_transform.is_empty():
+		return _host_spawn_transform.get("pos", Vector3.ZERO)
 	var player := _level_root.get_node_or_null("Player") as Node3D
-	var base := player.position if player != null else Vector3.ZERO
-	return base
-	
-func _spawn_rotation() -> Vector3:
-	var player := _level_root.get_node_or_null("Player") as Node3D
-	var base := player.rotation if player != null else Vector3.ZERO
-	return base
+	return player.position if player != null else Vector3.ZERO
 
+func _spawn_rotation() -> Vector3:
+	if not _host_spawn_transform.is_empty():
+		return _host_spawn_transform.get("rot", Vector3.ZERO)
+	var player := _level_root.get_node_or_null("Player") as Node3D
+	return player.rotation if player != null else Vector3.ZERO
 
 func _spawn_scale() -> Vector3:
+	if not _host_spawn_transform.is_empty():
+		return _host_spawn_transform.get("scale", Vector3.ONE)
 	var player := _level_root.get_node_or_null("Player") as Node3D
-	var base := player.scale if player != null else Vector3.ONE
-	return base
+	return player.scale if player != null else Vector3.ONE
 
 # ── Sync des transformations ─────────────────────────────────────────
 
@@ -2421,6 +2450,7 @@ func _disconnect_session() -> void:
 	_level_send_queue.clear()
 	_level_bake_receive.clear()
 	_level_baked_cache.clear()
+	_host_spawn_transform.clear()
 	_avatar_send_queue.clear()
 	_avatar_receive.clear()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):
