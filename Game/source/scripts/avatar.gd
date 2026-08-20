@@ -118,19 +118,21 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
 	if mi.mesh == null:
 		return
-	for i in mi.mesh.get_surface_count():
-		var existing := mi.get_surface_override_material(i)
-		if existing == null:
-			existing = mi.mesh.surface_get_material(i)
-		if existing == null:
-			continue
-		var dup := existing.duplicate()
-		if dup is StandardMaterial3D:
-			var smat := dup as StandardMaterial3D
-			smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
-			smat.depth_write = true
-			mi.set_surface_override_material(i, smat)
-			_mesh_mats.append(smat)
+	# Pour les meshes multi-matériaux, ne pas appliquer le fade de
+	# transparence — dupliquer chaque matériau en transparent génère trop
+	# de variantes de shaders et crash le GPU Vulkan.
+	if mi.mesh.get_surface_count() > 1:
+		return
+	var existing := mi.get_active_material(0)
+	if existing == null:
+		return
+	var dup := existing.duplicate()
+	if dup is StandardMaterial3D:
+		var smat := dup as StandardMaterial3D
+		smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+		smat.depth_write = true
+		mi.material_override = smat
+		_mesh_mats.append(smat)
 
 
 func _make_label_no_depth_test(label: Label3D) -> void:
