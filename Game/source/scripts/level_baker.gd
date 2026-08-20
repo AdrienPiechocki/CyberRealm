@@ -106,6 +106,16 @@ static func _embed(r: Resource, cache: Dictionary) -> Resource:
 static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 	if cache.has(r):
 		return cache[r]
+	# Les meshs primitifs (CapsuleMesh, BoxMesh…) n'ont pas de
+	# surface_get_arrays() : duplicate suffit.
+	if r is PrimitiveMesh:
+		var dup := r.duplicate(true) as Mesh
+		cache[r] = dup
+		return dup
+	if r is ArrayMesh == false:
+		var dup := r.duplicate(true) as Mesh
+		cache[r] = dup
+		return dup
 	var new_mesh := ArrayMesh.new()
 	var count := r.get_surface_count()
 	for i in count:
