@@ -1,7 +1,8 @@
-# Niveaux personnalisés
+# Personnalisation
 
-Ce dossier est réservé à **vos** assets et à **votre** niveau. Tout ce qui s'y
-trouve est ignoré par git et remplace le niveau par défaut du jeu au démarrage.
+Ce dossier est réservé à **vos** assets, **votre** niveau et **votre** avatar.
+Tout ce qui s'y trouve est ignoré par git et remplace le contenu par défaut du
+jeu au démarrage.
 
 ## Créer son niveau
 
@@ -28,10 +29,42 @@ trouve est ignoré par git et remplace le niveau par défaut du jeu au démarrag
   avec une collision sont traversables (utilisez `StaticBody3D`/`CSGShape3D`
   pour les murs, comme dans le niveau d'exemple).
 
+## Créer son avatar
+
+1. Placez vos assets 3D (`.glb`, `.fbx`, …) dans `res://user/assets/`.
+2. Copiez `res://scenes/avatar.tscn` vers `res://user/avatar.tscn` et
+   modifiez-le, ou créez une nouvelle scène 3D.
+3. **Le script `avatar.gd` doit être attaché** à la scène.
+4. Ajoutez un nœud `Label3D` nommé **NameLabel** (mode billboard) pour le nom
+   du joueur. Ajoutez vos meshes (`MeshInstance3D`) comme enfants.
+5. Lancez le jeu : s'il trouve `res://user/avatar.tscn`, il l'utilise à la
+   place de la scène par défaut.
+
+### Règles avatar
+
+- Le fichier doit s'appeler **exactement** `res://user/avatar.tscn`.
+- **Script obligatoire** : attachez `res://scripts/avatar.gd` à la
+  scène (le nœud racine ou un enfant).
+- **NameLabel obligatoire** : un `Label3D` nommé `NameLabel` (billboard). S'il
+  est absent, un label factice sera créé automatiquement à `Y = 1.8`.
+- La couleur du joueur est appliquée automatiquement sur les meshes qui n'ont
+  **pas** de matériau défini. Si vous créez un `StandardMaterial3D` avec vos
+  propres textures sur un mesh dans l'éditeur, la couleur de joueur ne
+  l'écrasera pas.
+- La transparence de proximité (< 1 m) fonctionne sur tous les meshes de
+  l'avatar, y compris les meshes texturés (leurs matériaux sont dupliqués
+  automatiquement).
+- Le nom du joueur (NameLabel) est visible à travers les murs.
+
 ## Revenir au niveau par défaut
 
 Supprimez (ou renommez) `res://user/level.tscn`. Le jeu utilisera alors
 `res://scenes/level.tscn`.
+
+## Revenir à l'avatar par défaut
+
+Supprimez (ou renommez) `res://user/avatar.tscn`. Le jeu utilisera alors la
+capsule + casque par défaut (`res://scenes/avatar.tscn`).
 
 ## Multijoueur LAN
 

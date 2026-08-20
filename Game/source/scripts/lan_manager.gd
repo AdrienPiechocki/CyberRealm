@@ -24,7 +24,10 @@ const DISCOVERY_QUERY := "CYBERREALM_DISCOVER"
 const LEVEL_CHUNK_SIZE := 24000
 const LEVEL_CHUNKS_PER_TICK := 24
 
-const REMOTE_PLAYER_SCENE := preload("res://scenes/remote_player.tscn")
+const CUSTOM_AVATAR_PATH := "res://user/avatar.tscn"
+const DEFAULT_AVATAR_PATH := "res://scenes/avatar.tscn"
+
+var _avatar_scene: PackedScene = null
 
 var session_active := false
 var is_host := false
@@ -221,6 +224,11 @@ func setup(level_root: Node3D, name: String, color: Color) -> void:
 	_level_root = level_root
 	player_name = name
 	player_color = color
+	# Charger la scène avatar custom si elle existe, sinon le défaut.
+	if ResourceLoader.exists(CUSTOM_AVATAR_PATH):
+		_avatar_scene = load(CUSTOM_AVATAR_PATH)
+	else:
+		_avatar_scene = load(DEFAULT_AVATAR_PATH)
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
 	_level_root.add_child(_players_container)
@@ -356,7 +364,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].setup(peer_id, pname, color)
 		return
-	var avatar := REMOTE_PLAYER_SCENE.instantiate()
+	var avatar := _avatar_scene.instantiate()
 	avatar.name = str(peer_id)
 	avatar.setup(peer_id, pname, color)
 	avatar.local_player = local_player

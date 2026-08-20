@@ -1,8 +1,6 @@
 [gd_scene format=4 uid="uid://qod8yxdgi26e"]
 
-[ext_resource type="Script" uid="uid://beamlslooas0m" path="res://scripts/remote_player.gd" id="1_remote"]
-
-[sub_resource type="StandardMaterial3D" id="StandardMaterial3D_avatar"]
+[ext_resource type="Script" uid="uid://beamlslooas0m" path="res://scripts/avatar.gd" id="1_remote"]
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_body"]
 
@@ -42,13 +40,8 @@ _surfaces = [{
 blend_shape_mode = 0
 shadow_mesh = SubResource("ArrayMesh_1uk4v")
 
-[node name="RemotePlayer" type="Node3D" unique_id=1200275872]
+[node name="Avatar" type="Node3D" unique_id=1200275872]
 script = ExtResource("1_remote")
-
-[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1683922496]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
-material_override = SubResource("StandardMaterial3D_avatar")
-mesh = SubResource("CapsuleMesh_body")
 
 [node name="NameLabel" type="Label3D" parent="." unique_id=959669778]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.8, 0)
@@ -56,6 +49,10 @@ billboard = 1
 text = "Player"
 font_size = 48
 outline_size = 6
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1683922496]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.5, 0)
+mesh = SubResource("CapsuleMesh_body")
 
 [node name="Helm" type="MeshInstance3D" parent="." unique_id=1737522616]
 transform = Transform3D(-50.00003, 4.37114e-06, 5.2108036e-13, 0, -5.9604668e-06, 49.999996, 4.3711416e-06, 50.000015, 5.9604645e-06, -1.1498426e-08, 0.79925275, -0.13152666)

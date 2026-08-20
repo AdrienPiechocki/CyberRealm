@@ -129,11 +129,11 @@ transfer.
 │   │   ├── wayland_room.tscn     main scene (WlrCompositor + Player + UI)
 │   │   ├── level.tscn            default level (space station)
 │   │   ├── player.tscn           first-person player
-│   │   └── remote_player.tscn    LAN avatar of another player
+│   │   └── avatar.tscn           LAN avatar of another player
 │   ├── scripts/
 │   │   ├── wayland_room.gd       orchestrator
 │   │   ├── lan_manager.gd        LAN host/join, avatars, window + level sync
-│   │   ├── remote_player.gd      avatar interpolation/transparency
+│   │   ├── avatar.gd             avatar interpolation/transparency
 │   │   ├── level_baker.gd        bakes the level into a self-contained blob
 │   │   └── ...                   windows_3d, focus_mode, layers, pins, menus
 │   └── user/                     YOUR custom level & assets (overrides default)
