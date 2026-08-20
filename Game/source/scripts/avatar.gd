@@ -132,8 +132,7 @@ func _prewarm_gpu() -> void:
 	vp.transparent_bg = true
 	var cam := Camera3D.new()
 	cam.current = true
-	cam.position = Vector3(0.0, 1.0, 5.0)
-	cam.look_at(Vector3(0.0, 1.0, 0.0))
+	cam.look_at_from_position(Vector3(0.0, 1.0, 5.0), Vector3(0.0, 1.0, 0.0))
 	vp.add_child(cam)
 	for h in holders:
 		vp.add_child(h)
