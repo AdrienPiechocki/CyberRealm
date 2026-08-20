@@ -554,6 +554,10 @@ func _bake_avatar() -> PackedByteArray:
 	baked.name = "Avatar"
 	baked.owner = null
 	LevelBaker._own_all(baked, baked)
+	# Diagnostic : compter meshes / matériaux / textures dans le bake.
+	var diag := {"meshes": 0, "mats": 0, "textures": 0, "verts": 0}
+	_diag_count_res(baked, diag)
+	push_warning("LAN: avatar bake diag — %s cache=%d" % [str(diag), cache.size()])
 	var scene := PackedScene.new()
 	if scene.pack(baked) != OK:
 		baked.queue_free()
@@ -573,6 +577,27 @@ func _bake_avatar() -> PackedByteArray:
 	push_warning("LAN: avatar baked — %d KB" % [bytes.size() / 1024])
 	LevelBaker.max_texture_size = 0
 	return bytes
+
+
+func _diag_count_res(node: Node, diag: Dictionary) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		if mi.mesh != null:
+			diag["meshes"] += 1
+			if mi.mesh is ArrayMesh:
+				var am := mi.mesh as ArrayMesh
+				for s in am.get_surface_count():
+					diag["verts"] += am.surface_get_array_len(s)
+					var mat = am.surface_get_material(s)
+					if mat != null:
+						diag["mats"] += 1
+						for p in mat.get_property_list():
+							if mat.get(p["name"]) is Texture2D:
+								diag["textures"] += 1
+	if node is Label3D:
+		pass
+	for c in node.get_children():
+		_diag_count_res(c, diag)
 
 func _send_avatar_to(id: int) -> void:
 	var bytes := _bake_avatar()
