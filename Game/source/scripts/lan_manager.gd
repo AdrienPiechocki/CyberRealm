@@ -542,15 +542,18 @@ func _bake_avatar() -> PackedByteArray:
 	# (sinon les references .fbx/.glb ne seront pas résolues côté peer).
 	# Limiter les textures à 256 px pour éviter un crash Vulkan côté client.
 	LevelBaker.max_texture_size = 256
+	LevelBaker.keep_surface_format = true
 	var root := _avatar_scene.instantiate() as Node3D
 	if root == null:
 		LevelBaker.max_texture_size = 0
+		LevelBaker.keep_surface_format = false
 		return PackedByteArray()
 	var cache := {}
 	var baked := LevelBaker._clone(root, null, cache) as Node3D
 	if baked == null:
 		root.queue_free()
 		LevelBaker.max_texture_size = 0
+		LevelBaker.keep_surface_format = false
 		return PackedByteArray()
 	baked.name = "Avatar"
 	baked.owner = null
@@ -563,20 +566,24 @@ func _bake_avatar() -> PackedByteArray:
 	if scene.pack(baked) != OK:
 		baked.queue_free()
 		LevelBaker.max_texture_size = 0
+		LevelBaker.keep_surface_format = false
 		return PackedByteArray()
 	baked.queue_free()
 	var tmp := "user://avatar_send.scn"
 	if ResourceSaver.save(scene, tmp) != OK:
 		LevelBaker.max_texture_size = 0
+		LevelBaker.keep_surface_format = false
 		return PackedByteArray()
 	var f := FileAccess.open(tmp, FileAccess.READ)
 	if f == null:
 		LevelBaker.max_texture_size = 0
+		LevelBaker.keep_surface_format = false
 		return PackedByteArray()
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
 	push_warning("LAN: avatar baked — %d KB" % [bytes.size() / 1024])
 	LevelBaker.max_texture_size = 0
+	LevelBaker.keep_surface_format = false
 	return bytes
 
 

@@ -14,8 +14,13 @@ extends RefCounted
 const BAKE_TMP_PATH := "user://lan_bake.scn"
 
 # Taille max des textures embarquées (0 = pas de limite). Positionné par
-# l'appelant avant le bake (ex: avatar = 512, level = 0).
+# l'appelant avant le bake (ex: avatar = 64, level = 0).
 static var max_texture_size := 0
+# Préserver les flags de format de surface (ARRAY_FORMAT_*) lors de la
+# reconstruction des ArrayMesh. Nécessaire pour les FBX custom dont les
+# meshs utilisent des attributs spécifiques (normales compressées, etc.).
+# Désactivé pour les niveaux GLB où le timeout GPU est critique.
+static var keep_surface_format := false
 
 static func bake(root: Node3D) -> Dictionary:
 	if root == null:
@@ -135,7 +140,10 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 		var prim = r.surface_get_primitive_type(i)
 		if mat != null:
 			mat = _embed(mat, cache)
-		new_mesh.add_surface_from_arrays(prim, arrays)
+		if keep_surface_format:
+			new_mesh.add_surface_from_arrays(prim, arrays, [], {}, r.surface_get_format(i))
+		else:
+			new_mesh.add_surface_from_arrays(prim, arrays)
 		new_mesh.surface_set_material(new_mesh.get_surface_count() - 1, mat)
 	for i in r.get_blend_shape_count():
 		new_mesh.add_blend_shape(r.get_blend_shape_name(i))
