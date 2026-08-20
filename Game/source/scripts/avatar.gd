@@ -78,7 +78,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 		_label.outline_size = 6
 		_label.position = Vector3(0, 1.8, 0)
 		add_child(_label)
-	_make_label_no_depth_test(_label)
+	#_make_label_no_depth_test(_label)
 	_label.text = pname
 
 	# AnimationPlayer — uniquement si au moins une animation est configurée.

@@ -193,6 +193,7 @@ static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 		cache[tex] = emb
 		return emb
 	# Fallback : retourner la texture originale (risque d'erreur côté client).
+	push_warning("LevelBaker: texture fallback non convertie — %s (%s)" % [tex.resource_path, tex.get_class()])
 	cache[tex] = tex
 	return tex
 
