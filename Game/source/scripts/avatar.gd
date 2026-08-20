@@ -116,16 +116,21 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 
 
 func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
-	var existing := mi.get_active_material(0)
-	if existing == null:
+	if mi.mesh == null:
 		return
-	var dup := existing.duplicate()
-	if dup is StandardMaterial3D:
-		var smat := dup as StandardMaterial3D
-		smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
-		smat.depth_write = true
-		mi.material_override = smat
-		_mesh_mats.append(smat)
+	for i in mi.mesh.get_surface_count():
+		var existing := mi.get_surface_override_material(i)
+		if existing == null:
+			existing = mi.mesh.surface_get_material(i)
+		if existing == null:
+			continue
+		var dup := existing.duplicate()
+		if dup is StandardMaterial3D:
+			var smat := dup as StandardMaterial3D
+			smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+			smat.depth_write = true
+			mi.set_surface_override_material(i, smat)
+			_mesh_mats.append(smat)
 
 
 func _make_label_no_depth_test(label: Label3D) -> void:
