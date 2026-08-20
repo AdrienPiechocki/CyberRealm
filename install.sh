@@ -135,6 +135,12 @@ install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-launch" "$HOME/.local/bi
 # le jeu ne survit à sa fermeture. Installe aussi le .desktop dessus.
 install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-run" "$HOME/.local/bin/cyberrealm-run"
 
+# --- Commandes runtime (cyberrealm-exec) -----------------------------------
+# Exécute des commandes sur le jeu en runtime via IPC fichier.
+# Usage : cyberrealm-exec launch firefox
+#         cyberrealm-exec windows
+install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-exec" "$HOME/.local/bin/cyberrealm-exec"
+
 # --- Lanceur .desktop du jeu ----------------------------------------------
 mkdir -p "$HOME/.local/share/applications"
 cat > "$HOME/.local/share/applications/cyberrealm.desktop" <<EOF

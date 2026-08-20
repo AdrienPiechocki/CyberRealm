@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# cyberrealm-exec — exécute des commandes sur CyberRealm en runtime
+#
+# Envoie une commande au jeu via IPC fichier ($XDG_RUNTIME_DIR) et attend
+# la réponse. Le jeu exécute la fonction correspondante et renvoie le résultat
+# en JSON.
+#
+# Usage:
+#   cyberrealm-exec <commande> [args...]
+#   cyberrealm-exec --help
+#
+# Commandes:
+#   launch <cmd>                  Lancer une app dans le jeu
+#   windows                       Lister les fenêtres ouvertes
+#   close <id>                    Fermer une fenêtre
+#   focus <id>                    Passer une fenêtre en focus plein écran
+#   unfocus                       Sortir du mode focus
+#   pin <id>                      Épingler/désépingler une fenêtre (PiP)
+#   hide <id>                     Masquer/afficher une fenêtre
+#   share <id>                    Activer/désactiver le partage d'une fenêtre
+#   focus-mode                    Afficher l'état du mode focus
+#   layer-interact                Basculer le mode interaction layer
+#   keyboard-layout [layout] [variant]
+#                                 Afficher ou changer le layout clavier
+#   quit                          Quitter le jeu
+#
+# Exemples:
+#   cyberrealm-exec launch firefox
+#   cyberrealm-exec windows
+#   cyberrealm-exec close 42
+#   cyberrealm-exec focus 3
+#   cyberrealm-exec keyboard-layout us ""
+
+set -euo pipefail
+
+TIMEOUT=5
+
+usage() {
+    cat >&2 <<'EOF'
+Usage: cyberrealm-exec <commande> [args...]
+
+Commandes:
+  launch <cmd>                  Lancer une app dans le jeu
+  windows                       Lister les fenêtres ouvertes
+  close <id>                    Fermer une fenêtre
+  focus <id>                    Passer une fenêtre en focus plein écran
+  unfocus                       Sortir du mode focus
+  pin <id>                      Épingler/désépingler une fenêtre (PiP)
+  hide <id>                     Masquer/afficher une fenêtre
+  share <id>                    Activer/désactiver le partage d'une fenêtre
+  focus-mode                    Afficher l'état du mode focus
+  layer-interact                Basculer le mode interaction layer
+  keyboard-layout [layout] [variant]
+                                Afficher ou changer le layout clavier
+  quit                          Quitter le jeu
+EOF
+    exit 1
+}
+
+exec_cmd() {
+    local rt="${XDG_RUNTIME_DIR:-}"
+    if [ -z "$rt" ]; then
+        echo "cyberrealm-exec: XDG_RUNTIME_DIR non défini" >&2
+        exit 1
+    fi
+
+    if [ ! -S "$rt/cyberrealm-0" ]; then
+        echo "cyberrealm-exec: CyberRealm n'est pas en cours d'exécution" >&2
+        echo "  (socket $rt/cyberrealm-0 introuvable)" >&2
+        exit 1
+    fi
+
+    local cmd_file="$rt/cyberrealm-cmd"
+    local resp_file="$rt/cyberrealm-cmd-resp"
+
+    local req_id="cr-$(date +%s%N$$)"
+    local payload="$req_id $*"
+
+    # Écriture atomique via fichier temporaire
+    local tmp="$cmd_file.$req_id"
+    printf '%s\n' "$payload" > "$tmp"
+    mv "$tmp" "$cmd_file"
+
+    # Attente de la réponse avec timeout
+    local waited=0
+    while [ ! -f "$resp_file" ] || ! grep -q "^$req_id " "$resp_file" 2>/dev/null; do
+        sleep 0.01
+        waited=$((waited + 1))
+        if [ "$waited" -ge $((TIMEOUT * 100)) ]; then
+            echo "cyberrealm-exec: timeout ($TIMEOUT s) — le jeu ne répond pas" >&2
+            rm -f "$cmd_file" "$resp_file"
+            exit 1
+        fi
+    done
+
+    # Extraction de la réponse
+    local line
+    line=$(grep "^$req_id " "$resp_file" | head -1)
+    local result="${line#"$req_id "}"
+
+    # Nettoyage : retirer la ligne de cette réponse
+    if [ -f "$resp_file" ]; then
+        local cleaned
+        cleaned=$(grep -v "^$req_id " "$resp_file" || true)
+        if [ -n "$cleaned" ]; then
+            printf '%s\n' "$cleaned" > "$resp_file"
+        else
+            rm -f "$resp_file"
+        fi
+    fi
+
+    # Parsing de la réponse JSON : extraire ok, error, output
+    local ok error output
+    ok=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print('1' if d.get('ok') else '0')" 2>/dev/null || echo "")
+    error=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('error',''))" 2>/dev/null || echo "")
+    output=$(echo "$result" | python3 -c "import sys,json; d=json.load(sys.stdin); o=d.get('output',''); print(o if isinstance(o,str) else json.dumps(o))" 2>/dev/null || echo "")
+
+    if [ "$ok" = "0" ] || [ -n "$error" ]; then
+        echo "cyberrealm-exec: $error" >&2
+        exit 1
+    fi
+
+    if [ -n "$output" ]; then
+        echo "$output"
+    fi
+}
+
+if [ $# -eq 0 ]; then
+    usage
+fi
+
+if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
+    usage
+fi
+
+exec_cmd "$@"
