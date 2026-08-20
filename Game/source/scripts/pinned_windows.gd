@@ -18,6 +18,8 @@ var pins_opacity := 0
 # Coin de l'écran où est affichée la fenêtre épinglée.
 # "top_left" | "top_right" | "bottom_left" | "bottom_right"
 var pins_position := "top_left"
+var _hover_tween: Tween
+var _is_hovering := false
 
 func setup(ui_ref: CanvasLayer) -> void:
 	ui = ui_ref
@@ -117,6 +119,11 @@ func unpin(key) -> void:
 	if is_instance_valid(pip):
 		pip.queue_free()
 	pinned_windows.erase(key)
+	if pinned_windows.is_empty():
+		_is_hovering = false
+		if _hover_tween:
+			_hover_tween.kill()
+			_hover_tween = null
 
 ## Retire toutes les fenêtres épinglées (pour garantir 1 seule fenêtre max)
 func unpin_all() -> void:
@@ -170,3 +177,25 @@ func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> vo
 	if pinned_windows.has(key) and is_instance_valid(pinned_windows[key]):
 		var pip_tex: TextureRect = pinned_windows[key].get_child(0)
 		pip_tex.texture = texture
+
+func _process(_delta: float) -> void:
+	if pinned_windows.is_empty():
+		return
+	var mouse_pos := get_viewport().get_mouse_position()
+	var hovering := false
+	for key in pinned_windows:
+		var pip: Control = pinned_windows[key]
+		if is_instance_valid(pip) and pip.get_global_rect().has_point(mouse_pos):
+			hovering = true
+			break
+	if hovering == _is_hovering:
+		return
+	_is_hovering = hovering
+	if _hover_tween:
+		_hover_tween.kill()
+	_hover_tween = create_tween()
+	var target_alpha := 0.0 if hovering else _pin_alpha()
+	for key in pinned_windows:
+		var pip: Control = pinned_windows[key]
+		if is_instance_valid(pip):
+			_hover_tween.tween_property(pip, "modulate:a", target_alpha, 0.15)
