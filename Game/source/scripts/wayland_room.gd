@@ -97,7 +97,7 @@ func _bake_level_for_lan() -> Dictionary:
 # tout le câblage du jeu (managers, signaux) référence ce node. Seul
 # l'environnement change ; le joueur est repositionné au spawn de l'hôte
 # (transmis explicitement — le blob baked exclut le Player).
-func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO) -> bool:
+func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO, spawn_rotation: Vector3 = Vector3.ZERO, spawn_scale: Vector3 = Vector3.ONE) -> bool:
 	if scene == null:
 		return false
 	var old_level := get_node_or_null("Level") as Node3D
@@ -110,14 +110,27 @@ func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO) -> 
 	var host_player := new_level.get_node_or_null("Player")
 	if host_player is Node3D and spawn_pos == Vector3.ZERO:
 		spawn_pos = (host_player as Node3D).position
+		spawn_rotation = (host_player as Node3D).rotation
+		spawn_scale = (host_player as Node3D).scale
 	if old_player != null:
 		if host_player != null:
 			new_level.remove_child(host_player)
 			host_player.queue_free()
 		old_player.get_parent().remove_child(old_player)
 		new_level.add_child(old_player)
+		# Le joueur local spawn au transform du niveau LOADÉ (hôte), pas de sa
+		# propre map. Le _ready() du Player se re-déclenche au re-parenting et
+		# ré-écrase spawn_pos (position de SA map) : on re-pose le vrai spawn
+		# du niveau loadé pour que les respawns utilisent le bon transform.
 		old_player.position = spawn_pos
-		old_player.rotation = Vector3.ZERO
+		old_player.rotation = spawn_rotation
+		old_player.scale = spawn_scale
+		if "spawn_pos" in old_player:
+			old_player.set("spawn_pos", spawn_pos)
+		if "spawn_rotation" in old_player:
+			old_player.set("spawn_rotation", spawn_rotation)
+		if "spawn_scale" in old_player:
+			old_player.set("spawn_scale", spawn_scale)
 	# Bascule du manager LAN AVANT de libérer l'ancien niveau (les avatars
 	# distants sont déplacés vers le nouveau conteneur).
 	if lan:
