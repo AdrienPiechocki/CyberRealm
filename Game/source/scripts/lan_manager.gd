@@ -575,7 +575,7 @@ func _avatar_send_blob(from_id: int, blob: PackedByteArray) -> void:
 		# autres peers (y compris le sender pour confirmation).
 		_avatar_blobs[from_id] = blob
 		for id in _players:
-			if id != from_id:
+			if id != from_id and id != multiplayer.get_unique_id():
 				_avatar_recv_blob.rpc_id(id, from_id, blob)
 	else:
 		# Un client reçoit l'avatar d'un autre peer (forwardé par l'hôte).
