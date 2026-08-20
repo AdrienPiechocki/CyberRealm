@@ -124,7 +124,7 @@ func _make_label_no_depth_test(label: Label3D) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.no_depth_test = true
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	label.material = mat
+	label.material_override = mat
 
 
 func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
