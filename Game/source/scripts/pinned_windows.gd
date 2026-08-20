@@ -20,6 +20,7 @@ var pins_opacity := 0
 var pins_position := "top_left"
 var _hover_tween: Tween
 var _is_hovering := false
+var _last_mouse_pos := Vector2(-1, -1)
 
 func setup(ui_ref: CanvasLayer) -> void:
 	ui = ui_ref
@@ -182,6 +183,28 @@ func _process(_delta: float) -> void:
 	if pinned_windows.is_empty():
 		return
 	var mouse_pos := get_viewport().get_mouse_position()
+	# En mode CAPTURED, get_mouse_position() renvoie une position figée :
+	# on ne peut pas détecter le hover correctement. On mémorise la position
+	# pour détecter quand la souris a VRAIMENT bougé après le retour en VISIBLE.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		_last_mouse_pos = mouse_pos
+		if _is_hovering:
+			_is_hovering = false
+			if _hover_tween:
+				_hover_tween.kill()
+				_hover_tween = null
+			var target_alpha := _pin_alpha()
+			for key in pinned_windows:
+				var pip: Control = pinned_windows[key]
+				if is_instance_valid(pip):
+					pip.modulate.a = target_alpha
+		return
+	# Après une transition CAPTURED → VISIBLE, la position souris est encore
+	# celle de la capture. On attend que la souris bouge VRAIMENT (position
+	# différente) avant de détecter le hover.
+	if mouse_pos == _last_mouse_pos:
+		return
+	_last_mouse_pos = mouse_pos
 	var hovering := false
 	for key in pinned_windows:
 		var pip: Control = pinned_windows[key]
