@@ -374,7 +374,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	var scene := _avatar_scene
 	# Utiliser l'avatar reçu du peer si disponible.
 	if _avatar_blobs.has(peer_id):
-		var tmp := "user://avatar_peer_%d.tscn" % peer_id
+		var tmp := "user://avatar_peer_%d.scn" % peer_id
 		var f := FileAccess.open(tmp, FileAccess.WRITE)
 		if f != null:
 			f.store_buffer(_avatar_blobs[peer_id])
@@ -539,8 +539,8 @@ func _bake_avatar() -> PackedByteArray:
 		return PackedByteArray()
 	# Deep-clone la scène pour embarquer les meshes/materials/textures
 	# (sinon les references .fbx/.glb ne seront pas résolues côté peer).
-	# Limiter les textures à 512 px pour éviter un crash Vulkan côté client.
-	LevelBaker.max_texture_size = 512
+	# Limiter les textures à 256 px pour éviter un crash Vulkan côté client.
+	LevelBaker.max_texture_size = 256
 	var root := _avatar_scene.instantiate() as Node3D
 	if root == null:
 		LevelBaker.max_texture_size = 0
@@ -560,7 +560,7 @@ func _bake_avatar() -> PackedByteArray:
 		LevelBaker.max_texture_size = 0
 		return PackedByteArray()
 	baked.queue_free()
-	var tmp := "user://avatar_send.tscn"
+	var tmp := "user://avatar_send.scn"
 	if ResourceSaver.save(scene, tmp) != OK:
 		LevelBaker.max_texture_size = 0
 		return PackedByteArray()
