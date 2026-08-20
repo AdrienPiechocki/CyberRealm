@@ -1,3 +1,4 @@
+class_name LevelBaker
 extends RefCounted
 ## Sérialise le niveau courant en une scène binaire AUTO-SUFFISANTE (blob)
 ## destinée au multijoueur LAN : tous les meshes/matériaux/textures sont

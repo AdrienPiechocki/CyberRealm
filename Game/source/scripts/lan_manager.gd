@@ -532,8 +532,26 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 func _bake_avatar() -> PackedByteArray:
 	if _avatar_scene == null:
 		return PackedByteArray()
+	# Deep-clone la scène pour embarquer les meshes/materials/textures
+	# (sinon les references .fbx/.glb ne seront pas résolues côté peer).
+	var root := _avatar_scene.instantiate() as Node3D
+	if root == null:
+		return PackedByteArray()
+	var cache := {}
+	var baked := LevelBaker._clone(root, null, cache) as Node3D
+	if baked == null:
+		root.queue_free()
+		return PackedByteArray()
+	baked.name = "Avatar"
+	baked.owner = null
+	LevelBaker._own_all(baked, baked)
+	var scene := PackedScene.new()
+	if scene.pack(baked) != OK:
+		baked.queue_free()
+		return PackedByteArray()
+	baked.queue_free()
 	var tmp := "user://avatar_send.tscn"
-	if ResourceSaver.save(_avatar_scene, tmp) != OK:
+	if ResourceSaver.save(scene, tmp) != OK:
 		return PackedByteArray()
 	var f := FileAccess.open(tmp, FileAccess.READ)
 	if f == null:
