@@ -24,9 +24,6 @@ static func bake(root: Node3D) -> Dictionary:
 	var clone := _clone(root, player, cache) as Node3D
 	if clone == null:
 		return {}
-	# Sweep récursif : remplacer TOUTES les Texture2D (y celles cachées
-	# dans les ArrayMesh / sub_resources) par des ImageTexture embarquées.
-	_embed_all_textures(clone, cache)
 	clone.name = "Level"
 	clone.owner = null
 	_own_all(clone, clone)
@@ -49,13 +46,6 @@ static func bake(root: Node3D) -> Dictionary:
 	push_warning("LevelBaker: bake OK — %d KB" % [bytes.size() / 1024])
 	return {"bytes": bytes, "spawn": spawn}
 
-# Clone l'arbre en nœuds frais (ClassDB.instantiate) : un `duplicate()` de
-# Godot conserve les données d'instance des scènes enfants, et
-# `PackedScene.pack()` réécrit alors chaque instance .fbx DEUX fois (une fois
-# comme instance externe, une fois comme nœuds locaux). Des nœuds frais n'ont
-# aucune donnée d'instance → `pack()` les écrit une seule fois, aplatis.
-# Les enfants runtime (`owner == null`, ex. conteneur Players/avatars du LAN)
-# et le sous-arbre Player (exclude) sont écartés.
 static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	var node := ClassDB.instantiate(orig.get_class()) as Node
 	if node == null:
@@ -92,100 +82,90 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 			node.add_child(sub)
 	return node
 
-# Duplique une ressource en profondeur et la met en cache : sa resource_path
-# est alors vide → `pack()` l'embarque comme sub_resource (aucune référence
-# externe résiduelle). Les scripts restent des références res:// (le client
-# a le même code de jeu — les maps LAN ne doivent pas attacher de scripts
-# custom).
 static func _embed(r: Resource, cache: Dictionary) -> Resource:
 	if r is Script:
 		return r
 	if cache.has(r):
 		return cache[r]
+	if r is Mesh:
+		return _embed_mesh(r, cache)
+	if r is Material:
+		return _embed_material(r, cache)
+	# Les textures importées (CompressedTexture2D) portent un resource_path
+	# vers un fichier que le client n'a PAS → ImageTexture embarquée.
+	if r is Texture2D:
+		var converted = _convert_texture(r, cache)
+		return converted
 	var dup := r.duplicate(true)
 	cache[r] = dup
 	return dup
 
-# Sweep récursif sur TOUTES les propriétés de TOUTES les ressources du
-# clone : remplace chaque Texture2D (CompressedTexture2D inclus) par une
-# ImageTexture contenant les pixels embarqués. Sans ça, les textures GLB
-# conservent leur resource_path d'origine et le client échoue au load().
-static func _embed_all_textures(node: Node, cache: Dictionary) -> void:
-	for p in node.get_property_list():
-		var usage := int(p.get("usage", 0))
-		if usage & PROPERTY_USAGE_STORAGE == 0:
-			continue
+# Reconstruit un Mesh surface par surface : chaque matériau est deep-clone
+# et ses textures converties, garantissant aucune référence externe résiduelle.
+static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
+	if cache.has(r):
+		return cache[r]
+	var new_mesh := ArrayMesh.new()
+	var count := r.get_surface_count()
+	for i in count:
+		var arrays := r.surface_get_arrays(i)
+		var mat := r.surface_get_material(i)
+		var prim := r.surface_get_primitive_type(i)
+		if mat != null:
+			mat = _embed(mat, cache)
+		new_mesh.add_surface_from_arrays(prim, arrays)
+		new_mesh.surface_set_material(new_mesh.get_surface_count() - 1, mat)
+	for i in r.get_blend_shape_count():
+		new_mesh.add_blend_shape(r.get_blend_shape_name(i))
+	new_mesh.custom_aabb = r.custom_aabb
+	cache[r] = new_mesh
+	return new_mesh
+
+# Deep-clone un matériau et convertit toutes ses propriétés texture.
+static func _embed_material(r: Material, cache: Dictionary) -> Material:
+	if cache.has(r):
+		return cache[r]
+	var dup := r.duplicate(true) as Material
+	if dup == null:
+		cache[r] = r
+		return r
+	# Parcourir TOUTES les propriétés pour remplacer les textures.
+	for p in dup.get_property_list():
 		var pname := String(p.get("name"))
-		var v = node.get(pname)
+		var v = dup.get(pname)
 		if v is Texture2D:
-			node.set(pname, _convert_texture(v, cache))
+			dup.set(pname, _convert_texture(v, cache))
 		elif v is Array:
 			var changed := false
-			var arr: Array = v
-			for i in arr.size():
-				if arr[i] is Texture2D:
-					arr[i] = _convert_texture(arr[i], cache)
+			for i in v.size():
+				if v[i] is Texture2D:
+					v[i] = _convert_texture(v[i], cache)
 					changed = true
 			if changed:
-				node.set(pname, arr)
-		elif v is Resource:
-			_embed_resource_textures(v, cache)
-	# Récursion sur les enfants.
-	for c in node.get_children():
-		_embed_all_textures(c, cache)
+				dup.set(pname, v)
+	cache[r] = dup
+	return dup
 
-# Traverse les propriétés d'une ressource pour remplacer les textures.
-static func _embed_resource_textures(r: Resource, cache: Dictionary) -> void:
-	if r == null or r is Script:
-		return
-	for p in r.get_property_list():
-		var usage := int(p.get("usage", 0))
-		if usage & PROPERTY_USAGE_STORAGE == 0:
-			continue
-		var pname := String(p.get("name"))
-		var v = r.get(pname)
-		if v is Texture2D:
-			r.set(pname, _convert_texture(v, cache))
-		elif v is Array:
-			var changed := false
-			var arr: Array = v
-			for i in arr.size():
-				if arr[i] is Texture2D:
-					arr[i] = _convert_texture(arr[i], cache)
-					changed = true
-			if changed:
-				r.set(pname, arr)
-		elif v is Resource:
-			_embed_resource_textures(v, cache)
-
-# Convertit une Texture2D (CompressedTexture2D, etc.) en ImageTexture
-# embarquée. Le resource_path vidé garantit que pack() l'écrit en
-# sub_resource (pas de référence externe).
-static func _convert_texture(tex: Texture2D, cache: Dictionary) -> ImageTexture:
+# Convertit une Texture2D en ImageTexture embarquée.
+static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 	if cache.has(tex):
-		var cached = cache[tex]
-		if cached is ImageTexture:
-			return cached
+		return cache[tex]
 	var img: Image = null
 	if tex is CompressedTexture2D:
 		img = tex.get_image()
 	elif tex is ImageTexture:
 		img = tex.get_image()
-	if img == null:
-		# Fallback : essaye de charger depuis le resource_path.
-		if not tex.resource_path.is_empty():
-			img = Image.load_from_file(tex.resource_path)
-	if img == null:
-		# Dernier recours : retourne la texture telle quelle.
-		return tex as ImageTexture
-	var emb := ImageTexture.create_from_image(img)
-	# Forcer resource_path vide pour que pack() l'embarque.
-	emb.resource_path = ""
-	cache[tex] = emb
-	return emb
+	if img == null and not tex.resource_path.is_empty():
+		img = Image.load_from_file(tex.resource_path)
+	if img != null:
+		var emb := ImageTexture.create_from_image(img)
+		emb.resource_path = ""
+		cache[tex] = emb
+		return emb
+	# Fallback : retourner la texture originale (risque d'erreur côté client).
+	cache[tex] = tex
+	return tex
 
-# Tous les nœuds clonés viennent de la scène (les nœuds runtime ont été
-# écartés par le filtre `owner == null`) → tous possédés par la racine.
 static func _own_all(n: Node, root: Node) -> void:
 	n.owner = root if n != root else null
 	for c in n.get_children():
