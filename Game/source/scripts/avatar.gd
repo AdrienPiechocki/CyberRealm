@@ -98,15 +98,55 @@ func _ready() -> void:
 	_prewarm_gpu()
 
 
-# Compile les shaders et upload les meshes de l'avatar dans un SubViewport
-# hors-écran, une seule frame, pendant que le GPU est encore libre.
-# Sans ça, le premier rendu dans le frustum (ex: la caméra se tourne vers
-# l'avatar d'un coup) compile tous les variants de shaders d'un coup et
-# provoque un TDR (crash Vulkan) combiné aux captures Wayland.
+# Compile les shaders et uploade les meshes de l'avatar dans un SubViewport
+# hors-écran, le temps de quelques frames, pendant que le GPU est encore
+# disponible. Le prewarm doit reproduire les conditions de rendu du viewport
+# principal (squelette de skinning, environnement sky/SSAO/SSR, lumière avec
+# ombres) : sans cela le premier rendu réel (ex: la caméra se tourne vers
+# l'avatar d'un coup) compile tous les variants de shaders manquants d'un coup
+# et provoque un TDR (crash Vulkan) combiné aux captures Wayland.
+# L'avatar reste invisible dans le viewport principal tant que le prewarm n'a
+# pas fini : le viewport principal ne le rend jamais avant que tout soit prêt.
 func _prewarm_gpu() -> void:
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(self, meshes)
-	var holders: Array[MeshInstance3D] = []
+	if meshes.is_empty():
+		return
+	var vp := SubViewport.new()
+	vp.size = Vector2i(64, 64)
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	vp.transparent_bg = true
+	get_tree().root.add_child(vp)
+	var cam := Camera3D.new()
+	cam.current = true
+	cam.look_at_from_position(Vector3(0.0, 1.0, 5.0), Vector3(0.0, 1.0, 0.0))
+	vp.add_child(cam)
+	# Même environnement que le viewport principal (sky, SSAO, SSR) pour
+	# compiler les variants ambient/reflection au prewarm, pas au 1er rendu.
+	var we := _find_world_environment()
+	if we != null:
+		var env_node := WorldEnvironment.new()
+		env_node.name = "PrewarmEnvironment"
+		env_node.environment = we.environment.duplicate(true)
+		vp.add_child(env_node)
+	# Lumière directionnelle avec ombres — mêmes variants shadow que le level.
+	var light := DirectionalLight3D.new()
+	light.shadow_enabled = true
+	light.look_at_from_position(Vector3(2.0, 5.0, 3.0), Vector3(0.0, 1.0, 0.0))
+	vp.add_child(light)
+	# Squelette cloné : les meshes skin (FBX custom) ont besoin d'un
+	# Skeleton3D pour compiler les variants de skinning. De simples holders
+	# sans squelette ne compilaient pas ces variants → recompilés au 1er rendu.
+	var skel := _find_skeleton(self)
+	var skel_holder: Skeleton3D = null
+	if skel != null:
+		skel_holder = Skeleton3D.new()
+		skel_holder.name = "PrewarmSkeleton"
+		for b in skel.get_bone_count():
+			skel_holder.add_bone(skel.get_bone_name(b))
+			skel_holder.set_bone_rest(b, skel.get_bone_rest(b))
+		vp.add_child(skel_holder)
 	var i := 0
 	for mi in meshes:
 		if mi.mesh == null:
@@ -122,32 +162,47 @@ func _prewarm_gpu() -> void:
 			if m != null:
 				h.set_surface_override_material(s, m)
 		h.position = Vector3((i % 5) * 0.8, 1.0, 0.0)
-		holders.append(h)
-	if holders.is_empty():
-		return
-	var vp := SubViewport.new()
-	vp.size = Vector2i(64, 64)
-	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
-	vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
-	vp.transparent_bg = true
-	var cam := Camera3D.new()
-	cam.current = true
-	cam.look_at_from_position(Vector3(0.0, 1.0, 5.0), Vector3(0.0, 1.0, 0.0))
-	vp.add_child(cam)
-	# Sans lumière, le SubViewport ne compile que les variants unlit des
-	# shaders. Le viewport principal rend l'avatar avec les lumières du level
-	# → variants lit compilés au premier rendu réel → crash. Ajouter une
-	# DirectionalLight (avec ombres) pour compiler les bons variants.
-	var light := DirectionalLight3D.new()
-	light.shadow_enabled = true
-	light.look_at_from_position(Vector3(2.0, 5.0, 3.0), Vector3(0.0, 1.0, 0.0))
-	vp.add_child(light)
-	for h in holders:
 		vp.add_child(h)
-	get_tree().root.add_child(vp)
-	await get_tree().process_frame
+		if skel_holder != null:
+			h.skeleton = h.get_path_to(skel_holder)
+	# Masquer l'avatar réel tant que les variants ne sont pas compilés. On
+	# attend plusieurs frames (process_frame, toujours émis — pas de dépendance
+	# au rendu) : le SubViewport UPDATE_ALWAYS rend à chaque frame et compile
+	# les variants pendant ce délai.
+	visible = false
+	for _f in 3:
+		await get_tree().process_frame
 	if is_instance_valid(vp):
 		vp.queue_free()
+	if is_instance_valid(self):
+		visible = true
+
+
+func _find_skeleton(node: Node) -> Skeleton3D:
+	if node is Skeleton3D:
+		return node as Skeleton3D
+	for child in node.get_children():
+		var found := _find_skeleton(child)
+		if found != null:
+			return found
+	return null
+
+
+func _find_world_environment() -> WorldEnvironment:
+	var scene := get_tree().current_scene
+	if scene == null:
+		return null
+	return _search_world_environment(scene)
+
+
+func _search_world_environment(node: Node) -> WorldEnvironment:
+	if node is WorldEnvironment:
+		return node as WorldEnvironment
+	for child in node.get_children():
+		var found := _search_world_environment(child)
+		if found != null:
+			return found
+	return null
 
 
 func _find_label(node: Node) -> Label3D:
