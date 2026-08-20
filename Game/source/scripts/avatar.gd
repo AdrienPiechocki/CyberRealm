@@ -7,6 +7,8 @@ extends Node3D
 ## propre scène (ou créez `res://user/avatar.tscn`). La scène doit attacher
 ## ce script et contenir un nœud Label3D nommé "NameLabel".
 
+@export var pitch_treshold: float = 2.0
+
 @export_group("Animations")
 ## Nom de la jouée quand l'avatar est immobile.
 @export var anim_idle: StringName = &""
@@ -50,9 +52,15 @@ func setup(id: int, pname: String, color: Color) -> void:
 		if not mi.visible:
 			continue
 		_duplicate_material_for_fade(mi)
-		if mi.get_surface_override_material(0) == null and \
-				mi.material_override == null and \
-				(mi.mesh == null or mi.mesh.surface_get_material(0) == null):
+		# Appliquer le tint couleur uniquement si le mesh n'a AUCUN matériau.
+		var has_any_mat := false
+		if mi.mesh != null:
+			for j in mi.mesh.get_surface_count():
+				if mi.get_surface_override_material(j) != null or \
+						mi.mesh.surface_get_material(j) != null:
+					has_any_mat = true
+					break
+		if not has_any_mat and mi.material_override == null:
 			var mat := StandardMaterial3D.new()
 			mat.albedo_color = color
 			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
@@ -108,16 +116,21 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 
 
 func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
-	var existing := mi.get_active_material(0)
-	if existing == null:
+	if mi.mesh == null:
 		return
-	var dup := existing.duplicate()
-	if dup is StandardMaterial3D:
-		var smat := dup as StandardMaterial3D
-		smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
-		smat.depth_write = true
-		mi.material_override = smat
-		_mesh_mats.append(smat)
+	for i in mi.mesh.get_surface_count():
+		var existing := mi.get_surface_override_material(i)
+		if existing == null:
+			existing = mi.mesh.surface_get_material(i)
+		if existing == null:
+			continue
+		var dup := existing.duplicate()
+		if dup is StandardMaterial3D:
+			var smat := dup as StandardMaterial3D
+			smat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
+			smat.depth_write = true
+			mi.set_surface_override_material(i, smat)
+			_mesh_mats.append(smat)
 
 
 func _make_label_no_depth_test(label: Label3D) -> void:
@@ -140,7 +153,7 @@ func _physics_process(delta: float) -> void:
 	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
-	rotation.x = _interp_pitch / 2
+	rotation.x = _interp_pitch / pitch_treshold
 	_update_transparency()
 	_update_animation(delta)
 	_prev_pos = _interp_pos
