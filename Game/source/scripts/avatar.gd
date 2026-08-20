@@ -51,14 +51,25 @@ func setup(id: int, pname: String, color: Color) -> void:
 	for mi in meshes:
 		if not mi.visible:
 			continue
+		if mi.mesh == null:
+			continue
+		# Les meshes multi-matériaux génèrent N draw calls + N compilations
+		# de shaders — crash le GPU Vulkan quand combinés au level + captures
+		# Wayland. Forcer un seul matériau via material_override réduit à 1.
+		if mi.mesh.get_surface_count() > 1:
+			var first_mat := mi.mesh.surface_get_material(0)
+			if first_mat == null:
+				first_mat = mi.get_surface_override_material(0)
+			if first_mat != null and mi.material_override == null:
+				mi.material_override = first_mat
+			continue
 		# Appliquer le tint couleur uniquement si le mesh n'a AUCUN matériau.
 		var has_any_mat := false
-		if mi.mesh != null:
-			for j in mi.mesh.get_surface_count():
-				if mi.get_surface_override_material(j) != null or \
-						mi.mesh.surface_get_material(j) != null:
-					has_any_mat = true
-					break
+		for j in mi.mesh.get_surface_count():
+			if mi.get_surface_override_material(j) != null or \
+					mi.mesh.surface_get_material(j) != null:
+				has_any_mat = true
+				break
 		if not has_any_mat and mi.material_override == null:
 			var mat := StandardMaterial3D.new()
 			mat.albedo_color = color
