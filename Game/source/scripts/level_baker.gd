@@ -110,7 +110,7 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 	for i in count:
 		var arrays := r.surface_get_arrays(i)
 		var mat := r.surface_get_material(i)
-		var prim := r.surface_get_primitive_type(i)
+		var prim = r.surface_get_primitive_type(i)
 		if mat != null:
 			mat = _embed(mat, cache)
 		new_mesh.add_surface_from_arrays(prim, arrays)
