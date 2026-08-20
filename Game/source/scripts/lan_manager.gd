@@ -7,7 +7,7 @@ extends Node
 signal status_changed(text: String)
 signal players_changed(roster: Array)
 signal discovery_results(results: Array)
-signal level_apply_requested(scene: PackedScene, spawn: Vector3)
+signal level_apply_requested(scene: PackedScene, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3)
 
 const PORT := 7777
 const DISCOVERY_PORT := 9999
@@ -557,7 +557,7 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	# distants sont spawnés selon LUI (pas le Player local de la scène
 	# d'origine), que le niveau soit déjà appliqué ou pas.
 	_host_spawn_transform = {"pos": recv_spawn, "rot": recv_rotation, "scale": recv_scale}
-	level_apply_requested.emit(scene, recv_spawn)
+	level_apply_requested.emit(scene, recv_spawn, recv_rotation, recv_scale)
 	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
 
 # Appelé par wayland_room après avoir remplacé le niveau : bascule la racine
