@@ -94,6 +94,55 @@ func setup(id: int, pname: String, color: Color) -> void:
 	_prev_pos = position
 
 
+func _ready() -> void:
+	_prewarm_gpu()
+
+
+# Compile les shaders et upload les meshes de l'avatar dans un SubViewport
+# hors-écran, une seule frame, pendant que le GPU est encore libre.
+# Sans ça, le premier rendu dans le frustum (ex: la caméra se tourne vers
+# l'avatar d'un coup) compile tous les variants de shaders d'un coup et
+# provoque un TDR (crash Vulkan) combiné aux captures Wayland.
+func _prewarm_gpu() -> void:
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(self, meshes)
+	var holders: Array[MeshInstance3D] = []
+	var i := 0
+	for mi in meshes:
+		if mi.mesh == null:
+			continue
+		var h := MeshInstance3D.new()
+		h.name = "Prewarm%d" % i
+		i += 1
+		h.mesh = mi.mesh
+		if mi.material_override != null:
+			h.material_override = mi.material_override
+		for s in mi.mesh.get_surface_count():
+			var m := mi.get_surface_override_material(s)
+			if m != null:
+				h.set_surface_override_material(s, m)
+		h.position = Vector3((i % 5) * 0.8, 1.0, 0.0)
+		holders.append(h)
+	if holders.is_empty():
+		return
+	var vp := SubViewport.new()
+	vp.size = Vector2i(64, 64)
+	vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	vp.render_target_clear_mode = SubViewport.CLEAR_MODE_ALWAYS
+	vp.transparent_bg = true
+	var cam := Camera3D.new()
+	cam.current = true
+	cam.position = Vector3(0.0, 1.0, 5.0)
+	cam.look_at(Vector3(0.0, 1.0, 0.0))
+	vp.add_child(cam)
+	for h in holders:
+		vp.add_child(h)
+	get_tree().root.add_child(vp)
+	await get_tree().process_frame
+	if is_instance_valid(vp):
+		vp.queue_free()
+
+
 func _find_label(node: Node) -> Label3D:
 	if node is Label3D and node.name == "NameLabel":
 		return node as Label3D
