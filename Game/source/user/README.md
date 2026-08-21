@@ -78,6 +78,18 @@ Les changements sont loggés (`[capture] … pression N`).
 
 - Forcer la cadence normale (diagnostic) : `CYBERREALM_CAPTURE_UNTHROTTLED=1`.
 
+## Performance : partage vidéo en LAN
+
+Partager une fenêtre mobilise côté hôte un thread d'encodage en continu
+(lecture du DMA-BUF, conversion couleurs, encodage H.264/AV1) à 60 ips par
+fenêtre. Le mode d'encodage est annoncé au démarrage du partage
+(`video_share: démarré codec=… mode=…`) : « matériel (VAAPI) » utilise le bloc
+vidéo du GPU, « LOGICIEL (libx264) » indique que VAAPI a échoué et que le CPU
+encode — à surveiller sur les machines modestes.
+
+- Réduire la charge hôte : `CYBERREALM_SHARE_FPS=30` (ou 20) divise le coût
+  d'encodage et de capture d'autant ; 30 ips suffit pour la plupart des usages.
+
 ## Créer son avatar
 
 1. Placez vos assets 3D (`.glb`, `.fbx`, …) dans `res://user/assets/`.

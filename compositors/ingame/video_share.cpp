@@ -95,6 +95,15 @@ bool VideoShare::start(const String &codec, int bitrate) {
 	codec_name = (codec == "av1") ? "av1" : "h264";
 	hw_av1 = (codec_name == "av1");
 
+	// Framerate d'encodage surchargeable : 60 ips mobilise en continu un cœur
+	// CPU (mmap + swscale) plus l'encodeur ; 30 suffit pour la plupart des
+	// partages et divise la charge par deux.
+	fps = 60;
+	if (const char *env = getenv("CYBERREALM_SHARE_FPS")) {
+		int v = atoi(env);
+		if (v >= 10 && v <= 60) fps = v;
+	}
+
 	if (va_init()) {
 		hw_mode = true;
 	} else {
@@ -118,6 +127,10 @@ bool VideoShare::start(const String &codec, int bitrate) {
 			return false;
 		}
 	}
+
+	UtilityFunctions::print("waylandgodot: video_share: démarré codec=", codec_name.c_str(),
+		" mode=", hw_mode ? "matériel (VAAPI)" : "LOGICIEL (libx264, CPU)",
+		" fps=", fps, " bitrate=", this->bitrate / 1000, " kb/s");
 
 	active = true;
 	worker_thread = std::thread(&VideoShare::worker_loop, this);
@@ -549,12 +562,12 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		}
 		ctx->width = w->content_w;
 		ctx->height = w->content_h;
-		ctx->time_base = (AVRational){1, 60};
-		ctx->framerate = (AVRational){60, 1};
+		ctx->time_base = (AVRational){1, fps};
+		ctx->framerate = (AVRational){fps, 1};
 		ctx->pix_fmt = AV_PIX_FMT_VAAPI;
 		ctx->hw_frames_ctx = av_buffer_ref(frames_ref);
 		ctx->bit_rate = bitrate;
-		ctx->gop_size = 60;
+		ctx->gop_size = fps;
 		// Pas de B-frames (même réglage que AV1) : supprime l'attente de
 		// ré-ordonnancement qui retient des surfaces du pool et retarde la
 		// sortie des paquets. Pour du streaming LAN temps réel, le gain de
@@ -580,11 +593,11 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 	if (!ctx) return false;
 	ctx->width = w->content_w;
 	ctx->height = w->content_h;
-	ctx->time_base = (AVRational){1, 60};
-	ctx->framerate = (AVRational){60, 1};
+	ctx->time_base = (AVRational){1, fps};
+	ctx->framerate = (AVRational){fps, 1};
 	ctx->pix_fmt = AV_PIX_FMT_YUV420P;
 	ctx->bit_rate = bitrate;
-	ctx->gop_size = 60;
+	ctx->gop_size = fps;
 	ctx->max_b_frames = 2;
 	av_opt_set(ctx->priv_data, "preset", "veryfast", 0);
 	// SPS/PPS devant chaque keyframe : le récepteur peut se synchroniser à
