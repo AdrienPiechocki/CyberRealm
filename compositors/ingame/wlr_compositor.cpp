@@ -2065,6 +2065,11 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
         }
     }
 
+    UtilityFunctions::print("waylandgodot: toplevel mappé id=", ws->id,
+        " app_id=", app_id, " title=\"", title, "\" taille=",
+        ws->toplevel->base->surface->current.width, "x",
+        ws->toplevel->base->surface->current.height);
+
     self->emit_signal("window_mapped", ws->id, title, app_id);
 
     // Annonce la présence (ou l'absence) d'une décoration gérée par le jeu :
