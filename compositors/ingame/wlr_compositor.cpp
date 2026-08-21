@@ -849,6 +849,16 @@ static constexpr double CAPTURE_CRITICAL_FRAME_MS = 40.0;   // < ~25 fps
 static constexpr uint64_t SLOW_INTERVALS_US[3] = {33'333, 100'000, 200'000}; // 30/10/5 par s
 static constexpr uint64_t FAST_INTERVALS_US[3] = {16'667, 33'333, 50'000};   // 60/30/20 par s
 
+// Budget anti-stall : au plus N captures de fenêtres NON partagées par frame
+// passée dans _process. Chaque capture peut bloquer jusqu'à timeout ms dans
+// le poll DMA-BUF ; sans budget, plusieurs fenêtres dues à la même frame
+// s'additionnent (2 × 25 ms de stall = frame à 40 ms garantie). Les fenêtres
+// au-delà du budget restent "due" (last_capture_us n'est pas mis à jour) et
+// sont servies aux frames suivantes — leur quad garde l'ancienne texture,
+// invisible à ces cadences. Les fenêtres partagées vidéo ne comptent pas :
+// le stream doit rester fluide.
+static constexpr int MAX_WINDOW_CAPTURES_PER_FRAME = 2;
+
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
 // pinch_end si aucun update n'arrive pendant cette durée.
@@ -907,7 +917,7 @@ bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, i
 // Fallback: DMA_BUF_IOCTL_SYNC (sync CPU uniquement, n'attend PAS le
 // GPU sur les pilotes sans sync implicite → tearing possible).
 // =====================================================================
-static void wait_for_dmabuf_gpu_writes(int dma_fd) {
+static void wait_for_dmabuf_gpu_writes(int dma_fd, int timeout_ms) {
     if (dma_fd < 0) return;
 
     // Tenter EXPORT_SYNC_FILE d'abord (sync GPU fiable cross-API).
@@ -917,17 +927,14 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd) {
         struct pollfd pfd;
         pfd.fd = export_args.fd;
         pfd.events = POLLIN;
-        // Bloque jusqu'à l'achèvement GPU, borné à 25 ms : si le sync_file
-        // ne signale pas (pilote/stall GPU pathologique), on NE bloque PAS le
-        // thread principal indéfiniment — sinon le service réseau n'est plus
-        // appelé et ENet finit par déconnecter le peer (timeout).
-        // À 60 captures/s max (WINDOW_CAPTURE_INTERVAL), le pire cas reste
-        // 1,5 s de blocage par seconde — mais ce borne ne s'atteint qu'en
-        // cas de stall GPU pathologique ; en fonctionnement normal le poll
-        // rend en <1 ms dès que le render pass est terminé. Au pire on lit
-        // un buffer pas encore synchronisé → artefact visuel transitoire,
-        // jamais un gel/disconnexion durable.
-        poll(&pfd, 1, 25);
+        // Bloque jusqu'à l'achèvement GPU, borné à timeout_ms (10 ms en
+        // régime normal, 4 ms sous pression — voir capture_poll_timeout_ms) :
+        // si le sync_file ne signale pas (GPU saturé, stall pathologique), on
+        // NE bloque PAS le thread principal indéfiniment — sinon le service
+        // réseau n'est plus appelé et ENet finit par déconnecter le peer
+        // (timeout). Au pire on lit un buffer pas encore synchronisé →
+        // artefact visuel transitoire sur le quad, jamais un gel durable.
+        poll(&pfd, 1, timeout_ms);
         close(export_args.fd);
         return;
     }
@@ -1235,7 +1242,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     // Attendre que le render pass EGL/GLES2 soit terminé sur le GPU
     // AVANT de lire les pixels en mmap. Sans cette synchronisation,
     // le memcpy peut lire des données partiellement écrites par le GPU.
-    wait_for_dmabuf_gpu_writes(cache.dma_fd);
+    wait_for_dmabuf_gpu_writes(cache.dma_fd, capture_poll_timeout_ms());
 
     // Partage vidéo inter-frame : soumet le DMA-BUF à l'encodeur (thread
     // worker). Le buffer vient d'être rendu et synchronisé — c'est le point
@@ -1594,7 +1601,7 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     // représentant les écritures GPU en cours, puis poll() bloque
     // jusqu'à leur achèvement. C'est la seule synchronisation fiable
     // entre deux API GPU (EGL wlroots ↔ Vulkan Godot).
-    wait_for_dmabuf_gpu_writes(cache.dma_fd);
+    wait_for_dmabuf_gpu_writes(cache.dma_fd, capture_poll_timeout_ms());
 
     // Partage vidéo inter-frame : soumet le DMA-BUF à l'encodeur (thread
     // worker), juste après le rendu et la synchronisation GPU — aucun
@@ -3797,8 +3804,32 @@ void WlrCompositor::_process(double delta) {
         if (OS::get_singleton()->get_environment("CYBERREALM_CAPTURE_UNTHROTTLED") == "1") {
             capture_pressure = 0;
         } else {
-            capture_pressure = capture_frame_ms_ema >= CAPTURE_CRITICAL_FRAME_MS ? 2 :
+            // Hystérésis : montée d'un palier immédiate (protéger le FPS),
+            // descente d'un palier seulement après ~2 s d'accalmie durable
+            // (EMA sous le seuil bas) — sinon on oscille à chaque frame
+            // entre dégrader et relâcher, ce qui fait varier la cadence
+            // sans jamais stabiliser le GPU.
+            static constexpr uint64_t CAPTURE_PRESSURE_GRACE_US = 2'000'000;
+            int candidate = capture_frame_ms_ema >= CAPTURE_CRITICAL_FRAME_MS ? 2 :
                 capture_frame_ms_ema >= CAPTURE_PRESSURE_FRAME_MS ? 1 : 0;
+            if (candidate > capture_pressure) {
+                capture_pressure = candidate;
+                capture_below_since_us = 0;
+            } else if (candidate < capture_pressure) {
+                if (capture_frame_ms_ema < CAPTURE_PRESSURE_FRAME_MS) {
+                    if (capture_below_since_us == 0) {
+                        capture_below_since_us = now_us;
+                    } else if (now_us - capture_below_since_us >= CAPTURE_PRESSURE_GRACE_US) {
+                        capture_pressure--;
+                        // Réarme pour le palier suivant (descente progressive).
+                        capture_below_since_us = now_us;
+                    }
+                } else {
+                    capture_below_since_us = 0;
+                }
+            } else {
+                capture_below_since_us = 0;
+            }
         }
         if (capture_pressure != capture_pressure_logged) {
             UtilityFunctions::print("waylandgodot: [capture] frame=", capture_frame_ms_ema,
@@ -3844,6 +3875,7 @@ void WlrCompositor::_process(double delta) {
     // linéairement avec le nombre de fenêtres ouvertes. Le filet de
     // sécurité périodique (WINDOW_SAFETY_RECAPTURE_INTERVAL) rattrape les
     // sous-surfaces apparues entre deux sync.
+    int window_captures_this_frame = 0;
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
         if (ws.toplevel && ws.toplevel->base && ws.toplevel->base->surface) {
@@ -3860,14 +3892,18 @@ void WlrCompositor::_process(double delta) {
             // 30/s pour les autres dirty (rafraîchissement des quads 3D).
             // Sous pression, les deux cadences sont allongées par paliers
             // (voir SLOW_INTERVALS_US / FAST_INTERVALS_US).
-            uint64_t interval = SLOW_INTERVALS_US[capture_pressure];
-            if (video_share.is_shared(ws.id)) {
-                interval = FAST_INTERVALS_US[capture_pressure];
-            }
+            bool shared = video_share.is_shared(ws.id);
+            uint64_t interval = shared ? FAST_INTERVALS_US[capture_pressure]
+                                       : SLOW_INTERVALS_US[capture_pressure];
             bool due = ws.dirty &&
                 (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= interval);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
+                // Budget anti-stall (voir MAX_WINDOW_CAPTURES_PER_FRAME) :
+                // au-delà, la fenêtre reste due pour une frame suivante.
+                if (!shared && window_captures_this_frame >= MAX_WINDOW_CAPTURES_PER_FRAME) {
+                    continue;
+                }
                 ws.last_capture_us = now_us;
                 // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
                 // réutilisé à chaque capture (même mémoire GPU). Si l'encodeur
@@ -3882,6 +3918,7 @@ void WlrCompositor::_process(double delta) {
                 }
                 if (capture_surface(ws.toplevel->base->surface,
                         ws.texture, ws.width, ws.height, ws.capture_cache)) {
+                    window_captures_this_frame++;
                     ws.dirty = false;
                     emit_signal("window_texture_updated", ws.id, ws.texture,
                         ws.width, ws.height);
