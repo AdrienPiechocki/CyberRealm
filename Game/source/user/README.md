@@ -61,6 +61,9 @@ changements sont loggés (`[scaler]`).
   `CYBERREALM_RENDER_DEBUG=1` — utile pour comparer deux machines.
 - GPU intégrés très limites : essayer le rendu Mobile, moins coûteux en
   fillrate que Forward+ : `./cyberrealm --rendering-method mobile`.
+- Utilisation GPU élevée : le projet plafonne à 120 FPS, un GPU rapide
+  travaille donc en continu. `CYBERREALM_MAX_FPS=60` (ou 30) réduit la
+  charge et les ventilateurs sans toucher au projet.
 
 ## Performance : captures de fenêtres adaptatives
 
