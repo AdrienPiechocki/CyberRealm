@@ -12,10 +12,13 @@ extends Node3D
 @export_group("Animations")
 ## Nom de la jouée quand l'avatar est immobile.
 @export var anim_idle: StringName = &""
+@export var idle_speed := 1.0
 ## Nom de l'animation jouée quand l'avatar se déplace au sol.
 @export var anim_walk: StringName = &""
+@export var walk_speed := 1.0
 ## Nom de l'animation jouée quand l'avatar est en l'air (chute / saut).
 @export var anim_jump: StringName = &""
+@export var jump_speed := 1.0
 ## Seuil de vitesse (m/s) en dessous duquel on est considéré immobile.
 @export var walk_speed_threshold := 0.1
 
@@ -309,15 +312,19 @@ func _update_animation(_delta: float) -> void:
 	_is_grounded = speed_v > 0.0
 	
 	var target: StringName = &""
+	var speed := 1.0
 	if not _is_grounded and anim_jump != &"":
 		target = anim_jump
+		speed = jump_speed
 	elif speed_h > walk_speed_threshold and anim_walk != &"":
 		target = anim_walk
+		speed = walk_speed
 	elif anim_idle != &"":
 		target = anim_idle
+		speed = idle_speed
 
 	if target != &"" and target != _current_anim:
-		_anim_player.play(target)
+		_anim_player.play(target, -1, speed)
 		_current_anim = target
 
 
