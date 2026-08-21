@@ -306,7 +306,7 @@ func _update_animation(_delta: float) -> void:
 	var vel := _interp_pos - _prev_pos
 	var speed_h = Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
 	var speed_v = vel.y
-	_is_grounded = speed_v > 0.0
+	_is_grounded = absf(speed_v) < 1.0
 	
 	var target: StringName = &""
 	if not _is_grounded and anim_jump != &"":
