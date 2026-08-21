@@ -85,6 +85,11 @@ Limites à connaître :
   propre joueur, le spawn de l'hôte est appliqué côté client.
 - Le niveau est envoyé quand un joueur rejoint. Si vous changez de niveau,
   les prochains arrivants recevront le nouveau.
+- **Le client charge la map AVANT d'entrer dans la partie** : après la
+  connexion, il reçoit et applique le niveau de l'hôte en étant gelé et
+  invisible des autres joueurs (progression affichée : « Loading host
+  map… X% »). Il n'apparaît chez les autres qu'une fois la map chargée.
 - Grosses maps : le blob est compressé (ZSTD) et envoyé en chunks, mais un
   niveau très lourd (plusieurs centaines de Mo d'assets) mettra du temps à
-  charger côté client.
+  charger côté client. Si le transfert est définitivement mort (aucun chunk
+  pendant 15 s), le client entre quand même dans la partie sur sa map locale.

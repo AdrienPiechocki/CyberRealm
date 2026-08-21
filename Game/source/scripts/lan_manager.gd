@@ -63,6 +63,15 @@ var _last_status := ""
 # vrai une fois le niveau local appliqué/chargé.
 var _level_stable := false
 var _session_start_msec := 0 # filet de sécurité : si le niveau n'arrive jamais
+# Client : vrai entre la connexion ENet et l'entrée EFFECTIVE dans la session.
+# Le joueur charge d'abord la map de l'hôte (chunks fiables) : tant que
+# _pending_join est vrai, il n'est pas enregistré auprès de l'hôte (aucun
+# avatar chez les autres), ne reçoit pas les spawns et n'émet AUCUNE synchro
+# (transform/fenêtres/curseur). Le join part à la fin du chargement
+# (_finalize_join) ou après JOIN_FALLBACK_MSEC sans aucun chunk reçu.
+var _pending_join := false
+const JOIN_FALLBACK_MSEC := 15000
+var _last_level_chunk_msec := 0 # dernier chunk de niveau reçu (client)
 # Transform de spawn de la scène de l'HÔTE (transmis dans le blob du niveau :
 # le Player en est exclu). Une fois connu, _spawn_* l'utilise à la place du
 # Player de la scène locale d'origine. Vidé au début de chaque session.
@@ -267,13 +276,18 @@ func setup(level_root: Node3D, name: String, color: Color) -> void:
 func is_session_active() -> bool:
 	return session_active
 
+# Client : vrai pendant le chargement de la map de l'hôte (avant le join
+# effectif). wayland_room s'en sert pour geler le joueur local.
+func is_waiting_for_host_map() -> bool:
+	return _pending_join
+
 # Met à jour la couleur locale et la diffuse si une session est en cours.
 func update_local_color(color: Color) -> void:
 	player_color = color
 	if not session_active:
 		return
 	var my_id := multiplayer.get_unique_id()
-	if not _players.has(my_id):
+	if not _players.has(my_id) or _pending_join:
 		return
 	_players[my_id]["color"] = color
 	if is_host:
@@ -355,6 +369,7 @@ func _on_connected_to_server() -> void:
 	# restent invisibles jusqu'à mark_level_stable() (fin de apply_host_level).
 	_level_stable = false
 	_session_start_msec = Time.get_ticks_msec()
+	_last_level_chunk_msec = _session_start_msec
 	_host_spawn_transform.clear()
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
@@ -362,6 +377,22 @@ func _on_connected_to_server() -> void:
 	_set_peer_timeout(1)
 	_set_status("Connected to server")
 	_emit_players()
+	# Ne PAS s'annoncer maintenant : on charge d'abord la map de l'hôte. Le
+	# join effectif (enregistrement + avatar + synchro) part à la fin du
+	# chargement — voir _finalize_join().
+	_pending_join = true
+
+# Entrée effective dans la session : la map de l'hôte est appliquée (ou le
+# délai de secours a expiré — on joue alors sur la map locale). On s'annonce
+# enfin à l'hôte : il re-broadcaste notre spawn aux autres, notre avatar part,
+# et les synchros reprennent (_pending_join = false).
+func _finalize_join() -> void:
+	if not _pending_join:
+		return
+	_pending_join = false
+	if local_player != null and "input_locked" in local_player:
+		local_player.input_locked = false
+	_set_status("Joined session")
 	# S'annoncer : le serveur va re-broadcaster le spawn de tous les avatars.
 	_register_player.rpc_id(1, player_name, player_color)
 	# Envoyer l'avatar custom au serveur (qui le forward aux autres).
@@ -434,6 +465,9 @@ func mark_level_stable() -> void:
 	if _level_stable:
 		return
 	_level_stable = true
+	# Le niveau (hôte ou local restauré) est appliqué : le client peut
+	# maintenant entrer dans la session s'il chargait encore la map.
+	_finalize_join()
 	for _f in 5:
 		await get_tree().process_frame
 	for id in _remote_players:
@@ -534,7 +568,10 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	data.append_array(chunk)
 	_level_bake_receive["data"] = data
 	_level_bake_receive["next"] = index + 1
+	_last_level_chunk_msec = Time.get_ticks_msec()
 	if index + 1 < total:
+		# Progression du chargement : le joueur est gelé jusqu'au join final.
+		_set_status("Loading host map… %d%%" % int((index + 1) * 100.0 / total))
 		return
 	var raw: PackedByteArray = _level_bake_receive["data"]
 	var recv_spawn: Vector3 = _level_bake_receive["spawn"]
@@ -546,12 +583,15 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	if bytes.is_empty() or bytes.size() != recv_size:
 		push_warning("LAN: décompress échoué — reçu %d octets, attendu %d" % [bytes.size(), recv_size])
 		_set_status("Host level corrupted (decompress failed) — kept local level")
+		# Transfert mort : ne pas rester bloqué en attente de join.
+		_finalize_join()
 		return
 	push_warning("LAN: niveau reçu — %d KB décompressé" % [bytes.size() / 1024])
 	var tmp := "user://lan_level.scn"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
 		_set_status("Could not write the host's level")
+		_finalize_join()
 		return
 	f.store_buffer(bytes)
 	f.close()
@@ -559,14 +599,17 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	if scene == null:
 		push_warning("LAN: impossible de charger la scène du niveau reçu (%s)" % tmp)
 		_set_status("Host level unreadable — kept local level")
+		_finalize_join()
 		return
 	push_warning("LAN: scène du niveau chargée OK")
 	# Mémoriser le transform de spawn de la scène de l'hôte : les avatars
 	# distants sont spawnés selon LUI (pas le Player local de la scène
 	# d'origine), que le niveau soit déjà appliqué ou pas.
 	_host_spawn_transform = {"pos": recv_spawn, "rot": recv_rotation, "scale": recv_scale}
-	level_apply_requested.emit(scene, recv_spawn, recv_rotation, recv_scale)
+	# Le statut AVANT l'emit : apply_host_level → mark_level_stable →
+	# _finalize_join() pose "Joined session", qui doit rester le message final.
 	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
+	level_apply_requested.emit(scene, recv_spawn, recv_rotation, recv_scale)
 
 # Appelé par wayland_room après avoir remplacé le niveau : bascule la racine
 # et déplace les avatars distants vers un nouveau conteneur (l'ancien niveau
@@ -836,13 +879,24 @@ func _physics_process(delta: float) -> void:
 	_drain_avatar_send()
 	if not session_active or _level_root == null:
 		return
-	# Filet de sécurité : si le niveau de l'hôte n'arrive jamais (bake ou
-	# transfert cassé), les avatars finiraient invisibles. Passé un délai, on
-	# les préchauffe quand même (le niveau local est déjà stable).
-	if not _level_stable and _session_start_msec > 0 \
+	# Filet de sécurité join : si le niveau de l'hôte n'arrive jamais (bake
+	# impossible, transfert mort), entrer quand même dans la session après un
+	# délai SANS AUCUN chunk reçu — on jouera sur la map locale. Un transfert
+	# lent mais vivant (chunks réguliers) ne déclenche pas ce fallback.
+	if _pending_join and _last_level_chunk_msec > 0 \
+			and Time.get_ticks_msec() - _last_level_chunk_msec > JOIN_FALLBACK_MSEC:
+		push_warning("LAN: niveau hôte jamais reçu — join forcé sur la map locale")
+		_finalize_join()
+	# Filet de sécurité avatars : session rejointe mais niveau toujours pas
+	# stable → préchauffer quand même (le niveau local est déjà stable).
+	elif not _level_stable and _session_start_msec > 0 \
 			and Time.get_ticks_msec() - _session_start_msec > 10000:
 		mark_level_stable()
 	if multiplayer.get_peers().is_empty():
+		return
+	# Map de l'hôte encore en cours de réception : n'émettre aucune synchro —
+	# le joueur local n'est pas encore entré dans la session.
+	if _pending_join:
 		return
 	var player := _level_root.get_node_or_null("Player") as Node3D
 	if player == null:
@@ -872,7 +926,7 @@ func _update_cpu_capture_request() -> void:
 	if compositor == null or not compositor.has_method("set_cpu_capture_requested"):
 		return
 	var need := false
-	if session_active and windows_provider.is_valid() and not multiplayer.get_peers().is_empty() and not _video_mode:
+	if session_active and not _pending_join and windows_provider.is_valid() and not multiplayer.get_peers().is_empty() and not _video_mode:
 		for item in windows_provider.call():
 			if not item is Dictionary:
 				continue
@@ -2285,7 +2339,7 @@ func _process(_delta: float) -> void:
 # le client en pose une (rpc rare). Le récepteur affiche ce curseur par-dessus
 # l'overlay focus distant de la fenêtre quand le propriétaire le survole.
 func _sync_cursor_state(delta: float) -> void:
-	if not session_active or multiplayer.get_unique_id() == 0:
+	if not session_active or _pending_join or multiplayer.get_unique_id() == 0:
 		return
 	if compositor == null or not compositor.has_method("get_window_pointer"):
 		return
@@ -2509,6 +2563,11 @@ func _disconnect_session() -> void:
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
 	session_active = false
 	is_host = false
+	# Annuler un join en attente (déconnexion pendant le chargement de la
+	# map) et dégeler le joueur local.
+	_pending_join = false
+	if local_player != null and "input_locked" in local_player:
+		local_player.input_locked = false
 	_players.clear()
 	_emit_players()
 	# Dernier, une fois les avatars distants libérés et l'état réinitialisé :
