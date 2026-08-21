@@ -540,7 +540,10 @@ func _process(delta: float) -> void:
 
 	# Map de l'hôte en cours de réception (join LAN pas encore finalisé) :
 	# geler le joueur local — il n'est pas encore entré dans la session.
-	player.input_locked = lan.is_waiting_for_host_map()
+	# (`lan` est créé après un await dans _ready() : null pendant les
+	# premières frames.)
+	if lan != null:
+		player.input_locked = lan.is_waiting_for_host_map()
 	if player.input_locked:
 		return
 
