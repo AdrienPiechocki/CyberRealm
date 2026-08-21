@@ -21,7 +21,7 @@ extends Node3D
 
 var peer_id := 0
 var player_name := ""
-var local_player: Node3D = null
+var local_player: CharacterBody3D = null
 
 var _interp_pos := Vector3.ZERO
 var _interp_yaw := 0.0
@@ -303,10 +303,9 @@ func _physics_process(delta: float) -> void:
 func _update_animation(_delta: float) -> void:
 	if _anim_player == null:
 		return
-	var vel = local_player.velocity
+	var vel = _interp_pos - _prev_pos
 	var speed_h = Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
-	var speed_v = vel.y
-	_is_grounded = absf(speed_v) < 1.0
+	_is_grounded = local_player.is_on_floor()
 
 	var target: StringName = &""
 	if not _is_grounded and anim_jump != &"":
