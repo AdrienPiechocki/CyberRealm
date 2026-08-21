@@ -232,6 +232,15 @@ func _ready() -> void:
 	])
 	_rdi_enabled = OS.get_environment(RENDER_DEBUG_ENV) == "1"
 
+	# Plafond FPS surchargeable : le projet tourne à run/max_fps=120, ce qui
+	# met un GPU rapide à contribution maximale en permanence (rendre plus
+	# vite que l'écran ne sert qu'à chauffer). CYBERREALM_MAX_FPS=60/30
+	# réduit l'utilisation GPU sans toucher au projet ; 0 = illimité.
+	var max_fps_env := OS.get_environment("CYBERREALM_MAX_FPS")
+	if max_fps_env != "":
+		Engine.max_fps = int(max_fps_env)
+		print("[render] max_fps = ", Engine.max_fps)
+
 	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
 	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
 	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
