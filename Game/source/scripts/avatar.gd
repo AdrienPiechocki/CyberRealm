@@ -305,7 +305,7 @@ func _update_animation(_delta: float) -> void:
 		return
 	var vel := _interp_pos - _prev_pos
 	var speed_h = Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
-	var speed_v = vel.y
+	var speed_v = vel.y / maxf(_delta, 0.001)
 	_is_grounded = absf(speed_v) < 1.0
 	
 	var target: StringName = &""
