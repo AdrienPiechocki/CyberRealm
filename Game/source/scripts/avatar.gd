@@ -296,14 +296,15 @@ func _physics_process(delta: float) -> void:
 	rotation.y = _interp_yaw
 	rotation.x = _interp_pitch / pitch_treshold
 	_update_transparency()
-	_update_animation(local_player.get_velocity(), delta)
+	_update_animation(delta)
 	_prev_pos = _interp_pos
 
 
-func _update_animation(vel: Vector3, _delta: float) -> void:
+func _update_animation(_delta: float) -> void:
 	if _anim_player == null:
 		return
-	var speed_h = Vector2(vel.x, vel.z).length()
+	var vel := _interp_pos - _prev_pos
+	var speed_h = Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
 	var speed_v = vel.y
 	_is_grounded = speed_v > 0.0
 	
