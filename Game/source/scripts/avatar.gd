@@ -303,9 +303,9 @@ func _physics_process(delta: float) -> void:
 func _update_animation(_delta: float) -> void:
 	if _anim_player == null:
 		return
-	var vel := _interp_pos - _prev_pos
-	var speed_h := Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
-	var speed_v := vel.y
+	var vel = local_player.velocity
+	var speed_h = Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
+	var speed_v = vel.y
 	_is_grounded = absf(speed_v) < 1.0
 
 	var target: StringName = &""
