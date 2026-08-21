@@ -44,6 +44,7 @@ var _is_grounded := true
 var _current_anim: StringName = &""
 var _prewarm_ready := false
 var _prewarming := false
+var anim_speed := 1.0
 
 
 func setup(id: int, pname: String, color: Color) -> void:
@@ -312,19 +313,18 @@ func _update_animation(_delta: float) -> void:
 	_is_grounded = speed_v > 0.0
 	
 	var target: StringName = &""
-	var speed := 1.0
 	if not _is_grounded and anim_jump != &"":
 		target = anim_jump
-		speed = jump_speed
+		anim_speed = jump_speed
 	elif speed_h > walk_speed_threshold and anim_walk != &"":
 		target = anim_walk
-		speed = walk_speed
+		anim_speed = walk_speed
 	elif anim_idle != &"":
 		target = anim_idle
-		speed = idle_speed
+		anim_speed = idle_speed
 
 	if target != &"" and target != _current_anim:
-		_anim_player.play(target, -1, speed)
+		_anim_player.play(target, -1, anim_speed)
 		_current_anim = target
 
 
