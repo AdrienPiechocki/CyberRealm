@@ -294,6 +294,12 @@ func _ready() -> void:
 	# _poll_capture_pending() ouvrirait le sélecteur au lancement suivant alors
 	# qu'aucune source OBS ne demande de capture.
 	_cleanup_stale_capture_files()
+	# Purge les blobs LAN périmés dans user:// (app_userdata) : bakes de
+	# niveau/avatar transférés lors de sessions précédentes. Les IDs de pair
+	# étant aléatoires à chaque session, avatar_peer_<id>.scn n'est jamais
+	# réutilisé et s'accumule sinon indéfiniment. Au démarrage, aucune session
+	# LAN n'est active : ces fichiers sont forcément obsolètes.
+	_cleanup_stale_bake_files()
 	# Portails de capture pour OBS : xdg-desktop-portal (backend wlr) +
 	# xdg-desktop-portal-wlr, dans la session du jeu (socket cyberrealm-0).
 	# IMPORTANT : sans set_portal_backend, XDG_CURRENT_DESKTOP hérite de
@@ -895,6 +901,22 @@ func _poll_capture_pending() -> void:
 		return
 	if FileAccess.file_exists(pending) and not capture_selector.visible:
 		capture_selector.open_selector()
+
+# Fichiers de transfert LAN écrits dans user:// par LevelBaker/lan_manager :
+# lan_bake.scn (hôte, niveau baké), lan_level.scn (client, niveau reçu),
+# avatar_send.scn (hôte, avatar baké) et avatar_peer_<id>.scn (client, un
+# avatar reçu par pair). Purge au démarrage : aucune session LAN n'est active,
+# les IDs de pair (aléatoires) ne seront jamais réutilisés.
+func _cleanup_stale_bake_files() -> void:
+	var dir := DirAccess.open("user://")
+	if dir == null:
+		return
+	for name: String in ["lan_bake.scn", "lan_level.scn", "avatar_send.scn"]:
+		if dir.file_exists(name):
+			dir.remove(name)
+	for f in dir.get_files():
+		if f.begins_with("avatar_peer_") and f.ends_with(".scn"):
+			dir.remove(f)
 
 func _on_capture_selector_chosen(choice: String) -> void:
 	_write_capture_choice(choice)
