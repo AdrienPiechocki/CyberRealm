@@ -2005,9 +2005,14 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			(quad.mesh as QuadMesh).size = item.get("size", Vector2.ONE)
 		_sync_remote_quad_collision(quad)
 		quad.visible = bool(item.get("visible", true))
+		# Collision active seulement si la fenêtre est visible : `disabled`
+		# porte sur la CollisionShape3D enfant (le StaticBody3D n'a pas cette
+		# propriété).
 		var remote_body2: StaticBody3D = quad.get_node_or_null("RemoteCollision") as StaticBody3D
 		if remote_body2 != null:
-			remote_body2.disabled = not quad.visible
+			var col: CollisionShape3D = remote_body2.get_child(0) as CollisionShape3D
+			if col != null:
+				col.disabled = not quad.visible
 		# SHARE OFF : le quad redevient noir (placeholder) et le décodeur
 		# vidéo du flux est libéré. SHARE ON : les frames streamées (rpc
 		# _sync_window_texture / _sync_video_frame) textureront le quad.
