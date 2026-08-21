@@ -10,10 +10,10 @@ extends Node3D
 ## loggé ([scaler]) pour la traçabilité.
 
 const MIN_LEVEL := 0      # pleine résolution
-const MAX_LEVEL := 4      # = MIN_SCALE
+const MAX_LEVEL := 5      # = MIN_SCALE
 const MAX_SCALE := 1.0
 const STEP := 0.1
-const MIN_SCALE := 0.6    # MAX_SCALE - MAX_LEVEL * STEP
+const MIN_SCALE := 0.5    # MAX_SCALE - MAX_LEVEL * STEP
 const DOWN_FPS := 45.0    # sous ce seuil soutenu : descente d'un palier
 const UP_FPS := 58.0      # au-dessus de ce seuil soutenu : montée d'un palier
 const WINDOW_SEC := 2.0   # fenêtre de mesure des FPS

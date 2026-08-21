@@ -52,13 +52,15 @@ d'objets qui disparaissent à travers les ouvertures.
 
 Sur les GPU intégrés, le shading à pleine résolution peut saturer le GPU
 même après occlusion culling. Le jeu abaisse alors automatiquement la
-résolution interne du rendu 3D par paliers (1.0 → 0.6, upscale bilinéaire)
+résolution interne du rendu 3D par paliers (1.0 → 0.5, upscale bilinéaire)
 quand les FPS passent sous ~45 soutenus, et remonte au-dessus de ~58. Les
 changements sont loggés (`[scaler]`).
 
 - Désactivation : `CYBERREALM_ADAPTIVE_SCALE=0`.
 - Diagnostic rendu complet (FPS, draw calls, primitives, VRAM, échelle) :
   `CYBERREALM_RENDER_DEBUG=1` — utile pour comparer deux machines.
+- GPU intégrés très limites : essayer le rendu Mobile, moins coûteux en
+  fillrate que Forward+ : `./cyberrealm --rendering-method mobile`.
 
 ## Performance : captures de fenêtres adaptatives
 
