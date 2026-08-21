@@ -8,6 +8,9 @@ signal status_changed(text: String)
 signal players_changed(roster: Array)
 signal discovery_results(results: Array)
 signal level_apply_requested(scene: PackedScene, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3)
+# Déconnexion d'une session : le client doit retrouver SON niveau personnel
+# (wayland_room filtre : no-op si aucun niveau hôte n'avait été appliqué).
+signal local_level_restore_requested
 
 const PORT := 7777
 const DISCOVERY_PORT := 9999
@@ -2486,6 +2489,10 @@ func _disconnect_session() -> void:
 	is_host = false
 	_players.clear()
 	_emit_players()
+	# Dernier, une fois les avatars distants libérés et l'état réinitialisé :
+	# la restauration recrée le conteneur Players sous le niveau personnel via
+	# on_level_swapped().
+	local_level_restore_requested.emit()
 
 func _exit_tree() -> void:
 	_stop_encode_thread()
