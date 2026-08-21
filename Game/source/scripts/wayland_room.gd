@@ -27,6 +27,7 @@ var lan: Node # multijoueur LAN (hôte/join, avatars)
 var cmd: Node # drone de commandes IPC (cyberrealm-exec)
 
 const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
+const OCCLUSION_BAKER := preload("res://scripts/occlusion_baker.gd")
 const COMMAND_NODE := preload("res://scripts/command_node.gd")
 
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
@@ -185,6 +186,12 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	# avatar skinné custom combiné aux captures Wayland).
 	if lan:
 		lan.mark_level_stable()
+	# Occluders runtime pour la map appliquée (custom ou blob LAN) : réduit la
+	# charge GPU en intérieur (l'occlusion culling ne dessine plus ce qui est
+	# derrière les murs/gros volumes). No-op si la scène embarque déjà un
+	# OccluderInstance3D baké dans l'éditeur.
+	if OCCLUSION_BAKER.bake(new_level) > 0:
+		print("[occ] occlusion culling générée pour le niveau appliqué")
 	return true
 
 func _add_manager(script: Script, node_name: String) -> Node3D:
@@ -204,6 +211,10 @@ func _ready() -> void:
 	# le capturer) : référence pour restore_local_level() après une déconnexion
 	# LAN. À capturer avant toute session, rien n'a encore bougé le joueur.
 	_local_spawn_transform = {"pos": player.position, "rot": player.rotation, "scale": player.scale}
+	# Occluders runtime pour le niveau de boot (custom ou défaut). Le niveau
+	# est dans l'arbre : les transforms globaux sont valides.
+	if OCCLUSION_BAKER.bake($Level as Node3D) > 0:
+		print("[occ] occlusion culling générée pour le niveau de boot")
 
 	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
 	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
