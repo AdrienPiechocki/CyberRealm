@@ -124,10 +124,44 @@ static func _embed(r: Resource, cache: Dictionary) -> Resource:
 		var converted = _convert_texture(r, cache)
 		return converted
 	var dup := r.duplicate(true)
+	cache[r] = dup
 	if dup != null:
 		dup.resource_path = ""
-	cache[r] = dup
+		# duplicate(true) ne duplique PAS les ressources cachées dans des
+		# conteneurs internes non exposés en propriétés (ex. AnimationLibrary
+		# : ses Animations importées d'un GLB « Save to File » portent encore
+		# leur resource_path → dépendance externe au pack, fichier absent chez
+		# le pair). Balayage récursif : tout ce qui traîne est embed à son tour.
+		_embed_nested(dup, cache)
 	return dup
+
+# Embed récursivement les ressources référencées par une ressource dupliquée :
+# propriétés directes, éléments de Array et valeurs de Dictionary. Les scripts
+# sont exclus (identiques dans tous les builds).
+static func _embed_nested(res: Resource, cache: Dictionary) -> void:
+	for p in res.get_property_list():
+		var pname := String(p.get("name"))
+		if pname == "script":
+			continue
+		var v = res.get(pname)
+		if v is Resource:
+			res.set(pname, _embed(v, cache))
+		elif v is Array:
+			var changed := false
+			for i in v.size():
+				if v[i] is Resource:
+					v[i] = _embed(v[i], cache)
+					changed = true
+			if changed:
+				res.set(pname, v)
+		elif v is Dictionary:
+			var changed := false
+			for k in v:
+				if v[k] is Resource:
+					v[k] = _embed(v[k], cache)
+					changed = true
+			if changed:
+				res.set(pname, v)
 
 # Reconstruit un Mesh surface par surface : chaque matériau est deep-clone
 # et ses textures converties, garantissant aucune référence externe résiduelle.
