@@ -645,6 +645,16 @@ class WlrCompositor : public Node {
     double capture_frame_ms_ema = 0.0;
     int capture_pressure = 0;
     int capture_pressure_logged = -1;
+    // Début de l'accalmie courante (EMA < seuil bas) pour la descente
+    // hystérétique de pression : on ne relâche la cadence qu'après ~2 s
+    // de calme, sinon on oscille dégrader/relâcher à chaque frame.
+    uint64_t capture_below_since_us = 0;
+
+    // Plafond du poll DMA-BUF (ms) selon la pression : en régime normal le
+    // sync_file signale en <1 ms ; sous pression GPU on attend moins longtemps
+    // (un contenu pas tout à fait synchronisé = artefact transitoire sur un
+    // quad de fenêtre, préférable à un stall de 25 ms du thread principal).
+    int capture_poll_timeout_ms() const { return capture_pressure > 0 ? 4 : 10; }
 
     static void on_new_toplevel(wl_listener *listener, void *data);
     static void on_new_toplevel_decoration(wl_listener *listener, void *data);

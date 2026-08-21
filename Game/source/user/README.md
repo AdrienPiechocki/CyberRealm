@@ -66,7 +66,10 @@ Le compositeur recapture les fenêtres qui se redessinent (30/s, 60/s si
 partagées en vidéo). Sur un GPU intégré, ces captures entrent en concurrence
 avec le rendu du jeu : quand le temps de frame dépasse ~25 ms, la cadence
 passe automatiquement à 10/s (puis 5/s sous ~25 ms), et remonte dès que le
-GPU respire. Les changements sont loggés (`[capture] … pression N`).
+GPU respire. Deux garde-fous supplémentaires : au plus 2 captures de fenêtres
+non partagées par frame (les autres attendent la frame suivante), et l'attente
+GPU de chaque capture est plafonnée à 4 ms sous pression au lieu de 25 ms.
+Les changements sont loggés (`[capture] … pression N`).
 
 - Forcer la cadence normale (diagnostic) : `CYBERREALM_CAPTURE_UNTHROTTLED=1`.
 
