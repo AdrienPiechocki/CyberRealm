@@ -30,6 +30,14 @@ const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
 const OCCLUSION_BAKER := preload("res://scripts/occlusion_baker.gd")
 const COMMAND_NODE := preload("res://scripts/command_node.gd")
 
+# Diagnostic rendu (CYBERREALM_RENDER_DEBUG=1) : FPS + draw calls + primitives
+# + VRAM toutes les RENDER_DEBUG_PERIOD_SEC, pour comparer deux machines.
+const RENDER_DEBUG_ENV := "CYBERREALM_RENDER_DEBUG"
+const RENDER_DEBUG_PERIOD_SEC := 2.0
+var _rdi_enabled := false
+var _rdi_accum := 0.0
+var _rdi_frames := 0
+
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
 
@@ -216,6 +224,14 @@ func _ready() -> void:
 	if OCCLUSION_BAKER.bake($Level as Node3D) > 0:
 		print("[occ] occlusion culling générée pour le niveau de boot")
 
+	# Diagnostic rendu : GPU + méthode de rendu une fois, puis stats
+	# périodiques si CYBERREALM_RENDER_DEBUG=1.
+	print("[render] GPU: %s — méthode: %s" % [
+		RenderingServer.get_video_adapter_name(),
+		RenderingServer.get_current_rendering_method(),
+	])
+	_rdi_enabled = OS.get_environment(RENDER_DEBUG_ENV) == "1"
+
 	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
 	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
 	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
@@ -227,6 +243,9 @@ func _ready() -> void:
 	pins = _add_manager(preload("res://scripts/pinned_windows.gd"), "PinnedWindows")
 	fx = _add_manager(preload("res://scripts/effects.gd"), "Effects")
 	presenter = _add_manager(preload("res://scripts/present_manager.gd"), "PresentManager")
+	# Résolution 3D adaptative (iGPU) : doit tourner en continu, indépendant
+	# des autres sous-systèmes.
+	_add_manager(preload("res://scripts/adaptive_scaler.gd"), "AdaptiveScaler")
 
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d)
@@ -511,6 +530,21 @@ func _toggle_remote_pin(peer_id: int, wid: int) -> void:
 
 func _process(delta: float) -> void:
 	fx.process(delta)
+
+	# Diagnostic rendu périodique (comparaison entre machines).
+	if _rdi_enabled:
+		_rdi_accum += delta
+		_rdi_frames += 1
+		if _rdi_accum >= RENDER_DEBUG_PERIOD_SEC:
+			print("[render] fps=%d draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
+				int(_rdi_frames / _rdi_accum),
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
+				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576.0,
+				get_viewport().scaling_3d_scale,
+			])
+			_rdi_accum = 0.0
+			_rdi_frames = 0
 
 	# La présentation du viewport vers l'output headless (capture OBS) et la
 	# synchro du curseur sont gérées par PresentManager :
