@@ -178,6 +178,7 @@ private:
 	bool hw_av1 = false;
 	std::string codec_name;
 	int bitrate = 0;
+	int fps = 60;                        // CYBERREALM_SHARE_FPS (10-60)
 	std::atomic<bool> active{false};
 
 	// Ensemble des encodeurs (fenêtres partagées). Créés/supprimés par le
