@@ -60,6 +60,16 @@ changements sont loggés (`[scaler]`).
 - Diagnostic rendu complet (FPS, draw calls, primitives, VRAM, échelle) :
   `CYBERREALM_RENDER_DEBUG=1` — utile pour comparer deux machines.
 
+## Performance : captures de fenêtres adaptatives
+
+Le compositeur recapture les fenêtres qui se redessinent (30/s, 60/s si
+partagées en vidéo). Sur un GPU intégré, ces captures entrent en concurrence
+avec le rendu du jeu : quand le temps de frame dépasse ~25 ms, la cadence
+passe automatiquement à 10/s (puis 5/s sous ~25 ms), et remonte dès que le
+GPU respire. Les changements sont loggés (`[capture] … pression N`).
+
+- Forcer la cadence normale (diagnostic) : `CYBERREALM_CAPTURE_UNTHROTTLED=1`.
+
 ## Créer son avatar
 
 1. Placez vos assets 3D (`.glb`, `.fbx`, …) dans `res://user/assets/`.
