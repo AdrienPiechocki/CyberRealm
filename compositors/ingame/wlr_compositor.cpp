@@ -833,8 +833,21 @@ static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 // en retard), window_ready renvoie false et on saute la capture → la cadence
 // réelle retombe sans accumuler de retard, jamais plus vite que la vidéo ne
 // peut être livrée.
-static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US_FAST = 16'667; // ~60/s (fenêtres partagées vidéo)
-static constexpr uint64_t WINDOW_CAPTURE_INTERVAL_US_SLOW = 33'333;  // ~30/s (autres fenêtres dirty)
+//
+// Cadence adaptative : sur un iGPU, chaque capture (render pass EGL + poll
+// DMA-BUF jusqu'à 25 ms) se met en file derrière le rendu du jeu. Quand
+// plusieurs fenêtres se redessinent en continu (systemmonitor, vidéo,
+// curseur de terminal), la somme sature le GPU et les FPS du jeu s'effondrent
+// — chaque poll atteint alors son plafond de 25 ms (visible dans les logs
+// [diag] vulkan capture wait_gpu=25.x). On mesure donc l'EMA du temps de
+// frame principal et on allonge les intervalles par paliers : moins de
+// captures → GPU libéré → le temps de frame redescend. Les fenêtres
+// partagées en vidéo sont dégradées aussi, mais moins (le stream doit rester
+// fluide) ; CYBERREALM_CAPTURE_UNTHROTTLED=1 force le niveau 0 pour comparer.
+static constexpr double CAPTURE_PRESSURE_FRAME_MS = 25.0;   // < ~40 fps
+static constexpr double CAPTURE_CRITICAL_FRAME_MS = 40.0;   // < ~25 fps
+static constexpr uint64_t SLOW_INTERVALS_US[3] = {33'333, 100'000, 200'000}; // 30/10/5 par s
+static constexpr uint64_t FAST_INTERVALS_US[3] = {16'667, 33'333, 50'000};   // 60/30/20 par s
 
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
@@ -3765,6 +3778,37 @@ void WlrCompositor::_process(double delta) {
 
     timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
+
+    // EMA du temps de frame principal → niveau de pression de capture.
+    // Ce delta inclut le rendu Godot ET les captures de la frame précédente :
+    // c'est exactement la charge qu'on veut réguler.
+    {
+        uint64_t now_us = (uint64_t)now.tv_sec * 1000000u + (uint64_t)(now.tv_nsec / 1000);
+        if (capture_last_frame_us != 0) {
+            double dt_ms = (double)(now_us - capture_last_frame_us) / 1000.0;
+            // Ignore les deltas aberrants (pause, gdb, première frame après
+            // un long gel) pour ne pas fausser l'EMA.
+            if (dt_ms > 0.0 && dt_ms < 500.0) {
+                capture_frame_ms_ema = capture_frame_ms_ema == 0.0
+                    ? dt_ms : capture_frame_ms_ema * 0.9 + dt_ms * 0.1;
+            }
+        }
+        capture_last_frame_us = now_us;
+        if (OS::get_singleton()->get_environment("CYBERREALM_CAPTURE_UNTHROTTLED") == "1") {
+            capture_pressure = 0;
+        } else {
+            capture_pressure = capture_frame_ms_ema >= CAPTURE_CRITICAL_FRAME_MS ? 2 :
+                capture_frame_ms_ema >= CAPTURE_PRESSURE_FRAME_MS ? 1 : 0;
+        }
+        if (capture_pressure != capture_pressure_logged) {
+            UtilityFunctions::print("waylandgodot: [capture] frame=", capture_frame_ms_ema,
+                "ms -> pression ", capture_pressure, " (fenêtres non partagées: ",
+                SLOW_INTERVALS_US[capture_pressure] / 1000, " ms, partagées: ",
+                FAST_INTERVALS_US[capture_pressure] / 1000, " ms)");
+            capture_pressure_logged = capture_pressure;
+        }
+    }
+
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
         wlr_surface_send_frame_done_tree(ws.toplevel->base->surface, &now);
@@ -3811,13 +3855,14 @@ void WlrCompositor::_process(double delta) {
             // vidéo → surcharge du thread principal → lag du partage LAN,
             // risque de déconnexion.
             uint64_t now_us = (uint64_t)now.tv_sec * 1000000u + (uint64_t)(now.tv_nsec / 1000);
-            // Cadence par fenêtre : 60/s pour les fenêtres partagées vidéo
-            // (le stream doit rester fluide), 30/s pour les autres dirty
-            // (rafraîchissement des quads 3D, moitié moins de render passes →
-            // GPU et mémoire libres pour l'encodeur VAAPI).
-            uint64_t interval = WINDOW_CAPTURE_INTERVAL_US_SLOW;
+            // Cadence par fenêtre, modulée par la pression GPU : 60/s pour
+            // les fenêtres partagées vidéo (le stream doit rester fluide),
+            // 30/s pour les autres dirty (rafraîchissement des quads 3D).
+            // Sous pression, les deux cadences sont allongées par paliers
+            // (voir SLOW_INTERVALS_US / FAST_INTERVALS_US).
+            uint64_t interval = SLOW_INTERVALS_US[capture_pressure];
             if (video_share.is_shared(ws.id)) {
-                interval = WINDOW_CAPTURE_INTERVAL_US_FAST;
+                interval = FAST_INTERVALS_US[capture_pressure];
             }
             bool due = ws.dirty &&
                 (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= interval);
@@ -3906,7 +3951,11 @@ void WlrCompositor::_process(double delta) {
     // on_popup_commit, cette boucle n'est qu'un filet de sécurité pour les
     // sous-surfaces désynchronisées.
     frame_counter++;
-    if ((frame_counter & 1) == 0) {
+    // Sous pression GPU, ralentir aussi le filet de sécurité des popups
+    // (1 frame sur 2 → 1 sur 4/8) : chaque capture coûte un render pass +
+    // une sync DMA-BUF, précisément ce qu'on cherche à économiser.
+    uint64_t popup_modulo = capture_pressure >= 2 ? 8u : capture_pressure == 1 ? 4u : 2u;
+    if ((frame_counter % popup_modulo) == 0) {
         for (auto &pair : popups) {
             PopupState &ps = pair.second;
             if (ps.popup && ps.popup->base && ps.popup->base->surface) {
@@ -3936,7 +3985,10 @@ void WlrCompositor::_process(double delta) {
             ls.dirty = false;
             continue;
         }
-        if (!ls.dirty && (frame_counter % LAYER_SAFETY_RECAPTURE_INTERVAL) != 0) {
+        // Filet de sécurité espacé sous pression GPU (les commits posent
+        // dirty de toute façon, ce n'est qu'un rattrapage périodique).
+        uint64_t layer_interval = (uint64_t)LAYER_SAFETY_RECAPTURE_INTERVAL * (capture_pressure + 1);
+        if (!ls.dirty && (frame_counter % layer_interval) != 0) {
             continue;
         }
         if (!capture_surface(surf, ls.texture, ls.width, ls.height, ls.capture_cache)) {

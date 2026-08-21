@@ -636,6 +636,16 @@ class WlrCompositor : public Node {
     // popups dans _process (voir commentaire dans _process).
     uint64_t frame_counter = 0;
 
+    // Cadence de capture adaptative : EMA du temps de frame principal (ms)
+    // et niveau de pression 0..2 qui allonge les intervalles de recapture
+    // quand l'iGPU sature (le thread principal passe son temps dans les
+    // poll DMA-BUF des captures au lieu de rendre le jeu). Voir les
+    // constantes CAPTURE_PRESSURE_* dans wlr_compositor.cpp.
+    uint64_t capture_last_frame_us = 0;
+    double capture_frame_ms_ema = 0.0;
+    int capture_pressure = 0;
+    int capture_pressure_logged = -1;
+
     static void on_new_toplevel(wl_listener *listener, void *data);
     static void on_new_toplevel_decoration(wl_listener *listener, void *data);
     static void on_toplevel_decoration_request_mode(wl_listener *listener, void *data);
