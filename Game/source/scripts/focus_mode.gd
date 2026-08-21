@@ -118,6 +118,62 @@ var remote_focus_peer := -1
 var remote_focus_wid := -1
 var remote_focus_rect: TextureRect = null
 
+# ── Occlusion du monde pendant le focus ──────────────────────────────
+# L'overlay 2D plein écran couvre toute la vue : la scène 3D derrière est
+# dessinée pour rien. Un box occludeur fin, posé devant la caméra et
+# dimensionné pour couvrir tout le frustum, fait culler par le rasterizer
+# d'occlusion (use_occlusion_culling) tout ce qui se trouve derrière
+# l'overlay. Un BOX plutôt qu'un quad : volume convexe, aucun piège de
+# winding, occlusion valide quel que soit l'angle.
+
+const OCCLUDER_DIST := 0.12 # m devant la caméra (> near plane par défaut 0.05)
+const OCCLUDER_MARGIN := 1.4 # marge de couverture du frustum
+const OCCLUDER_THICKNESS := 0.02 # m, épaisseur du box
+
+var _world_occluder: OccluderInstance3D
+
+func _ensure_world_occluder() -> void:
+	if _world_occluder != null and is_instance_valid(_world_occluder):
+		return
+	var box := BoxOccluder3D.new()
+	box.size = Vector3(1.0, 1.0, OCCLUDER_THICKNESS)
+	_world_occluder = OccluderInstance3D.new()
+	_world_occluder.occluder = box
+	_world_occluder.visible = false
+	add_child(_world_occluder)
+
+# Repositionne l'occludeur devant la caméra courante. Appelé chaque frame en
+# focus : la caméra est normalement figée par le focus, mais rester correct
+# si elle bouge ne coûte rien.
+func _update_world_occluder() -> void:
+	if _world_occluder == null or not _world_occluder.visible:
+		return
+	var cam := player.get_node_or_null("Camera3D") as Camera3D
+	if cam == null:
+		return
+	var vp_size := get_viewport().get_visible_rect().size
+	var aspect := vp_size.x / maxf(vp_size.y, 1.0)
+	var half_fov := deg_to_rad(cam.fov) * 0.5
+	var vh: float
+	var vw: float
+	if cam.keep_aspect == Camera3D.KEEP_WIDTH:
+		# fov horizontal : la hauteur se déduit de l'aspect.
+		vw = 2.0 * OCCLUDER_DIST * tan(half_fov)
+		vh = vw / maxf(aspect, 0.001)
+	else:
+		# KEEP_HEIGHT (défaut) : fov vertical.
+		vh = 2.0 * OCCLUDER_DIST * tan(half_fov)
+		vw = vh * aspect
+	var box := _world_occluder.occluder as BoxOccluder3D
+	box.size = Vector3(vw * OCCLUDER_MARGIN, vh * OCCLUDER_MARGIN, OCCLUDER_THICKNESS)
+	_world_occluder.global_transform = Transform3D(
+		cam.global_transform.basis,
+		cam.global_position - cam.global_transform.basis.z.normalized() * OCCLUDER_DIST)
+
+func _process(_delta: float) -> void:
+	if focus_mode:
+		_update_world_occluder()
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -201,6 +257,10 @@ func enter_focus(id: int) -> void:
 	var entering := not focus_mode
 	focus_mode = true
 	focus_stack.append(id)
+	# L'overlay couvre la vue : activer l'occludeur plein écran pour que
+	# l'occlusion culling retire la scène 3D derrière.
+	_ensure_world_occluder()
+	_world_occluder.visible = true
 
 	var info: Dictionary = windows.get_quad_info(id)
 	var st := _state(id)
@@ -264,6 +324,9 @@ func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
 	rect.z_index = FOCUS_Z_BASE + 1
 	ui.add_child(rect)
 	remote_focus_rect = rect
+	# Idem focus local : l'overlay plein écran masque la scène 3D.
+	_ensure_world_occluder()
+	_world_occluder.visible = true
 	player.focus_mode_active = true
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 
@@ -685,6 +748,10 @@ func _clear_popup_overlays() -> void:
 	focus_popup_rects.clear()
 
 func _reset_focus_ui() -> void:
+	# Sortie du mode focus : la scène 3D redevient visible, retirer
+	# l'occludeur plein écran.
+	if _world_occluder != null and is_instance_valid(_world_occluder):
+		_world_occluder.visible = false
 	_clear_popup_overlays()
 	popup_drag_id = -1
 	popup_buttons_down = 0
