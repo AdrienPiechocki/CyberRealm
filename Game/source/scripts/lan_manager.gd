@@ -238,6 +238,11 @@ var _responder: PacketPeerUDP = null # host : répond aux requêtes de découver
 var _scanner: PacketPeerUDP = null   # client : scanne le réseau
 var _scanning := false
 var _scan_results: Array = []
+# Génération du scan en cours : incrémentée à chaque discover_games() et à
+# chaque fermeture du scanner (déconnexion). Une coroutine discover_games()
+# réveillée après un await vérifie sa génération : périmée → elle abandonne
+# sans toucher au scanner courant (fermé, ou remplacé par un nouveau scan).
+var _scan_generation := 0
 
 func setup(level_root: Node3D, name: String, color: Color) -> void:
 	_level_root = level_root
@@ -2188,6 +2193,8 @@ func discover_games() -> void:
 	if _scanning:
 		return
 	_scanning = true
+	_scan_generation += 1
+	var generation := _scan_generation
 	_scan_results.clear()
 	_scanner = PacketPeerUDP.new()
 	_scanner.set_broadcast_enabled(true)
@@ -2205,6 +2212,12 @@ func discover_games() -> void:
 	var elapsed := 0.0
 	while elapsed < DISCOVERY_TIMEOUT:
 		await get_tree().create_timer(DISCOVERY_RETRY_INTERVAL).timeout
+		# Déconnexion (ou quit) pendant l'attente : _disconnect_session() a
+		# fermé/vidé le scanner — abandonner sans y toucher (sinon crash sur
+		# null et écrasement du statut "Disconnected"). Un scan relancé
+		# entre-temps a incrémenté la génération : cette instance est périmée.
+		if generation != _scan_generation or _scanner == null:
+			return
 		elapsed += DISCOVERY_RETRY_INTERVAL
 		_poll_scanner()
 		_send_broadcast_queries(_scanner)
@@ -2476,6 +2489,10 @@ func _disconnect_session() -> void:
 	_last_texture_versions.clear()
 	_stop_responder()
 	if _scanner:
+		# Invalider la coroutine discover_games() en attente AVANT de fermer :
+		# à son réveil elle verra une génération périmée et n'utilisera pas ce
+		# peer (set_dest_address sur un PacketPeerUDP fermé/null = crash).
+		_scan_generation += 1
 		_scanner.close()
 		_scanner = null
 		_scanning = false
