@@ -13,7 +13,7 @@ config_version=5
 config/name="CyberRealm"
 run/main_scene="uid://drgt1wfckhxn1"
 config/features=PackedStringArray("4.7", "Forward Plus")
-run/max_fps=120
+run/max_fps=60
 
 [display]
 
