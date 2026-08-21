@@ -1020,11 +1020,12 @@ public:
     // session (pas d'adressage fenêtre→flux en Wayland). start_audio_share()
     // lance la capture en thread ; poll_audio_packet() renvoie un paquet
     // OPUS de 20 ms dès qu'il est disponible (sinon null) ; audio_decode()
-    // décode un paquet OPUS reçu → PCM s16 interleaved stéréo 48 kHz.
+    // décode un paquet OPUS reçu ([seq][payload]) → PCM s16 interleaved
+    // stéréo 48 kHz, avec concealment des pertes (suivi par sender_id).
     bool start_audio_share();
     void stop_audio_share();
     Dictionary poll_audio_packet();
-    PackedByteArray audio_decode(const PackedByteArray &packet);
+    PackedByteArray audio_decode(const PackedByteArray &packet, int sender_id);
 
     // --- Partage vidéo (stream LAN) ------------------------------------
     // VideoShare (encodeur vidéo inter-frame, remplacement du JPEG par-frame).

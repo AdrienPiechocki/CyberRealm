@@ -345,7 +345,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
     ClassDB::bind_method(D_METHOD("stop_audio_share"), &WlrCompositor::stop_audio_share);
     ClassDB::bind_method(D_METHOD("poll_audio_packet"), &WlrCompositor::poll_audio_packet);
-    ClassDB::bind_method(D_METHOD("audio_decode", "packet"), &WlrCompositor::audio_decode);
+    ClassDB::bind_method(D_METHOD("audio_decode", "packet", "sender_id"), &WlrCompositor::audio_decode);
     ClassDB::bind_method(D_METHOD("video_share_start", "codec", "bitrate"), &WlrCompositor::video_share_start);
     ClassDB::bind_method(D_METHOD("video_share_stop"), &WlrCompositor::video_share_stop);
     ClassDB::bind_method(D_METHOD("video_share_active"), &WlrCompositor::video_share_active);
@@ -5674,8 +5674,8 @@ Dictionary WlrCompositor::poll_audio_packet() {
     return result;
 }
 
-PackedByteArray WlrCompositor::audio_decode(const PackedByteArray &packet) {
-    return audio_share.decode_opus_packet(packet);
+PackedByteArray WlrCompositor::audio_decode(const PackedByteArray &packet, int sender_id) {
+    return audio_share.decode_opus_packet(packet, sender_id);
 }
 
 // ---------------------------------------------------------------------
