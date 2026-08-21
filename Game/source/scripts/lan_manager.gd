@@ -1563,7 +1563,7 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 		return
 	if bytes.is_empty() or compositor == null:
 		return
-	var pcm: PackedByteArray = compositor.audio_decode(bytes)
+	var pcm: PackedByteArray = compositor.audio_decode(bytes, from)
 	if pcm.is_empty():
 		if not _audio_decode_warned:
 			_audio_decode_warned = true

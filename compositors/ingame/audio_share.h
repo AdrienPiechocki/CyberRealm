@@ -75,11 +75,15 @@ public:
 
 	// Encode un paquet OPUS (20 ms, stéréo 48 kHz) mélangé depuis tous les
 	// rings. Renvoie false si moins de 20 ms de données sont disponibles.
+	// Format émis : [seq u32 LE][payload OPUS] — la séquence sert à la PLC
+	// côté récepteur.
 	bool poll_opus_packet(PackedByteArray &r_out);
 
-	// Décode un paquet OPUS → PCM s16 interleaved (stéréo 48 kHz). Renvoie un
-	// tableau vide si le paquet est invalide.
-	PackedByteArray decode_opus_packet(const PackedByteArray &p_in);
+	// Décode un paquet OPUS ([seq u32 LE][payload]) → PCM s16 interleaved
+	// (stéréo 48 kHz). p_sender identifie l'émetteur (suivi de séquence par
+	// peer) ; les pertes détectées sont comblées par la concealment OPUS.
+	// Renvoie un tableau vide si le paquet est invalide.
+	PackedByteArray decode_opus_packet(const PackedByteArray &p_in, int p_sender);
 
 	// Callbacks statiques PipeWire (publiques : référencées par les tables de
 	// pointeurs const au namespace scope). Les types spa sont qualifiés avec
@@ -145,6 +149,11 @@ private:
 	// Encoder / decoder OPUS.
 	void *opus_encoder = nullptr; // OpusEncoder*
 	void *opus_decoder = nullptr; // OpusDecoder*
+
+	// Numérotation des paquets émis (poll_opus_packet, thread du jeu) et
+	// dernier seq vu par émetteur (decode_opus_packet, thread du jeu).
+	uint32_t tx_seq = 0;
+	std::unordered_map<int, uint32_t> rx_last_seq;
 };
 
 } // namespace godot

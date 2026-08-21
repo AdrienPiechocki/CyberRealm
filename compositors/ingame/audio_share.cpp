@@ -10,6 +10,7 @@
 #include <opus/opus.h>
 
 #include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
@@ -23,6 +24,15 @@ static constexpr uint32_t AUDIO_RATE = 48000;
 static constexpr uint32_t AUDIO_CHANNELS = 2;
 static constexpr int OPUS_FRAME_SIZE = 960; // 20 ms à 48 kHz
 static constexpr size_t RING_CAPACITY_FRAMES = AUDIO_RATE; // 1 s de buffer
+// Débit OPUS stéréo : 160 kbps ≈ transparent (musique), ~20 Ko/s sur le LAN.
+static constexpr int OPUS_BITRATE = 160000;
+// Complexité max : meilleur ratio qualité/débit de l'encodeur (coût CPU ok).
+static constexpr int OPUS_COMPLEXITY = 10;
+// PLC : trames maximales régénérées pour combler un trou réseau (200 ms).
+static constexpr int MAX_PLC_FRAMES = 10;
+// Écart de séquence au-delà duquel on considère une resynchronisation
+// (nouvelle session d'émission) plutôt qu'une rafale de pertes.
+static constexpr int32_t SEQ_RESYNC_GAP = 1000;
 
 static const struct pw_registry_events g_registry_events = {
 	.version = PW_VERSION_REGISTRY_EVENTS,
@@ -116,6 +126,8 @@ bool AudioShare::start() {
 	}
 	install_crash_backtrace();
 	pw_init(nullptr, nullptr);
+	tx_seq = 0;
+	rx_last_seq.clear();
 
 	thread_loop = pw_thread_loop_new("cyberrealm-audio-share", nullptr);
 	if (!thread_loop) {
@@ -199,6 +211,7 @@ void AudioShare::stop() {
 	client_pids.clear();
 	node_clients.clear();
 	target_pids.clear();
+	rx_last_seq.clear();
 	if (core) {
 		pw_core_disconnect((pw_core *)core);
 		core = nullptr;
@@ -526,18 +539,21 @@ void AudioShare::create_stream_for(uint32_t node_id, int pid) {
 	streams.push_back(s);
 }
 
-// Limiteur simple : ~1,4 dB de marge + clamp à ±1. Le mélange de plusieurs
-// apps peut dépasser 0 dBFS ; sans limite, le décodage OPUS en s16 côté
-// récepteur WRAP au-delà de ±32767 → distorsion dure (signal « saturé »).
+// Limiteur doux (soft-knee) : linéaire sous le seuil, saturation tanh
+// au-dessus, sortie toujours dans [-1, +1]. Le mélange de plusieurs apps peut
+// dépasser 0 dBFS ; un clamp dur crée une distorsion harmonique âpre (signal
+// « saturé »), le knee doux comprime les crêtes de façon quasi inaudible.
+// Continuité C0 et C1 au seuil : y = s·(k + (1-k)·tanh((|v|-k)/(1-k))).
+static constexpr float LIMIT_KNEE = 0.7f;
+
 static float limit_sample(float v) {
-	v *= 0.85f;
-	if (v > 1.0f) {
-		return 1.0f;
+	float a = std::fabs(v);
+	if (a <= LIMIT_KNEE) {
+		return v;
 	}
-	if (v < -1.0f) {
-		return -1.0f;
-	}
-	return v;
+	const float s = v > 0.0f ? 1.0f : -1.0f;
+	return s * (LIMIT_KNEE +
+			(1.0f - LIMIT_KNEE) * std::tanh((a - LIMIT_KNEE) / (1.0f - LIMIT_KNEE)));
 }
 
 // Défini dans le .cpp (où stream.h est inclus) : callback libre, le type réel
@@ -619,7 +635,9 @@ bool AudioShare::poll_opus_packet(PackedByteArray &r_out) {
 			return false;
 		}
 		opus_encoder_ctl(static_cast<OpusEncoder *>(opus_encoder),
-				OPUS_SET_BITRATE(96000));
+				OPUS_SET_BITRATE(OPUS_BITRATE));
+		opus_encoder_ctl(static_cast<OpusEncoder *>(opus_encoder),
+				OPUS_SET_COMPLEXITY(OPUS_COMPLEXITY));
 	}
 	// Mélange : somme des rings de tous les streams actifs, clampé. Un stream
 	// qui n'a pas encore 20 ms (démarrage) est compté comme silence.
@@ -651,20 +669,28 @@ bool AudioShare::poll_opus_packet(PackedByteArray &r_out) {
 		v = limit_sample(v);
 	}
 
-	uint8_t packet[1500];
+	// Paquet émis = [seq u32 LE][payload OPUS] : la séquence permet au
+	// récepteur de détecter les pertes (canal non fiable) et d'appliquer la
+	// concealment OPUS au lieu de laisser un trou sec de 20 ms par paquet.
+	uint8_t packet[4 + 1500];
+	packet[0] = (uint8_t)(tx_seq & 0xFF);
+	packet[1] = (uint8_t)((tx_seq >> 8) & 0xFF);
+	packet[2] = (uint8_t)((tx_seq >> 16) & 0xFF);
+	packet[3] = (uint8_t)((tx_seq >> 24) & 0xFF);
+	tx_seq++;
 	int written = opus_encode_float(static_cast<OpusEncoder *>(opus_encoder),
-			frames.data(), OPUS_FRAME_SIZE, packet, (opus_int32)sizeof(packet));
+			frames.data(), OPUS_FRAME_SIZE, packet + 4, (opus_int32)(sizeof(packet) - 4));
 	if (written < 0) {
 		return false;
 	}
-	r_out.resize(written);
-	memcpy(r_out.ptrw(), packet, (size_t)written);
+	r_out.resize(4 + written);
+	memcpy(r_out.ptrw(), packet, (size_t)(4 + written));
 	return true;
 }
 
-PackedByteArray AudioShare::decode_opus_packet(const PackedByteArray &p_in) {
+PackedByteArray AudioShare::decode_opus_packet(const PackedByteArray &p_in, int p_sender) {
 	PackedByteArray out;
-	if (p_in.is_empty()) {
+	if (p_in.size() < 5) { // 4 octets de seq + au moins 1 octet d'OPUS
 		return out;
 	}
 	if (!opus_decoder) {
@@ -675,18 +701,55 @@ PackedByteArray AudioShare::decode_opus_packet(const PackedByteArray &p_in) {
 			return out;
 		}
 	}
-	const int samples = OPUS_FRAME_SIZE * AUDIO_CHANNELS;
-	out.resize(samples * (int)sizeof(int16_t));
-	opus_int16 *pcm = reinterpret_cast<opus_int16 *>(out.ptrw());
-	int decoded = opus_decode(static_cast<OpusDecoder *>(opus_decoder),
-			reinterpret_cast<const unsigned char *>(p_in.ptr()), (opus_int32)p_in.size(),
-			pcm, OPUS_FRAME_SIZE, 0);
-	if (decoded < 0) {
-		out.resize(0);
-		return out;
+	const uint8_t *in = reinterpret_cast<const uint8_t *>(p_in.ptr()) + 4;
+	const opus_int32 in_len = (opus_int32)p_in.size() - 4;
+	const uint32_t seq = (uint32_t)p_in[0] | ((uint32_t)p_in[1] << 8)
+		| ((uint32_t)p_in[2] << 16) | ((uint32_t)p_in[3] << 24);
+
+	// Détection des pertes par émetteur (plusieurs peers peuvent partager en
+	// même temps). Différence wrap-aware : > 1 = pertes à combler par PLC ;
+	// ≤ 0 ou écart énorme = doublon ou nouvelle session → resynchronisation.
+	uint32_t last = 0;
+	bool first = true;
+	auto it = rx_last_seq.find(p_sender);
+	if (it != rx_last_seq.end()) {
+		last = it->second;
+		first = false;
 	}
-	// decoded = nombre de frames décodées (<= OPUS_FRAME_SIZE).
-	out.resize(decoded * AUDIO_CHANNELS * (int)sizeof(int16_t));
+	const int32_t diff = (int32_t)(seq - last);
+	int concealed = 0;
+	if (!first && diff > 1 && diff < SEQ_RESYNC_GAP) {
+		concealed = diff - 1;
+		if (concealed > MAX_PLC_FRAMES) {
+			concealed = MAX_PLC_FRAMES;
+		}
+	}
+	rx_last_seq[p_sender] = seq;
+
+	std::vector<opus_int16> pcm((size_t)(concealed + 1) * OPUS_FRAME_SIZE * AUDIO_CHANNELS);
+	// PLC : le décodeur régénère une continuation plausible du signal
+	// (décroissance vers silence), bien plus douce qu'un trou numérique.
+	for (int i = 0; i < concealed; i++) {
+		int d = opus_decode(static_cast<OpusDecoder *>(opus_decoder), nullptr, 0,
+				pcm.data() + (size_t)i * OPUS_FRAME_SIZE * AUDIO_CHANNELS,
+				OPUS_FRAME_SIZE, 0);
+		if (d < 0) {
+			concealed = i;
+			break;
+		}
+	}
+	int decoded = opus_decode(static_cast<OpusDecoder *>(opus_decoder), in, in_len,
+			pcm.data() + (size_t)concealed * OPUS_FRAME_SIZE * AUDIO_CHANNELS,
+			OPUS_FRAME_SIZE, 0);
+	if (decoded < 0) {
+		if (concealed == 0) {
+			return out;
+		}
+		decoded = 0; // on garde quand même la PLC produite
+	}
+	const size_t frames_out = (size_t)concealed * OPUS_FRAME_SIZE + (size_t)decoded;
+	out.resize((int)(frames_out * AUDIO_CHANNELS * sizeof(int16_t)));
+	memcpy(out.ptrw(), pcm.data(), frames_out * AUDIO_CHANNELS * sizeof(int16_t));
 	return out;
 }
 
