@@ -49,7 +49,7 @@ var pins = null
 var focus = null
 # Joueur local (posé par wayland_room) : transmis aux avatars distants pour la
 # transparence de proximité (fondus sous 1 m).
-var local_player: Node3D = null
+var local_player: CharacterBody3D = null
 
 var _level_root: Node3D = null
 var _players_container: Node3D = null
