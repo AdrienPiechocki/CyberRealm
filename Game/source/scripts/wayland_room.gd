@@ -46,6 +46,12 @@ const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
 const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
 
 var _level_path := ""
+# Vrai tant que le niveau affiché est celui de l'hôte LAN (apply_host_level) :
+# à la déconnexion, le joueur doit retrouver SON niveau personnel.
+var _level_swapped := false
+# Transform d'origine du Player dans le niveau personnel (capturé au boot,
+# avant toute session LAN) : sert de spawn au retour après déconnexion.
+var _local_spawn_transform := {}
 
 const POLKIT_AGENT_CANDIDATES := [
 	"/usr/lib/polkit-kde-authentication-agent-1",
@@ -98,6 +104,35 @@ func _bake_level_for_lan() -> Dictionary:
 # l'environnement change ; le joueur est repositionné au spawn de l'hôte
 # (transmis explicitement — le blob baked exclut le Player).
 func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO, spawn_rotation: Vector3 = Vector3.ZERO, spawn_scale: Vector3 = Vector3.ONE) -> bool:
+	if _swap_level(scene, spawn_pos, spawn_rotation, spawn_scale, true):
+		_level_swapped = true
+		return true
+	return false
+
+# Retour au niveau personnel du joueur après une déconnexion LAN : même
+# mécanique que apply_host_level, mais avec SA scène d'origine (_level_path)
+# et SON spawn d'origine. No-op si aucun niveau hôte n'a été appliqué (hôte,
+# connexion échouée avant transfert…) — le joueur est déjà chez lui.
+func restore_local_level() -> bool:
+	if not _level_swapped:
+		return true
+	var scene: PackedScene = load(_level_path)
+	if scene == null:
+		scene = load(DEFAULT_LEVEL_PATH)
+	if scene == null:
+		push_error("Impossible de restaurer le niveau personnel '%s'" % _level_path)
+		return false
+	var t: Dictionary = _local_spawn_transform
+	if _swap_level(scene, t.get("pos", Vector3.ZERO), t.get("rot", Vector3.ZERO), t.get("scale", Vector3.ONE), false):
+		_level_swapped = false
+		return true
+	return false
+
+# Remplace le niveau courant par `scene` en réutilisant le Player local, puis
+# le repositionne au transform transmis. `use_scene_player_spawn` : si vrai et
+# qu'aucun spawn n'est transmis, utiliser celui du Player embarqué dans la
+# scène (comportement apply_host_level) ; sinon le transform passé fait foi.
+func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3, use_scene_player_spawn: bool) -> bool:
 	if scene == null:
 		return false
 	var old_level := get_node_or_null("Level") as Node3D
@@ -107,21 +142,20 @@ func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO, spa
 	if new_level == null:
 		return false
 	var old_player := old_level.get_node_or_null("Player")
-	var host_player := new_level.get_node_or_null("Player")
-	if host_player is Node3D and spawn_pos == Vector3.ZERO:
-		spawn_pos = (host_player as Node3D).position
-		spawn_rotation = (host_player as Node3D).rotation
-		spawn_scale = (host_player as Node3D).scale
+	var scene_player := new_level.get_node_or_null("Player")
+	if use_scene_player_spawn and scene_player is Node3D and spawn_pos == Vector3.ZERO:
+		spawn_pos = (scene_player as Node3D).position
+		spawn_rotation = (scene_player as Node3D).rotation
+		spawn_scale = (scene_player as Node3D).scale
 	if old_player != null:
-		if host_player != null:
-			new_level.remove_child(host_player)
-			host_player.queue_free()
+		if scene_player != null:
+			new_level.remove_child(scene_player)
+			scene_player.queue_free()
 		old_player.get_parent().remove_child(old_player)
 		new_level.add_child(old_player)
-		# Le joueur local spawn au transform du niveau LOADÉ (hôte), pas de sa
-		# propre map. Le _ready() du Player se re-déclenche au re-parenting et
-		# ré-écrase spawn_pos (position de SA map) : on re-pose le vrai spawn
-		# du niveau loadé pour que les respawns utilisent le bon transform.
+		# Le _ready() du Player se re-déclenche au re-parenting et ré-écrase
+		# spawn_pos avec la position COURANTE : on re-pose explicitement le
+		# spawn du niveau appliqué pour que les respawns l'utilisent.
 		old_player.position = spawn_pos
 		old_player.rotation = spawn_rotation
 		old_player.scale = spawn_scale
@@ -166,6 +200,11 @@ func _init() -> void:
 	_load_level()
 
 func _ready() -> void:
+	# Spawn d'origine du joueur dans SON niveau (le Player._ready() vient de
+	# le capturer) : référence pour restore_local_level() après une déconnexion
+	# LAN. À capturer avant toute session, rien n'a encore bougé le joueur.
+	_local_spawn_transform = {"pos": player.position, "rot": player.rotation, "scale": player.scale}
+
 	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
 	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
 	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
@@ -284,6 +323,7 @@ func _ready() -> void:
 	lan.setup($Level, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
 	lan.level_bake_provider = _bake_level_for_lan
 	lan.level_apply_requested.connect(apply_host_level)
+	lan.local_level_restore_requested.connect(restore_local_level)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_host_requested.connect(lan.host_game)
 	pause_menu.lan_join_requested.connect(lan.join_game)
