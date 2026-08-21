@@ -538,6 +538,12 @@ func _process(delta: float) -> void:
 	if pause_menu.visible:
 		return
 
+	# Map de l'hôte en cours de réception (join LAN pas encore finalisé) :
+	# geler le joueur local — il n'est pas encore entré dans la session.
+	player.input_locked = lan.is_waiting_for_host_map()
+	if player.input_locked:
+		return
+
 	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
 		layers.deactivate_layer_interact()
 		window_menu.toggle_menu()

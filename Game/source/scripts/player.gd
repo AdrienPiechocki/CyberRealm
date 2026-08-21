@@ -19,6 +19,10 @@ var layer_pointer_active := false
 # Positionné par wayland_room.gd : vrai tant que le session est verrouillé.
 # Empêche la recapture de la souris (MOUSE_MODE_CAPTURED) pendant le lockscreen.
 var session_locked := false
+# Positionné par wayland_room.gd : vrai pendant le chargement de la map LAN
+# (join pas encore finalisé). Gèle déplacement et caméra ; Escape (menu pause)
+# reste fonctionnel pour pouvoir annuler la connexion.
+var input_locked := false
 # Référence paresseuse au compositeur, pour connaître la layer surface qui
 # détient le focus clavier (rofi, menu waybar...).
 var _compositor: WlrCompositor = null
@@ -48,7 +52,7 @@ func _physics_process(delta):
 	if position.y <= -MaxDepth:
 		position = spawn_pos
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy():
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -82,6 +86,10 @@ func _input(event):
 	if $PauseMenuLayer/PauseMenu.visible:
 		return
 	if $CaptureSelectorLayer/CaptureSelector.visible:
+		return
+	# Chargement de la map LAN : tout l'input jeu est gelé (déplacement,
+	# caméra, clics) sauf Escape pour ouvrir le menu pause (annuler).
+	if input_locked and not event.is_action_pressed("pause_menu"):
 		return
 	if event.is_action_pressed("pause_menu") and not interact_mode_active:
 		if session_locked:
