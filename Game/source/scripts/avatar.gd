@@ -12,13 +12,10 @@ extends Node3D
 @export_group("Animations")
 ## Nom de la jouée quand l'avatar est immobile.
 @export var anim_idle: StringName = &""
-@export var idle_speed := 1.0
 ## Nom de l'animation jouée quand l'avatar se déplace au sol.
 @export var anim_walk: StringName = &""
-@export var walk_speed := 1.0
 ## Nom de l'animation jouée quand l'avatar est en l'air (chute / saut).
 @export var anim_jump: StringName = &""
-@export var jump_speed := 1.0
 ## Seuil de vitesse (m/s) en dessous duquel on est considéré immobile.
 @export var walk_speed_threshold := 0.1
 
