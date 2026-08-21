@@ -29,6 +29,25 @@ jeu au démarrage.
   avec une collision sont traversables (utilisez `StaticBody3D`/`CSGShape3D`
   pour les murs, comme dans le niveau d'exemple).
 
+## Performance : occlusion culling
+
+Pour les maps denses (intérieurs à pièces multiples), le jeu génère
+**automatiquement** un occludeur basé sur la géométrie réelle du niveau au
+chargement (boot, et aussi sur les maps reçues en LAN) : ce qui se trouve
+derrière les murs et les gros objets n'est plus dessiné par le GPU. Une
+arche ou une porte ne masque que là où il y a de la matière — pas
+d'objets qui disparaissent à travers les ouvertures.
+
+- Aucune action requise : la génération copie les triangles des meshes
+  opaques (budget ~120 000 triangles, plus gros objets d'abord, ~20 ms).
+- **Bake manuel possible** : si vous ajoutez vous-même un `OccluderInstance3D`
+  baké dans l'éditeur (« Bake Occlusion »), il est respecté et la génération
+  auto est sautée.
+- Diagnostic : lancez le jeu avec `CYBERREALM_OCC_DEBUG=1` pour voir le
+  volume d'occludeur généré.
+- Fonctionne avec le rendu Forward+ (défaut du projet) ; sans effet en
+  Compatibility.
+
 ## Créer son avatar
 
 1. Placez vos assets 3D (`.glb`, `.fbx`, …) dans `res://user/assets/`.
