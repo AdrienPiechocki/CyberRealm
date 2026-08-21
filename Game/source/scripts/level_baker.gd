@@ -88,6 +88,17 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 				if arr[i] is Resource:
 					arr[i] = _embed(arr[i], cache)
 			node.set(pname, arr)
+		elif v is Dictionary:
+			# Ex. AnimationPlayer.libraries (StringName -> AnimationLibrary) :
+			# sans ce cas, la ressource garde son resource_path d'origine et
+			# PackedScene.pack() l'enregistre en dépendance EXTERNE (ex.
+			# res://user/assets/avatar/walk.tres) que le pair ne possède pas
+			# → load() du blob reçu échoue en cascade.
+			var dict: Dictionary = v.duplicate()
+			for k in dict:
+				if dict[k] is Resource:
+					dict[k] = _embed(dict[k], cache)
+			node.set(pname, dict)
 		else:
 			node.set(pname, v)
 	for c in orig.get_children():
