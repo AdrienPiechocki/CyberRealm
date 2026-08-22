@@ -556,8 +556,9 @@ func on_window_unmapped(id: int) -> void:
 		var quad = quads[id]
 		if is_instance_valid(quad):
 			var occ := quad.get_node_or_null("Occluder") as OccluderInstance3D
-			occ.queue_free()
-			await get_tree().physics_frame
+			if occ != null:
+				occ.queue_free()
+				await get_tree().physics_frame
 			quad.queue_free()
 		quads.erase(id)
 	windows_state_changed.emit()

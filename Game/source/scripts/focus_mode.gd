@@ -563,6 +563,8 @@ func on_window_unmapped(id: int) -> void:
 	focus_stack.erase(id)
 	if focus_rects.has(id):
 		if is_instance_valid(focus_rects[id]):
+			_world_occluder.visible = false
+			await get_tree().physics_frame
 			focus_rects[id].queue_free()
 		focus_rects.erase(id)
 	focus_states.erase(id)
