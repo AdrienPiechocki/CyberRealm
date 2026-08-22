@@ -602,7 +602,10 @@ func _drain_level_send() -> void:
 			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], entry.get("rotation", Vector3.ZERO), entry.get("scale", Vector3.ONE), bytes.slice(start, end))
 			entry["sent"] = sent + 1
 
-@rpc("any_peer", "reliable")
+# Canal ENet dédié (6) : les milliers de chunks du niveau ne doivent PAS
+# bloquer (ordre fiable) les RPC de contrôle sur le canal 0 — sinon le
+# broadcast de spawn et le roster n'arrivent qu'après tout le niveau.
+@rpc("any_peer", "call_remote", "reliable", 6)
 func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3, chunk: PackedByteArray) -> void:
 	if is_host or multiplayer.get_remote_sender_id() != 1:
 		return
@@ -956,7 +959,10 @@ func _drain_avatar_send() -> void:
 			_avatar_recv_chunk.rpc_id(id, multiplayer.get_unique_id(), sent, total, entry["size"], bytes.slice(start, end))
 			entry["sent"] = sent + 1
 
-@rpc("any_peer", "reliable")
+# Canal ENet dédié (1) : l'avatar de l'hôte part juste après les chunks de
+# niveau sur sa connexion — sans canal propre il resterait bloqué derrière
+# tout le transfert (ordre fiable du canal 0).
+@rpc("any_peer", "call_remote", "reliable", 1)
 func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size: int, chunk: PackedByteArray) -> void:
 	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
 		return
