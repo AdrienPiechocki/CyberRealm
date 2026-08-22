@@ -2432,6 +2432,10 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			continue
 		var q: Node3D = quads[wid]
 		if is_instance_valid(q):
+			var occ := q.get_node_or_null("Occluder") as OccluderInstance3D
+			if occ != null:
+				occ.queue_free()
+				await get_tree().physics_frame
 			q.queue_free()
 		quads.erase(wid)
 		if _remote_textures.has(peer_id):
