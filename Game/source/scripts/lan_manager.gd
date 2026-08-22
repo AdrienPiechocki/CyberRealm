@@ -486,10 +486,47 @@ func _register_player(pname: String, color: Color) -> void:
 	_players[from] = {"name": pname, "color": color}
 	_set_status("Player %d (%s) joined" % [from, pname])
 	_lan_log("registration reçue de %d — broadcast spawns (roster=%d)" % [from, _players.size()])
+	# Snapshot du roster envoyé IMMÉDIATEMENT au nouvel arrivant : minuscule,
+	# il part devant les floods de chunks. Sans lui, le client ne connaît le
+	# roster qu'aux broadcasts (souvent après l'application du niveau) et le
+	# différé « attente des avatars » n'a rien à attendre.
+	var snapshot: Array = []
+	for id in _players:
+		snapshot.append([id, String(_players[id].get("name", "")), Color(_players[id].get("color", Color.WHITE))])
+	_roster_snapshot.rpc_id(from, snapshot)
 	for id in _players:
 		var entry: Dictionary = _players[id]
 		_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
 	_emit_players()
+
+# Roster complet envoyé par l'hôte dès la registration du client : peuplé
+# AVANT tout transfert lourd, il permet au différé de niveau de connaître
+# les avatars attendus.
+@rpc("any_peer", "call_remote", "reliable")
+func _roster_snapshot(entries: Array) -> void:
+	if is_host or multiplayer.get_remote_sender_id() != 1:
+		return
+	for e in entries:
+		if e.size() < 3:
+			continue
+		var pid := int(e[0])
+		if pid == multiplayer.get_unique_id() or _players.has(pid):
+			continue
+		_players[pid] = {"name": String(e[1]), "color": e[2]}
+	_lan_log("snapshot roster hôte — %s (blobs=%s)" % [str(_players.keys()), str(_avatar_blobs.keys())])
+	_emit_players()
+	# Si le niveau est déjà différé et que le snapshot révèle de nouveaux
+	# joueurs, étendre l'attente (même deadline).
+	if not _deferred_level.is_empty():
+		var waiting: Array = _deferred_level["waiting"]
+		for pid in _players:
+			pid = int(pid)
+			if pid == multiplayer.get_unique_id():
+				continue
+			if not _avatar_blobs.has(pid) and not waiting.has(pid):
+				waiting.append(pid)
+		waiting.sort()
+		_deferred_level["waiting"] = waiting
 
 # Chaque pair saute son propre peer_id (il a déjà son joueur local).
 @rpc("any_peer", "reliable", "call_local")
