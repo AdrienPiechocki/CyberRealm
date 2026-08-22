@@ -32,6 +32,10 @@ const TITLEBAR_BTN_MIN := Color(0.95, 0.7, 0.2)
 const TITLEBAR_BTN_MAX := Color(0.3, 0.78, 0.42)
 const TITLEBAR_BUTTON_SIZE_RATIO := 0.55 # taille d'un bouton = 55% de la hauteur de barre
 const TITLEBAR_BUTTON_GAP_RATIO := 0.22 # espace entre boutons = 22% de la hauteur de barre
+# Épaisseur (m) du BoxOccluder3D plaqué sur chaque quad fenêtre : assez fine
+# pour rester proche du plan visuel, assez épaisse pour être rasterisée
+# proprement par l'occlusion culling.
+const WINDOW_OCCLUDER_DEPTH := 0.04
 const TITLEBAR_BUTTON_MARGIN_RATIO := 0.35 # marge du bord droit de la barre
 
 # Position de spawn des nouvelles fenêtres : toujours 1 m devant la caméra,
@@ -355,6 +359,18 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	body.set_meta("window_id", id)
 	quad.add_child(body)
 
+	# Occlusion culling : boîte fine alignée sur le quad. Enfant du quad →
+	# suit grab/déplacement/rotation sans code par frame, et se désactive
+	# automatiquement quand la fenêtre est cachée (hide/minimise/focus).
+	# La dimension est tenue à jour par _sync_titlebar(), appelée après
+	# chaque changement de taille du mesh.
+	var occ := OccluderInstance3D.new()
+	occ.name = "Occluder"
+	var occ_box := BoxOccluder3D.new()
+	occ_box.size = Vector3(mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
+	occ.occluder = occ_box
+	quad.add_child(occ)
+
 	# Barre de titre du jeu (SSD) : quad coloré + Label3D posés AU-DESSUS du
 	# contenu (ne recouvre jamais le contenu de l'app). Ajoutée APRÈS body
 	# pour que quad.get_child(0) continue de renvoyer le corps du contenu.
@@ -444,6 +460,13 @@ func _sync_titlebar(quad: MeshInstance3D) -> void:
 	var bar_body: StaticBody3D = titlebar.get_node("BarBody")
 	var bar_shape: BoxShape3D = bar_body.get_child(0).shape
 	bar_shape.size = Vector3(mesh.size.x, bar_h, 0.02)
+
+	# L'occludeur suit la taille du contenu (appelé après chaque resize,
+	# ratio du premier frame inclus).
+	var occ := quad.get_node_or_null("Occluder") as OccluderInstance3D
+	if occ != null and occ.occluder is BoxOccluder3D:
+		(occ.occluder as BoxOccluder3D).size = Vector3(
+			mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
 
 	# Boutons alignés à droite : maximiser, réduire, fermer (de gauche à droite).
 	var btn_size := bar_h * TITLEBAR_BUTTON_SIZE_RATIO
