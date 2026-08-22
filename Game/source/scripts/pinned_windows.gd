@@ -184,20 +184,11 @@ func _process(_delta: float) -> void:
 		return
 	var mouse_pos := get_viewport().get_mouse_position()
 	# En mode CAPTURED, get_mouse_position() renvoie une position figée :
-	# on ne peut pas détecter le hover correctement. On mémorise la position
-	# pour détecter quand la souris a VRAIMENT bougé après le retour en VISIBLE.
+	# le hover se juge alors à la VISÉE — le rayon caméra (centre de l'écran)
+	# touche-t-il la fenêtre 3D épinglée ?
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		_last_mouse_pos = mouse_pos
-		if _is_hovering:
-			_is_hovering = false
-			if _hover_tween:
-				_hover_tween.kill()
-				_hover_tween = null
-			var target_alpha := _pin_alpha()
-			for key in pinned_windows:
-				var pip: Control = pinned_windows[key]
-				if is_instance_valid(pip):
-					pip.modulate.a = target_alpha
+		_set_hovering(_captured_look_hover())
 		return
 	# Après une transition CAPTURED → VISIBLE, la position souris est encore
 	# celle de la capture. On attend que la souris bouge VRAIMENT (position
@@ -213,12 +204,46 @@ func _process(_delta: float) -> void:
 			break
 	if hovering == _is_hovering:
 		return
+	_set_hovering(hovering)
+
+# Transition d'état commune (souris visible ou capturée) : voile le PiP quand
+# on le survise/le vise, le restaure sinon.
+func _set_hovering(hovering: bool) -> void:
+	if hovering == _is_hovering:
+		return
 	_is_hovering = hovering
 	if _hover_tween:
 		_hover_tween.kill()
-	_hover_tween = create_tween()
 	var target_alpha := 0.0 if hovering else _pin_alpha()
+	_hover_tween = create_tween()
 	for key in pinned_windows:
 		var pip: Control = pinned_windows[key]
 		if is_instance_valid(pip):
 			_hover_tween.tween_property(pip, "modulate:a", target_alpha, 0.15)
+
+# Souris CAPTURED : true si le rayon caméra touche la fenêtre 3D correspondant
+# au PiP épinglé — quad de contenu local ("window_id"), barre de titre locale
+# ("titlebar_of") ou quad distant ("remote_window", quads noirs LAN).
+func _captured_look_hover() -> bool:
+	if pinned_windows.is_empty():
+		return false
+	var cam := get_viewport().get_camera_3d()
+	if cam == null:
+		return false
+	var origin := cam.global_position
+	var dir := -cam.global_transform.basis.z
+	var params := PhysicsRayQueryParameters3D.create(origin, origin + dir * 1000.0)
+	var hit := get_world_3d().direct_space_state.intersect_ray(params)
+	if hit.is_empty():
+		return false
+	var collider: Object = hit.get("collider")
+	if collider == null or not (collider is Node):
+		return false
+	if collider.has_meta("window_id"):
+		return pinned_windows.has(int(collider.get_meta("window_id")))
+	if collider.has_meta("titlebar_of"):
+		return pinned_windows.has(int(collider.get_meta("titlebar_of")))
+	if collider.has_meta("remote_window"):
+		var rw: Dictionary = collider.get_meta("remote_window")
+		return pinned_windows.has(_remote_key(int(rw.get("peer_id", -1)), int(rw.get("wid", -1))))
+	return false
