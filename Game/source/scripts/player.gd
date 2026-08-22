@@ -1,6 +1,11 @@
 extends CharacterBody3D
 
 @export var MaxDepth := 50
+@export var MaxClimbDistance := 5.0
+@export var MaxClimbTime := 0.2
+@export var ClimbSpeed := 2.5
+var climbed_distance := 0.0
+var climb_time := 0.0
 
 var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 var speed = 5
@@ -74,11 +79,25 @@ func _physics_process(delta):
 
 	if not interact_mode_active:
 		move_and_slide()
+		if not is_on_floor():
+			climb_time += delta
+		else:
+			climb_time = 0.0
+		if is_on_wall() and climb_time < MaxClimbTime and absf(Vector2(movement_dir.x, movement_dir.z).length()) > 0.0:
+			climb(delta)
 		if is_on_floor() and Input.is_action_just_pressed("jump", true):
 			velocity.y = jump_speed
 		$UI/Cursor.label_settings.font_color = Color.WHITE
 	else:
 		$UI/Cursor.label_settings.font_color = Color.BLACK
+
+func climb(delta):
+	if climbed_distance < MaxClimbDistance:
+		velocity.y += (gravity * delta) * ClimbSpeed
+		climbed_distance += (gravity * delta) * ClimbSpeed
+	else:
+		velocity.y = 0.0
+		climbed_distance = 0.0
 
 func _input(event):
 	if focus_mode_active:
