@@ -386,6 +386,9 @@ func _ready() -> void:
 	lan.compositor = win3d.compositor
 	lan.pins = pins
 	lan.focus = focus
+	# Le focus local réclame la copie CPU des captures le temps de sa salve
+	# d'analyse de transparence (agrégé avec les besoins du partage LAN).
+	focus.cpu_capture_notify = Callable(lan, "set_cpu_capture_consumer")
 	lan.local_player = player
 	win3d.windows_state_changed.connect(_on_windows_state_changed)
 

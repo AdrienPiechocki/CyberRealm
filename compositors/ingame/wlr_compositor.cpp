@@ -1267,9 +1267,22 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
 
     timespec t_copy_start, t_copy_end;
     clock_gettime(CLOCK_MONOTONIC, &t_copy_start);
-    if (cache.format == DRM_FORMAT_ABGR8888 ||
-        cache.format == DRM_FORMAT_XBGR8888) {
-        // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
+    if (cache.format == DRM_FORMAT_XBGR8888) {
+        // RGBX : le 4e octet est un padding indéfini (souvent 0). Recopié
+        // tel quel dans l'alpha RGBA de sortie, il rend la fenêtre « pleine-
+        // ment transparente » pour tout lecteur du canal alpha (stream JPEG
+        // LAN, analyse de transparence du mode focus). On force opaque.
+        for (int y = 0; y < h; y++) {
+            const uint8_t *row = cache.data + (size_t)y * cache.stride;
+            for (int x = 0; x < w; x++) {
+                dst[(y * w + x) * 4 + 0] = row[x * 4 + 0]; // R
+                dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+                dst[(y * w + x) * 4 + 2] = row[x * 4 + 2]; // B
+                dst[(y * w + x) * 4 + 3] = 255;            // A (padding X)
+            }
+        }
+    } else if (cache.format == DRM_FORMAT_ABGR8888) {
+        // RGBA avec alpha réel → copie directe par ligne (stride peut > w*4)
         for (int y = 0; y < h; y++) {
             memcpy(dst + (size_t)y * w * 4,
                 cache.data + (size_t)y * cache.stride,
@@ -1630,8 +1643,19 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
         ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
         bool has_alpha = (cache.format == DRM_FORMAT_ABGR8888 ||
                           cache.format == DRM_FORMAT_ARGB8888);
-        if (cache.format == DRM_FORMAT_ABGR8888 ||
-            cache.format == DRM_FORMAT_XBGR8888) {
+        if (cache.format == DRM_FORMAT_XBGR8888) {
+            // RGBX : padding X indéfini → alpha forcé opaque (cf. capture
+            // dmabuf).
+            for (int y = 0; y < h; y++) {
+                const uint8_t *row = cache.data + (size_t)y * cache.stride;
+                for (int x = 0; x < w; x++) {
+                    dst[(y * w + x) * 4 + 0] = row[x * 4 + 0]; // R
+                    dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+                    dst[(y * w + x) * 4 + 2] = row[x * 4 + 2]; // B
+                    dst[(y * w + x) * 4 + 3] = 255;            // A
+                }
+            }
+        } else if (cache.format == DRM_FORMAT_ABGR8888) {
             // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
             for (int y = 0; y < h; y++) {
                 memcpy(dst + (size_t)y * w * 4,

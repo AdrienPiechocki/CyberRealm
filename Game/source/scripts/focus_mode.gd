@@ -138,13 +138,18 @@ var _world_occluder: OccluderInstance3D
 # « disparaît » à travers la transparence. On échantillonne le canal alpha de
 # l'image CPU de la fenêtre (copie déjà faite par la capture — pas de readback
 # GPU), à cadence limitée et seulement si la version de texture a changé.
-const ALPHA_CHECK_INTERVAL := 0.4 # s entre deux analyses
+const ALPHA_CHECK_INTERVAL := 0.25 # s entre deux tentatives d'analyse
+const ALPHA_PROBE_TIMEOUT := 2.0 # s avant abandon si aucune image exploitable
 const ALPHA_OPAQUE_MIN := 242 # alpha >= 242/255 considéré opaque
 const OCCLUDER_OFF_FRAC := 0.12 # > 12% px non opaques → occludeur suspendu
-const OCCLUDER_ON_FRAC := 0.04 # < 4% → réactivé (hystérésis anti-clignotement)
+
+# Posé par wayland_room : Callable(clé: String, actif: bool). Enregistre/
+# libère une demande de copie CPU des captures auprès du lan_manager.
+var cpu_capture_notify: Callable = Callable()
 
 var _alpha_check_cd := 0.0
-var _alpha_last_version := -1
+var _alpha_probe_deadline := 0.0
+var _alpha_probing := false
 var _occluder_suspended := false
 
 func _ensure_world_occluder() -> void:
@@ -190,25 +195,32 @@ func _process(delta: float) -> void:
 		_update_world_occluder()
 		_update_occluder_for_alpha(delta)
 
-# Analyse (throttlée) l'alpha du contenu de la fenêtre focus LOCALE et suspend
-# l'occludeur si le contenu est significativement transparent. Le focus
-# DISTANT n'est pas concerné : le stream vidéo n'a pas de canal alpha.
+# Analyse par SALVE l'alpha du contenu de la fenêtre focus LOCALE : une seule
+# décision par focus (le contenu change rarement d'opacité en cours de
+# session ; refocus pour réévaluer). Sur le chemin de capture Vulkan
+# zéro-copie, l'image CPU n'existe que si quelqu'un la demande — on s'enregistre
+# comme consommateur auprès du lan_manager le temps de la salve : la copie
+# synchrone coûte 30-50 ms/capture en 1080p sur le thread principal, hors de
+# question de la laisser tourner pendant tout le focus. Focus DISTANT exclu :
+# le stream vidéo n'a pas de canal alpha.
 func _update_occluder_for_alpha(delta: float) -> void:
 	if _world_occluder == null or not _world_occluder.visible:
 		return
 	if remote_focus or focus_fullscreen_id == -1 \
 			or not windows.quads.has(focus_fullscreen_id):
 		return
+	if not _alpha_probing:
+		return
+	_alpha_probe_deadline -= delta
 	_alpha_check_cd -= delta
 	if _alpha_check_cd > 0.0:
 		return
-	var ver: int = windows.get_window_texture_version(focus_fullscreen_id)
-	if ver == _alpha_last_version:
-		return # contenu inchangé → décision conservée
 	_alpha_check_cd = ALPHA_CHECK_INTERVAL
-	_alpha_last_version = ver
 	var img: Image = windows.get_window_image(focus_fullscreen_id)
 	if img == null or img.is_empty():
+		if _alpha_probe_deadline <= 0.0:
+			print("[focus-alpha] pas d'image CPU disponible — occludeur maintenu")
+			_finish_alpha_probe()
 		return
 	img.convert(Image.FORMAT_RGBA8)
 	# Grille d'échantillonnage grossière (~1300 points max) : largement assez
@@ -225,18 +237,35 @@ func _update_occluder_for_alpha(delta: float) -> void:
 			if img.get_pixel(x, y).a * 255.0 < float(ALPHA_OPAQUE_MIN):
 				clear += 1
 	var frac := float(clear) / maxf(total, 1)
-	if _occluder_suspended:
-		if frac < OCCLUDER_ON_FRAC:
-			_occluder_suspended = false
-			_world_occluder.visible = true
-	elif frac > OCCLUDER_OFF_FRAC:
+	print("[focus-alpha] fenêtre %d — pixels non opaques : %d%%" % [
+		focus_fullscreen_id, int(frac * 100.0)])
+	if frac > OCCLUDER_OFF_FRAC:
 		_occluder_suspended = true
 		_world_occluder.visible = false
+	_finish_alpha_probe()
+
+# Démarre la salve : enregistre la demande de copie CPU + délai limite.
+func _start_alpha_probe() -> void:
+	if remote_focus:
+		return
+	_occluder_suspended = false
+	_alpha_probing = true
+	_alpha_check_cd = 0.0 # première tentative dès la frame suivante
+	_alpha_probe_deadline = ALPHA_PROBE_TIMEOUT
+	if cpu_capture_notify.is_valid():
+		cpu_capture_notify.call("focus", true)
+
+# Termine la salve : libère la copie CPU quoi qu'il arrive.
+func _finish_alpha_probe() -> void:
+	_alpha_probing = false
+	if cpu_capture_notify.is_valid():
+		cpu_capture_notify.call("focus", false)
 
 func _reset_occluder_alpha_state() -> void:
-	_alpha_check_cd = 0.0 # première analyse dès la frame suivante
-	_alpha_last_version = -1
+	_finish_alpha_probe()
 	_occluder_suspended = false
+	_alpha_check_cd = 0.0
+	_alpha_probe_deadline = 0.0
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
@@ -325,7 +354,9 @@ func enter_focus(id: int) -> void:
 	# l'occlusion culling retire la scène 3D derrière.
 	_ensure_world_occluder()
 	_world_occluder.visible = true
+	# Nouvelle fenêtre focus : relance une salve d'analyse de transparence.
 	_reset_occluder_alpha_state()
+	_start_alpha_probe()
 
 	var info: Dictionary = windows.get_quad_info(id)
 	var st := _state(id)

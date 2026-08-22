@@ -1013,11 +1013,16 @@ func _physics_process(delta: float) -> void:
 # dès qu'une fenêtre animée est ouverte). En mode vidéo inter-frame elle ne
 # doit pas non plus tourner : l'encodeur C++ lit le DMA-BUF directement
 # (thread worker), la copie CPU ne sert plus à rien.
+# Consommateurs additionnels de la copie CPU synchrone (clé -> true) : ex.
+# focus_mode pour analyser la transparence de la fenêtre focus. Tant que non
+# vide, la copie est demandée même sans partage LAN actif.
+var cpu_capture_consumers: Dictionary = {}
+
 func _update_cpu_capture_request() -> void:
 	if compositor == null or not compositor.has_method("set_cpu_capture_requested"):
 		return
-	var need := false
-	if session_active and not _pending_join and windows_provider.is_valid() and not multiplayer.get_peers().is_empty() and not _video_mode:
+	var need := not cpu_capture_consumers.is_empty()
+	if not need and session_active and not _pending_join and windows_provider.is_valid() and not multiplayer.get_peers().is_empty() and not _video_mode:
 		for item in windows_provider.call():
 			if not item is Dictionary:
 				continue
@@ -1025,6 +1030,18 @@ func _update_cpu_capture_request() -> void:
 				need = true
 				break
 	compositor.set_cpu_capture_requested(need)
+
+# Enregistre/libère un consommateur de copie CPU (ex. salve du mode focus).
+func set_cpu_capture_consumer(key: String, active: bool) -> void:
+	var changed := false
+	if active and not cpu_capture_consumers.has(key):
+		cpu_capture_consumers[key] = true
+		changed = true
+	elif not active and cpu_capture_consumers.has(key):
+		cpu_capture_consumers.erase(key)
+		changed = true
+	if changed:
+		_update_cpu_capture_request()
 
 # ── Sync des fenêtres (quads noirs des autres joueurs) ───────────────
 
