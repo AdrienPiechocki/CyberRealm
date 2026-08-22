@@ -32,6 +32,17 @@ const DEFAULT_AVATAR_PATH := "res://scenes/avatar.tscn"
 
 var _avatar_scene: PackedScene = null
 var _avatar_blobs: Dictionary = {} # peer_id -> PackedByteArray (scène binaire)
+# Scènes avatar décodées à l'avance : peer_id -> PackedScene. Le coût du
+# load() (parse + ressources embarquées des avatars lourds, plusieurs
+# secondes) est payé dès l'arrivée du blob — idéalement pendant l'écran de
+# chargement — et non au spawn, où il faisait surgir l'avatar en retard.
+var _avatar_scene_cache: Dictionary = {}
+# Niveau client reçu mais pas encore appliqué : retenu tant que les blobs
+# d'avatars attendus ne sont pas arrivés, pour que tous les avatars
+# apparaissent EN MÊME TEMPS que le niveau (et pas après). Timeout inclus :
+# un pair muet ne bloque jamais l'entrée en session au-delà du délai.
+var _deferred_level: Dictionary = {} # {scene, pos, rot, scl, waiting, deadline}
+const AVATAR_LEVEL_WAIT_TIMEOUT_MSEC := 8000
 # Avatar choisi dans le menu LAN (res://…/avatar.tscn). Vide = mode auto :
 # user/avatar.tscn si présent, sinon l'avatar par défaut.
 var _selected_avatar_path := ""
@@ -435,8 +446,11 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 		_remote_players[peer_id].setup(peer_id, pname, color)
 		return
 	var scene := _avatar_scene
-	# Utiliser l'avatar reçu du peer si disponible.
-	if _avatar_blobs.has(peer_id):
+	# Utiliser l'avatar reçu du peer si disponible (scène décodée à l'arrivée
+	# du blob → spawn instantané ; sinon décodage à la volée).
+	if _avatar_scene_cache.has(peer_id):
+		scene = _avatar_scene_cache[peer_id]
+	elif _avatar_blobs.has(peer_id):
 		var tmp := "user://avatar_peer_%d.scn" % peer_id
 		var f := FileAccess.open(tmp, FileAccess.WRITE)
 		if f != null:
@@ -445,6 +459,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 			var loaded: PackedScene = load(tmp)
 			if loaded != null:
 				scene = loaded
+				_avatar_scene_cache[peer_id] = loaded
 	var avatar := scene.instantiate()
 	avatar.name = str(peer_id)
 	avatar.setup(peer_id, pname, color)
@@ -484,6 +499,8 @@ func _remove_player(peer_id: int) -> void:
 		_remote_players[peer_id].queue_free()
 		_remote_players.erase(peer_id)
 	_players.erase(peer_id)
+	_avatar_blobs.erase(peer_id)
+	_avatar_scene_cache.erase(peer_id)
 	_clear_remote_windows(peer_id)
 	_emit_players()
 
@@ -612,7 +629,66 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	# Le statut AVANT l'emit : apply_host_level → mark_level_stable →
 	# _finalize_join() pose "Joined session", qui doit rester le message final.
 	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
-	level_apply_requested.emit(scene, recv_spawn, recv_rotation, recv_scale)
+	# L'application peut être différée : on attend les avatars des pairs
+	# (voir _defer_or_emit_level_apply) pour qu'ils apparaissent avec le
+	# niveau, pas quelques secondes après.
+	_defer_or_emit_level_apply(scene, recv_spawn, recv_rotation, recv_scale)
+
+
+func _cache_avatar_scene(peer_id: int) -> void:
+	if not _avatar_blobs.has(peer_id) or _avatar_scene_cache.has(peer_id):
+		return
+	var tmp := "user://avatar_peer_%d.scn" % peer_id
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_buffer(_avatar_blobs[peer_id])
+	f.close()
+	var t0 := Time.get_ticks_msec()
+	var loaded: PackedScene = load(tmp)
+	push_warning("LAN: avatar peer %d décodé en %d ms" % [peer_id, Time.get_ticks_msec() - t0])
+	if loaded != null:
+		_avatar_scene_cache[peer_id] = loaded
+
+# Retient l'application du niveau tant que des blobs d'avatars attendus
+# (roster courant, hors joueur local) manquent ; sinon applique immédiatement.
+func _defer_or_emit_level_apply(scene: PackedScene, pos: Vector3, rot: Vector3, scl: Vector3) -> void:
+	var waiting: Array = []
+	for id in _players:
+		if int(id) == multiplayer.get_unique_id():
+			continue
+		if not _avatar_blobs.has(int(id)):
+			waiting.append(int(id))
+	if waiting.is_empty():
+		level_apply_requested.emit(scene, pos, rot, scl)
+		return
+	waiting.sort()
+	_deferred_level = {
+		"scene": scene, "pos": pos, "rot": rot, "scl": scl,
+		"waiting": waiting,
+		"deadline": Time.get_ticks_msec() + AVATAR_LEVEL_WAIT_TIMEOUT_MSEC,
+	}
+	_set_status("Loading players' avatars… (%d pending)" % waiting.size())
+	push_warning("LAN: niveau différé — avatars attendus des peers %s" % str(waiting))
+
+# Applique le niveau différé dès que plus personne n'est attendu (ou au
+# timeout ; un pair parti/disconnecté cesse d'être attendu).
+func _maybe_flush_deferred_level() -> void:
+	if _deferred_level.is_empty():
+		return
+	var waiting: Array = []
+	for id in _deferred_level["waiting"]:
+		if multiplayer.multiplayer_peer != null and multiplayer.get_peers().has(int(id)):
+			if not _avatar_blobs.has(int(id)):
+				waiting.append(int(id))
+	_deferred_level["waiting"] = waiting
+	var expired: bool = Time.get_ticks_msec() >= int(_deferred_level["deadline"])
+	if waiting.is_empty() or expired:
+		if expired and not waiting.is_empty():
+			push_warning("LAN: timeout avatars (%s) — application du niveau sans eux" % str(waiting))
+		var d: Dictionary = _deferred_level
+		_deferred_level = {}
+		level_apply_requested.emit(d["scene"], d["pos"], d["rot"], d["scl"])
 
 # Appelé par wayland_room après avoir remplacé le niveau : bascule la racine
 # et déplace les avatars distants vers un nouveau conteneur (l'ancien niveau
@@ -872,12 +948,16 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 		return
 	push_warning("LAN: avatar reçu de peer %d — %d KB" % [recv_from, bytes.size() / 1024])
 	_avatar_blobs[recv_from] = bytes
+	# Décodage immédiat : le coût du load() est payé ici (pendant l'attente
+	# du niveau) plutôt qu'au spawn.
+	_cache_avatar_scene(recv_from)
 	if _remote_players.has(recv_from):
 		var av: Node = _remote_players[recv_from]
 		av.queue_free()
 		_remote_players.erase(recv_from)
 	var entry: Dictionary = _players.get(recv_from, {})
 	_spawn_player(recv_from, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+	_maybe_flush_deferred_level()
 
 @rpc("any_peer", "reliable")
 func _avatar_send_blob(from_id: int, blob: PackedByteArray) -> void:
@@ -994,6 +1074,8 @@ func _physics_process(delta: float) -> void:
 	elif not _level_stable and _session_start_msec > 0 \
 			and Time.get_ticks_msec() - _session_start_msec > 10000:
 		mark_level_stable()
+	# Niveau différé en attente des avatars : timeout de sécurité.
+	_maybe_flush_deferred_level()
 	if multiplayer.get_peers().is_empty():
 		return
 	# Map de l'hôte encore en cours de réception : n'émettre aucune synchro —
@@ -2688,6 +2770,9 @@ func _disconnect_session() -> void:
 	if local_player != null and "input_locked" in local_player:
 		local_player.input_locked = false
 	_players.clear()
+	_avatar_blobs.clear()
+	_avatar_scene_cache.clear()
+	_deferred_level.clear()
 	_emit_players()
 	# Dernier, une fois les avatars distants libérés et l'état réinitialisé :
 	# la restauration recrée le conteneur Players sous le niveau personnel via
