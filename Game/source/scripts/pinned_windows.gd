@@ -190,10 +190,9 @@ func _process(_delta: float) -> void:
 	var hovering := _look_hover()
 	if focus.focus_fullscreen_id in pinned_windows:
 		hovering = true
-	elif not hovering and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+	elif not hovering and (Input.mouse_mode == Input.MOUSE_MODE_VISIBLE or focus.focus_fullscreen_id != -1):
 		var mouse_pos := get_viewport().get_mouse_position()
 		if mouse_pos == _last_mouse_pos:
-			hovering = false
 			return
 		_last_mouse_pos = mouse_pos
 		for key in pinned_windows:
