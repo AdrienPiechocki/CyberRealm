@@ -251,9 +251,6 @@ func _ready() -> void:
 	pins = _add_manager(preload("res://scripts/pinned_windows.gd"), "PinnedWindows")
 	fx = _add_manager(preload("res://scripts/effects.gd"), "Effects")
 	presenter = _add_manager(preload("res://scripts/present_manager.gd"), "PresentManager")
-	# Résolution 3D adaptative (iGPU) : doit tourner en continu, indépendant
-	# des autres sous-systèmes.
-	_add_manager(preload("res://scripts/adaptive_scaler.gd"), "AdaptiveScaler")
 
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d)
