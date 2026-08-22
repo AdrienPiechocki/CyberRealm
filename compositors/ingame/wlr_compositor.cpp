@@ -250,6 +250,16 @@ static const std::unordered_map<int, uint32_t> GODOT_TO_EVDEV = {
     {132, 26},     // KEY_DIAERESIS (0x84, XK_diaeresis)
     {65106, 26},   // KEY_DEAD_CIRCUMFLEX (0xfe52) : '^'
     {65111, 26},   // KEY_DEAD_DIAERESIS (0xfe57) : '¨' (Shift+^)
+    // Touche AZERTY '$'/'£'/'¤' (physique US ']') = evdev 27. Idem remarque
+    // ci-dessus : le keysym du layout actif arrive en physical_keycode.
+    // Observé sur le terrain (logs CYBERREALM_INPUT_DEBUG) : physical=125
+    // (KEY_BRACERIGHT, symbole US shifté de la position) et keycode=36
+    // (KEY_DOLLAR). Pas de Key::KEY_STERLING/CURRENCY dans l'enum
+    // GDExtension → valeurs X11 en dur ('£' = 0xa3, '¤' = 0xa4).
+    {(int)Key::KEY_BRACERIGHT, 27},
+    {(int)Key::KEY_DOLLAR, 27},
+    {163, 27},     // XK_sterling : '£' (Shift+$)
+    {164, 27},     // XK_currency : '¤' (AltGr+$)
     {(int)Key::KEY_NUMLOCK, 69},
     // Numpad (fallback when keycode is already KP_*)
     {(int)Key::KEY_KP_0, 82}, {(int)Key::KEY_KP_1, 79},
