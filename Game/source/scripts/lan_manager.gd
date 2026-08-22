@@ -498,6 +498,10 @@ func _register_player(pname: String, color: Color) -> void:
 		var entry: Dictionary = _players[id]
 		_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
 	_emit_players()
+	# Contrôle parti depuis un tube vide (snapshot + broadcasts ci-dessus) →
+	# SEULEMENT MAINTENANT démarrer les transferts lourds vers ce pair.
+	_send_level_to(from)
+	_send_avatar_to(from)
 
 # Roster complet envoyé par l'hôte dès la registration du client : peuplé
 # AVANT tout transfert lourd, il permet au différé de niveau de connaître
@@ -615,8 +619,11 @@ func _on_peer_connected(id: int) -> void:
 		# de quelques secondes ne doit pas faire tomber la session (défaut ENet :
 		# déconnexion après ~5 s sans ACK).
 		_set_peer_timeout(id)
-		_send_level_to(id)
-		_send_avatar_to(id)
+		# PAS d'envoi de niveau/avatar ici : attendre la registration du pair
+		# (voir _register_player). Les paquets de contrôle (snapshot roster,
+		# broadcasts) doivent partir sur un tube VIDE — s'ils se disputent le
+		# socket avec des mégaoctets de chunks, ils sont perdus dès le burst
+		# initial et ne se récupèrent que par retransmissions ENet (~5-8 s).
 
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
 # rejoint : le blob binaire auto-suffisant produit par LevelBaker (meshes/
