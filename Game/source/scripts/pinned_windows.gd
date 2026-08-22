@@ -10,6 +10,7 @@ const PIN_Z_BASE := 1900
 const PIN_Z_ABOVE_FOCUS := 2100
 
 var ui: CanvasLayer
+var focus: Node3D
 var pinned_windows: Dictionary = {} # clé (int window_id local, ou String "r:peer:wid" distant) -> TextureRect
 # True : la fenêtre épinglée s'affiche au-dessus du layer focus.
 var pins_above_focus := false
@@ -22,8 +23,9 @@ var _hover_tween: Tween
 var _is_hovering := false
 var _last_mouse_pos := Vector2(-1, -1)
 
-func setup(ui_ref: CanvasLayer) -> void:
+func setup(ui_ref: CanvasLayer, focus_ref: Node3D) -> void:
 	ui = ui_ref
+	focus = focus_ref
 	if ui != null and ui.get_viewport() != null:
 		ui.get_viewport().size_changed.connect(_reposition_all)
 
@@ -186,7 +188,9 @@ func _process(_delta: float) -> void:
 	# le mode souris ; en MOUSE_MODE_VISIBLE, survoler le PiP lui-même compte
 	# aussi.
 	var hovering := _look_hover()
-	if not hovering and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+	if focus.focus_fullscreen_id in pinned_windows:
+		hovering = true
+	elif not hovering and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
 		var mouse_pos := get_viewport().get_mouse_position()
 		if mouse_pos == _last_mouse_pos:
 			hovering = false
