@@ -43,6 +43,13 @@ var _avatar_scene_cache: Dictionary = {}
 # un pair muet ne bloque jamais l'entrée en session au-delà du délai.
 var _deferred_level: Dictionary = {} # {scene, pos, rot, scl, waiting, deadline}
 const AVATAR_LEVEL_WAIT_TIMEOUT_MSEC := 8000
+# Annonce (registration + avatar) déjà envoyée à l'hôte : partagée entre le
+# chemin nominal (dès la connexion, pour paralléliser l'échange d'avatars
+# avec le téléchargement du niveau) et les chemins de secours (_finalize_join).
+var _announced := false
+# Avatars déjà envoyés à chaque pair cette session : une inscription
+# re-diffuse tous les spawns, il ne faut pas renvoyer le blob à chaque fois.
+var _avatar_sent_to: Dictionary = {}
 # Avatar choisi dans le menu LAN (res://…/avatar.tscn). Vide = mode auto :
 # user/avatar.tscn si présent, sinon l'avatar par défaut.
 var _selected_avatar_path := ""
@@ -348,6 +355,8 @@ func host_game() -> bool:
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	_start_responder()
+	_announced = false
+	_avatar_sent_to.clear()
 	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
 	return true
@@ -389,17 +398,22 @@ func _on_connected_to_server() -> void:
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	# Timeouts ENet généreux côté client (voir _on_peer_connected).
 	_set_peer_timeout(1)
+	_announced = false
+	_avatar_sent_to.clear()
 	_set_status("Connected to server")
 	_emit_players()
-	# Ne PAS s'annoncer maintenant : on charge d'abord la map de l'hôte. Le
-	# join effectif (enregistrement + avatar + synchro) part à la fin du
-	# chargement — voir _finalize_join().
+	# S'annoncer DÈS la connexion (et non à la fin du chargement) : l'hôte
+	# re-broadcaste notre spawn, les autres pairs nous envoient leurs avatars
+	# pendant que le niveau se télécharge — et le niveau reçu n'est appliqué
+	# qu'une fois ces avatars décodés (voir _defer_or_emit_level_apply) pour
+	# que tout apparaisse ensemble. Les synchros restent gelées (_pending_join).
 	_pending_join = true
+	_announce_self()
 
 # Entrée effective dans la session : la map de l'hôte est appliquée (ou le
-# délai de secours a expiré — on joue alors sur la map locale). On s'annonce
-# enfin à l'hôte : il re-broadcaste notre spawn aux autres, notre avatar part,
-# et les synchros reprennent (_pending_join = false).
+# délai de secours a expiré — on joue alors sur la map locale). L'annonce
+# part normalement dès la connexion (_announce_self) ; ce rappel ne sert
+# qu'aux chemins de secours où elle n'a pas encore eu lieu.
 func _finalize_join() -> void:
 	if not _pending_join:
 		return
@@ -407,9 +421,17 @@ func _finalize_join() -> void:
 	if local_player != null and "input_locked" in local_player:
 		local_player.input_locked = false
 	_set_status("Joined session")
-	# S'annoncer : le serveur va re-broadcaster le spawn de tous les avatars.
+	_announce_self()
+
+# Annonce au serveur : registration (l'hôte re-broadcaste le spawn de tous)
+# + envoi de notre avatar. Idempotent sur toute la session.
+func _announce_self() -> void:
+	if _announced:
+		return
+	_announced = true
 	_register_player.rpc_id(1, player_name, player_color)
-	# Envoyer l'avatar custom au serveur (qui le forward aux autres).
+	if not _avatar_sent_to.has(1):
+		_avatar_sent_to[1] = true
 	_send_avatar_to(1)
 
 func _on_connection_failed() -> void:
@@ -445,6 +467,17 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].setup(peer_id, pname, color)
 		return
+	# Le client découvre le roster via ce broadcast (_register_player ne
+	# tourne que chez l'hôte) — nécessaire au différé de niveau comme à
+	# l'affichage des joueurs.
+	if not _players.has(peer_id):
+		_players[peer_id] = {"name": pname, "color": color}
+	# Échange d'avatars en maille complète : si je n'ai pas encore envoyé le
+	# mien à CE pair, je le lui envoie (une inscription re-diffuse tous les
+	# spawns, le garde-fou _avatar_sent_to évite les renvois).
+	if session_active and not _avatar_sent_to.has(peer_id):
+		_avatar_sent_to[peer_id] = true
+		_send_avatar_to(peer_id)
 	var scene := _avatar_scene
 	# Utiliser l'avatar reçu du peer si disponible (scène décodée à l'arrivée
 	# du blob → spawn instantané ; sinon décodage à la volée).
@@ -2764,6 +2797,8 @@ func _disconnect_session() -> void:
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
 	session_active = false
 	is_host = false
+	_announced = false
+	_avatar_sent_to.clear()
 	# Annuler un join en attente (déconnexion pendant le chargement de la
 	# map) et dégeler le joueur local.
 	_pending_join = false
