@@ -100,10 +100,17 @@ encode — à surveiller sur les machines modestes.
    du joueur. Ajoutez vos meshes (`MeshInstance3D`) comme enfants.
 5. Lancez le jeu : s'il trouve `res://user/avatar.tscn`, il l'utilise à la
    place de la scène par défaut.
+6. En LAN, choisissez votre avatar dans le menu déroulant de la page
+   **LAN Game** : tous les `avatar.tscn` du projet y sont listés (nommés
+   d'après le nœud racine de chaque scène). Votre choix est mémorisé et
+   l'avatar réel — meshes et animations embarqués — est envoyé aux autres
+   joueurs.
 
 ### Règles avatar
 
-- Le fichier doit s'appeler **exactement** `res://user/avatar.tscn`.
+- Convention : `res://user/avatar.tscn` est l'avatar « auto », utilisé sans
+  toucher au menu LAN. Tout fichier nommé `avatar.tscn` ailleurs dans le
+  projet apparaît aussi dans le menu déroulant LAN.
 - **Script obligatoire** : attachez `res://scripts/avatar.gd` à la
   scène (le nœud racine ou un enfant).
 - **NameLabel obligatoire** : un `Label3D` nommé `NameLabel` (billboard). S'il
@@ -133,6 +140,16 @@ Votre niveau custom est **jouable en LAN même avec des builds différents** :
 l'hôte sérialise son niveau en un blob binaire auto-suffisant (meshes,
 matériaux et textures embarqués) et l'envoie aux joueurs qui rejoignent.
 Les clients n'ont donc pas besoin de `res://user/` sur leur machine.
+
+### Choisir son avatar en LAN
+
+Dans la page **LAN Game** du menu pause, un menu déroulant liste tous les
+`avatar.tscn` trouvés dans le projet (l'avatar par défaut en premier, puis
+les customs par ordre de chemin). Chaque entrée porte le **nom du nœud
+racine** de sa scène. Le choix — persisté entre les sessions — détermine la
+scène bakée et envoyée aux autres joueurs : chacun voit votre vrai modèle
+avec ses animations. Sans choix explicite, l'avatar « auto » est utilisé
+(`res://user/avatar.tscn` s'il existe, sinon le défaut).
 
 Limites à connaître :
 

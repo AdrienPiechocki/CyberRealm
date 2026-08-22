@@ -12,6 +12,9 @@ signal lan_join_requested(ip: String)
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
+signal lan_avatar_changed(path: String)
+
+const LanManagerScript := preload("res://scripts/lan_manager.gd")
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -730,6 +733,9 @@ func get_lan_player_name() -> String:
 		return OS.get_environment("USER")
 	return nm
 
+func get_lan_avatar_path() -> String:
+	return String(_settings.get("lan_avatar_path", ""))
+
 func get_lan_player_color() -> Color:
 	var fallback := Color(0.2, 0.6, 1.0)
 	var v = _settings.get("lan_player_color", fallback)
@@ -810,6 +816,40 @@ func _show_lan() -> void:
 	)
 	color_row.add_child(color_btn)
 	container.add_child(color_row)
+
+	# Choix de l'avatar incarné : tous les avatar.tscn trouvés dans le
+	# projet, nommés d'après le nœud racine de chaque scène. Persisté comme
+	# le nom/couleur ; "" = avatar par défaut (auto).
+	var avatar_row := HBoxContainer.new()
+	avatar_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	avatar_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var avatar_label := Label.new()
+	avatar_label.text = "Avatar"
+	avatar_label.add_theme_font_size_override("font_size", 13)
+	avatar_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	avatar_row.add_child(avatar_label)
+	var avatar_opt := OptionButton.new()
+	var saved_avatar := get_lan_avatar_path()
+	var sel_idx := -1
+	for a in LanManagerScript.list_avatars():
+		var path := String(a["path"])
+		if path == saved_avatar:
+			sel_idx = avatar_opt.item_count
+		avatar_opt.add_item(String(a["name"]))
+		avatar_opt.set_item_metadata(avatar_opt.item_count - 1, path)
+	if avatar_opt.item_count > 0:
+		avatar_opt.select(maxi(sel_idx, 0))
+		avatar_opt.item_selected.connect(func(idx: int):
+			var p := String(avatar_opt.get_item_metadata(idx))
+			_settings["lan_avatar_path"] = p
+			_save_settings()
+			lan_avatar_changed.emit(p)
+		)
+		avatar_row.add_child(avatar_opt)
+	else:
+		avatar_label.queue_free()
+		avatar_row.queue_free()
+	container.add_child(avatar_row)
 
 	var host_btn := _make_btn("Host Game")
 	host_btn.pressed.connect(func():

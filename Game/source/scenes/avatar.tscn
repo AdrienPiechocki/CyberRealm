@@ -40,7 +40,7 @@ _surfaces = [{
 blend_shape_mode = 0
 shadow_mesh = SubResource("ArrayMesh_1uk4v")
 
-[node name="Avatar" type="Node3D" unique_id=1200275872]
+[node name="Default" type="Node3D" unique_id=1200275872]
 script = ExtResource("1_remote")
 
 [node name="NameLabel" type="Label3D" parent="." unique_id=959669778]
