@@ -132,6 +132,21 @@ const OCCLUDER_THICKNESS := 0.02 # m, épaisseur du box
 
 var _world_occluder: OccluderInstance3D
 
+# ── Transparence du focus vs occlusion ───────────────────────────────
+# Une fenêtre semi-transparente (Konsole…) laisse voir la scène 3D derrière
+# l'overlay : l'occludeur doit alors être suspendu, sinon le monde cullé
+# « disparaît » à travers la transparence. On échantillonne le canal alpha de
+# l'image CPU de la fenêtre (copie déjà faite par la capture — pas de readback
+# GPU), à cadence limitée et seulement si la version de texture a changé.
+const ALPHA_CHECK_INTERVAL := 0.4 # s entre deux analyses
+const ALPHA_OPAQUE_MIN := 242 # alpha >= 242/255 considéré opaque
+const OCCLUDER_OFF_FRAC := 0.12 # > 12% px non opaques → occludeur suspendu
+const OCCLUDER_ON_FRAC := 0.04 # < 4% → réactivé (hystérésis anti-clignotement)
+
+var _alpha_check_cd := 0.0
+var _alpha_last_version := -1
+var _occluder_suspended := false
+
 func _ensure_world_occluder() -> void:
 	if _world_occluder != null and is_instance_valid(_world_occluder):
 		return
@@ -170,9 +185,58 @@ func _update_world_occluder() -> void:
 		cam.global_transform.basis,
 		cam.global_position - cam.global_transform.basis.z.normalized() * OCCLUDER_DIST)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if focus_mode:
 		_update_world_occluder()
+		_update_occluder_for_alpha(delta)
+
+# Analyse (throttlée) l'alpha du contenu de la fenêtre focus LOCALE et suspend
+# l'occludeur si le contenu est significativement transparent. Le focus
+# DISTANT n'est pas concerné : le stream vidéo n'a pas de canal alpha.
+func _update_occluder_for_alpha(delta: float) -> void:
+	if _world_occluder == null or not _world_occluder.visible:
+		return
+	if remote_focus or focus_fullscreen_id == -1 \
+			or not windows.quads.has(focus_fullscreen_id):
+		return
+	_alpha_check_cd -= delta
+	if _alpha_check_cd > 0.0:
+		return
+	var ver: int = windows.get_window_texture_version(focus_fullscreen_id)
+	if ver == _alpha_last_version:
+		return # contenu inchangé → décision conservée
+	_alpha_check_cd = ALPHA_CHECK_INTERVAL
+	_alpha_last_version = ver
+	var img: Image = windows.get_window_image(focus_fullscreen_id)
+	if img == null or img.is_empty():
+		return
+	img.convert(Image.FORMAT_RGBA8)
+	# Grille d'échantillonnage grossière (~1300 points max) : largement assez
+	# pour distinguer « fenêtre translucide » de « coins arrondis/ombre ».
+	var w := img.get_width()
+	var h := img.get_height()
+	var step_x := maxi(w / mini(48, w), 1)
+	var step_y := maxi(h / mini(27, h), 1)
+	var total := 0
+	var clear := 0
+	for y in range(step_y / 2, h, step_y):
+		for x in range(step_x / 2, w, step_x):
+			total += 1
+			if img.get_pixel(x, y).a * 255.0 < float(ALPHA_OPAQUE_MIN):
+				clear += 1
+	var frac := float(clear) / maxf(total, 1)
+	if _occluder_suspended:
+		if frac < OCCLUDER_ON_FRAC:
+			_occluder_suspended = false
+			_world_occluder.visible = true
+	elif frac > OCCLUDER_OFF_FRAC:
+		_occluder_suspended = true
+		_world_occluder.visible = false
+
+func _reset_occluder_alpha_state() -> void:
+	_alpha_check_cd = 0.0 # première analyse dès la frame suivante
+	_alpha_last_version = -1
+	_occluder_suspended = false
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
 	compositor = compositor_ref
@@ -261,6 +325,7 @@ func enter_focus(id: int) -> void:
 	# l'occlusion culling retire la scène 3D derrière.
 	_ensure_world_occluder()
 	_world_occluder.visible = true
+	_reset_occluder_alpha_state()
 
 	var info: Dictionary = windows.get_quad_info(id)
 	var st := _state(id)
@@ -752,6 +817,7 @@ func _reset_focus_ui() -> void:
 	# l'occludeur plein écran.
 	if _world_occluder != null and is_instance_valid(_world_occluder):
 		_world_occluder.visible = false
+	_reset_occluder_alpha_state()
 	_clear_popup_overlays()
 	popup_drag_id = -1
 	popup_buttons_down = 0
