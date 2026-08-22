@@ -50,6 +50,12 @@ var _announced := false
 # Avatars déjà envoyés à chaque pair cette session : une inscription
 # re-diffuse tous les spawns, il ne faut pas renvoyer le blob à chaque fois.
 var _avatar_sent_to: Dictionary = {}
+# Blob de l'avatar LOCAL baké puis compressé, une fois par session : le bake
+# (clone de scène + textures) coûte des secondes et ne doit JAMAIS tourner
+# dans un handler réseau — sinon l'hôte gèle et les broadcasts partent en retard.
+var _avatar_send_cache: PackedByteArray = PackedByteArray()
+# Taille DÉCOMPRIMÉE du blob ci-dessus (nécessaire au decompress côté pair).
+var _avatar_send_cache_raw_size := 0
 # Avatar choisi dans le menu LAN (res://…/avatar.tscn). Vide = mode auto :
 # user/avatar.tscn si présent, sinon l'avatar par défaut.
 var _selected_avatar_path := ""
@@ -376,6 +382,8 @@ func host_game() -> bool:
 	_start_responder()
 	_announced = false
 	_avatar_sent_to.clear()
+	_avatar_send_cache = PackedByteArray()
+	_avatar_send_cache_raw_size = 0
 	_lan_log("host_game — en attente de clients", true)
 	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
@@ -420,6 +428,8 @@ func _on_connected_to_server() -> void:
 	_set_peer_timeout(1)
 	_announced = false
 	_avatar_sent_to.clear()
+	_avatar_send_cache = PackedByteArray()
+	_avatar_send_cache_raw_size = 0
 	_lan_log("connecté à l'hôte — annonce immédiate (pending_join)", true)
 	_set_status("Connected to server")
 	_emit_players()
@@ -453,8 +463,6 @@ func _announce_self() -> void:
 	_announced = true
 	_lan_log("annonce: register + avatar → hôte")
 	_register_player.rpc_id(1, player_name, player_color)
-	if not _avatar_sent_to.has(1):
-		_avatar_sent_to[1] = true
 	_send_avatar_to(1)
 
 func _on_connection_failed() -> void:
@@ -499,9 +507,9 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 		_lan_log("roster += %d (n=%d, blobs=%s)" % [peer_id, _players.size(), str(_avatar_blobs.keys())])
 	# Échange d'avatars en maille complète : si je n'ai pas encore envoyé le
 	# mien à CE pair, je le lui envoie (une inscription re-diffuse tous les
-	# spawns, le garde-fou _avatar_sent_to évite les renvois).
+	# spawns ; _send_avatar_to marque lui-même _avatar_sent_to, et le blob
+	# est déjà baké/compressé en cache → envoi quasi gratuit).
 	if session_active and not _avatar_sent_to.has(peer_id):
-		_avatar_sent_to[peer_id] = true
 		_send_avatar_to(peer_id)
 	var scene := _avatar_scene
 	# Utiliser l'avatar reçu du peer si disponible (scène décodée à l'arrivée
@@ -858,6 +866,10 @@ static func _avatar_display_name(path: String) -> String:
 ## script exposant setup() (celui d'avatar.gd), sinon on retombe en auto.
 func set_selected_avatar(path: String) -> void:
 	_selected_avatar_path = ""
+	# La sélection effective change dans tous les cas (nouveau chemin ou
+	# retour en auto) → le blob baké n'est plus valable.
+	_avatar_send_cache = PackedByteArray()
+	_avatar_send_cache_raw_size = 0
 	if path.is_empty() or path == CUSTOM_AVATAR_PATH or path == DEFAULT_AVATAR_PATH:
 		return
 	if not ResourceLoader.exists(path):
@@ -957,19 +969,30 @@ func _diag_count_res(node: Node, diag: Dictionary) -> void:
 		_diag_count_res(c, diag)
 
 func _send_avatar_to(id: int) -> void:
-	var bytes := _bake_avatar()
-	if bytes.is_empty():
-		return
-	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
-	if compressed.is_empty():
-		compressed = bytes
+	# Bake + compression une seule fois par session (voir _avatar_send_cache).
+	if _avatar_send_cache.is_empty():
+		var t0 := Time.get_ticks_msec()
+		var raw := _bake_avatar()
+		if raw.is_empty():
+			return
+		var compressed := raw.compress(FileAccess.COMPRESSION_ZSTD)
+		if compressed.is_empty():
+			compressed = raw
+		_avatar_send_cache = compressed
+		_avatar_send_cache_raw_size = raw.size()
+		_lan_log("avatar local baké en %d ms — %d KB brut, %d KB compressé" % [
+			Time.get_ticks_msec() - t0, raw.size() / 1024, compressed.size() / 1024])
+	var bytes := _avatar_send_cache
+	# Marquage centralisé : tout envoi (connect, annonce, maille) compte.
+	_avatar_sent_to[id] = true
+	var total := ceili(float(bytes.size()) / float(LEVEL_CHUNK_SIZE))
 	_avatar_send_queue[id] = {
-		"bytes": compressed,
-		"size": bytes.size(),
-		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
+		"bytes": bytes,
+		"size": _avatar_send_cache_raw_size,
+		"total": total,
 		"sent": 0,
 	}
-	push_warning("LAN: envoi avatar vers peer %d — brut %d KB, compressé %d KB, %d chunks" % [id, bytes.size() / 1024, compressed.size() / 1024, ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE))])
+	push_warning("LAN: envoi avatar vers peer %d — compressé %d KB, %d chunks" % [id, bytes.size() / 1024, total])
 
 func _drain_avatar_send() -> void:
 	if _avatar_send_queue.is_empty():
@@ -2837,6 +2860,8 @@ func _disconnect_session() -> void:
 	is_host = false
 	_announced = false
 	_avatar_sent_to.clear()
+	_avatar_send_cache = PackedByteArray()
+	_avatar_send_cache_raw_size = 0
 	# Annuler un join en attente (déconnexion pendant le chargement de la
 	# map) et dégeler le joueur local.
 	_pending_join = false
