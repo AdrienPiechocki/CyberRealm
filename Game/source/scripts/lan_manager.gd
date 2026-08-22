@@ -653,12 +653,22 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 static func list_avatars() -> Array[Dictionary]:
 	var found: Array = []
 	_scan_avatars("res://", found)
+	# Build exporté : les ressources texte sont converties en binaire et
+	# remplacées par un fichier « *.remap » dans le PCK. Normalisation vers
+	# le chemin logique, que ResourceLoader sait résoudre (remap inclus).
+	for i in found.size():
+		found[i] = String(found[i]).trim_suffix(".remap")
 	found.erase(DEFAULT_AVATAR_PATH)
 	found.sort()
 	found.push_front(DEFAULT_AVATAR_PATH)
+	# Dédoublonnage défensif (avatar.tscn ET avatar.tscn.remap vus ensemble).
+	var uniq: Array = []
+	for p in found:
+		if not uniq.has(p):
+			uniq.append(p)
 	var out: Array[Dictionary] = []
 	var seen := {}
-	for p in found:
+	for p in uniq:
 		var path := String(p)
 		var nm := _avatar_display_name(path)
 		if nm == "":
@@ -684,7 +694,8 @@ static func _scan_avatars(dir_path: String, out: Array) -> void:
 			var p := dir_path.path_join(f)
 			if d.current_is_dir():
 				_scan_avatars(p, out)
-			elif f == "avatar.tscn":
+			# « .remap » : forme prise par les .tscn dans un PCK exporté.
+			elif f == "avatar.tscn" or f == "avatar.tscn.remap":
 				out.append(p)
 		f = d.get_next()
 	d.list_dir_end()
