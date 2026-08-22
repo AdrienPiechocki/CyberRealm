@@ -369,6 +369,9 @@ func _ready() -> void:
 	lan.level_apply_requested.connect(apply_host_level)
 	lan.local_level_restore_requested.connect(restore_local_level)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
+	pause_menu.lan_avatar_changed.connect(lan.set_selected_avatar)
+	# Avatar choisi au menu LAN (persisté) : appliqué avant tout host/join.
+	lan.set_selected_avatar(pause_menu.get_lan_avatar_path())
 	pause_menu.lan_host_requested.connect(lan.host_game)
 	pause_menu.lan_join_requested.connect(lan.join_game)
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)

@@ -43,7 +43,7 @@ Vulkan DMA-BUF import**.
   players.
 - **Pause menu** (`Esc`) — remappable keybinds, startup apps, custom keybinds
   that launch arbitrary commands inside the compositor, and a **LAN Game** page
-  (host/join, player name & color, LAN discovery).
+  (host/join, player name & color, avatar picker, LAN discovery).
 - **KWin integration** — an optional KWin script fullscreens the game when
   launched from Plasma and blocks all KDE global shortcuts while it has focus.
 
@@ -56,6 +56,11 @@ Vulkan DMA-BUF import**.
   discovery on **UDP 9999**.
 - **Avatars** — other players appear as colored capsules with name labels,
   interpolated from unreliable position RPCs, fading out when you get close.
+  The avatar you incarnate is picked from the LAN page dropdown, which lists
+  every `avatar.tscn` found in the project (named after each scene's root
+  node; default first). Your choice is persisted and the actual scene is baked
+  with embedded assets and streamed to peers — everyone sees your real model,
+  animations included.
 - **Window sharing** — select a window in the navigation menu and hit **SHARE**:
   its live content is streamed (H.264/AV1 inter-frame through a VAAPI hardware
   encoder, with a JPEG-per-frame fallback) and shown on a real quad in the other

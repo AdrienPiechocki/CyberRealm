@@ -32,6 +32,9 @@ const DEFAULT_AVATAR_PATH := "res://scenes/avatar.tscn"
 
 var _avatar_scene: PackedScene = null
 var _avatar_blobs: Dictionary = {} # peer_id -> PackedByteArray (scène binaire)
+# Avatar choisi dans le menu LAN (res://…/avatar.tscn). Vide = mode auto :
+# user/avatar.tscn si présent, sinon l'avatar par défaut.
+var _selected_avatar_path := ""
 
 var session_active := false
 var is_host := false
@@ -641,15 +644,103 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 # Chaque joueur envoie sa scène avatar (custom ou défaut) aux autres
 # pour que chacun voie l'avatar réel de l'autre.
 
+# ── Choix de l'avatar (menu LAN) ─────────────────────────────────────
+
+## Liste tous les avatar.tscn présents dans le projet : scan récursif de
+## res:// (DirAccess liste aussi le contenu du PCK exporté). Chaque entrée
+## est {path, name} — name = nom du nœud racine de la scène. L'avatar par
+## défaut est toujours listé en premier, les autres par ordre de chemin.
+static func list_avatars() -> Array[Dictionary]:
+	var found: Array = []
+	_scan_avatars("res://", found)
+	found.erase(DEFAULT_AVATAR_PATH)
+	found.sort()
+	found.push_front(DEFAULT_AVATAR_PATH)
+	var out: Array[Dictionary] = []
+	var seen := {}
+	for p in found:
+		var path := String(p)
+		var nm := _avatar_display_name(path)
+		if nm == "":
+			continue
+		# Homonymes (deux scènes dont la racine porte le même nom) :
+		# suffixe numérique pour que le menu reste lisible.
+		if seen.has(nm):
+			seen[nm] = int(seen[nm]) + 1
+			nm = "%s (%d)" % [nm, seen[nm]]
+		else:
+			seen[nm] = 1
+		out.append({"path": path, "name": nm})
+	return out
+
+static func _scan_avatars(dir_path: String, out: Array) -> void:
+	var d := DirAccess.open(dir_path)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var f := d.get_next()
+	while f != "":
+		if not f.begins_with("."):
+			var p := dir_path.path_join(f)
+			if d.current_is_dir():
+				_scan_avatars(p, out)
+			elif f == "avatar.tscn":
+				out.append(p)
+		f = d.get_next()
+	d.list_dir_end()
+
+# Nom affiché : celui du nœud racine de la scène, lu depuis son SceneState
+# (load() sans instantiate — les dépendances GLB restent en cache pour le
+# bake ultérieur).
+static func _avatar_display_name(path: String) -> String:
+	var ps := load(path) as PackedScene
+	if ps == null:
+		return ""
+	var st := ps.get_state()
+	if st != null and st.get_node_count() > 0:
+		return st.get_node_name(0)
+	return ""
+
+## Applique l'avatar choisi dans le menu LAN. "" (ou les chemins historiques)
+## remet le mode auto. La scène est validée : elle doit charger et porter un
+## script exposant setup() (celui d'avatar.gd), sinon on retombe en auto.
+func set_selected_avatar(path: String) -> void:
+	_selected_avatar_path = ""
+	if path.is_empty() or path == CUSTOM_AVATAR_PATH or path == DEFAULT_AVATAR_PATH:
+		return
+	if not ResourceLoader.exists(path):
+		push_warning("LAN: avatar choisi introuvable : %s" % path)
+		return
+	var ps := load(path) as PackedScene
+	if ps == null:
+		push_warning("LAN: avatar illisible : %s" % path)
+		return
+	var inst := ps.instantiate()
+	if inst == null or not inst.has_method("setup"):
+		push_warning("LAN: scène sans script avatar (setup manquant) : %s" % path)
+		if inst != null:
+			inst.free()
+		return
+	inst.free()
+	_selected_avatar_path = path
+
+
 func _bake_avatar() -> PackedByteArray:
-	if _avatar_scene == null:
+	# Scène à incarner : le choix du menu LAN s'il est valide, sinon le
+	# comportement historique (custom user/avatar.tscn, sinon défaut).
+	var src := _avatar_scene
+	if _selected_avatar_path != "":
+		var sel := load(_selected_avatar_path) as PackedScene
+		if sel != null:
+			src = sel
+	if src == null:
 		return PackedByteArray()
 	# Deep-clone la scène pour embarquer les meshes/materials/textures
 	# (sinon les references .fbx/.glb ne seront pas résolues côté peer).
 	# Limiter les textures à 256 px pour éviter un crash Vulkan côté client.
 	LevelBaker.max_texture_size = 256
 	LevelBaker.keep_surface_format = true
-	var root := _avatar_scene.instantiate() as Node3D
+	var root := src.instantiate() as Node3D
 	if root == null:
 		LevelBaker.max_texture_size = 0
 		LevelBaker.keep_surface_format = false
