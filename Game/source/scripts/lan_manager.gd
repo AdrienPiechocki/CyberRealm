@@ -107,7 +107,26 @@ var _level_baked_cache: Dictionary = {}
 
 # Avatar chunked transfer (même pattern que les niveaux).
 var _avatar_send_queue: Dictionary = {} # peer_id -> {bytes, total, sent}
-var _avatar_receive: Dictionary = {}    # {data, from_id, total, next}
+# Journal protocole (user://lan_debug.log) : diagnostic du join LAN.
+func _lan_log(msg: String, reset := false) -> void:
+	push_warning("LAN: " + msg)
+	if reset:
+		var f0 := FileAccess.open("user://lan_debug.log", FileAccess.WRITE)
+		if f0 != null:
+			f0.close()
+			return
+	var f := FileAccess.open("user://lan_debug.log", FileAccess.READ_WRITE)
+	if f == null:
+		f = FileAccess.open("user://lan_debug.log", FileAccess.WRITE)
+	if f != null:
+		f.seek_end()
+		f.store_line("[%9.3f] %s" % [Time.get_ticks_msec() / 1000.0, msg])
+		f.close()
+
+# Réception d'avatars : UN SLOT PAR ÉMETTEUR — les blobs circulent en
+# parallèle sur le canal 1 (maille complète), un slot unique serait
+# réinitialisé à chaque entrelacement de transferts.
+var _avatar_receive_slots: Dictionary = {} # from_id -> {data, size, total, next}
 
 # Fenêtres des autres joueurs, rendues en quads noirs dans le MONDE (pas
 # dans le repère du niveau) : chaque machine diffuse son propre état.
@@ -357,6 +376,7 @@ func host_game() -> bool:
 	_start_responder()
 	_announced = false
 	_avatar_sent_to.clear()
+	_lan_log("host_game — en attente de clients", true)
 	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
 	return true
@@ -400,6 +420,7 @@ func _on_connected_to_server() -> void:
 	_set_peer_timeout(1)
 	_announced = false
 	_avatar_sent_to.clear()
+	_lan_log("connecté à l'hôte — annonce immédiate (pending_join)", true)
 	_set_status("Connected to server")
 	_emit_players()
 	# S'annoncer DÈS la connexion (et non à la fin du chargement) : l'hôte
@@ -418,6 +439,7 @@ func _finalize_join() -> void:
 	if not _pending_join:
 		return
 	_pending_join = false
+	_lan_log("finalize_join — synchros dégelées")
 	if local_player != null and "input_locked" in local_player:
 		local_player.input_locked = false
 	_set_status("Joined session")
@@ -429,6 +451,7 @@ func _announce_self() -> void:
 	if _announced:
 		return
 	_announced = true
+	_lan_log("annonce: register + avatar → hôte")
 	_register_player.rpc_id(1, player_name, player_color)
 	if not _avatar_sent_to.has(1):
 		_avatar_sent_to[1] = true
@@ -454,6 +477,7 @@ func _register_player(pname: String, color: Color) -> void:
 		return
 	_players[from] = {"name": pname, "color": color}
 	_set_status("Player %d (%s) joined" % [from, pname])
+	_lan_log("registration reçue de %d — broadcast spawns (roster=%d)" % [from, _players.size()])
 	for id in _players:
 		var entry: Dictionary = _players[id]
 		_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
@@ -472,6 +496,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	# l'affichage des joueurs.
 	if not _players.has(peer_id):
 		_players[peer_id] = {"name": pname, "color": color}
+		_lan_log("roster += %d (n=%d, blobs=%s)" % [peer_id, _players.size(), str(_avatar_blobs.keys())])
 	# Échange d'avatars en maille complète : si je n'ai pas encore envoyé le
 	# mien à CE pair, je le lui envoie (une inscription re-diffuse tous les
 	# spawns, le garde-fou _avatar_sent_to évite les renvois).
@@ -695,6 +720,9 @@ func _defer_or_emit_level_apply(scene: PackedScene, pos: Vector3, rot: Vector3, 
 			continue
 		if not _avatar_blobs.has(int(id)):
 			waiting.append(int(id))
+	_lan_log("niveau prêt — roster=%s blobs=%s → %s" % [
+		str(_players.keys()), str(_avatar_blobs.keys()),
+		"application immédiate" if waiting.is_empty() else "différé (attente %s)" % str(waiting)])
 	if waiting.is_empty():
 		level_apply_requested.emit(scene, pos, rot, scl)
 		return
@@ -722,6 +750,7 @@ func _maybe_flush_deferred_level() -> void:
 	if waiting.is_empty() or expired:
 		if expired and not waiting.is_empty():
 			push_warning("LAN: timeout avatars (%s) — application du niveau sans eux" % str(waiting))
+		_lan_log("flush niveau différé — %s" % ("timeout, manquants %s" % str(waiting) if not waiting.is_empty() else "blobs complets"))
 		var d: Dictionary = _deferred_level
 		_deferred_level = {}
 		level_apply_requested.emit(d["scene"], d["pos"], d["rot"], d["scl"])
@@ -966,21 +995,24 @@ func _drain_avatar_send() -> void:
 func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size: int, chunk: PackedByteArray) -> void:
 	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
 		return
-	# Nouveau transfert : repart de zéro.
-	if not _avatar_receive.has("total") or int(_avatar_receive.get("total", -1)) != total or int(_avatar_receive.get("from_id", -1)) != from_id:
-		_avatar_receive = {"data": PackedByteArray(), "from_id": from_id, "size": uncompressed_size, "total": total, "next": 0}
-	if index < int(_avatar_receive.get("next", 0)):
+	# Nouveau transfert de cet émetteur : repart de zéro.
+	var slot: Dictionary = _avatar_receive_slots.get(from_id, {})
+	if slot.is_empty() or int(slot.get("total", -1)) != total or int(slot.get("size", -1)) != uncompressed_size:
+		slot = {"data": PackedByteArray(), "size": uncompressed_size, "total": total, "next": 0}
+		_avatar_receive_slots[from_id] = slot
+		_lan_log("avatar[%d]: début (%d chunks)" % [from_id, total])
+	if index < int(slot["next"]):
 		return
-	var data: PackedByteArray = _avatar_receive["data"]
+	var data: PackedByteArray = slot["data"]
 	data.append_array(chunk)
-	_avatar_receive["data"] = data
-	_avatar_receive["next"] = index + 1
+	slot["data"] = data
+	slot["next"] = index + 1
 	if index + 1 < total:
 		return
-	var raw: PackedByteArray = _avatar_receive["data"]
-	var recv_size: int = int(_avatar_receive["size"])
-	var recv_from: int = int(_avatar_receive["from_id"])
-	_avatar_receive.clear()
+	var raw: PackedByteArray = slot["data"]
+	var recv_size: int = int(slot["size"])
+	var recv_from: int = from_id
+	_avatar_receive_slots.erase(from_id)
 	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
 	if bytes.is_empty() or bytes.size() != recv_size:
 		push_warning("LAN: avatar décompress échoué — reçu %d octets, attendu %d" % [bytes.size(), recv_size])
@@ -2767,7 +2799,7 @@ func _disconnect_session() -> void:
 	_level_baked_cache.clear()
 	_host_spawn_transform.clear()
 	_avatar_send_queue.clear()
-	_avatar_receive.clear()
+	_avatar_receive_slots.clear()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):
 		compositor.video_decoder_clear_all()
 	_video_configs.clear()
