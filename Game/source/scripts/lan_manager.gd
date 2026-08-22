@@ -136,6 +136,9 @@ var _avatar_receive_slots: Dictionary = {} # from_id -> {data, size, total, next
 
 # Fenêtres des autres joueurs, rendues en quads noirs dans le MONDE (pas
 # dans le repère du niveau) : chaque machine diffuse son propre état.
+# Épaisseur (m) du BoxOccluder3D plaqué sur chaque quad distant — même
+# valeur que WINDOW_OCCLUDER_DEPTH des fenêtres locales (windows_3d.gd).
+const REMOTE_WINDOW_OCCLUDER_DEPTH := 0.04
 var _remote_windows_root: Node3D = null
 var _remote_windows: Dictionary = {}      # peer_id -> Node3D (conteneur des quads)
 var _remote_window_quads: Dictionary = {} # peer_id -> {wid -> MeshInstance3D}
@@ -2459,6 +2462,16 @@ func _make_remote_quad() -> MeshInstance3D:
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	quad.material_override = mat
 	quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	# Occlusion culling : boîte fine plaquée sur le quad (même recette que les
+	# fenêtres locales) — le quad noir masque ce qui est derrière lui. Enfant
+	# du quad → suit déplacement/rotation sans code par frame ; la taille est
+	# tenue à jour par _sync_remote_quad_collision().
+	var occ := OccluderInstance3D.new()
+	occ.name = "Occluder"
+	var occ_box := BoxOccluder3D.new()
+	occ_box.size = Vector3(1.0, 1.0, REMOTE_WINDOW_OCCLUDER_DEPTH)
+	occ.occluder = occ_box
+	quad.add_child(occ)
 	var body := StaticBody3D.new()
 	body.name = "RemoteCollision"
 	body.collision_layer = 2
@@ -2485,6 +2498,10 @@ func _sync_remote_quad_collision(quad: MeshInstance3D) -> void:
 	if shape != null and quad.mesh is QuadMesh:
 		var s: Vector2 = (quad.mesh as QuadMesh).size
 		shape.size = Vector3(s.x, s.y, 0.01)
+	var occ := quad.get_node_or_null("Occluder") as OccluderInstance3D
+	if occ != null and occ.occluder is BoxOccluder3D and quad.mesh is QuadMesh:
+		var s2: Vector2 = (quad.mesh as QuadMesh).size
+		(occ.occluder as BoxOccluder3D).size = Vector3(s2.x, s2.y, REMOTE_WINDOW_OCCLUDER_DEPTH)
 
 # Pose/retire la texture du contenu réel sur le quad distant. Sans texture, le
 # quad revient au noir (placeholder, SHARE OFF). Quand une texture est posée,
