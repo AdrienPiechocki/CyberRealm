@@ -183,31 +183,25 @@ func _process(_delta: float) -> void:
 	if pinned_windows.is_empty():
 		return
 	var mouse_pos := get_viewport().get_mouse_position()
-	# En mode CAPTURED, get_mouse_position() renvoie une position figée :
-	# le hover se juge alors à la VISÉE — le rayon caméra (centre de l'écran)
-	# touche-t-il la fenêtre 3D épinglée ?
-	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+	# Hover = visée (rayon caméra sur la fenêtre 3D épinglée), quel que soit
+	# le mode souris ; en MOUSE_MODE_VISIBLE, survoler le PiP lui-même compte
+	# aussi.
+	var hovering := _look_hover()
+	if not hovering and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+		var mouse_pos := get_viewport().get_mouse_position()
+		if mouse_pos == _last_mouse_pos:
+			hovering = false
+			return
 		_last_mouse_pos = mouse_pos
-		_set_hovering(_captured_look_hover())
-		return
-	# Après une transition CAPTURED → VISIBLE, la position souris est encore
-	# celle de la capture. On attend que la souris bouge VRAIMENT (position
-	# différente) avant de détecter le hover.
-	if mouse_pos == _last_mouse_pos:
-		return
-	_last_mouse_pos = mouse_pos
-	var hovering := false
-	for key in pinned_windows:
-		var pip: Control = pinned_windows[key]
-		if is_instance_valid(pip) and pip.get_global_rect().has_point(mouse_pos):
-			hovering = true
-			break
-	if hovering == _is_hovering:
-		return
+		for key in pinned_windows:
+			var pip: Control = pinned_windows[key]
+			if is_instance_valid(pip) and pip.get_global_rect().has_point(mouse_pos):
+				hovering = true
+				break
 	_set_hovering(hovering)
 
-# Transition d'état commune (souris visible ou capturée) : voile le PiP quand
-# on le survise/le vise, le restaure sinon.
+# Transition d'état commune : voile le PiP quand on vise sa fenêtre 3D, le
+# restaure sinon.
 func _set_hovering(hovering: bool) -> void:
 	if hovering == _is_hovering:
 		return
@@ -221,16 +215,16 @@ func _set_hovering(hovering: bool) -> void:
 		if is_instance_valid(pip):
 			_hover_tween.tween_property(pip, "modulate:a", target_alpha, 0.15)
 
-# Souris CAPTURED : true si le rayon caméra touche la fenêtre 3D correspondant
+# True si le rayon caméra touche la fenêtre 3D correspondant
 # au PiP épinglé — quad de contenu local ("window_id"), barre de titre locale
 # ("titlebar_of") ou quad distant ("remote_window", quads noirs LAN).
-func _captured_look_hover() -> bool:
+func _look_hover() -> bool:
 	if pinned_windows.is_empty():
 		return false
 	var cam := get_viewport().get_camera_3d()
 	if cam == null:
 		return false
-	var origin := cam.global_position
+	var origin := cam.global_position 
 	var dir := -cam.global_transform.basis.z
 	var params := PhysicsRayQueryParameters3D.create(origin, origin + dir * 1000.0)
 	var hit := get_world_3d().direct_space_state.intersect_ray(params)
