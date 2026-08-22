@@ -182,7 +182,6 @@ func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> vo
 func _process(_delta: float) -> void:
 	if pinned_windows.is_empty():
 		return
-	var mouse_pos := get_viewport().get_mouse_position()
 	# Hover = visée (rayon caméra sur la fenêtre 3D épinglée), quel que soit
 	# le mode souris ; en MOUSE_MODE_VISIBLE, survoler le PiP lui-même compte
 	# aussi.
