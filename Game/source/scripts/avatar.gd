@@ -8,7 +8,6 @@ extends Node3D
 ## ce script et contenir un nœud Label3D nommé "NameLabel".
 
 @export var pitch_treshold: float = 2.0
-@export var head: Node3D
 
 @export_group("Animations")
 ## Nom de la jouée quand l'avatar est immobile.
@@ -52,9 +51,6 @@ func setup(id: int, pname: String, color: Color) -> void:
 	# shaders soient compilés hors-écran (sinon TDR pendant le chargement du
 	# niveau). La visibilité est restaurée par start_prewarm().
 	visible = false
-
-	if head == null:
-		head = get_node(".")
 
 	# Collecter tous les MeshInstance3D et préparer les matériaux.
 	var meshes: Array[MeshInstance3D] = []
@@ -298,7 +294,7 @@ func _physics_process(delta: float) -> void:
 	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
-	head.rotation.x = _interp_pitch / pitch_treshold
+	rotation.x = _interp_pitch / pitch_treshold
 	_update_transparency()
 	_update_animation(delta)
 	_prev_pos = _interp_pos
