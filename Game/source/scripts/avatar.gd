@@ -108,7 +108,8 @@ func _ready() -> void:
 	# du niveau — un prewarm à ce moment-là s'ajouterait à la compilation des
 	# shaders du niveau et provoquerait le TDR. Le lan_manager appelle
 	# start_prewarm() une fois le niveau stable.
-	pass
+	if head == null:
+		head = get_node(".")
 
 
 # Déclenche le prewarm GPU une seule fois, quand le niveau est stable. Tant
