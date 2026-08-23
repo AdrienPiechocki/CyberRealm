@@ -7,10 +7,26 @@ extends Node3D
 ## wayland_room.gd) ; la fermeture de la fenêtre active (kill) fait retomber
 ## le focus sur la précédente. Chaque fenêtre conserve son propre état (taille
 ## d'origine, position du curseur, pointer lock, popups).
+## L'input pointeur va à la fenêtre SURVOLÉE de la pile (pas seulement à la
+## fenêtre active) ; un appui bouton sur une fenêtre d'arrière-plan la remonte
+## au sommet de la pile et l'active. Chaque fenêtre (sauf la plein écran) a
+## une BARRE DE TITRE dessinée au-dessus de son contenu (décoration 2D façon
+## windows_3d.gd) : clic-glisser dessus déplace la fenêtre sans modificateur ;
+## Super+clic gauche dans le contenu reste disponible en secours (selon le
+## bureau hôte, la capture Meta+boutons peut avaler les événements bouton).
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
 const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
+
+# Barre de titre des fenêtres du mode focus (décoration 2D, miroir de la SSD
+# de windows_3d.gd : mêmes couleurs). Posée juste au-dessus du contenu
+# AFFICHÉ (zone KEEP_ASPECT_CENTERED), largeur = celle du contenu. Un
+# clic-glisser dessus déplace la fenêtre sans modificateur ; les couleurs
+# reprennent TITLEBAR_BG/TITLEBAR_FG de windows_3d.gd.
+const FOCUS_TITLEBAR_H := 32.0
+const FOCUS_TITLEBAR_BG := Color(0.13, 0.15, 0.22)
+const FOCUS_TITLEBAR_FG := Color(0.85, 0.88, 0.96)
 
 # Écart (m) entre les fenêtres de la pile à la sortie du mode focus : chacune
 # est posée STACK_Z_OFFSET devant la précédente, vers la caméra.
@@ -49,7 +65,8 @@ var focus_stack: Array = []
 # window_id (int) -> TextureRect plein écran affichant la fenêtre en overlay 2D.
 var focus_rects: Dictionary = {}
 # window_id (int) -> état propre à la fenêtre : original_size, mouse_captured,
-# mouse_uv, surface_size, content_offset, content_size.
+# mouse_uv, surface_size, content_offset, content_size, ui_offset (décalage
+# 2D de l'overlay accumulé par le déplacement Super+clic gauche).
 var focus_states: Dictionary = {}
 # La seule fenêtre de la pile passée en plein écran côté compositeur (la
 # première entrée en focus). Les suivantes conservent leur taille d'origine.
@@ -66,6 +83,50 @@ var focus_popup_rects: Dictionary = {}
 # vers la fenêtre principale) → le drag-and-drop ne fonctionne pas.
 var popup_drag_id: int = -1
 var popup_buttons_down: int = 0
+
+# Grab implicite fenêtre : dernière fenêtre ayant reçu un appui bouton. Tant
+# qu'un bouton reste enfoncé, motion + boutons continuent d'être routés vers
+# ELLE même si le curseur quitte sa zone affichée (contrat Wayland implicite :
+# sans ça, un drag de sélection sauterait à la fenêtre du dessous dès que le
+# curseur la quitte). Miroir de popup_drag_id pour les popups.
+var window_press_id: int = -1
+var window_press_buttons: int = 0
+
+# Déplacement d'une fenêtre de la pile par Super+clic gauche : l'overlay suit
+# le curseur (décalage persistant dans l'état de la fenêtre, cf. ui_offset),
+# tous les événements pointeur sont absorbés jusqu'au relâchement du bouton.
+# La fenêtre plein écran (fond de pile) n'est pas déplaçable.
+var window_move_id: int = -1
+var window_move_last_pos := Vector2.ZERO
+
+# Barres de titre des fenêtres de la pile : window_id -> Panel. Pas de barre
+# pour la fenêtre plein écran (non déplaçable, son contenu couvre l'écran).
+# Hit-test manuel via _titlebar_at : les Controls sont en MOUSE_FILTER_IGNORE
+# pour ne pas interférer avec la routing souris du mode focus.
+var focus_title_bars: Dictionary = {}
+
+# État de la touche Super/Meta, suivi depuis le flux InputEventKey (le même
+# flux que le forward clavier : garantie de livraison, là où le polling
+# Input.is_key_pressed peut dépendre de la plateforme / du grab du bureau
+# hôte). Mis à jour dans handle_input_event.
+var _super_down := false
+
+# État brut du bouton gauche, suivi depuis le flux InputEventMouseButton :
+# l'action Godot "left_click" est bindée sans modifieur, un clic émis avec
+# Super tenu peut selon la version être filtré du cache d'actions ; le flux
+# d'événements, lui, ne ment jamais. Utilisé en complément des polls action
+# pour le démarrage/la fin du déplacement Super+clic.
+var _left_down := false
+var _left_event_pressed := false
+var _left_event_frame := -1
+
+# Sondage direct de l'état brut du bouton gauche (Input.is_mouse_button_
+# pressed) avec détection de front : ni le cache d'actions ni la propagation
+# d'événements ne peuvent le filtrer. C'est la source primaire pour le
+# déplacement ; les actions et événements ne sont que des filets.
+var _left_raw_prev := false
+var _left_press_edge := false
+var _left_release_edge := false
 
 # Curseur custom de la fenêtre active dessiné en overlay 2D (TextureRect
 # positionné sur le pointeur) : réplique le wl_pointer.set_cursor de
@@ -331,13 +392,14 @@ func _active_id() -> int:
 func _state(id: int) -> Dictionary:
 	if not focus_states.has(id):
 		focus_states[id] = {
-			"original_size": Vector2.ONE,
-			"mouse_captured": false,
-			"mouse_uv": Vector2(0.5, 0.5),
-			"surface_size": Vector2(1, 1),
-			"content_offset": Vector2.ZERO,
-			"content_size": Vector2(1, 1),
-		}
+		"original_size": Vector2.ONE,
+		"mouse_captured": false,
+		"mouse_uv": Vector2(0.5, 0.5),
+		"surface_size": Vector2(1, 1),
+		"content_offset": Vector2.ZERO,
+		"content_size": Vector2(1, 1),
+		"ui_offset": Vector2.ZERO,
+	}
 	return focus_states[id]
 
 func enter_focus(id: int) -> void:
@@ -392,6 +454,8 @@ func enter_focus(id: int) -> void:
 	st["content_offset"] = info.get("content_offset", Vector2.ZERO)
 	st["content_size"] = info.get("content_size", st["surface_size"])
 	_refresh_rect_layout(id)
+	# Barre de titre (déplacement par clic-glisser, sans modificateur).
+	_ensure_title_bar(id)
 
 	# Cacher le quad 3D, l'overlay 2D prend le relais
 	# windows.set_quad_visible(id, false)
@@ -561,6 +625,7 @@ func on_window_unmapped(id: int) -> void:
 		return
 	var was_active := id == _active_id()
 	focus_stack.erase(id)
+	_remove_title_bar(id)
 	if focus_rects.has(id):
 		if is_instance_valid(focus_rects[id]):
 			_world_occluder.visible = false
@@ -568,12 +633,21 @@ func on_window_unmapped(id: int) -> void:
 			focus_rects[id].queue_free()
 		focus_rects.erase(id)
 	focus_states.erase(id)
+	if window_move_id == id:
+		window_move_id = -1
+	if window_press_id == id:
+		window_press_id = -1
+		window_press_buttons = 0
 	# Si la fenêtre plein écran quitte la pile, promouvoir la nouvelle
 	# première fenêtre : le mode focus garde toujours exactement une fenêtre
 	# plein écran côté compositeur.
 	if focus_fullscreen_id == id and not focus_stack.is_empty():
 		compositor.set_window_fullscreen(focus_stack[0], true)
 		focus_fullscreen_id = focus_stack[0]
+		# La fenêtre promue plein écran ne doit plus porter de barre de titre
+		# (non déplaçable) : retrait immédiat, pas d'attente du prochain
+		# rafraîchissement de layout.
+		_remove_title_bar(focus_fullscreen_id)
 	if focus_stack.is_empty():
 		# Plus aucune fenêtre dans la pile : sortir du mode focus
 		compositor.release_all_keys()
@@ -629,7 +703,11 @@ func _refresh_rect_layout(id: int) -> void:
 	var viewport_size := get_viewport().get_visible_rect().size
 	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], viewport_size)
 	rect.size = display_size
-	rect.position = (viewport_size - display_size) / 2.0
+	# ui_offset = décalage accumulé par le déplacement Super+clic gauche ;
+	# réappliqué ici car ce layout est recalculé à chaque mise à jour texture.
+	rect.position = (viewport_size - display_size) / 2.0 + _state(id)["ui_offset"]
+	# La barre de titre suit son contenu (position, taille, titre).
+	_sync_title_bar(id)
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
 	if not focus_mode or remote_focus:
@@ -782,8 +860,8 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 	# Grab bouton pour le drag-and-drop : mémoriser le popup qui reçoit un
 	# appui et compter les boutons enfoncés, pour router vers lui tant que le
 	# drag est actif même hors de ses bords (voir handle_focus_input).
-	var press_left := Input.is_action_just_pressed("left_click")
-	var release_left := Input.is_action_just_released("left_click")
+	var press_left := _left_press_this_frame()
+	var release_left := _left_release_this_frame()
 	var press_right := Input.is_action_just_pressed("right_click")
 	var release_right := Input.is_action_just_released("right_click")
 	var press_middle := Input.is_action_just_pressed("middle_click")
@@ -831,19 +909,266 @@ func _activate_window(id: int) -> void:
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	# Rafraîchir les popups overlayés
-	_clear_popup_overlays()
-	for popup_id in windows.popup_parent_info:
-		var pinfo = windows.popup_parent_info[popup_id]
-		if pinfo.parent_window_id == id or \
-			(pinfo.parent_popup_id != -1 and focus_popup_rects.has(pinfo.parent_popup_id)):
-			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
-				pinfo.x, pinfo.y, pinfo.width, pinfo.height)
+	_refresh_popups()
 
 func _clear_popup_overlays() -> void:
 	for popup_id in focus_popup_rects:
 		if is_instance_valid(focus_popup_rects[popup_id]):
 			focus_popup_rects[popup_id].queue_free()
 	focus_popup_rects.clear()
+
+# Recrée les overlays de popups de la fenêtre active : positions recalculées
+# depuis le rect courant du parent (appelé après un déplacement Super+clic).
+func _refresh_popups() -> void:
+	var active := _active_id()
+	_clear_popup_overlays()
+	for popup_id in windows.popup_parent_info:
+		var pinfo = windows.popup_parent_info[popup_id]
+		if pinfo.parent_window_id == active or \
+			(pinfo.parent_popup_id != -1 and focus_popup_rects.has(pinfo.parent_popup_id)):
+			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
+				pinfo.x, pinfo.y, pinfo.width, pinfo.height)
+
+# Zone écran réellement occupée par le CONTENU d'un overlay : le TextureRect
+# est en STRETCH_KEEP_ASPECT_CENTERED, seules les barres letterbox autour du
+# contenu sont « traversantes » (cliquables vers la fenêtre du dessous).
+# Rect vide si la fenêtre n'a pas d'overlay ou pas encore de texture.
+func _displayed_rect(id: int) -> Rect2:
+	var rect: TextureRect = focus_rects.get(id)
+	if rect == null or not is_instance_valid(rect):
+		return Rect2()
+	var tex := rect.texture
+	if tex == null:
+		return Rect2()
+	var tex_size := tex.get_size()
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		return Rect2()
+	var crect := rect.get_global_rect()
+	if crect.size.x <= 0.0 or crect.size.y <= 0.0:
+		return Rect2()
+	var aspect := tex_size.x / maxf(tex_size.y, 1.0)
+	var rect_aspect := crect.size.x / maxf(crect.size.y, 0.001)
+	var displayed: Vector2
+	if aspect > rect_aspect:
+		displayed = Vector2(crect.size.x, crect.size.x / aspect)
+	else:
+		displayed = Vector2(crect.size.y * aspect, crect.size.y)
+	return Rect2(crect.position + (crect.size - displayed) / 2.0, displayed)
+
+# Fenêtre la plus au-dessus de la pile dont le contenu affiché contient pos,
+# -1 si aucune (barres letterbox / hors contenu). Itération du sommet vers
+# le fond : l'occlusion visuelle des overlays détermine la fenêtre touchée.
+func _window_at(pos: Vector2) -> int:
+	for i in range(focus_stack.size() - 1, -1, -1):
+		var id: int = focus_stack[i]
+		if _displayed_rect(id).has_point(pos):
+			return id
+	return -1
+
+# Crée la barre de titre d'une fenêtre de la pile (sauf plein écran).
+# Panel + Label centré : même palette que les SSD 3D (windows_3d.gd) pour une
+# cohérence visuelle entre les deux modes.
+func _ensure_title_bar(id: int) -> void:
+	if id == focus_fullscreen_id or id < 0:
+		return
+	if focus_title_bars.has(id) and is_instance_valid(focus_title_bars[id]):
+		_sync_title_bar(id)
+		return
+	var bar := Panel.new()
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = FOCUS_TITLEBAR_BG
+	sb.corner_radius_top_left = 4
+	sb.corner_radius_top_right = 4
+	bar.add_theme_stylebox_override("panel", sb)
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.z_index = _rect_z_index(id)
+	var lbl := Label.new()
+	lbl.name = "Title"
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.clip_text = true
+	lbl.add_theme_color_override("font_color", FOCUS_TITLEBAR_FG)
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(lbl)
+	ui.add_child(bar)
+	focus_title_bars[id] = bar
+	_sync_title_bar(id)
+
+# Positionne la barre au-dessus du contenu AFFICHÉ (pas du TextureRect : en
+# KEEP_ASPECT_CENTERED les barres letterbox ne doivent pas porter la déco).
+# Appelée à chaque _refresh_rect_layout : la barre suit le contenu, y compris
+# pendant un déplacement (ui_offset) et un resize.
+# Zone écran du CONTENU VISIBLE d'un overlay : sous-zone de _displayed_rect
+# correspondant à la géométrie réelle du client (content_offset/content_size)
+# dans le buffer capturé. Le buffer est arrondi au multiple de 64 (côté
+# Vulkan), donc il inclut un padding transparent à droite/bas : sans ce
+# recadrage, la barre de titre dépassait la fenêtre visible sur la droite.
+# Retombe sur _displayed_rect si la géométrie n'est pas connue/fiable.
+func _displayed_content_rect(id: int) -> Rect2:
+	var disp := _displayed_rect(id)
+	if disp.size.x <= 0.0 or disp.size.y <= 0.0:
+		return Rect2()
+	var st := _state(id)
+	var surf: Vector2 = st.get("surface_size", Vector2.ZERO)
+	var coff: Vector2 = st.get("content_offset", Vector2.ZERO)
+	var csize: Vector2 = st.get("content_size", Vector2.ZERO)
+	if surf.x <= 0.0 or surf.y <= 0.0 \
+			or csize.x <= 0.0 or csize.y <= 0.0 \
+			or csize.x > surf.x or csize.y > surf.y:
+		return disp
+	return Rect2(
+		disp.position + Vector2(coff.x / surf.x, coff.y / surf.y) * disp.size,
+		Vector2(csize.x / surf.x, csize.y / surf.y) * disp.size
+	)
+
+func _sync_title_bar(id: int) -> void:
+	var bar: Panel = focus_title_bars.get(id)
+	if bar == null or not is_instance_valid(bar):
+		return
+	if id == focus_fullscreen_id or not focus_stack.has(id):
+		bar.visible = false
+		return
+	# La barre épouse le CONTENU VISIBLE (pas le buffer) : collée au bord
+	# supérieur du contenu, même largeur que lui.
+	var content := _displayed_content_rect(id)
+	if content.size.x <= 0.0:
+		bar.visible = false
+		return
+	bar.visible = true
+	bar.size = Vector2(content.size.x, FOCUS_TITLEBAR_H)
+	bar.position = Vector2(content.position.x, content.position.y - FOCUS_TITLEBAR_H)
+	var lbl: Label = bar.get_node_or_null("Title")
+	if lbl != null:
+		lbl.text = String(windows.window_titles.get(id, ""))
+		lbl.size = bar.size
+
+# z_index que porte l'overlay d'une fenêtre selon son rang dans la pile
+# (FOCUS_Z_BASE + rang + 1, cf. enter_focus / _raise_window). La barre porte
+# le MÊME z que son rect : ajoutée après dans l'arbre, elle se dessine
+# au-dessus ; le rect d'une fenêtre plus haute dans la pile (z supérieur) la
+# recouvre, comme en 3D.
+func _rect_z_index(id: int) -> int:
+	var idx := focus_stack.find(id)
+	if idx == -1 or not focus_rects.has(id) or not is_instance_valid(focus_rects[id]):
+		return FOCUS_Z_BASE + 1
+	return int(focus_rects[id].z_index)
+
+# Fenêtre dont la BARRE DE TITRE affichée contient pos, -1 sinon. Itération
+# du sommet vers le fond (une barre peut être recouverte par le contenu d'une
+# fenêtre plus haute, mais jamais par une autre barre : elles sont hors des
+# zones de contenu).
+func _titlebar_at(pos: Vector2) -> int:
+	for i in range(focus_stack.size() - 1, -1, -1):
+		var id: int = focus_stack[i]
+		var bar: Panel = focus_title_bars.get(id)
+		if bar == null or not is_instance_valid(bar) or not bar.visible:
+			continue
+		if bar.get_global_rect().has_point(pos):
+			return id
+	return -1
+
+# Retire la barre de titre d'une fenêtre (démap, sortie de pile, sortie du
+# mode focus).
+func _remove_title_bar(id: int) -> void:
+	if not focus_title_bars.has(id):
+		return
+	var bar: Panel = focus_title_bars[id]
+	focus_title_bars.erase(id)
+	if is_instance_valid(bar):
+		bar.queue_free()
+
+# Passe une fenêtre au sommet de la pile SANS l'activer : réordonne la pile
+# et réaligne les z_index des overlays (FOCUS_Z_BASE + rang dans la pile,
+# cf. enter_focus).
+func _raise_window(id: int) -> void:
+	if id < 0 or not focus_stack.has(id):
+		return
+	focus_stack.erase(id)
+	focus_stack.append(id)
+	for i in focus_stack.size():
+		var wid: int = focus_stack[i]
+		if focus_rects.has(wid) and is_instance_valid(focus_rects[wid]):
+			focus_rects[wid].z_index = FOCUS_Z_BASE + i + 1
+		var bar: Panel = focus_title_bars.get(wid)
+		if bar != null and is_instance_valid(bar):
+			bar.z_index = FOCUS_Z_BASE + i + 1
+
+func _is_super_pressed() -> bool:
+	return _super_down or Input.is_key_pressed(KEY_META)
+
+# Appui/relâchement du bouton gauche pour la frame courante : front de l'état
+# brut (source primaire, insensible aux modificateurs), complété par l'action
+# Godot et les événements bruts au cas où le sondage passerait à côté.
+func _poll_left_button() -> void:
+	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	_left_press_edge = now and not _left_raw_prev
+	_left_release_edge = (not now) and _left_raw_prev
+	if _left_press_edge or _left_release_edge:
+		_left_down = now
+		_left_event_pressed = now
+		_left_event_frame = Engine.get_process_frames()
+	_left_raw_prev = now
+
+func _left_press_this_frame() -> bool:
+	return _left_press_edge \
+		or Input.is_action_just_pressed("left_click") \
+		or (_left_event_pressed and _left_event_frame == Engine.get_process_frames())
+
+func _left_release_this_frame() -> bool:
+	if _left_release_edge or Input.is_action_just_released("left_click"):
+		return true
+	return (not _left_down and _left_event_frame == Engine.get_process_frames())
+
+# Démarre le déplacement Super+clic gauche : la fenêtre remonte au sommet et
+# devient active ; ses popups (ancrés au rect parent à la création) sont
+# masqués jusqu'à la fin du déplacement.
+func _start_window_move(id: int, mouse_pos: Vector2) -> void:
+	window_move_id = id
+	window_move_last_pos = mouse_pos
+	_raise_window(id)
+	_activate_window(id)
+	_clear_popup_overlays()
+	_hide_cursor_overlay()
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		print("focus-move: start id=", id, " pos=", mouse_pos)
+
+# Suit le curseur pendant un déplacement : delta → ui_offset de la fenêtre
+# (persistant, réappliqué par _refresh_rect_layout). Fin au relâchement du
+# bouton gauche.
+func _update_window_move(mouse_pos: Vector2) -> void:
+	if window_move_id == -1 or not focus_rects.has(window_move_id):
+		window_move_id = -1
+		return
+	var st := _state(window_move_id)
+	st["ui_offset"] += mouse_pos - window_move_last_pos
+	window_move_last_pos = mouse_pos
+	_refresh_rect_layout(window_move_id)
+	# Fin au relâchement du bouton gauche (flux d'événements + action Godot).
+	if _left_release_this_frame() or not _left_down:
+		window_move_id = -1
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("focus-move: end")
+		_refresh_popups()
+
+# Forward les boutons souris vers une fenêtre (chemin commun aux modes
+# souris visible et capturée).
+func _forward_window_buttons(id: int) -> void:
+	if _left_press_this_frame():
+		compositor.forward_pointer_button(id, 0x110, true)
+	if _left_release_this_frame():
+		compositor.forward_pointer_button(id, 0x110, false)
+
+	if Input.is_action_just_pressed("right_click"):
+		compositor.forward_pointer_button(id, 0x111, true)
+	if Input.is_action_just_released("right_click"):
+		compositor.forward_pointer_button(id, 0x111, false)
+
+	# Clic molette (BTN_MIDDLE) : forwardé comme les clics gauche/droit.
+	if Input.is_action_just_pressed("middle_click"):
+		compositor.forward_pointer_button(id, 0x112, true)
+	if Input.is_action_just_released("middle_click"):
+		compositor.forward_pointer_button(id, 0x112, false)
 
 func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
@@ -854,6 +1179,15 @@ func _reset_focus_ui() -> void:
 	_clear_popup_overlays()
 	popup_drag_id = -1
 	popup_buttons_down = 0
+	window_move_id = -1
+	window_press_id = -1
+	window_press_buttons = 0
+	for bar_id in focus_title_bars.keys():
+		_remove_title_bar(bar_id)
+	_super_down = false
+	_left_down = false
+	_left_event_pressed = false
+	_left_event_frame = -1
 	for id in focus_rects:
 		if is_instance_valid(focus_rects[id]):
 			focus_rects[id].queue_free()
@@ -926,7 +1260,12 @@ func _hide_cursor_overlay() -> void:
 	cursor_overlay_serial = -1
 
 # Routage souris/clavier du mode focus, appelé chaque frame par
-# wayland_room.gd tant que le mode est actif. L'input va à la fenêtre active.
+# wayland_room.gd tant que le mode est actif. L'input pointeur va à la
+# fenêtre SURVOLÉE de la pile — pas forcément la fenêtre active — tandis que
+# le clavier reste sur l'active (set_window_keyboard_focus). Un appui bouton
+# sur une fenêtre d'arrière-plan la remonte au sommet de la pile et
+# l'active ; Super+clic gauche déplace une fenêtre (fullscreen exclue) en
+# absorbant tous les événements pointeur.
 func handle_focus_input() -> void:
 	if remote_focus:
 		return
@@ -934,9 +1273,12 @@ func handle_focus_input() -> void:
 	if active_id == -1 or not focus_rects.has(active_id):
 		return
 	var st := _state(active_id)
-	var rect: TextureRect = focus_rects[active_id]
 	var surf_x: float
 	var surf_y: float
+
+	# Front du bouton gauche depuis l'état brut (une seule fois par frame,
+	# avant les deux chemins : visible ET capturé utilisent ces bords).
+	_poll_left_button()
 
 	# Souris capturée (lock): forward UNIQUEMENT le relatif (via _input).
 	# Ne PAS envoyer de wl_pointer.motion (absolu) ici : un client locké ne doit
@@ -952,101 +1294,162 @@ func handle_focus_input() -> void:
 	if st["mouse_captured"]:
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
+		compositor.set_window_pointer(active_id, surf_x, surf_y, true)
+		_forward_window_buttons(active_id)
+		return
+
+	var mouse_pos := get_viewport().get_mouse_position()
+
+	# Déplacement Super+clic gauche en cours : le compositeur absorbe TOUS les
+	# événements pointeur jusqu'au relâchement du bouton (l'overlay suit le
+	# curseur), aucun motion/bouton/scroll ne part vers les clients.
+	if window_move_id != -1:
+		_update_window_move(mouse_pos)
+		return
+
+	var press_left := _left_press_this_frame()
+	var release_left := _left_release_this_frame()
+	var press_right := Input.is_action_just_pressed("right_click")
+	var release_right := Input.is_action_just_released("right_click")
+	var press_middle := Input.is_action_just_pressed("middle_click")
+	var release_middle := Input.is_action_just_released("middle_click")
+
+	# MAIS dès qu'un drag est ACTIF au niveau wlroots (wl_data_device), les
+	# grabs implicites n'existent plus : wlroots route tout par la surface
+	# sous le curseur (wl_data_device.enter) pour mettre à jour la cible de
+	# drop. Figée sur une fenêtre/popup, la cible ne changerait jamais.
+	if compositor.is_drag_active():
+		popup_drag_id = -1
+		popup_buttons_down = 0
+		window_press_id = -1
+		window_press_buttons = 0
+
+	# Résolution de la cible pointeur, par priorité décroissante : grab
+	# implicite fenêtre (appui en cours, cf. window_press_id), grab implicite
+	# popup (drag-and-drop popup, cf. popup_drag_id), popup de la fenêtre
+	# active sous le curseur (les popups sont dessinés au-dessus de tous les
+	# overlays), puis fenêtre survolée — la plus haute dont le CONTENU affiché
+	# contient le curseur, qui peut donc être une fenêtre d'arrière-plan ;
+	# fallback = fenêtre active (barres letterbox / hors contenu).
+	var popup_target: Dictionary = {}
+	var target_window := active_id
+	if window_press_id != -1:
+		target_window = window_press_id
+	elif popup_drag_id != -1 and popup_buttons_down > 0 \
+			and focus_popup_rects.has(popup_drag_id):
+		popup_target = {"id": popup_drag_id, "rect": focus_popup_rects[popup_drag_id]}
 	else:
-		# Souris visible: position absolue, curseur custom suit la souris
-		var mouse_pos := get_viewport().get_mouse_position()
+		popup_target = _popup_at(mouse_pos)
+		if popup_target.is_empty():
+			var hover_id := _window_at(mouse_pos)
+			if hover_id != -1:
+				target_window = hover_id
 
-		# Utiliser la zone réelle affichée par le TextureRect pour le mapping
-		# (plus précis que de recalculer avec surface_size)
-		var tex := rect.texture
-		var displayed_size: Vector2 = Vector2.ZERO
-		if tex:
-			var tex_size := tex.get_size()
-			# Rect2 global du TextureRect après layout Godot
-			var tex_rect := rect.get_global_rect()
-			# Taille affichée respectant l'aspect ratio
-			var aspect := tex_size.x / tex_size.y
-			var rect_aspect := tex_rect.size.x / tex_rect.size.y
-			if aspect > rect_aspect:
-				displayed_size = Vector2(tex_rect.size.x, tex_rect.size.x / aspect)
-			else:
-				displayed_size = Vector2(tex_rect.size.y * aspect, tex_rect.size.y)
-			var offset := tex_rect.position + (tex_rect.size - displayed_size) / 2.0
-
-			var local_pos := mouse_pos - offset
-			st["mouse_uv"] = Vector2(
-				clampf(local_pos.x / displayed_size.x, 0.0, 1.0),
-				clampf(local_pos.y / displayed_size.y, 0.0, 1.0)
-			)
-		else:
-			st["mouse_uv"] = Vector2(0.5, 0.5)
-
-		# Adopter le curseur custom posé par l'application en focus
-		# (wl_pointer.set_cursor, remonté via xwayland-satellite pour les
-		# fenêtres X11) : dessiné en overlay 2D sur le pointeur, sinon flèche
-		# système par défaut. Uniquement dans le chemin souris visible : en
-		# souris capturée (FPS) l'overlay est masqué par _hide_cursor_overlay.
-		var display_scale := Vector2.ONE
-		if displayed_size.x > 0.0 and st["surface_size"].x > 0.0:
-			display_scale = displayed_size / st["surface_size"]
-		_update_cursor_overlay(active_id, mouse_pos, display_scale)
-
-		# Popup de la fenêtre active sous le curseur (menus, dropdowns...) :
-		# router mouvement + clics vers la SURFACE du popup (forward_*_popup),
-		# pas vers la fenêtre. En mode focus seuls les popups de la fenêtre
-		# active sont overlayés ; sans ce routage, tout l'input partait vers la
-		# fenêtre aux coordonnées du popup et le menu ne recevait ni hover ni
-		# clic (inutilisable dans GIMP par exemple, alors que ça marche en 3D).
-		# Pendant un drag-and-drop (bouton enfoncé sur un popup), on continue
-		# de router vers LE popup qui a reçu l'appui, même quand le curseur le
-		# quitte : sinon le relâchement partirait vers la fenêtre et le drag
-		# serait abandonné par l'application.
-		# MAIS dès qu'un drag est ACTIF au niveau wlroots (wl_data_device), le
-		# grab popup n'existe plus : wlroots route tout par la surface sous le
-		# curseur (wl_data_device.enter) pour mettre à jour la cible de drop.
-		# Router vers le popup figerait la cible sur le popup → DnD cassé.
-		var popup_hit := _popup_at(mouse_pos)
-		var popup_target: Dictionary
-		var drag_active := compositor.is_drag_active()
-		if drag_active:
-			popup_drag_id = -1
-			popup_buttons_down = 0
-		if not drag_active and popup_drag_id != -1 and popup_buttons_down > 0 \
-				and focus_popup_rects.has(popup_drag_id):
-			popup_target = {"id": popup_drag_id, "rect": focus_popup_rects[popup_drag_id]}
-		else:
-			popup_target = popup_hit
-		if not popup_target.is_empty():
-			_forward_to_popup(popup_target, mouse_pos)
-			compositor.set_window_pointer(active_id, 0, 0, false)
+	# Appui gauche sur une BARRE DE TITRE : déplacer la fenêtre SANS
+	# modificateur (décoration 2D façon windows_3d.gd). Le clic est absorbé,
+	# rien ne part vers les clients ; la fenêtre est remontée et activée par
+	# _start_window_move. Les popups restent prioritaires : une zone de barre
+	# recouverte par un menu doit capter le clic pour le menu, pas lancer un
+	# déplacement.
+	if press_left and popup_target.is_empty():
+		var tb_id := _titlebar_at(mouse_pos)
+		if tb_id != -1 and tb_id != focus_fullscreen_id:
+			_start_window_move(tb_id, mouse_pos)
 			return
 
-		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
-		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
-		compositor.forward_pointer_motion(active_id, surf_x, surf_y)
+	# Super+clic gauche : secours si la barre n'est pas touchée (selon le
+	# bureau hôte, la capture Meta+boutons peut aussi avaler ces événements).
+	# Jamais via un popup, jamais la fenêtre fullscreen du fond de pile.
+	if press_left and _is_super_pressed() and popup_target.is_empty():
+		if target_window == focus_fullscreen_id:
+			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+				print("focus-move: refusé, fenêtre fullscreen id=", target_window)
+		else:
+			_start_window_move(target_window, mouse_pos)
+			return
 
-	compositor.set_window_pointer(active_id, surf_x, surf_y, true)
+	# Cible popup (menus, dropdowns...) : router mouvement + clics vers la
+	# SURFACE du popup (forward_*_popup), pas vers la fenêtre. En mode focus
+	# seuls les popups de la fenêtre active sont overlayés ; sans ce routage,
+	# tout l'input partait vers la fenêtre aux coordonnées du popup et le menu
+	# ne recevait ni hover ni clic (inutilisable dans GIMP par exemple, alors
+	# que ça marche en 3D). Pendant un drag-and-drop (bouton enfoncé sur un
+	# popup), on continue de router vers LE popup qui a reçu l'appui même hors
+	# de ses bords : sinon le relâchement partirait vers la fenêtre et le drag
+	# serait abandonné par l'application.
+	if not popup_target.is_empty():
+		_forward_to_popup(popup_target, mouse_pos)
+		compositor.set_window_pointer(active_id, 0, 0, false)
+		# Le curseur custom doit continuer à SUIVRE le pointeur au-dessus d'un
+		# popup : cette branche retourne tôt, et sans mise à jour explicite
+		# l'overlay restait figé à sa dernière position (curseur « gelé »
+		# visuellement dès l'entrée dans un menu). L'image reste celle de la
+		# fenêtre propriétaire (le compositeur n'expose pas de curseur par
+		# popup) ; l'échelle est celle du POPUP pour que le hotspot tombe juste
+		# même si son facteur d'affichage diffère de celui de la fenêtre.
+		var prect: TextureRect = popup_target["rect"]
+		var pcontent: Vector2 = prect.get_meta("content_size", prect.size)
+		var pscale := Vector2.ONE
+		if pcontent.x > 0.0 and pcontent.y > 0.0:
+			pscale = prect.get_global_rect().size / pcontent
+		_update_cursor_overlay(active_id, mouse_pos, pscale)
+		return
 
-	if Input.is_action_just_pressed("left_click"):
-		compositor.forward_pointer_button(active_id, 0x110, true)
-	if Input.is_action_just_released("left_click"):
-		compositor.forward_pointer_button(active_id, 0x110, false)
+	# Comptage du grab implicite fenêtre : le premier appui fige la cible et,
+	# si c'est une fenêtre d'arrière-plan, la remonte au sommet de la pile et
+	# l'active (clavier + popups) AVANT de lui forwarder l'appui ; côté
+	# compositeur, forward_pointer_button active aussi le toplevel.
+	# EXCEPTION fenêtre plein écran : cliquer dedans NE doit PAS la faire
+	# passer devant les autres (elle reste le fond de pile) ni lui voler le
+	# clavier ; l'appui reste forwardé normalement vers elle.
+	if press_left or press_right or press_middle:
+		if window_press_id == -1:
+			window_press_id = target_window
+			window_press_buttons = 1
+			if target_window != active_id and target_window != focus_fullscreen_id:
+				_raise_window(target_window)
+				_activate_window(target_window)
+		else:
+			window_press_buttons += 1
+	elif window_press_id != -1 and (release_left or release_right or release_middle):
+		window_press_buttons -= 1
+		if window_press_buttons <= 0:
+			window_press_id = -1
+			window_press_buttons = 0
 
-	if Input.is_action_just_pressed("right_click"):
-		compositor.forward_pointer_button(active_id, 0x111, true)
-	if Input.is_action_just_released("right_click"):
-		compositor.forward_pointer_button(active_id, 0x111, false)
+	# Position souris → UV du contenu de la fenêtre ciblée : mapping via la
+	# zone réellement affichée par son TextureRect (KEEP_ASPECT_CENTERED),
+	# cohérente avec le rendu et avec la conversion UV → surface.
+	var tst := _state(target_window)
+	var disp := _displayed_rect(target_window)
+	if disp.size.x > 0.0 and disp.size.y > 0.0:
+		tst["mouse_uv"] = Vector2(
+			clampf((mouse_pos.x - disp.position.x) / disp.size.x, 0.0, 1.0),
+			clampf((mouse_pos.y - disp.position.y) / disp.size.y, 0.0, 1.0)
+		)
+	else:
+		tst["mouse_uv"] = Vector2(0.5, 0.5)
 
-	# Clic molette (BTN_MIDDLE) : forwardé comme les clics gauche/droit.
-	if Input.is_action_just_pressed("middle_click"):
-		compositor.forward_pointer_button(active_id, 0x112, true)
-	if Input.is_action_just_released("middle_click"):
-		compositor.forward_pointer_button(active_id, 0x112, false)
+	# Adopter le curseur custom posé par l'application ciblée
+	# (wl_pointer.set_cursor, remonté via xwayland-satellite pour les
+	# fenêtres X11) : dessiné en overlay 2D sur le pointeur, sinon flèche
+	# système par défaut. Uniquement dans le chemin souris visible : en
+	# souris capturée (FPS) l'overlay est masqué par _hide_cursor_overlay.
+	var display_scale := Vector2.ONE
+	if disp.size.x > 0.0 and tst["surface_size"].x > 0.0:
+		display_scale = disp.size / tst["surface_size"]
+	_update_cursor_overlay(target_window, mouse_pos, display_scale)
+
+	surf_x = tst["mouse_uv"].x * tst["surface_size"].x + tst["content_offset"].x
+	surf_y = tst["mouse_uv"].y * tst["surface_size"].y + tst["content_offset"].y
+	compositor.forward_pointer_motion(target_window, surf_x, surf_y)
+	compositor.set_window_pointer(target_window, surf_x, surf_y, true)
+	_forward_window_buttons(target_window)
 
 	if Input.is_action_just_pressed("scroll_up"):
-		compositor.forward_pointer_axis(active_id, 0, -100.0)
+		compositor.forward_pointer_axis(target_window, 0, -100.0)
 	if Input.is_action_just_pressed("scroll_down"):
-		compositor.forward_pointer_axis(active_id, 0, 100.0)
+		compositor.forward_pointer_axis(target_window, 0, 100.0)
 
 # Touches mortes AZERTY (^ et ¨) : Godot compose lui-même la séquence dans sa
 # couche X11 et avale l'appui de la touche morte PUIS le relâchement de la
@@ -1206,6 +1609,13 @@ func handle_input_event(event: InputEvent) -> bool:
 		# xkbcommon reçoit des DOWN non appariés → modificateur "coincé".
 		if key_event.echo:
 			return true
+		# Suivi de Super/Meta pour le déplacement Super+clic gauche (voir
+		# _super_down). Avant tout le reste : même si un raccourci consomme
+		# une combinaison avec Meta, l'état du modificateur reste à jour.
+		if key_event.keycode == KEY_META or key_event.physical_keycode == KEY_META:
+			_super_down = key_event.pressed
+			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+				print("focus-move: super ", "down" if _super_down else "up")
 		# Raccourcis clavier gérés par le jeu lui-même (le raccourci focus
 		# pour sortir, la touche de fermeture de la fenêtre) : les consommer
 		# SANS les forwarder au client. Sinon la touche est tapée dans la
@@ -1243,6 +1653,18 @@ func handle_input_event(event: InputEvent) -> bool:
 		if key_event.unicode == 60 or key_event.unicode == 62 or code == KEY_QUOTELEFT:
 			code = KEY_LESS
 		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
+	elif event is InputEventMouseButton:
+		# Suivi brut du bouton gauche (voir _left_down) + log de diagnostic :
+		# les clics ne sont pas forwardés depuis ce chemin (le routage pointeur
+		# est fait par polling dans handle_focus_input), on consomme seulement.
+		var mb := event as InputEventMouseButton
+		if mb.button_index == MOUSE_BUTTON_LEFT:
+			_left_down = mb.pressed
+			_left_event_pressed = mb.pressed
+			_left_event_frame = Engine.get_process_frames()
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("mouse _input: btn=", mb.button_index, " pressed=", mb.pressed,
+				" meta=", mb.meta_pressed, " pos=", mb.position)
 	elif st["mouse_captured"] and event is InputEventMouseMotion:
 		# Tracker la position UV + forward le mouvement relatif au client
 		var viewport_size := get_viewport().get_visible_rect().size
