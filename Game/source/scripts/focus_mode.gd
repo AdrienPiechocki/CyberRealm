@@ -440,10 +440,27 @@ func enter_focus(id: int) -> void:
 	var is_fullscreen := focus_fullscreen_id == id
 	var rect := TextureRect.new()
 	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	# IMPÉRATIF : par défaut (EXPAND_KEEP_SIZE) un TextureRect se prend sa
+	# texture comme taille minimale. Or la texture de capture est arrondie au
+	# multiple de 64 (ex. 1920x1088 pour un contenu 1918x1054) : sans ce flag,
+	# l'overlay refusait de rétrécir sous la taille du BUFFER, débordait du
+	# viewport et le contenu apparaissait décalé (jusqu'à hors écran à droite).
+	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	rect.mouse_filter = Control.MOUSE_FILTER_PASS
 	rect.visible = true
 	if is_fullscreen:
 		rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+		# Le buffer de capture est arrondi au multiple de 64 (1920x1088 pour
+		# un contenu 1920x1080) : en KEEP_ASPECT_CENTERED sur ce buffer, le
+		# fullscreen était légèrement dé-zoomé (fines barres latérales). On
+		# croppe la zone de CONTENU avec le shader des popups et on l'étire
+		# exactement sur le viewport (STRETCH_SCALE) : plus aucun bord perdu,
+		# quelle que soit la taille réelle du contenu côté client.
+		rect.stretch_mode = TextureRect.STRETCH_SCALE
+		var mat := ShaderMaterial.new()
+		mat.shader = popup_crop_shader
+		mat.set_shader_parameter("content_size", st["content_size"])
+		rect.material = mat
 	rect.z_index = FOCUS_Z_BASE + focus_stack.size()
 	ui.add_child(rect)
 	focus_rects[id] = rect
@@ -683,6 +700,13 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	var geo := compositor.get_window_geometry(id)
 	st["content_offset"] = Vector2(geo["x"], geo["y"])
 	st["content_size"] = Vector2(geo["width"], geo["height"])
+	# Fenêtre plein écran : le shader de crop doit suivre la géométrie du
+	# client (resize en fullscreen) pour que le contenu remplisse toujours
+	# exactement le viewport.
+	if id == focus_fullscreen_id:
+		var fmat := focus_rects[id].material as ShaderMaterial
+		if fmat:
+			fmat.set_shader_parameter("content_size", st["content_size"])
 	# Nouvelle fenêtre / resize : ajuster la taille de l'overlay des fenêtres
 	# non plein écran à la nouvelle taille de surface.
 	_refresh_rect_layout(id)
@@ -703,11 +727,39 @@ func _refresh_rect_layout(id: int) -> void:
 	var viewport_size := get_viewport().get_visible_rect().size
 	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], viewport_size)
 	rect.size = display_size
-	# ui_offset = décalage accumulé par le déplacement Super+clic gauche ;
-	# réappliqué ici car ce layout est recalculé à chaque mise à jour texture.
-	rect.position = (viewport_size - display_size) / 2.0 + _state(id)["ui_offset"]
+	# Centrage fin sur le CONTENU VISIBLE (pas le buffer) : compense le
+	# padding d'arrondi 64 et les offsets de géométrie (CSD). Calculé SANS
+	# ui_offset : c'est le centrage automatique de référence.
+	rect.position = (viewport_size - display_size) / 2.0
+	var base_content := _displayed_content_rect(id)
+	if base_content.size.x > 0.0 and base_content.size.y > 0.0:
+		rect.position += Vector2(
+			(viewport_size.x - base_content.size.x) * 0.5 - base_content.position.x,
+			(viewport_size.y - base_content.size.y) * 0.5 - base_content.position.y)
+	# Le visuel complet = barre de titre AU-DESSUS du contenu : décaler d'une
+	# demi-hauteur de barre vers le haut pour centrer l'ENSEMBLE et non le
+	# seul contenu (sinon l'assemblage paraît descendu de H/2).
+	rect.position.y += FOCUS_TITLEBAR_H * 0.5
+	# ui_offset = décalage accumulé par le drag barre de titre / Super+clic ;
+	# appliqué APRÈS le centrage sinon chaque rafraîchissement (texture,
+	# frames du drag) recentrerait la fenêtre et annulerait le déplacement.
+	rect.position += _state(id)["ui_offset"]
 	# La barre de titre suit son contenu (position, taille, titre).
 	_sync_title_bar(id)
+	# Diagnostic centrage : marges gauche/droite calculées côté overlay ET
+	# zone du contenu visible dans le buffer (padding d'arrondi 64 inclus).
+	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		var cst := _state(id)
+		var final_content := _displayed_content_rect(id)
+		print("focus-layout: id=", id,
+			" vp=", viewport_size,
+			" disp=", display_size,
+			" pos=", rect.position,
+			" mg=", final_content.position.x,
+			" md=", viewport_size.x - final_content.end.x,
+			" surf=", cst.get("surface_size", Vector2.ZERO),
+			" coff=", cst.get("content_offset", Vector2.ZERO),
+			" csize=", cst.get("content_size", Vector2.ZERO))
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
 	if not focus_mode or remote_focus:
