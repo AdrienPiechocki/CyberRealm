@@ -53,6 +53,9 @@ func setup(id: int, pname: String, color: Color) -> void:
 	# niveau). La visibilité est restaurée par start_prewarm().
 	visible = false
 
+	if head == null:
+		head = get_node(".")
+
 	# Collecter tous les MeshInstance3D et préparer les matériaux.
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(self, meshes)
@@ -108,8 +111,7 @@ func _ready() -> void:
 	# du niveau — un prewarm à ce moment-là s'ajouterait à la compilation des
 	# shaders du niveau et provoquerait le TDR. Le lan_manager appelle
 	# start_prewarm() une fois le niveau stable.
-	if head == null:
-		head = get_node(".")
+	pass
 
 
 # Déclenche le prewarm GPU une seule fois, quand le niveau est stable. Tant
