@@ -1170,6 +1170,12 @@ func _forward_window_buttons(id: int) -> void:
 	if Input.is_action_just_released("middle_click"):
 		compositor.forward_pointer_button(id, 0x112, false)
 
+	# Scroll
+	if Input.is_action_just_pressed("scroll_up"):
+		compositor.forward_pointer_axis(id, 0, -100.0)
+	if Input.is_action_just_pressed("scroll_down"):
+		compositor.forward_pointer_axis(id, 0, 100.0)
+
 func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
 	# l'occludeur plein écran.
