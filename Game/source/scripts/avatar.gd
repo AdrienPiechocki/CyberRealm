@@ -298,7 +298,7 @@ func _physics_process(delta: float) -> void:
 	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
-	head.global_rotation.x = _interp_pitch / pitch_treshold
+	head.rotation.x = _interp_pitch / pitch_treshold
 	_update_transparency()
 	_update_animation(delta)
 	_prev_pos = _interp_pos
