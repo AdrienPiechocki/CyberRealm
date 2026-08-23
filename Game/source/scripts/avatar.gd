@@ -8,6 +8,10 @@ extends Node3D
 ## ce script et contenir un nœud Label3D nommé "NameLabel".
 
 @export var pitch_treshold: float = 2.0
+## Nœud utilisé comme pivot du pitch (Node3D). Vide : la racine de l'avatar.
+## Permet à chaque scène avatar de désigner un os/articulation (tête,
+## torse…) sur lequel appliquer la rotation verticale.
+@export var pitch_pivot_path: NodePath = ^""
 
 @export_group("Animations")
 ## Nom de la jouée quand l'avatar est immobile.
@@ -36,6 +40,7 @@ const FADE_DISTANCE := 2.0
 var _mesh_mats: Array[StandardMaterial3D] = []
 var _label: Label3D = null
 var _anim_player: AnimationPlayer = null
+var _pitch_pivot: Node3D = null
 var _prev_pos := Vector3.ZERO
 var _is_grounded := true
 var _current_anim: StringName = &""
@@ -94,6 +99,14 @@ func setup(id: int, pname: String, color: Color) -> void:
 			_anim_player = AnimationPlayer.new()
 			_anim_player.name = "AnimationPlayer"
 			add_child(_anim_player)
+
+	# Pivot du pitch : nœud désigné par la scène avatar, sinon la racine.
+	_pitch_pivot = null
+	if not pitch_pivot_path.is_empty():
+		_pitch_pivot = get_node_or_null(pitch_pivot_path) as Node3D
+		if _pitch_pivot == null:
+			push_warning("Avatar %s: pitch_pivot_path '%s' introuvable ou pas Node3D." %
+					[name, pitch_pivot_path])
 
 	_interp_pos = position
 	_target_pos = position
@@ -294,7 +307,8 @@ func _physics_process(delta: float) -> void:
 	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
 	position = _interp_pos
 	rotation.y = _interp_yaw
-	rotation.x = _interp_pitch / pitch_treshold
+	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
+	pitch_node.rotation.x = _interp_pitch / pitch_treshold
 	_update_transparency()
 	_update_animation(delta)
 	_prev_pos = _interp_pos
