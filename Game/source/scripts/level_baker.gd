@@ -110,6 +110,10 @@ static func prepare_user_scripts(root: Node) -> Dictionary:
 				continue
 			sources[r] = FileAccess.get_file_as_string(r)
 			scan_queue.append(r)
+	for p in sources:
+		if String(sources[p]).is_empty():
+			push_warning("LevelBaker: source vide pour %s — build exporté avec des scripts compilés ? " % p
+				+ "script_export_mode doit valoir 0 (Texte) pour le partage LAN.")
 	if sources.is_empty():
 		return {}
 	var batch := UserScriptMirror.new_batch()
