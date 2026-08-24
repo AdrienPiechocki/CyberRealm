@@ -614,6 +614,11 @@ func _add_drop_target(avatar: Node3D) -> void:
 		return
 	var body := AnimatableBody3D.new()
 	body.name = "DropTarget"
+	# sync_to_physics=true fige le corps dans le serveur physique à sa
+	# transform de création : le mouvement du parent n'est jamais propagé et
+	# les raycasts touchent une position obsolète. false = le collider suit
+	# l'avatar (aucune mécanique de plateforme n'est attendue ici).
+	body.sync_to_physics = false
 	body.collision_layer = 2
 	body.collision_mask = 0
 	var cs := CollisionShape3D.new()
