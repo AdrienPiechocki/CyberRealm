@@ -4294,12 +4294,27 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
     // le focus pointeur) et traiter l'abandon du drag ci-dessous.
     WindowState *ws = find_window(window_id);
 
-    UtilityFunctions::print("waylandgodot: button id=", window_id,
-        " pressed=", pressed,
-        " t=", get_time_msec(),
-        " focus_ok=", (ws && seat->pointer_state.focused_surface == ws->toplevel->base->surface));
+    static const bool dbg_btn =
+        getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+    if (dbg_btn) {
+        UtilityFunctions::print("waylandgodot: button id=", window_id,
+            " pressed=", pressed,
+            " t=", get_time_msec(),
+            " focus_ok=", (ws && seat->pointer_state.focused_surface == ws->toplevel->base->surface));
+    }
 
-    if (pressed) {
+    if (!pressed) {
+        // Drop de fichiers sur le monde 3D : interception AVANT toute
+        // notification du relâchement. Notifier d'abord terminerait le grab
+        // du drag immédiatement (drag détruit, source annulée) et
+        // l'extraction text/uri-list n'aurait alors plus rien à lire.
+        if (!ws && seat->drag != nullptr && seat->drag->focus == nullptr &&
+                seat->drag->source != nullptr &&
+                (uint32_t)button == seat->pointer_state.grab_button &&
+                extract_file_drop_start()) {
+            return; // relâchement différé (délivré par _finish_file_drop)
+        }
+    } else {
         release_stale_button((uint32_t)button);
     }
 
@@ -4322,21 +4337,6 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
             virtual_keyboard.num_keycodes,
             &virtual_keyboard.modifiers);
     } else {
-        // Drop de fichiers sur le monde 3D (partage LAN) : drag actif,
-        // aucune fenêtre sous le curseur et le drag a perdu son focus
-        // client (clear_focus quand le rayon quitte toute fenêtre). On
-        // tente d'extraire text/uri-list de la source ; si l'extraction
-        // démarre, le relâchement est différé jusqu'à la fin de lecture —
-        // la source doit écrire ses données AVANT que wlroots n'annule le
-        // drag, sinon elle peut abandonner le transfert à l'annulation.
-        if (!ws && seat->drag != nullptr && seat->drag->focus == nullptr &&
-                seat->drag->source != nullptr &&
-                (uint32_t)button == seat->pointer_state.grab_button) {
-            if (extract_file_drop_start()) {
-                return; // relâchement différé (délivré par _finish_file_drop)
-            }
-            // Extraction impossible : comportement historique ci-dessous.
-        }
         // Gestion de l'abandon de Drag and Drop : relâché hors de toute
         // fenêtre (ws == nullptr) ou hors de la surface qui a le focus du
         // drag -> on annule la source, ce qui déclenchera on_drag_destroy

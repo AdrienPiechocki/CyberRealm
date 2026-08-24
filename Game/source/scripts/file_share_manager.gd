@@ -255,6 +255,10 @@ func update_drag(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if dragging and lan != null and lan.is_session_active():
 		target = _resolve_avatar_peer(ray_origin, ray_dir)
 	_hover_peer = target
+	if _debug and (dragging != _dbg_dragging or target != _dbg_hover):
+		_dbg_dragging = dragging
+		_dbg_hover = target
+		print("[FileShare] drag=%s hover=%d contacts=%d" % [dragging, target, _contacts.size()])
 	if _hud_label != null:
 		_hud_label.visible = target != 0
 		if target != 0:
