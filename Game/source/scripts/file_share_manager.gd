@@ -22,6 +22,7 @@ const PROGRESS_INTERVAL_MSEC := 250 # throttle des RPC de progression
 const DONE_VISIBLE_MSEC := 8000
 const MAX_LIST_LINES := 12
 const DROP_REACH := 8.0
+const DROP_CONE_RAD := deg_to_rad(12.0) # tolérance de visée du drop
 const AK_TAG_PREFIX := "cr_" # préfixe des tags de lignes authorized_keys
 const KEY_STALE_MSEC := 15 * 60 * 1000 # balayage des clés oubliées
 
@@ -272,26 +273,57 @@ func _resolve_avatar_peer(ray_origin: Vector3, ray_dir: Vector3) -> int:
 		ray_origin, ray_origin + ray_dir * DROP_REACH)
 	query.exclude = [player.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	if hit.is_empty() or not hit.has("collider"):
-		return 0
+	if not hit.is_empty() and hit.has("collider"):
+		var container: Node3D = lan.get_players_container()
+		if container != null and is_instance_valid(container):
+			# Remontée hiérarchique : l'avatar est un enfant direct du
+			# conteneur « Players », nommé str(peer_id).
+			var n: Node = hit["collider"]
+			for _i in 8:
+				if n == null or not is_instance_valid(n):
+					break
+				if n.get_parent() == container:
+					var pid := int(n.name)
+					if pid != multiplayer.get_unique_id() and _contacts.has(pid):
+						return pid
+					return 0 # son avatar ou pas de contact → inenvoyable
+				n = n.get_parent()
+	# Repli : proximité angulaire. Un rayon fin rate facilement la capsule
+	# d'un avatar éloigné (souris capturée : le viseur reste au centre de
+	# l'écran pendant qu'on marche) — on accepte toute cible dans un cône
+	# de tolérance autour du regard, à portée de drop.
+	return _nearest_avatar_in_cone(ray_origin, ray_dir)
+
+
+## Avatar d'un autre pair le mieux aligné avec le regard (cône de tolérance,
+## à portée DROP_REACH, contact connu requis).
+func _nearest_avatar_in_cone(ray_origin: Vector3, ray_dir: Vector3) -> int:
 	var container: Node3D = lan.get_players_container()
 	if container == null or not is_instance_valid(container):
 		return 0
-	# Remontée hiérarchique : l'avatar est un enfant direct du conteneur
-	# « Players », nommé str(peer_id).
-	var n: Node = hit["collider"]
-	for _i in 8:
-		if n == null or not is_instance_valid(n):
-			return 0
-		if n.get_parent() == container:
-			var pid := int(n.name)
-			if pid == multiplayer.get_unique_id():
-				return 0 # son propre avatar n'est pas une cible
-			if _contacts.has(pid):
-				return pid
-			return 0 # pas de contact pour ce pair → inenvoyable
-		n = n.get_parent()
-	return 0
+	var me := multiplayer.get_unique_id()
+	var best := 0
+	var best_angle := DROP_CONE_RAD
+	for child in container.get_children():
+		var pid := int(child.name)
+		if pid == me or not _contacts.has(pid):
+			continue
+		var n3 := child as Node3D
+		if n3 == null:
+			continue
+		var to_avatar: Vector3 = \
+			n3.global_position + Vector3.UP * 0.9 - ray_origin
+		var dist := to_avatar.length()
+		if dist > DROP_REACH:
+			continue
+		var angle := ray_dir.angle_to(to_avatar)
+		if _debug and angle < DROP_CONE_RAD * 2.0:
+			print("[FileShare] candidat %s dist=%.1fm angle=%.1f°" % [
+				child.name, dist, rad_to_deg(angle)])
+		if angle < best_angle:
+			best_angle = angle
+			best = pid
+	return best
 
 
 func _peer_name(pid: int) -> String:

@@ -590,18 +590,15 @@ func _process(delta: float) -> void:
 
 	# Suivi de l'icône de drag-and-drop. STRETCH_KEEP dessine la texture à sa
 	# taille NATIVE (pas celle du rect) : centrer sur la texture réelle, sinon
-	# l'icône est décalée de la moitié de l'écart. Sous souris capturée
-	# get_mouse_position() est figée : on masque plutôt qu'afficher un fantôme.
+	# l'icône est décalée de la moitié de l'écart. Sous souris capturée,
+	# get_mouse_position() est figée : le curseur compositeur est alors piloté
+	# par le viseur central (_aim_pos) — l'icône suit donc le réticule.
 	if drag_icon_rect and drag_icon_rect.visible:
-		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-			drag_icon_rect.visible = false
-		else:
-			var mouse_pos := get_viewport().get_mouse_position()
-			var sz := drag_icon_size
-			if drag_icon_rect.texture != null:
-				sz = Vector2(drag_icon_rect.texture.get_width(),
-					drag_icon_rect.texture.get_height())
-			drag_icon_rect.position = mouse_pos - sz / 2.0
+		var sz := drag_icon_size
+		if drag_icon_rect.texture != null:
+			sz = Vector2(drag_icon_rect.texture.get_width(),
+				drag_icon_rect.texture.get_height())
+		drag_icon_rect.position = _aim_pos() - sz / 2.0
 
 	# Session verrouillée : tout le pointeur part vers la surface de
 	# verrouillage (le curseur y est visible), rien ne va au jeu.

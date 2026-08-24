@@ -4919,7 +4919,9 @@ bool WlrCompositor::extract_file_drop_start() {
                     decoded += rest[i];
                 }
             }
-            paths.append(String(decoded.c_str()));
+            // String(const char*) interprète octet par octet (Latin-1) :
+            // « é » devient « Ã© ». Il faut décoder l'UTF-8 explicitement.
+            paths.append(String::utf8(decoded.c_str(), (int64_t)decoded.size()));
         }
 
         if (!guard->load()) return;
