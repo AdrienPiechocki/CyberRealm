@@ -46,6 +46,12 @@ var _is_grounded := true
 var _current_anim: StringName = &""
 var _prewarm_ready := false
 var _prewarming := false
+## Vrai quand le pair a prouvé sa présence : le lan_manager reçoit sa 1re
+## synchro de transform (il en émet une par frame physique dès qu'il est en
+## session, AUCUNE tant qu'il charge encore le niveau). Tant que faux,
+## l'avatar reste invisible même après prewarm — pas de corps fantôme planté
+## au spawn côté des autres pendant que le joueur n'est pas encore arrivé.
+var _arrived := false
 
 
 func setup(id: int, pname: String, color: Color) -> void:
@@ -130,7 +136,7 @@ func _ready() -> void:
 # spawn après coup, ou re-parenting) ne relance pas le prewarm.
 func start_prewarm() -> void:
 	if _prewarm_ready:
-		visible = true
+		_update_visible()
 		return
 	if _prewarming:
 		return
@@ -138,7 +144,19 @@ func start_prewarm() -> void:
 	await _prewarm_gpu()
 	_prewarm_ready = true
 	_prewarming = false
-	visible = true
+	_update_visible()
+
+
+## La visibilité de l'avatar obéit à DEUX conditions cumulées : shaders
+## préchauffés (pas de TDR au moment de l'apparition) ET pair réellement
+## arrivé (1re synchro reçue).
+func set_arrived(arrived: bool) -> void:
+	_arrived = arrived
+	_update_visible()
+
+
+func _update_visible() -> void:
+	visible = _prewarm_ready and _arrived
 
 
 # Compile les shaders et uploade les meshes de l'avatar dans un SubViewport
