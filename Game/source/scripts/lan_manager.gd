@@ -56,6 +56,9 @@ var _avatar_sent_to: Dictionary = {}
 var _avatar_send_cache: PackedByteArray = PackedByteArray()
 # Taille DÉCOMPRIMÉE du blob ci-dessus (nécessaire au decompress côté pair).
 var _avatar_send_cache_raw_size := 0
+# Manifeste de scripts utilisateur de l'avatar local (voir UserScriptMirror /
+# LevelBaker.prepare_user_scripts) : envoyé aux pairs juste avant les chunks.
+var _avatar_send_scripts_cache: Dictionary = {}
 # Avatar choisi dans le menu LAN (res://…/avatar.tscn). Vide = mode auto :
 # user/avatar.tscn si présent, sinon l'avatar par défaut.
 var _selected_avatar_path := ""
@@ -373,6 +376,9 @@ func host_game() -> bool:
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
+	# Miroir des scripts utilisateur reparti à zéro pour cette session (les
+	# manifests reçus — avatars des clients — réinstallent leurs lots).
+	UserScriptMirror.clear()
 	# L'hôte a déjà son niveau chargé (compilé au boot) : avatars immédiatement
 	# préchauffables.
 	_level_stable = true
@@ -387,6 +393,7 @@ func host_game() -> bool:
 	_avatar_sent_to.clear()
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
+	_avatar_send_scripts_cache = {}
 	_lan_log("host_game — en attente de clients", true)
 	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
@@ -419,6 +426,9 @@ func disconnect_session() -> void:
 func _on_connected_to_server() -> void:
 	session_active = true
 	is_host = false
+	# Miroir des scripts utilisateur reparti à zéro : le niveau et les avatars
+	# de CETTE session réinstalleront leurs lots avant tout chargement de blob.
+	UserScriptMirror.clear()
 	# Le niveau de l'hôte arrive plus tard (chunks fiables) : les avatars
 	# restent invisibles jusqu'à mark_level_stable() (fin de apply_host_level).
 	_level_stable = false
@@ -433,6 +443,7 @@ func _on_connected_to_server() -> void:
 	_avatar_sent_to.clear()
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
+	_avatar_send_scripts_cache = {}
 	_lan_log("connecté à l'hôte — annonce immédiate (pending_join)", true)
 	_set_status("Connected to server")
 	_emit_players()
@@ -650,6 +661,12 @@ func _send_level_to(id: int) -> void:
 	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
 	if compressed.is_empty():
 		compressed = bytes
+	# Manifeste des scripts utilisateur : envoyé AVANT les chunks (même canal
+	# fiable → ordre garanti). À l'arrivée du dernier chunk le pair écrit déjà
+	# ses fichiers miroir et load(blob) résout les ext_resource des scripts.
+	var manifest: Dictionary = data.get("scripts", {})
+	if not manifest.is_empty():
+		_receive_level_scripts.rpc_id(id, manifest)
 	_level_send_queue[id] = {
 		"bytes": compressed,
 		"spawn": data.get("spawn", Vector3.ZERO),
@@ -681,6 +698,22 @@ func _drain_level_send() -> void:
 			var end := mini(start + LEVEL_CHUNK_SIZE, bytes.size())
 			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], entry.get("rotation", Vector3.ZERO), entry.get("scale", Vector3.ONE), bytes.slice(start, end))
 			entry["sent"] = sent + 1
+
+# Manifeste des scripts utilisateur de l'hôte (UserScriptMirror) : reçu une
+# fois par session, AVANT les chunks du niveau. Installé immédiatement dans le
+# miroir disque — quand le blob sera complet, load() résoudra ses ext_resource
+# (et les preload/extends des scripts) vers de vrais fichiers locaux.
+# MÊME CANAL (6) que les chunks : l'ordre fiable ENet n'est garanti que
+# intra-canal, il faut que ce RPC précède toujours le premier chunk.
+@rpc("any_peer", "call_remote", "reliable", 6)
+func _receive_level_scripts(manifest: Dictionary) -> void:
+	if is_host or multiplayer.get_remote_sender_id() != 1:
+		return
+	if manifest.is_empty() or not UserScriptMirror.valid(manifest):
+		return
+	var count := UserScriptMirror.install(manifest)
+	push_warning("LAN: scripts utilisateur du niveau installés (%d fichiers)" % count)
+	_lan_log("scripts niveau hôte — lot installé (%d fichiers)" % count)
 
 # Canal ENet dédié (6) : les milliers de chunks du niveau ne doivent PAS
 # bloquer (ordre fiable) les RPC de contrôle sur le canal 0 — sinon le
@@ -917,6 +950,7 @@ func set_selected_avatar(path: String) -> void:
 	# retour en auto) → le blob baké n'est plus valable.
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
+	_avatar_send_scripts_cache = {}
 	if path.is_empty() or path == CUSTOM_AVATAR_PATH or path == DEFAULT_AVATAR_PATH:
 		return
 	if not ResourceLoader.exists(path):
@@ -936,7 +970,9 @@ func set_selected_avatar(path: String) -> void:
 	_selected_avatar_path = path
 
 
-func _bake_avatar() -> PackedByteArray:
+func _bake_avatar() -> Dictionary:
+	# Retour : {bytes, scripts} — bytes = blob binaire auto-suffisant,
+	# scripts = manifeste UserScriptMirror (vide si aucun script utilisateur).
 	# Scène à incarner : le choix du menu LAN s'il est valide, sinon le
 	# comportement historique (custom user/avatar.tscn, sinon défaut).
 	var src := _avatar_scene
@@ -945,7 +981,7 @@ func _bake_avatar() -> PackedByteArray:
 		if sel != null:
 			src = sel
 	if src == null:
-		return PackedByteArray()
+		return {}
 	# Deep-clone la scène pour embarquer les meshes/materials/textures
 	# (sinon les references .fbx/.glb ne seront pas résolues côté peer).
 	# Limiter les textures à 256 px pour éviter un crash Vulkan côté client.
@@ -955,14 +991,17 @@ func _bake_avatar() -> PackedByteArray:
 	if root == null:
 		LevelBaker.max_texture_size = 0
 		LevelBaker.keep_surface_format = false
-		return PackedByteArray()
+		return {}
+	# Scripts utilisateur de l'avatar : collecte + remappage miroir AVANT le
+	# clonage (_clone attache les copies miroir ; voir LevelBaker).
+	var manifest := LevelBaker.prepare_user_scripts(root)
 	var cache := {}
 	var baked := LevelBaker._clone(root, null, cache) as Node3D
 	if baked == null:
 		root.queue_free()
 		LevelBaker.max_texture_size = 0
 		LevelBaker.keep_surface_format = false
-		return PackedByteArray()
+		return {}
 	baked.name = "Avatar"
 	baked.owner = null
 	LevelBaker._own_all(baked, baked)
@@ -975,24 +1014,24 @@ func _bake_avatar() -> PackedByteArray:
 		baked.queue_free()
 		LevelBaker.max_texture_size = 0
 		LevelBaker.keep_surface_format = false
-		return PackedByteArray()
+		return {}
 	baked.queue_free()
 	var tmp := "user://avatar_send.scn"
 	if ResourceSaver.save(scene, tmp) != OK:
 		LevelBaker.max_texture_size = 0
 		LevelBaker.keep_surface_format = false
-		return PackedByteArray()
+		return {}
 	var f := FileAccess.open(tmp, FileAccess.READ)
 	if f == null:
 		LevelBaker.max_texture_size = 0
 		LevelBaker.keep_surface_format = false
-		return PackedByteArray()
+		return {}
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
-	push_warning("LAN: avatar baked — %d KB" % [bytes.size() / 1024])
+	push_warning("LAN: avatar baked — %d KB (%d scripts user)" % [bytes.size() / 1024, manifest.size()])
 	LevelBaker.max_texture_size = 0
 	LevelBaker.keep_surface_format = false
-	return bytes
+	return {"bytes": bytes, "scripts": manifest}
 
 
 func _diag_count_res(node: Node, diag: Dictionary) -> void:
@@ -1019,19 +1058,28 @@ func _send_avatar_to(id: int) -> void:
 	# Bake + compression une seule fois par session (voir _avatar_send_cache).
 	if _avatar_send_cache.is_empty():
 		var t0 := Time.get_ticks_msec()
-		var raw := _bake_avatar()
+		var res: Dictionary = _bake_avatar()
+		if res.is_empty():
+			return
+		var raw: PackedByteArray = res.get("bytes", PackedByteArray())
 		if raw.is_empty():
 			return
+		_avatar_send_scripts_cache = res.get("scripts", {})
 		var compressed := raw.compress(FileAccess.COMPRESSION_ZSTD)
 		if compressed.is_empty():
 			compressed = raw
 		_avatar_send_cache = compressed
 		_avatar_send_cache_raw_size = raw.size()
-		_lan_log("avatar local baké en %d ms — %d KB brut, %d KB compressé" % [
-			Time.get_ticks_msec() - t0, raw.size() / 1024, compressed.size() / 1024])
+		_lan_log("avatar local baké en %d ms — %d KB brut, %d KB compressé, %d scripts" % [
+			Time.get_ticks_msec() - t0, raw.size() / 1024, compressed.size() / 1024,
+			_avatar_send_scripts_cache.size()])
 	var bytes := _avatar_send_cache
 	# Marquage centralisé : tout envoi (connect, annonce, maille) compte.
 	_avatar_sent_to[id] = true
+	# Manifeste de scripts AVANT les chunks (même canal fiable → ordre garanti :
+	# le miroir est peuplé quand le blob complet sera décodé).
+	if not _avatar_send_scripts_cache.is_empty():
+		_avatar_scripts.rpc_id(id, multiplayer.get_unique_id(), _avatar_send_scripts_cache)
 	var total := ceili(float(bytes.size()) / float(LEVEL_CHUNK_SIZE))
 	_avatar_send_queue[id] = {
 		"bytes": bytes,
@@ -1057,6 +1105,18 @@ func _drain_avatar_send() -> void:
 			var end := mini(start + LEVEL_CHUNK_SIZE, bytes.size())
 			_avatar_recv_chunk.rpc_id(id, multiplayer.get_unique_id(), sent, total, entry["size"], bytes.slice(start, end))
 			entry["sent"] = sent + 1
+
+# Manifeste des scripts utilisateur d'un avatar (UserScriptMirror) : envoyé
+# par chaque pair juste avant ses chunks, sur le même canal fiable (ordre
+# garanti) — le miroir est peuplé quand le blob complet sera décodé.
+@rpc("any_peer", "call_remote", "reliable", 1)
+func _avatar_scripts(from_id: int, manifest: Dictionary) -> void:
+	if multiplayer.get_remote_sender_id() != from_id:
+		return
+	if manifest.is_empty() or not UserScriptMirror.valid(manifest):
+		return
+	var count := UserScriptMirror.install(manifest)
+	_lan_log("scripts avatar[%d] — lot installé (%d fichiers)" % [from_id, count])
 
 # Canal ENet dédié (1) : l'avatar de l'hôte part juste après les chunks de
 # niveau sur sa connexion — sans canal propre il resterait bloqué derrière
@@ -2927,6 +2987,7 @@ func _disconnect_session() -> void:
 	_avatar_sent_to.clear()
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
+	_avatar_send_scripts_cache = {}
 	# Annuler un join en attente (déconnexion pendant le chargement de la
 	# map) et dégeler le joueur local.
 	_pending_join = false
