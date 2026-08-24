@@ -588,10 +588,20 @@ func _process(delta: float) -> void:
 	# elles doivent continuer de tourner pendant que le menu pause gèle
 	# l'arbre, sinon la capture se figerait sur la dernière frame.
 
-	# Suivi de l'icône de drag-and-drop
+	# Suivi de l'icône de drag-and-drop. STRETCH_KEEP dessine la texture à sa
+	# taille NATIVE (pas celle du rect) : centrer sur la texture réelle, sinon
+	# l'icône est décalée de la moitié de l'écart. Sous souris capturée
+	# get_mouse_position() est figée : on masque plutôt qu'afficher un fantôme.
 	if drag_icon_rect and drag_icon_rect.visible:
-		var mouse_pos := get_viewport().get_mouse_position()
-		drag_icon_rect.position = mouse_pos - drag_icon_size / 2.0
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			drag_icon_rect.visible = false
+		else:
+			var mouse_pos := get_viewport().get_mouse_position()
+			var sz := drag_icon_size
+			if drag_icon_rect.texture != null:
+				sz = Vector2(drag_icon_rect.texture.get_width(),
+					drag_icon_rect.texture.get_height())
+			drag_icon_rect.position = mouse_pos - sz / 2.0
 
 	# Session verrouillée : tout le pointeur part vers la surface de
 	# verrouillage (le curseur y est visible), rien ne va au jeu.
