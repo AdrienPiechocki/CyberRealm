@@ -367,6 +367,13 @@ func get_players_roster() -> Array:
 func get_players_container() -> Node3D:
 	return _players_container
 
+
+## Carte peer_id → nœud avatar (résolution par identité : les noms de nœuds
+## ne sont pas fiables — Godot les renomme en cas de collision, et un nom
+## auto-généré « @Node3D@N » casserait toute analyse par int(name)).
+func get_remote_players() -> Dictionary:
+	return _remote_players
+
 # ── Host ─────────────────────────────────────────────────────────────
 
 func host_game() -> bool:
