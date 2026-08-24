@@ -209,7 +209,8 @@ capsule + helmet (`res://scenes/avatar.tscn`).
 Drag one or more files from an application running inside the game (Dolphin,
 Nautilus…) and **drop them onto another player's avatar** (within ~8 m): a
 "Drop to send to …" hint appears while hovering. Files travel over
-**rsync-over-ssh** to `~/CyberRealmRecu/` on the receiver.
+**rsync-over-ssh** to their Downloads folder (XDG, as configured in the
+receiver's desktop environment).
 
 **No password is ever asked for or transmitted.** The receiver approves the
 request with a single click; their game then temporarily installs the
@@ -257,7 +258,7 @@ Limitations:
   trust — an active attacker substituting keys during THAT first exchange
   remains theoretically possible.
 - Only regular files are sent (no folders — drop their contents instead).
-  Files silently overwrite same-named ones in `~/CyberRealmRecu/`.
+  Files silently overwrite same-named ones in the receiver's Downloads folder.
 - If your machine has several network interfaces (VPN, docker…), the
   advertised IP may be the wrong one → the transfer fails cleanly
   ("ssh server unreachable").

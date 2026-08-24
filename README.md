@@ -251,7 +251,8 @@ them.
 ### File sharing by drag & drop
 
 Drag files from any in-game application onto another player's avatar to send
-them to their `~/CyberRealmRecu/` folder over rsync-over-ssh — **no password
+them to their Downloads folder (XDG, as configured in their desktop
+environment) over rsync-over-ssh — **no password
 is ever typed or transmitted**: the receiver accepts the request with one
 click, which temporarily authorizes the sender's throwaway SSH key for that
 single transfer (restricted line, auto-removed afterwards). Every machine
