@@ -91,6 +91,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 		add_child(_label)
 	#_make_label_no_depth_test(_label)
 	_label.text = pname
+	_label.no_depth_test = true
 
 	# AnimationPlayer — uniquement si au moins une animation est configurée.
 	if anim_idle != &"" or anim_walk != &"" or anim_jump != &"":
