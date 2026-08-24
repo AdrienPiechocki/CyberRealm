@@ -621,7 +621,7 @@ func _add_drop_target(avatar: Node3D) -> void:
 	cap.radius = 0.4
 	cap.height = 1.8
 	cs.shape = cap
-	cs.position = Vector3(0, 0.9, 0)
+	cs.position = avatar.position
 	body.add_child(cs)
 	avatar.add_child(body)
 
