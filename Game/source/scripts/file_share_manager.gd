@@ -55,6 +55,12 @@ var _busy_until_msec := 0 # anti-spam offres refusées
 
 # Survol pendant drag.
 var _hover_peer := 0
+var _dbg_dragging := false
+var _dbg_hover := 0
+
+## Diagnostic : CYBERREALM_FILESHARE_DEBUG=1 trace l'état de survol (drag
+## actif ? avatar résolu ? contact présent ?) et les drops reçus.
+static var _debug := false
 
 # UI (construite dans setup).
 var _hud_label: Label = null
@@ -75,9 +81,14 @@ func setup(p_player: CharacterBody3D, p_lan: Node, p_compositor: WlrCompositor) 
 	player = p_player
 	lan = p_lan
 	compositor = p_compositor
+	_debug = OS.get_environment("CYBERREALM_FILESHARE_DEBUG") == "1"
 	_build_ui()
 	if lan != null and lan.has_signal("players_changed"):
 		lan.players_changed.connect(_on_roster_changed)
+	# Clé générée DÈS le setup : l'annonce des contacts (roster change) part
+	# souvent avant le premier drop et doit transporter une clé réelle.
+	if not ensure_local_keypair():
+		push_warning("FileShare: outils ssh absents (openssh) — partage de fichiers inactif")
 	# Filet de sécurité : lignes authorized_keys oubliées d'une session
 	# précédente (crash, déconnexion pendant un transfert…).
 	_sweep_stale_keys()
@@ -291,6 +302,9 @@ func _peer_name(pid: int) -> String:
 ## Connecté à WlrCompositor.file_drop_received : fichiers lâchés sur le monde
 ## 3D. S'il y a un avatar sous le curseur → offre de transfert.
 func on_files_dropped(paths: PackedStringArray) -> void:
+	push_warning("FileShare: drop reçu (%d chemins, hover=%d, session=%s)" % [
+		paths.size(), _hover_peer,
+		str(lan != null and lan.is_session_active())])
 	var files := PackedStringArray()
 	var total := 0
 	for p in paths:
@@ -299,6 +313,7 @@ func on_files_dropped(paths: PackedStringArray) -> void:
 			files.append(p)
 			total += int(f.get_len())
 	if files.is_empty():
+		_flash_status("Drop ignoré : aucun fichier lisible")
 		return
 	if lan == null or not lan.is_session_active() or _hover_peer == 0 \
 			or not ensure_local_keypair():

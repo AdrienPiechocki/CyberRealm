@@ -593,11 +593,38 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	avatar.position = _spawn_position()
 	avatar.rotation = _spawn_rotation()
 	avatar.scale = _spawn_scale()
+	_add_drop_target(avatar)
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar
 	if _level_stable:
 		avatar.start_prewarm()
 	_emit_players()
+
+
+## Les avatars distants sont purement visuels (Node3D, « pas de collision »
+## cf. avatar.gd) : sans collider, aucun raycast ne peut les toucher — le
+## ciblage du drag & drop de fichiers (et toute visée monde) les traverse.
+## On ajoute un corps cinématique capsule au spawn. Layer 2 : le joueur
+## local (mask 1) continue de traverser les autres joueurs, mais les
+## raycasts (mask par défaut = tout) les voient.
+func _add_drop_target(avatar: Node3D) -> void:
+	if avatar == null or not is_instance_valid(avatar):
+		return
+	if avatar.has_node("DropTarget"):
+		return
+	var body := AnimatableBody3D.new()
+	body.name = "DropTarget"
+	body.collision_layer = 2
+	body.collision_mask = 0
+	var cs := CollisionShape3D.new()
+	var cap := CapsuleShape3D.new()
+	cap.radius = 0.4
+	cap.height = 1.8
+	cs.shape = cap
+	cs.position = Vector3(0, 0.9, 0)
+	body.add_child(cs)
+	avatar.add_child(body)
+
 
 # Le niveau vient d'être appliqué (client : fin de apply_host_level ; l'hôte
 # est stable dès host_game). Quelques frames de latence pour laisser le
