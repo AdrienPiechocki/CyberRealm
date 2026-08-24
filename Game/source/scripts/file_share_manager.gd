@@ -58,6 +58,7 @@ var _busy_until_msec := 0 # anti-spam offres refusées
 var _hover_peer := 0
 var _dbg_dragging := false
 var _dbg_hover := 0
+var _diag_last_msec := 0
 
 ## Diagnostic : CYBERREALM_FILESHARE_DEBUG=1 trace l'état de survol (drag
 ## actif ? avatar résolu ? contact présent ?) et les drops reçus.
@@ -260,10 +261,46 @@ func update_drag(ray_origin: Vector3, ray_dir: Vector3) -> void:
 		_dbg_dragging = dragging
 		_dbg_hover = target
 		print("[FileShare] drag=%s hover=%d contacts=%d" % [dragging, target, _contacts.size()])
+	var session_drag: bool = dragging and lan != null and lan.is_session_active()
+	if _debug and session_drag:
+		_diag_targeting(ray_origin, ray_dir)
 	if _hud_label != null:
-		_hud_label.visible = target != 0
+		_hud_label.visible = session_drag
 		if target != 0:
 			_hud_label.text = "Lâchez pour envoyer à %s" % _peer_name(target)
+		elif session_drag:
+			_hud_label.text = "Visez un joueur pour lui envoyer les fichiers"
+
+
+## Diagnostic de ciblage (CYBERREALM_FILESHARE_DEBUG=1) : position souris vue
+## par Godot, premier collider touché par le rayon, et pour chaque avatar
+## distant sa distance/angle hors du regard. Throttle 500 ms — révèle en
+## particulier si la position souris est GELÉE pendant le grab du drag.
+func _diag_targeting(ray_origin: Vector3, ray_dir: Vector3) -> void:
+	var now := Time.get_ticks_msec()
+	if now - _diag_last_msec < 500:
+		return
+	_diag_last_msec = now
+	var info := "[FileShare] diag: mode_souris=%d curseur_godot=%s" % [
+		Input.mouse_mode, str(get_viewport().get_mouse_position())]
+	var query := PhysicsRayQueryParameters3D.create(
+		ray_origin, ray_origin + ray_dir * DROP_REACH)
+	query.exclude = [player.get_rid()] if player != null and is_instance_valid(player) else []
+	var hit := get_world_3d().direct_space_state.intersect_ray(query)
+	info += " | rayon: " + ("rien" if hit.is_empty() else str(hit["collider"].name))
+	var container: Node3D = lan.get_players_container()
+	if container == null or not is_instance_valid(container):
+		info += " | conteneur joueurs INVALIDE"
+	else:
+		info += " | avatars=%d:" % container.get_child_count()
+		for child in container.get_children():
+			var n3 := child as Node3D
+			if n3 == null:
+				continue
+			var to_av: Vector3 = n3.global_position + Vector3.UP * 0.9 - ray_origin
+			info += " [%s d=%.1fm a=%.0f°]" % [
+				child.name, to_av.length(), rad_to_deg(ray_dir.angle_to(to_av))]
+	print(info)
 
 
 func _resolve_avatar_peer(ray_origin: Vector3, ray_dir: Vector3) -> int:
