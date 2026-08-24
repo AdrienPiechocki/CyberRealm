@@ -4933,6 +4933,14 @@ bool WlrCompositor::extract_file_drop_start() {
 // comme avant cette fonctionnalité).
 void WlrCompositor::_finish_file_drop(PackedStringArray paths, uint32_t time_msec,
         int button) {
+    static const bool dbg_drop =
+        getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+    if (dbg_drop) {
+        UtilityFunctions::print("waylandgodot: file_drop n=", paths.size());
+        for (int i = 0; i < paths.size(); i++) {
+            UtilityFunctions::print("waylandgodot:   path[", i, "]=", paths[i]);
+        }
+    }
     if (!paths.is_empty()) {
         emit_signal("file_drop_received", paths);
     }

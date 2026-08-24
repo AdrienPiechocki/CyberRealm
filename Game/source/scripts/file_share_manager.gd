@@ -312,10 +312,14 @@ func on_files_dropped(paths: PackedStringArray) -> void:
 	var files := PackedStringArray()
 	var total := 0
 	for p in paths:
+		if _debug:
+			print("[FileShare] chemin brut : [", p, "]")
 		var f := FileAccess.open(p, FileAccess.READ)
 		if f != null:
 			files.append(p)
 			total += int(f.get_len())
+		elif _debug:
+			print("[FileShare] open() a échoué : ", error_string(FileAccess.get_open_error()))
 	if files.is_empty():
 		_flash_status("Drop ignoré : aucun fichier lisible")
 		return
