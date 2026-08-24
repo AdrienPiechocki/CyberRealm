@@ -6,8 +6,9 @@ extends Node3D
 ## voit un prompt modal et valide d'un simple clic : sa machine installe
 ## ALORS la clé publique ssh de l'expéditeur dans ~/.ssh/authorized_keys
 ## (ligne restreinte, taguée), ce qui permet à l'expéditeur de pousser les
-## fichiers par rsync-over-ssh vers ~/CyberRealmRecu/. La ligne est retirée
-## dès la fin du transfert (et un balayage supprime les lignes orphelines).
+## fichiers par rsync-over-ssh vers leur dossier Téléchargements (XDG). La
+## ligne est retirée dès la fin du transfert (et un balayage supprime les
+## lignes orphelines).
 ##
 ## Aucun secret ne transite sur le réseau : pas de mot de passe partagé,
 ## l'authentification est une clé publique éphémère, et les données voyagent
@@ -15,7 +16,15 @@ extends Node3D
 ## - chaque machine : openssh (ssh-keygen/ssh) + rsync ;
 ## - destinataire : serveur ssh actif avec authentification par clé.
 
-const DEST_DIR_NAME := "CyberRealmRecu" # ~/CyberRealmRecu chez le destinataire
+## Dossier de réception : celui des paramètres du bureau (XDG/KDE — p.ex.
+## ~/Téléchargements sur un système en français), sinon ~/Downloads. Le chemin
+## absolu est renvoyé dans la réponse d'acceptation car il est localisé chez
+## le destinataire : l'expéditeur ne peut pas le deviner.
+func downloads_dir() -> String:
+	var d := OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+	if d.is_empty():
+		d = OS.get_environment("HOME").path_join("Downloads")
+	return d
 const CHANNEL := 7 # canal fiable dédié au partage de fichiers
 const OFFER_TIMEOUT_MSEC := 30000
 const PROGRESS_INTERVAL_MSEC := 250 # throttle des RPC de progression
@@ -267,9 +276,9 @@ func update_drag(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if _hud_label != null:
 		_hud_label.visible = session_drag
 		if target != 0:
-			_hud_label.text = "Lâchez pour envoyer à %s" % _peer_name(target)
+			_hud_label.text = "Release to send to %s" % _peer_name(target)
 		elif session_drag:
-			_hud_label.text = "Visez un joueur pour lui envoyer les fichiers"
+			_hud_label.text = "Aim at a player to send them the files"
 
 
 ## Diagnostic de ciblage (CYBERREALM_FILESHARE_DEBUG=1) : position souris vue
@@ -385,14 +394,14 @@ func on_files_dropped(paths: PackedStringArray) -> void:
 		elif _debug:
 			print("[FileShare] open() a échoué : ", error_string(FileAccess.get_open_error()))
 	if files.is_empty():
-		_flash_status("Drop ignoré : aucun fichier lisible")
+		_flash_status("Drop ignored: no readable file")
 		return
 	if lan == null or not lan.is_session_active() or _hover_peer == 0 \
 			or not ensure_local_keypair():
-		_flash_status("Drop ignoré : aucun joueur visé ou session inactive")
+		_flash_status("Drop ignored: no player targeted or session inactive")
 		return
 	if not _can_start_transfer():
-		_flash_status("Transfert impossible : déjà occupé")
+		_flash_status("Transfer impossible: already busy")
 		return
 	var oid := _next_offer_id
 	_next_offer_id += 1
@@ -403,7 +412,7 @@ func on_files_dropped(paths: PackedStringArray) -> void:
 		"peer": _hover_peer, "files": files, "names": names,
 		"total": total, "msec": Time.get_ticks_msec(),
 	}
-	_show_progress("Offre vers %s — en attente…" % _peer_name(_hover_peer), -1, "")
+	_show_progress("Offer to %s — waiting…" % _peer_name(_hover_peer), -1, "")
 	_offer_files.rpc_id(_hover_peer, oid, names, total)
 
 
@@ -488,13 +497,17 @@ func _apply_offer(sender: int, offer_id: int, names: PackedStringArray, total_by
 
 
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
-func _offer_answer(offer_id: int, accepted: bool, username: String) -> void:
-	_apply_answer(multiplayer.get_remote_sender_id(), offer_id, accepted, username)
+func _offer_answer(offer_id: int, accepted: bool, username: String,
+		dest_dir: String = "") -> void:
+	_apply_answer(multiplayer.get_remote_sender_id(), offer_id, accepted,
+		username, dest_dir)
 
 
 ## Côté expéditeur : réponse du destinataire. `username` est le login ssh chez
 ## lui ; la clé publique locale a déjà été installée dans son authorized_keys.
-func _apply_answer(sender: int, offer_id: int, accepted: bool, username: String) -> void:
+## `dest_dir` est son dossier de réception absolu (localisé chez LUI).
+func _apply_answer(sender: int, offer_id: int, accepted: bool,
+		username: String, dest_dir := "") -> void:
 	if not _pending_offers.has(offer_id):
 		return
 	var offer: Dictionary = _pending_offers[offer_id]
@@ -502,18 +515,19 @@ func _apply_answer(sender: int, offer_id: int, accepted: bool, username: String)
 		return # réponse usurpée : ignorer silencieusement
 	_pending_offers.erase(offer_id)
 	if not accepted:
-		_show_progress("%s a refusé l'envoi" % _peer_name(sender), 100, "Refusé")
+		_show_progress("%s declined the transfer" % _peer_name(sender), 100, "Declined")
 		_prog_done_msec = Time.get_ticks_msec()
 		_busy_until_msec = Time.get_ticks_msec() + 1500
 		return
 	username = _clean_credential(username)
-	if username.is_empty():
-		_show_progress("Réponse invalide — envoi annulé", 100, "Erreur")
+	dest_dir = _clean_credential(dest_dir)
+	if username.is_empty() or not dest_dir.is_absolute_path():
+		_show_progress("Invalid reply — transfer cancelled", 100, "Error")
 		_prog_done_msec = Time.get_ticks_msec()
 		_busy_until_msec = Time.get_ticks_msec() + 1500
-		_transfer_done.rpc_id(sender, offer_id, false, "Identifiants invalides côté expéditeur")
+		_transfer_done.rpc_id(sender, offer_id, false, "Invalid credentials on sender side")
 		return
-	_start_rsync(offer_id, offer, sender, username)
+	_start_rsync(offer_id, offer, sender, username, dest_dir)
 
 
 ## Caractères de contrôle interdits (le login part en argv d'un process local).
@@ -533,8 +547,8 @@ static func _clean_credential(s: String) -> String:
 ## Le shell ne voit JAMAIS les données : tout passe en argv après le script
 ## (exec "$@"), seuls les chemins temporaires locaux sont interpolés.
 static func build_rsync_argv(files: PackedStringArray, username: String,
-		key_path: String, host: String, prog_path: String, err_path: String,
-		known_hosts_path: String) -> PackedStringArray:
+		key_path: String, host: String, dest_dir: String,
+		prog_path: String, err_path: String, known_hosts_path: String) -> PackedStringArray:
 	var script := 'exec "$@" >"%s" 2>"%s"' % [prog_path, err_path]
 	var ssh_opts := "ssh -i \"%s\" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=\"%s\" -o ConnectTimeout=10"
 	ssh_opts = ssh_opts % [key_path, known_hosts_path]
@@ -544,7 +558,7 @@ static func build_rsync_argv(files: PackedStringArray, username: String,
 		"--"])
 	for f in files:
 		argv.append(f)
-	argv.append("%s@%s:%s/" % [username, host, DEST_DIR_NAME])
+	argv.append("%s@%s:%s/" % [username, host, dest_dir])
 	return argv
 
 
@@ -555,13 +569,14 @@ static func missing_binaries() -> String:
 	return ""
 
 
-func _start_rsync(offer_id: int, offer: Dictionary, peer: int, username: String) -> void:
+func _start_rsync(offer_id: int, offer: Dictionary, peer: int,
+		username: String, dest_dir: String) -> void:
 	var missing := missing_binaries()
 	if not missing.is_empty():
-		_show_progress("Outil manquant : %s (voir README)" % missing, 100, "Erreur")
+		_show_progress("Missing tool: %s (see README)" % missing, 100, "Error")
 		_prog_done_msec = Time.get_ticks_msec()
 		_transfer_done.rpc_id(peer, offer_id, false,
-			"Expéditeur : outil manquant (%s)" % missing)
+			"Sender: missing tool (%s)" % missing)
 		return
 	var tmp_dir := OS.get_user_data_dir().path_join("file_share_%d" % offer_id)
 	DirAccess.make_dir_recursive_absolute(tmp_dir)
@@ -569,12 +584,12 @@ func _start_rsync(offer_id: int, offer: Dictionary, peer: int, username: String)
 	var err_path := tmp_dir.path_join("stderr")
 	var kh_path := OS.get_user_data_dir().path_join("known_hosts")
 	var argv := build_rsync_argv(offer["files"], username, _key_path,
-		String(_contacts[peer]["ip"]), prog_path, err_path, kh_path)
+		String(_contacts[peer]["ip"]), dest_dir, prog_path, err_path, kh_path)
 	var pid := OS.create_process(argv[0], argv.slice(1))
 	if pid <= 0:
-		_show_progress("Impossible de lancer rsync", 100, "Erreur")
+		_show_progress("Failed to start rsync", 100, "Error")
 		_prog_done_msec = Time.get_ticks_msec()
-		_transfer_done.rpc_id(peer, offer_id, false, "rsync n'a pas pu démarrer")
+		_transfer_done.rpc_id(peer, offer_id, false, "rsync could not start")
 		return
 	_active_transfer = {
 		"role": "send", "pid": pid, "total": int(offer["total"]),
@@ -582,7 +597,7 @@ func _start_rsync(offer_id: int, offer: Dictionary, peer: int, username: String)
 		"err_path": err_path, "tmp_dir": tmp_dir,
 		"peer": peer, "id": offer_id, "tag": "",
 	}
-	_show_progress("Envoi vers %s…" % _peer_name(peer), 0, "")
+	_show_progress("Sending to %s…" % _peer_name(peer), 0, "")
 
 
 ## Lecture du fichier de progression (mises à jour \r-séparées de
@@ -621,7 +636,7 @@ func _poll_send() -> void:
 		return
 	t["last_pct"] = pct
 	t["last_emit_msec"] = now
-	_show_progress("Envoi vers %s…" % _peer_name(int(t["peer"])), pct, "")
+	_show_progress("Sending to %s…" % _peer_name(int(t["peer"])), pct, "")
 
 
 func _finish_send(ok: bool, message: String) -> void:
@@ -635,9 +650,9 @@ func _finish_send(ok: bool, message: String) -> void:
 	DirAccess.remove_absolute(String(t["err_path"]))
 	DirAccess.remove_absolute(dir_path)
 	if ok:
-		_show_progress("Envoyé à %s ✔" % _peer_name(peer), 100, "Terminé")
+		_show_progress("Sent to %s ✔" % _peer_name(peer), 100, "Done")
 	else:
-		_show_progress("Échec de l'envoi vers %s" % _peer_name(peer), 100, message)
+		_show_progress("Send to %s failed" % _peer_name(peer), 100, message)
 	_prog_done_msec = Time.get_ticks_msec()
 	_busy_until_msec = Time.get_ticks_msec() + 1500
 	_transfer_done.rpc_id(peer, oid, ok, message)
@@ -697,9 +712,10 @@ func _apply_done(sender: int, offer_id: int, ok: bool, message: String) -> void:
 	_active_transfer = {}
 	_busy_until_msec = Time.get_ticks_msec() + 1500
 	if ok:
-		_show_progress("Reçu de %s ✔ → ~/%s" % [_peer_name(sender), DEST_DIR_NAME], 100, "Terminé")
+		_show_progress("Received from %s ✔ → %s" % [
+			_peer_name(sender), String(t.get("dir", ""))], 100, "Done")
 	else:
-		_show_progress("Échec de la réception de %s" % _peer_name(sender), 100, message)
+		_show_progress("Receiving from %s failed" % _peer_name(sender), 100, message)
 	_prog_done_msec = Time.get_ticks_msec()
 
 
@@ -712,24 +728,26 @@ func _accept_offer() -> void:
 	var offer: Dictionary = _incoming
 	var username := _clean_credential(_user_edit.text)
 	if username.is_empty():
-		_flash_status("Nom d'utilisateur requis")
+		_flash_status("Username required")
 		_incoming_msec = Time.get_ticks_msec()
 		return
 	var contact: Dictionary = _contacts[int(offer["peer"])]
 	var tag := install_peer_key(String(contact["pubkey"]))
 	if tag.is_empty():
-		_flash_status("Impossible d'écrire ~/.ssh/authorized_keys")
+		_flash_status("Could not write ~/.ssh/authorized_keys")
 		_incoming_msec = Time.get_ticks_msec()
 		return
 	_incoming = {}
 	var oid := int(offer["id"])
-	var home := OS.get_environment("HOME")
-	if not home.is_empty():
-		DirAccess.make_dir_recursive_absolute(home.path_join(DEST_DIR_NAME))
+	# Dossier de réception choisi par le DESTINATAIRE (paramètres bureau) :
+	# créé à l'avance pour rsync, et transmis à l'expéditeur dans la réponse.
+	var dest := downloads_dir()
+	DirAccess.make_dir_recursive_absolute(dest)
 	_close_modal()
-	_active_transfer = {"role": "recv", "peer": int(offer["peer"]), "id": oid, "tag": tag}
-	_show_progress("Réception de %s…" % _peer_name(int(offer["peer"])), 0, "")
-	_offer_answer.rpc_id(int(offer["peer"]), oid, true, username)
+	_active_transfer = {"role": "recv", "peer": int(offer["peer"]), "id": oid,
+		"tag": tag, "dir": dest}
+	_show_progress("Receiving from %s…" % _peer_name(int(offer["peer"])), 0, "")
+	_offer_answer.rpc_id(int(offer["peer"]), oid, true, username, dest)
 
 
 func _refuse_offer(notify := true) -> void:
@@ -752,7 +770,7 @@ func _process(_delta: float) -> void:
 		if now - int(_pending_offers[oid]["msec"]) > OFFER_TIMEOUT_MSEC:
 			var offer: Dictionary = _pending_offers[oid]
 			_pending_offers.erase(oid)
-			_show_progress("%s n'a pas répondu" % _peer_name(int(offer["peer"])), 100, "Expiré")
+			_show_progress("%s did not respond" % _peer_name(int(offer["peer"])), 100, "Expired")
 			_prog_done_msec = now
 	# Offre entrante non traitée → refus automatique.
 	if not _incoming.is_empty() and now - _incoming_msec > OFFER_TIMEOUT_MSEC:
@@ -865,12 +883,12 @@ func _build_ui() -> void:
 	vbox.add_child(buttons)
 
 	var refuse := Button.new()
-	refuse.text = "Refuser"
+	refuse.text = "Decline"
 	refuse.pressed.connect(func() -> void: _refuse_offer())
 	buttons.add_child(refuse)
 
 	var accept := Button.new()
-	accept.text = "Accepter"
+	accept.text = "Accept"
 	accept.pressed.connect(func() -> void: _accept_offer())
 	buttons.add_child(accept)
 
@@ -903,7 +921,7 @@ func _make_form_label(text: String) -> Label:
 
 func _open_modal() -> void:
 	var offer: Dictionary = _incoming
-	_modal_title.text = "%s veut vous envoyer %d fichier(s) (%s)\nAutoriser sa clé SSH temporaire ?" % [
+	_modal_title.text = "%s wants to send you %d file(s) (%s)\nAllow their temporary SSH key?" % [
 		_peer_name(int(offer["peer"])), offer["names"].size(), human_size(int(offer["total"])),
 	]
 	var lines: Array[String] = []
@@ -911,7 +929,7 @@ func _open_modal() -> void:
 		lines.append(str(n))
 	_modal_files.text = _truncate_list(lines)
 	var fp := String(_contacts[int(offer["peer"])]["fp"])
-	_modal_fp.text = ("Clé de l'expéditeur : %s…" % fp.substr(0, 24)) if not fp.is_empty() else ""
+	_modal_fp.text = ("Sender's key: %s…" % fp.substr(0, 24)) if not fp.is_empty() else ""
 	_modal_fp.visible = not _modal_fp.text.is_empty()
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	_modal_root.visible = true
