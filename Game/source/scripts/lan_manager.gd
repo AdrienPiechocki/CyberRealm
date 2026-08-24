@@ -85,6 +85,10 @@ var _level_root: Node3D = null
 var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
 var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
+# Peers dont on a reçu au moins une synchro de transform : ils « sont là ».
+# Un avatar n'est visible que pour ces pairs (sinon corps fantôme au spawn
+# pendant que le joueur charge encore le niveau).
+var _arrived_peers: Dictionary = {}
 var _last_status := ""
 # Les avatars ne sont préchauffés (GPU, hors viewport principal) qu'une fois
 # le niveau stable : le chargement du niveau compile ses propres shaders, et
@@ -600,6 +604,10 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	avatar.position = _spawn_position()
 	avatar.rotation = _spawn_rotation()
 	avatar.scale = _spawn_scale()
+	# Invisible jusqu'à la première synchro de transform du pair : tant
+	# qu'il charge le niveau (_pending_join) il n'en émet aucune, et on ne
+	# veut pas d'un corps fantôme planté au spawn côté des autres joueurs.
+	avatar.set_arrived(_arrived_peers.has(peer_id))
 	_add_drop_target(avatar)
 	_players_container.add_child(avatar)
 	_remote_players[peer_id] = avatar
@@ -663,6 +671,7 @@ func _remove_player(peer_id: int) -> void:
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].queue_free()
 		_remote_players.erase(peer_id)
+	_arrived_peers.erase(peer_id)
 	_players.erase(peer_id)
 	_avatar_blobs.erase(peer_id)
 	_avatar_scene_cache.erase(peer_id)
@@ -900,6 +909,7 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 		var av: Node = _remote_players[id]
 		if not is_instance_valid(av):
 			_remote_players.erase(id)
+			_arrived_peers.erase(id)
 			continue
 		var p: Node = av.get_parent()
 		if p and p != _players_container:
@@ -1298,7 +1308,19 @@ func _sync_player_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 		return
 	if not _remote_players.has(from):
 		return
+	_reveal_peer(from)
 	_remote_players[from].apply_transform(pos, yaw, pitch)
+
+## Première preuve de vie d'un pair. Il émet une synchro de transform à
+## chaque frame physique dès qu'il est en session — et AUCUNE tant qu'il
+## charge le niveau. Révéler ici = il apparaît quand il arrive vraiment.
+func _reveal_peer(peer_id: int) -> void:
+	if _arrived_peers.has(peer_id):
+		return
+	_arrived_peers[peer_id] = true
+	var av: Node = _remote_players.get(peer_id)
+	if av != null and is_instance_valid(av) and av.has_method("set_arrived"):
+		av.set_arrived(true)
 
 func _physics_process(delta: float) -> void:
 	_update_cpu_capture_request()
@@ -2982,6 +3004,7 @@ func _clear_remote_players() -> void:
 	for id in _remote_players:
 		_remote_players[id].queue_free()
 	_remote_players.clear()
+	_arrived_peers.clear()
 
 func _disconnect_session() -> void:
 	_stop_audio_share()
