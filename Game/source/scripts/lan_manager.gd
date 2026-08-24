@@ -362,6 +362,11 @@ func get_players_roster() -> Array:
 	)
 	return roster
 
+## Conteneur des avatars distants (niveau courant) — utilisé par le partage
+## de fichiers pour résoudre la cible d'un drop.
+func get_players_container() -> Node3D:
+	return _players_container
+
 # ── Host ─────────────────────────────────────────────────────────────
 
 func host_game() -> bool:

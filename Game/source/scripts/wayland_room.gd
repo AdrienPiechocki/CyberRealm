@@ -26,6 +26,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 var lan: Node # multijoueur LAN (hôte/join, avatars)
 var cmd: Node # drone de commandes IPC (cyberrealm-exec)
 var interactor: Node3D # clic gauche sur les objets du niveau (scripts user)
+var file_share: Node3D # drag & drop de fichiers sur un avatar → rsync LAN
 
 const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
 const OCCLUSION_BAKER := preload("res://scripts/occlusion_baker.gd")
@@ -406,6 +407,15 @@ func _ready() -> void:
 	add_child(interactor)
 	interactor.setup(player, lan)
 
+	# Partage de fichiers : drag & drop Wayland lâché sur un avatar → offre
+	# rsync (prompt mot de passe SSH chez le destinataire, cf. README).
+	file_share = Node3D.new()
+	file_share.name = "FileShare"
+	file_share.set_script(preload("res://scripts/file_share_manager.gd"))
+	add_child(file_share)
+	file_share.setup(player, lan, compositor)
+	compositor.file_drop_received.connect(file_share.on_files_dropped)
+
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
 	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
@@ -610,6 +620,11 @@ func _process(delta: float) -> void:
 	if pause_menu.visible:
 		return
 
+	# Prompt de partage de fichiers (drag & drop sur un avatar) : modal,
+	# le monde est gelé comme pour le menu pause.
+	if file_share != null and file_share.is_modal_open():
+		return
+
 	# Map de l'hôte en cours de réception (join LAN pas encore finalisé) :
 	# geler le joueur local — il n'est pas encore entré dans la session.
 	# (`lan` est créé après un await dans _ready() : null pendant les
@@ -727,6 +742,9 @@ func _process(delta: float) -> void:
 	# surface Wayland lui appartient et n'interagit jamais avec le monde.
 	if interactor != null:
 		interactor.update_aim(ray_origin, ray_dir)
+	# Cible de drop pendant un drag Wayland (même rayon caméra).
+	if file_share != null:
+		file_share.update_drag(ray_origin, ray_dir)
 
 func _input(event: InputEvent) -> void:
 	# Tout input (même celui du joueur qui ne vise aucune surface : WASD,

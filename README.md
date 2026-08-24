@@ -172,6 +172,9 @@ transfer.
 - `libpipewire`, `libspa`, `opus` (shared audio capture)
 - `libx11` (resolving the real PID of X11 windows for audio sharing, via the
   satellite's X server `_NET_WM_PID`)
+- `openssh` + `rsync` on **every** machine playing (drag & drop file sharing
+  over a throwaway SSH keypair), and an enabled `sshd` on machines that want
+  to *receive* files (`systemctl enable --now sshd`)
 - A running Wayland session (e.g. KDE/Plasma) to launch the game from
 
 ## Build & install
@@ -192,7 +195,8 @@ cd CyberRealm
 5. Installs the KWin script, the `cyberrealm-launch` wrapper, and a
    `.desktop` launcher.
 6. Opens the firewall for LAN multiplayer (`ufw allow 7777/udp` and
-   `9999/udp`).
+   `9999/udp`) and for file sharing (`22/tcp`), then reminds you to enable
+   `sshd` if you want to receive files by drag & drop.
 
 If you'd rather build manually, `scons target=template_debug platform=linux`
 builds the GDExtension and `godot --headless --path Game/source --export-release Linux Game/build/CyberRealm.x86_64` exports the game.
@@ -243,6 +247,17 @@ cyberrealm-launch firefox
 Remote windows are view-only: `SUPER+F` opens a fullscreen view of them (with the
 owner's cursor overlaid), `SUPER+P` pins them as PiP. You cannot type or click into
 them.
+
+### File sharing by drag & drop
+
+Drag files from any in-game application onto another player's avatar to send
+them to their `~/CyberRealmRecu/` folder over rsync-over-ssh — **no password
+is ever typed or transmitted**: the receiver accepts the request with one
+click, which temporarily authorizes the sender's throwaway SSH key for that
+single transfer (restricted line, auto-removed afterwards). Every machine
+needs `openssh` + `rsync`; receivers additionally need `sshd` running and
+port 22 reachable on the LAN (both handled/checked by `install.sh`). Full
+details: `Game/source/user/README.md`.
 
 ## Controls
 
