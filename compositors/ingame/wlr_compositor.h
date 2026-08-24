@@ -7,8 +7,11 @@
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
+#include <atomic>
+#include <memory>
 #include <unordered_map>
 
 #include <set>
@@ -865,6 +868,15 @@ class WlrCompositor : public Node {
     Ref<Texture2D> drag_icon_texture;
     int drag_icon_width = 0;
     int drag_icon_height = 0;
+
+    // --- Drop de fichiers sur le monde 3D (partage LAN) ----------------
+    // Un drag-and-drop relâché hors de toute surface client (sur un avatar
+    // ou le décor) est annulé par wlroots (pas de focus client). On
+    // intercepte alors le relâchement, on lit text/uri-list depuis la
+    // source et on émet file_drop_received vers GDScript.
+    std::shared_ptr<std::atomic_bool> alive_guard;
+    bool extract_file_drop_start();
+    void _finish_file_drop(PackedStringArray paths, uint32_t time_msec, int button);
 
 protected:
     static void _bind_methods();

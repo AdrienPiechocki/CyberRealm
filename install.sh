@@ -7,7 +7,7 @@ GAME="$SCRIPT_DIR/Game/build/CyberRealm.x86_64"
 
 sudo pacman -S --needed base-devel godot wayland wayland-protocols pixman libdrm xwayland-satellite \
                libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr \
-               ffmpeg libva-mesa-driver libva libx11
+               ffmpeg libva-mesa-driver libva libx11 openssh rsync
 
 # wlroots 0.19 n'est plus dans les dépôts officiels d'Arch (retiré au profit de
 # wlroots0.20) alors que le compositeur du jeu est codé contre son API. Si
@@ -156,3 +156,14 @@ EOF
 # for multiplayer
 sudo ufw allow 7777/udp
 sudo ufw allow 9999/udp
+# for drag & drop file sharing between players (rsync-over-ssh, port ssh)
+sudo ufw allow 22/tcp
+
+# --- Partage de fichiers (drag & drop) --------------------------------------
+# openssh + rsync sont installés ci-dessus. Recevoir des fichiers exige en plus
+# le démon ssh du destinataire : on ne l'active PAS automatiquement (décision
+# de sécurité propre à chaque machine), simple rappel.
+if ! systemctl is-active --quiet sshd && ! systemctl is-enabled --quiet sshd; then
+    echo "install: sshd inactif — pour RECEVOIR des fichiers par drag & drop :"
+    echo "          sudo systemctl enable --now sshd"
+fi

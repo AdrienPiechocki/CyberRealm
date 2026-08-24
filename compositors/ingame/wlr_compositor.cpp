@@ -14,6 +14,8 @@
 #include <ctime>
 #include <fstream>
 #include <algorithm>
+#include <thread>
+#include <cctype>
 #include <vector>
 #include <unistd.h>
 #include <fcntl.h>
@@ -449,6 +451,11 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::INT, "width"),
         PropertyInfo(Variant::INT, "height")));
     ADD_SIGNAL(MethodInfo("drag_icon_removed"));
+    ADD_SIGNAL(MethodInfo("file_drop_received",
+        PropertyInfo(Variant::PACKED_STRING_ARRAY, "paths")));
+
+    ClassDB::bind_method(D_METHOD("_finish_file_drop", "paths", "time_msec", "button"),
+        &WlrCompositor::_finish_file_drop);
 
     ADD_SIGNAL(MethodInfo("layer_surface_mapped",
         PropertyInfo(Variant::INT, "id"),
@@ -495,6 +502,7 @@ void WlrCompositor::_bind_methods() {
 }
 
 WlrCompositor::WlrCompositor() {
+    alive_guard = std::make_shared<std::atomic_bool>(true);
     const char *env = getenv("XDG_CURRENT_DESKTOP");
     if (env) {
         portal_backend = String(env);
@@ -508,6 +516,11 @@ WlrCompositor::WlrCompositor() {
 }
 
 WlrCompositor::~WlrCompositor() {
+    // Les threads lecteurs de drop vérifient ce garde avant de toucher au
+    // cycle de messages Godot (call_deferred) : après destruction, silence.
+    if (alive_guard) {
+        alive_guard->store(false);
+    }
     // Libérer les ressources Vulkan tant que RenderingDevice est encore
     // valide (avant que les maps windows/popups ne détruisent les
     // CaptureCache via leurs destructeurs).
@@ -4309,6 +4322,21 @@ void WlrCompositor::forward_pointer_button(int window_id, int button, bool press
             virtual_keyboard.num_keycodes,
             &virtual_keyboard.modifiers);
     } else {
+        // Drop de fichiers sur le monde 3D (partage LAN) : drag actif,
+        // aucune fenêtre sous le curseur et le drag a perdu son focus
+        // client (clear_focus quand le rayon quitte toute fenêtre). On
+        // tente d'extraire text/uri-list de la source ; si l'extraction
+        // démarre, le relâchement est différé jusqu'à la fin de lecture —
+        // la source doit écrire ses données AVANT que wlroots n'annule le
+        // drag, sinon elle peut abandonner le transfert à l'annulation.
+        if (!ws && seat->drag != nullptr && seat->drag->focus == nullptr &&
+                seat->drag->source != nullptr &&
+                (uint32_t)button == seat->pointer_state.grab_button) {
+            if (extract_file_drop_start()) {
+                return; // relâchement différé (délivré par _finish_file_drop)
+            }
+            // Extraction impossible : comportement historique ci-dessous.
+        }
         // Gestion de l'abandon de Drag and Drop : relâché hors de toute
         // fenêtre (ws == nullptr) ou hors de la surface qui a le focus du
         // drag -> on annule la source, ce qui déclenchera on_drag_destroy
@@ -4788,6 +4816,130 @@ void WlrCompositor::on_drag_destroy(wl_listener *listener, void *data) {
     RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
     self->drag_icon_cache.reset(rd);
     self->emit_signal("drag_icon_removed");
+}
+
+// --- Drop de fichiers sur le monde 3D --------------------------------------
+// Lit text/uri-list depuis la source du drag via un tube. La remontée du
+// bouton relâché au grab wlroots est différée à la fin de la lecture : sans
+// ce délai, la source (Dolphin, Nautilus…) peut recevoir l'annulation du
+// drag avant d'avoir écrit les données demandées et abandonner le transfert.
+// Timeout de sécurité si la source ne répond pas (sélection géante, app
+// bloquée) : le drag se termine alors normalement, éventuellement sans
+// données.
+#define FILE_DROP_URI_MIME "text/uri-list"
+#define FILE_DROP_READ_TIMEOUT_MS 1000
+
+bool WlrCompositor::extract_file_drop_start() {
+    wlr_data_source *source = seat->drag->source;
+
+    bool has_uris = false;
+    char **mimes = (char **)source->mime_types.data;
+    size_t mime_count = source->mime_types.size / sizeof(char *);
+    for (size_t i = 0; i < mime_count; i++) {
+        if (strcmp(mimes[i], FILE_DROP_URI_MIME) == 0) {
+            has_uris = true;
+            break;
+        }
+    }
+    if (!has_uris) {
+        return false; // pas des fichiers : comportement historique (annulation)
+    }
+
+    int fds[2];
+    if (pipe(fds) != 0) {
+        return false;
+    }
+    // La requête send part AVANT toute notification du relâchement : le
+    // client verra .send puis .cancelled dans cet ordre.
+    wlr_data_source_send(source, FILE_DROP_URI_MIME, fds[1]);
+    close(fds[1]);
+
+    const uint32_t time_msec = get_time_msec();
+    const int button = (int)seat->pointer_state.grab_button;
+    const int read_fd = fds[0];
+    auto guard = alive_guard;
+
+    std::thread([this, guard, read_fd, time_msec, button]() {
+        std::string data;
+        char buf[4096];
+        const auto deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(FILE_DROP_READ_TIMEOUT_MS);
+        for (;;) {
+            const auto now = std::chrono::steady_clock::now();
+            long remain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                deadline - now).count();
+            if (remain_ms <= 0) break;
+            pollfd p{};
+            p.fd = read_fd;
+            p.events = POLLIN;
+            if (::poll(&p, 1, (int)remain_ms) <= 0) break;
+            ssize_t r = ::read(read_fd, buf, sizeof(buf));
+            if (r > 0) {
+                data.append(buf, (size_t)r);
+                continue; // EOF uniquement quand la source ferme son fd
+            }
+            break;
+        }
+        ::close(read_fd);
+
+        PackedStringArray paths;
+        size_t pos = 0;
+        while (pos < data.size()) {
+            size_t eol = data.find('\n', pos);
+            if (eol == std::string::npos) eol = data.size();
+            std::string line = data.substr(pos, eol - pos);
+            pos = eol + 1;
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            if (line.empty() || line[0] == '#') continue;
+            const std::string prefix = "file://";
+            if (line.compare(0, prefix.size(), prefix) != 0) continue;
+            std::string rest = line.substr(prefix.size());
+            // file:///chemin → /chemin ; file://localhost/… accepté ; tout
+            // autre hôte n'est pas un chemin local.
+            if (!rest.empty() && rest[0] != '/') {
+                size_t slash = rest.find('/');
+                if (slash == std::string::npos || rest.substr(0, slash) != "localhost") {
+                    continue;
+                }
+                rest = rest.substr(slash);
+            }
+            // Décodage %XX (%20 pour les espaces, %2F…).
+            std::string decoded;
+            for (size_t i = 0; i < rest.size(); i++) {
+                if (rest[i] == '%' && i + 2 < rest.size() &&
+                        isxdigit((unsigned char)rest[i + 1]) &&
+                        isxdigit((unsigned char)rest[i + 2])) {
+                    auto hexval = [](char c) -> int {
+                        c |= 0x20; // minuscule
+                        return c <= '9' ? c - '0' : c - 'a' + 10;
+                    };
+                    decoded += (char)((hexval(rest[i + 1]) << 4) | hexval(rest[i + 2]));
+                    i += 2;
+                } else {
+                    decoded += rest[i];
+                }
+            }
+            paths.append(String(decoded.c_str()));
+        }
+
+        if (!guard->load()) return;
+        call_deferred("_finish_file_drop", paths, time_msec, button);
+    }).detach();
+    return true;
+}
+
+// Fil d'exécution principal : émission vers GDScript puis délivrance du
+// relâchement différé au grab wlroots (qui annule le drag sans focus client,
+// comme avant cette fonctionnalité).
+void WlrCompositor::_finish_file_drop(PackedStringArray paths, uint32_t time_msec,
+        int button) {
+    if (!paths.is_empty()) {
+        emit_signal("file_drop_received", paths);
+    }
+    if (!seat) return;
+    wlr_seat_pointer_notify_button(seat, time_msec, (uint32_t)button,
+        WL_POINTER_BUTTON_STATE_RELEASED);
+    wlr_seat_pointer_notify_frame(seat);
 }
 
 void WlrCompositor::on_request_set_selection(wl_listener *listener, void *data) {
