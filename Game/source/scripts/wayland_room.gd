@@ -25,6 +25,7 @@ var fx: Node3D
 var presenter: Node3D # présente le viewport à l'output headless pour OBS
 var lan: Node # multijoueur LAN (hôte/join, avatars)
 var cmd: Node # drone de commandes IPC (cyberrealm-exec)
+var interactor: Node3D # clic gauche sur les objets du niveau (scripts user)
 
 const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
 const OCCLUSION_BAKER := preload("res://scripts/occlusion_baker.gd")
@@ -396,6 +397,15 @@ func _ready() -> void:
 	add_child(cmd)
 	cmd.setup(compositor, win3d, focus, layers, pins, lan, player)
 
+	# Interactions monde : clic gauche sur un objet du niveau portant un
+	# script exposant interact() (convention documentée dans user/README.md).
+	# Le relais RPC passe par ce node (même NodePath sur tous les pairs).
+	interactor = Node3D.new()
+	interactor.name = "Interactor"
+	interactor.set_script(preload("res://scripts/world_interactor.gd"))
+	add_child(interactor)
+	interactor.setup(player, lan)
+
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
 	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
@@ -712,6 +722,11 @@ func _process(delta: float) -> void:
 	var ray_origin := cam.project_ray_origin(mouse_pos)
 	var ray_dir := cam.project_ray_normal(mouse_pos)
 	win3d.process_raycast(ray_origin, ray_dir, delta, interact_mode_active)
+	# Interaction monde (clic gauche sur un objet scripté du niveau) : même
+	# rayon, évalué APRÈS le système de fenêtres — un clic qui touche une
+	# surface Wayland lui appartient et n'interagit jamais avec le monde.
+	if interactor != null:
+		interactor.update_aim(ray_origin, ray_dir)
 
 func _input(event: InputEvent) -> void:
 	# Tout input (même celui du joueur qui ne vise aucune surface : WASD,

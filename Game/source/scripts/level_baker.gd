@@ -10,6 +10,11 @@ extends RefCounted
 ## Le blob peut donc être chargé sur une machine dont le build ne contient PAS
 ## les assets de la map : les maps custom deviennent jouables en LAN sans
 ## builds identiques.
+##
+## Les scripts .gd situés sous res://user/ sont traités à part (voir
+## prepare_user_scripts) : réécrits vers le miroir user://lan_mirror/… et
+## transmis à part via un manifeste {chemin → source} que les pairs écrivent
+## sur disque avant de charger le blob (UserScriptMirror).
 
 const BAKE_TMP_PATH := "user://lan_bake.scn"
 
@@ -21,6 +26,14 @@ static var max_texture_size := 0
 # meshs utilisent des attributs spécifiques (normales compressées, etc.).
 # Désactivé pour les niveaux GLB où le timeout GPU est critique.
 static var keep_surface_format := false
+
+# Scripts utilisateur (res://user/**.gd) remappés pour le transfert LAN :
+# script original → copie chargée depuis le miroir user://lan_mirror/….
+# Rempli par prepare_user_scripts() AVANT le clonage ; consommé par _clone()
+# et _embed() pendant le bake pour que le blob ne référence QUE le miroir
+# (fichiers que UserScriptMirror.install() recrée chez les pairs).
+static var _script_remap: Dictionary = {}
+static var _ref_regex: RegEx = null
 
 static func bake(root: Node3D) -> Dictionary:
 	if root == null:
@@ -36,6 +49,9 @@ static func bake(root: Node3D) -> Dictionary:
 		spawn_rotation = r if r is Vector3 else player.rotation
 		var s = player.get("spawn_scale")
 		spawn_scale = s if s is Vector3 else player.scale
+	# Scripts utilisateur : collecte + remappage vers le miroir AVANT le
+	# clonage (_clone/_embed remplacent chaque script original par sa copie).
+	var manifest := prepare_user_scripts(root)
 	var cache := {}
 	var clone := _clone(root, player, cache) as Node3D
 	if clone == null:
@@ -59,8 +75,88 @@ static func bake(root: Node3D) -> Dictionary:
 	if bytes.is_empty():
 		push_error("LevelBaker: blob vide après lecture")
 		return {}
-	push_warning("LevelBaker: bake OK — %d KB" % [bytes.size() / 1024])
-	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale}
+	push_warning("LevelBaker: bake OK — %d KB (%d scripts user)" % [bytes.size() / 1024, manifest.size()])
+	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale, "scripts": manifest}
+
+# ── Scripts utilisateur pour le LAN ──────────────────────────────────
+
+## Collecte les scripts .gd sous res://user/ référencés par l'arbre — attachés
+## aux nœuds ou cités entre eux via preload()/load()/extends (chemin littéral)
+## — puis prépare le transfert :
+## 1. réécrit leurs sources vers un lot miroir unique (res://user/… →
+##    user://lan_mirror/<lot>/user/…),
+## 2. écrit ces fichiers SUR CETTE MACHINE (les copies ci-dessous résolvent
+##    leurs propres preload/extends depuis le disque au chargement),
+## 3. charge chaque script depuis le miroir : la copie porte resource_path
+##    miroir et remplace l'original dans le clonage (table _script_remap).
+## Retourne le manifeste réseau {chemin_miroir → source réécrite} ; vide si
+## aucun script utilisateur (rien à transmettre, comportement inchangé).
+static func prepare_user_scripts(root: Node) -> Dictionary:
+	_script_remap.clear()
+	var found := {} # res://chemin -> Script attaché à un nœud de l'arbre
+	_collect_scripts(root, found)
+	# Sources complètes : objets attachés + dépendances transitives.
+	var sources := {} # res://chemin -> source originale
+	var scan_queue: Array = []
+	for p in found:
+		sources[p] = _script_source(found[p])
+		scan_queue.append(p)
+	while not scan_queue.is_empty():
+		for r in _scan_refs(sources[scan_queue.pop_front()]):
+			if sources.has(r):
+				continue
+			if not FileAccess.file_exists(r):
+				push_warning("LevelBaker: script utilisateur référencé introuvable : %s" % r)
+				continue
+			sources[r] = FileAccess.get_file_as_string(r)
+			scan_queue.append(r)
+	if sources.is_empty():
+		return {}
+	var batch := UserScriptMirror.new_batch()
+	var manifest := {}
+	for p in sources:
+		manifest[UserScriptMirror.mirror_path(p, batch)] = UserScriptMirror.rewritten_source(sources[p], batch)
+	UserScriptMirror.install(manifest)
+	# Copies chargées depuis le miroir (une définition par chemin, même si le
+	# script est attaché à plusieurs nœuds) : resource_path = miroir → pack()
+	# enregistre une ext_resource que les pairs résolvent après install().
+	for p in found:
+		var copy := load(UserScriptMirror.mirror_path(p, batch)) as Script
+		if copy == null:
+			push_warning("LevelBaker: copie miroir illisible pour %s — script non transmis" % p)
+			continue
+		_script_remap[found[p]] = copy
+	return manifest
+
+static func _collect_scripts(n: Node, out: Dictionary) -> void:
+	var s := n.get_script() as Script
+	if s != null and UserScriptMirror.is_user_script_path(s.resource_path):
+		out[s.resource_path] = s
+	for c in n.get_children():
+		_collect_scripts(c, out)
+
+static func _script_source(s: Script) -> String:
+	if not s.source_code.is_empty():
+		return s.source_code
+	if not s.resource_path.is_empty():
+		return FileAccess.get_file_as_string(s.resource_path)
+	return ""
+
+## Références res://user/**.gd présentes dans une source : preload()/load()
+## avec littéral, et extends "chemin". Les chemins construits dynamiquement ne
+## sont pas détectés (limite documentée côté utilisateur).
+static func _scan_refs(source: String) -> Array:
+	if source.is_empty():
+		return []
+	if _ref_regex == null:
+		_ref_regex = RegEx.new()
+		_ref_regex.compile("(?:preload|load|extends)[ \\t]*\\(?[ \\t]*[\"'](res://[^\"']+\\.gd)[\"']")
+	var out: Array = []
+	for m in _ref_regex.search_all(source):
+		var p := m.get_string(1)
+		if UserScriptMirror.is_user_script_path(p):
+			out.append(p)
+	return out
 
 static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	var node := ClassDB.instantiate(orig.get_class()) as Node
@@ -69,7 +165,9 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	node.name = orig.name
 	var script: Script = orig.get_script()
 	if script != null:
-		node.set_script(script)
+		# Script utilisateur remappé : attacher la copie miroir (sinon le pack
+		# enregistre une dépendance res://user/… absente chez les pairs).
+		node.set_script(_script_remap.get(script, script))
 	for g in orig.get_groups():
 		node.add_to_group(g)
 	for p in orig.get_property_list():
@@ -111,7 +209,9 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 
 static func _embed(r: Resource, cache: Dictionary) -> Resource:
 	if r is Script:
-		return r
+		# Scripts cités comme ressources (var exportée typée, etc.) : même
+		# remappage que les scripts de nœuds.
+		return _script_remap.get(r, r)
 	if cache.has(r):
 		return cache[r]
 	if r is Mesh:

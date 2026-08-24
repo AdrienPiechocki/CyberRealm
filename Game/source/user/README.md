@@ -124,6 +124,80 @@ encode — à surveiller sur les machines modestes.
   automatiquement).
 - Le nom du joueur (NameLabel) est visible à travers les murs.
 
+## Scripts personnalisés
+
+Vos niveaux et avatars peuvent porter vos propres scripts `.gd`, y compris en
+multijoueur : ils sont transmis avec la map/l'avatar et exécutés par tous les
+joueurs.
+
+1. Placez vos scripts sous `res://user/` (ex. `res://user/scripts/ma_porte.gd`).
+2. Attachez-les à vos nœuds dans l'éditeur Godot comme n'importe quel script.
+3. Lancez le jeu : en LAN, les sources voyagent avec le niveau baké et sont
+   écrites sur les machines des joueurs avant le chargement de la map. Les
+   avatars custom suivent le même principe : leurs scripts sont transmis
+   avec eux.
+
+### Règles
+
+- Entre vos scripts, référencez-vous via `preload("res://user/…")`,
+  `load("res://user/…")` avec un chemin **littéral**, ou
+  `extends "res://user/base.gd"` : ces dépendances sont détectées et
+  transmises avec le reste.
+- Évitez `class_name` dans les scripts user : l'enregistrement global des
+  classes n'existe pas chez les autres joueurs — passez par `preload()`.
+- Les classes du jeu (`CharacterBody3D`, `res://scripts/avatar.gd`…) sont
+  disponibles normalement sur toutes les machines.
+- Chaque machine exécute SA copie du script : gardez une logique
+  déterministe, ou désignez une autorité (typiquement l'hôte). Les
+  annotations `@rpc` fonctionnent — la scène étant identique partout, les
+  NodePath correspondent d'une machine à l'autre.
+- Limites : seuls les `.gd` sont transmis (un `load()` d'un asset non embarqué
+  dans la scène — texture, `.glb`… — échouera chez les clients) ; un chemin
+  construit dynamiquement (`"res://user/" + variable`) n'est pas réécrit.
+- Attention : rejoindre une partie revient à exécuter les scripts de l'hôte ;
+  le multijoueur suppose la confiance entre joueurs.
+
+### Interagir avec les objets (clic gauche)
+
+Un objet du niveau devient interactif si son script (ou celui d'un de ses
+ancêtres) expose `interact()`. Visez l'objet à moins de 3 m et cliquez
+gauche : la fonction est appelée sur toutes les machines de la session.
+
+```gdscript
+extends StaticBody3D  # n'importe quel nœud AVEC COLLISION
+
+var open := false
+
+# Obligatoire — player_id = peer du joueur qui a interagi (1 = hôte).
+func interact(_player_id: int) -> void:
+	open = not open
+	$AnimationPlayer.play("open" if open else "close")
+
+# Optionnel — texte affiché sous le viseur quand l'objet est visé.
+func get_interact_prompt() -> String:
+	return "Ouvrir la porte"
+
+# Optionnel — appelé quand le viseur entre/sort de l'objet (surbrillance…).
+func interact_focus(aimed: bool) -> void:
+	$Highlight.visible = aimed
+```
+
+Règles :
+
+- L'objet doit avoir **une collision** (`StaticBody3D`, `CSGShape3D` avec
+  `use_collision`, mesh + collider…) ; le clic est résolu par raycast depuis
+  la caméra, comme pour tirer un rayon dans un FPS classique.
+- `interact()` peut omettre l'argument (`func interact()`), mais le déclarer
+  permet d'identifier QUI a agi (ex. logique réservée à l'hôte : 
+  `if player_id != 1: return`).
+- Cliquer une fenêtre Wayland ne déclenche jamais d'interaction monde : le
+  clic appartient d'abord à l'application visée.
+- En LAN, un clic appelle `interact()` chez tout le monde (relais réseau) :
+  gardez la fonction déterministe pour un effet partagé cohérent, ou filtrez
+  par `player_id` si seul l'auteur doit exécuter quelque chose.
+- Un spammeur ne peut pas inonder la session : le relais est limité à une
+  interaction par joueur toutes les 150 ms.
+
 ## Revenir au niveau par défaut
 
 Supprimez (ou renommez) `res://user/level.tscn`. Le jeu utilisera alors
@@ -153,10 +227,9 @@ avec ses animations. Sans choix explicite, l'avatar « auto » est utilisé
 
 Limites à connaître :
 
-- **Pas de scripts custom** : les meshes/matériaux/textures des maps sont
-  embarqués dans le blob, mais les **scripts** ne le sont pas. Une map LAN ne
-  doit pas attacher de scripts situés dans `res://user/` (les scripts du jeu,
-  `res://scripts/`, fonctionnent normalement).
+- **Scripts custom pris en charge** : les `.gd` situés sous `res://user/` et
+  attachés au niveau (ou aux avatars) voyagent avec le blob et s'exécutent
+  chez tous les joueurs — voir « Scripts personnalisés » pour les règles.
 - Les nodes ajoutés **à la volée pendant la partie** (sous le niveau, sans
   `owner`) ne sont pas transmis — uniquement le contenu de la scène.
 - Le **joueur** (`Player`) n'est pas transmis : chaque machine garde son
