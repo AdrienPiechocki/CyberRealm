@@ -73,7 +73,14 @@ func setup(id: int, pname: String, color: Color) -> void:
 			(mi.material_override as StandardMaterial3D).albedo_color = color
 			continue
 		_duplicate_material_for_fade(mi)
-		if mi.material_override == null:
+		var has_any_mat := false
+		if mi.mesh != null:
+			for j in mi.mesh.get_surface_count():
+				if mi.get_surface_override_material(j) != null or \
+						mi.mesh.surface_get_material(j) != null:
+					has_any_mat = true
+					break
+		if not has_any_mat and mi.material_override == null:
 			var mat := StandardMaterial3D.new()
 			mat.albedo_color = color
 			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
