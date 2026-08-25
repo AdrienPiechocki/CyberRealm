@@ -632,6 +632,10 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 		return
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].setup(peer_id, pname, color)
+		if _level_stable and _remote_players[peer_id].has_method("start_prewarm"):
+			_remote_players[peer_id].start_prewarm()
+		if _arrived_peers.has(peer_id) and _remote_players[peer_id].has_method("set_arrived"):
+			_remote_players[peer_id].set_arrived(true)
 		return
 	# Le client découvre le roster via ce broadcast (_register_player ne
 	# tourne que chez l'hôte) — nécessaire au différé de niveau comme à
@@ -1272,7 +1276,9 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 	push_warning("LAN: avatar reçu de peer %d — %d KB" % [recv_from, bytes.size() / 1024])
 	_avatar_blobs[recv_from] = bytes
 	# Décodage immédiat : le coût du load() est payé ici (pendant l'attente
-	# du niveau) plutôt qu'au spawn.
+	# du niveau) plutôt qu'au spawn. Invalider le cache précédent pour que la
+	# nouvelle scène soit décodée (un avatar changé doit remplacer l'ancien).
+	_avatar_scene_cache.erase(recv_from)
 	_cache_avatar_scene(recv_from)
 	if _remote_players.has(recv_from):
 		var av: Node = _remote_players[recv_from]
