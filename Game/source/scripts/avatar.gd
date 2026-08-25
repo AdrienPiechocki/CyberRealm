@@ -38,6 +38,7 @@ const LERP_SPEED := 20.0
 const FADE_DISTANCE := 2.0
 
 var _mesh_mats: Array[StandardMaterial3D] = []
+var _color_tint_mats: Array[StandardMaterial3D] = []
 var _label: Label3D = null
 var _anim_player: AnimationPlayer = null
 var _pitch_pivot: Node3D = null
@@ -57,20 +58,22 @@ var _arrived := false
 func setup(id: int, pname: String, color: Color) -> void:
 	peer_id = id
 	player_name = pname
-	# Invisible tant que le prewarm GPU n'est pas terminé : le viewport
-	# principal ne doit jamais rendre l'avatar avant que tous les variants de
-	# shaders soient compilés hors-écran (sinon TDR pendant le chargement du
-	# niveau). La visibilité est restaurée par start_prewarm().
 	visible = false
+	_color_tint_mats.clear()
 
-	# Collecter tous les MeshInstance3D et préparer les matériaux.
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(self, meshes)
 	for mi in meshes:
 		if not mi.visible:
 			continue
+		# Sur un appel subséquent (changement de couleur), le material_override
+		# existe déjà (tint couleur precedent). Mettre à jour sa couleur.
+		if mi.material_override is StandardMaterial3D \
+				and mi.material_override in _color_tint_mats:
+			(mi.material_override as StandardMaterial3D).albedo_color = color
+			continue
+		# Premier appel ou mesh sans tint : duplicate pour fade + appliquer tint.
 		_duplicate_material_for_fade(mi)
-		# Appliquer le tint couleur uniquement si le mesh n'a AUCUN matériau.
 		var has_any_mat := false
 		if mi.mesh != null:
 			for j in mi.mesh.get_surface_count():
@@ -83,7 +86,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 			mat.albedo_color = color
 			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
 			mi.material_override = mat
-			_mesh_mats.append(mat)
+			_color_tint_mats.append(mat)
 
 	# Label du nom.
 	_label = _find_label(self)
@@ -360,6 +363,9 @@ func _update_transparency() -> void:
 	var dist := global_position.distance_to(local_player.global_position) - 1
 	var alpha := clampf(dist / FADE_DISTANCE, 0.0, 1.0)
 	for mat in _mesh_mats:
+		if mat != null and is_instance_valid(mat):
+			mat.albedo_color.a = alpha
+	for mat in _color_tint_mats:
 		if mat != null and is_instance_valid(mat):
 			mat.albedo_color.a = alpha
 
