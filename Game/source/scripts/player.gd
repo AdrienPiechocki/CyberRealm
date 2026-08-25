@@ -12,8 +12,11 @@ var speed = 5
 var jump_speed = 3
 var mouse_sensitivity = 0.002
 
-var keyboard_only := OS.get_environment("KEYBOARD_ONLY") == "1"
-var keyboard_look_speed := 2.0
+# Vitesse angulaire du stick droit à pleine déflexion (rad/s), réponse
+# quadratique pour la précision en near-center. La souris garde son chemin
+# InputEventMouseMotion, inchangé. Les touches fléchées (actions look_*)
+# suivent le même chemin.
+var pad_look_speed := 2.6
 
 var interact_mode_active := false
 var focus_mode_active := false
@@ -28,9 +31,15 @@ var session_locked := false
 # (join pas encore finalisé). Gèle déplacement et caméra ; Escape (menu pause)
 # reste fonctionnel pour pouvoir annuler la connexion.
 var input_locked := false
-# Référence paresseuse au compositeur, pour connaître la layer surface qui
+# Référence paresseuse au compositeur, pour connaître la layer qui
 # détient le focus clavier (rofi, menu waybar...).
 var _compositor: WlrCompositor = null
+
+# Diagnostic manette (CYBERREALM_PAD_DEBUG=1) : trace les événements bruts
+# émis par le matériel — indispensable quand un pad dévie de la
+# cartographie standard (sticks/gâchettes sur des axes inattendus).
+var _pad_diag := OS.get_environment("CYBERREALM_PAD_DEBUG") == "1"
+var _pad_diag_axes := {} # "device|axis" -> dernière valeur tracée
 
 var spawn_pos: Vector3 = Vector3.ZERO
 var spawn_rotation: Vector3 = Vector3.ZERO
@@ -56,6 +65,8 @@ func _keyboard_busy() -> bool:
 func _physics_process(delta):
 	if position.y <= -MaxDepth:
 		position = spawn_pos
+	if velocity.y > jump_speed:
+		velocity.y = jump_speed
 	velocity.y += -gravity * delta
 	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked:
 		velocity.x = 0
@@ -67,15 +78,26 @@ func _physics_process(delta):
 		float(Input.is_action_pressed("back", true)) - float(Input.is_action_pressed("forward", true))
 	)
 	var movement_dir = transform.basis * Vector3(input.x, 0, input.y)
-	velocity.x = movement_dir.x * speed
-	velocity.z = movement_dir.z * speed
+	var pad_cursor_active := Input.is_action_pressed("layer_interact", true) or layer_pointer_active
+	if not pad_cursor_active:
+		velocity.x = movement_dir.x * speed
+		velocity.z = movement_dir.z * speed
+	else:
+		velocity.x = 0
+		velocity.z = 0
 
-	if keyboard_only:
-		var yaw := float(Input.is_action_pressed("look_right", true)) - float(Input.is_action_pressed("look_left", true))
-		var pitch := float(Input.is_action_pressed("look_down", true)) - float(Input.is_action_pressed("look_up", true))
-		rotate_y(-yaw * keyboard_look_speed * delta)
-		$Camera3D.rotate_x(-pitch * keyboard_look_speed * delta)
-		$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
+	# Stick droit / flèches : caméra analogique, active dans tous les modes
+	# (souris capturée incluse — la souris passe par _input, sans conflit).
+	# Réponse quadratique : précision près du centre, vitesse pleine en bord.
+	# RT tenu (mode curseur pad) ou layer focus actif : le stick gauche
+	# appartient au curseur souris, pas au joueur ; la caméra reste libre.
+	if not pad_cursor_active:
+		var look := Input.get_vector("look_left", "look_right", "look_up", "look_down")
+		if look != Vector2.ZERO:
+			var look_amt: Vector2 = look * look.length()
+			rotate_y(-look_amt.x * pad_look_speed * delta)
+			$Camera3D.rotate_x(-look_amt.y * pad_look_speed * delta)
+			$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
 
 	if not interact_mode_active:
 		move_and_slide()
@@ -100,9 +122,19 @@ func climb(delta):
 		climbed_distance = 0.0
 
 func _input(event):
+	if _pad_diag:
+		_pad_diag_event(event)
+	# Manette dans les menus : activer le bouton focalisé directement.
+	if event is InputEventJoypadButton and event.pressed:
+		if _pad_menu_activate(event):
+			return
 	if focus_mode_active:
 		return
 	if $PauseMenuLayer/PauseMenu.visible:
+		# Afficher la souris uniquement quand l'utilisateur la bouge (pas au d-pad).
+		if event is InputEventMouseMotion or (event is InputEventMouseButton and event.pressed):
+			if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		return
 	if $CaptureSelectorLayer/CaptureSelector.visible:
 		return
@@ -121,10 +153,9 @@ func _input(event):
 		if _get_compositor() and _get_compositor().get_keyboard_focus_layer_id() >= 0:
 			return
 		$PauseMenuLayer/PauseMenu.show_menu()
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	if $PauseMenuLayer/PauseMenu.visible or $CaptureSelectorLayer/CaptureSelector.visible or $WindowMenuLayer/WindowMenu.visible:
+		return
 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
-		if $WindowMenuLayer/WindowMenu.visible:
-			return
 		if layer_pointer_active or session_locked:
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -132,3 +163,39 @@ func _input(event):
 		rotate_y(-event.relative.x * mouse_sensitivity)
 		$Camera3D.rotate_x(-event.relative.y * mouse_sensitivity)
 		$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
+
+## Trace brute des événements manette (axes dédupliqués à ±0.05). La liste
+## des pads connectés est imprimée une fois au premier événement reçu.
+func _pad_diag_event(event: InputEvent) -> void:
+	if event is InputEventJoypadButton:
+		if event.pressed:
+			print("[PadDiag] device=%d button=%d pressed" % [
+				event.device, event.button_index])
+	elif event is InputEventJoypadMotion:
+		var key := "%d|%d" % [event.device, event.axis]
+		var prev := float(_pad_diag_axes.get(key, 99.0))
+		if absf(event.axis_value - prev) > 0.05:
+			_pad_diag_axes[key] = event.axis_value
+			print("[PadDiag] device=%d axis=%d value=%+.2f" % [
+				event.device, event.axis, event.axis_value])
+	elif _pad_diag_axes.is_empty() or not _pad_diag_axes.has("_pads_listed"):
+		_pad_diag_axes["_pads_listed"] = true
+		for d in Input.get_connected_joypads():
+			print("[PadDiag] pad connecté : device=%d name=\"%s\" guid=%s" % [
+				d, Input.get_joy_name(d), Input.get_joy_guid(d)])
+
+func _pad_menu_activate(event: InputEventJoypadButton) -> bool:
+	# Si ui_accept contient déjà ce bouton, la voie normale du viewport
+	# s'en charge — on n'interfère pas.
+	for ev in InputMap.action_get_events("ui_accept"):
+		if ev is InputEventJoypadButton and ev.button_index == event.button_index:
+			return false
+	if event.button_index != JOY_BUTTON_A:
+		return false
+	var fe := get_viewport().gui_get_focus_owner()
+	if fe == null or not fe is BaseButton:
+		return false
+	if fe.disabled:
+		return false
+	fe.pressed.emit()
+	return true

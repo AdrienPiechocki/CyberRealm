@@ -522,7 +522,7 @@ func _event_matches_mods(event: InputEvent, mods: Dictionary) -> bool:
 func _aim_pos() -> Vector2:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return get_viewport().get_visible_rect().size / 2.0
-	return get_viewport().get_mouse_position()
+	return layers._cursor_pos
 
 # Cast un rayon depuis la souris et renvoie la fenêtre touchée : {"local": wid}
 # pour une fenêtre du compositeur local, {"remote_peer": pid, "remote_wid":
@@ -667,13 +667,13 @@ func _process(delta: float) -> void:
 		if not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):
 			compositor.close_window(focus.get_focus_window_id())
 			return
-		focus.handle_focus_input()
+		focus.handle_focus_input(delta)
 		return
 
 	# Layer surfaces (waybar/rofi): quand la souris est visible et survole
 	# une layer surface ou son popup, on forward l'input vers elle et on
 	# laisse le raycast 3D de côté (les overlays 2D passent devant la scène).
-	if not pause_menu.visible and layers.handle_layer_pointer(get_viewport().get_mouse_position()):
+	if not pause_menu.visible and layers.handle_layer_pointer(delta):
 		return
 
 	# Clavier occupé par un overlay keyboard-interactive (rofi, waybar...):
@@ -773,16 +773,23 @@ func _input(event: InputEvent) -> void:
 
 	# Session verrouillée : tout le clavier part vers le lockscreen (le
 	# champ password de quickshell), aucun bind du jeu ne doit répondre.
-	if layers.is_locked() and event is InputEventKey:
-		layers.forward_keyboard_event(event)
-		return
+	if layers.is_locked():
+		if event is InputEventKey:
+			layers.forward_keyboard_event(event)
+			return
+		elif event is InputEventJoypadButton:
+			layers.forward_gamepad_event(event)
+			return
 
 	# Une layer surface keyboard-interactive (rofi, waybar menu) détient le
 	# focus clavier : forward vers elle, quel que soit le mode de la souris.
-	if event is InputEventKey and layers.keyboard_busy() and not capture_selector.visible:
-		layers.forward_keyboard_event(event)
-		return
-
+	if layers.keyboard_busy() and not capture_selector.visible:
+		if event is InputEventKey:
+			layers.forward_keyboard_event(event)
+			return
+		elif event is InputEventJoypadButton:
+			layers.forward_gamepad_event(event)
+			return
 	# Gestes touchpad (pinch → zoom). Godot forwarde InputEventMagnifyGesture
 	# (factor incrémental) ; le compositeur maintient l'état du geste et route
 	# via le focus pointeur du seat (fenêtre survolée en 3D, fenêtre active en

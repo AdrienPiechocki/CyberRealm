@@ -1,4 +1,4 @@
-extends PanelContainer
+extends GameMenu
 
 signal app_launch_requested(command: String)
 signal quit_requested
@@ -50,6 +50,7 @@ var container: VBoxContainer
 # Actions remappables depuis le menu (ordre d'affichage).
 const REMAPPABLE_ACTIONS := [
 	"forward", "back", "left", "right", "jump",
+	"look_up", "look_down", "look_left", "look_right",
 	"interact_mode", "window_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
 	"layer_interact", "left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
@@ -76,7 +77,11 @@ var _lan_results_box: VBoxContainer = null
 var _lan_status_text := ""
 var _lan_roster: Array = []
 
+func _can_stick_input() -> bool:
+	return not _custom_key_waiting and _waiting_action == ""
+
 func _process(delta: float) -> void:
+	super(delta)  # GameMenu : nav/scroll stick
 	if _play_time < QUIT_GAMEPLAY_DELAY:
 		_play_time += delta
 	if _quit_btn:
@@ -120,6 +125,9 @@ func _clear() -> void:
 	_quit_btn = null
 	for c in container.get_children():
 		c.queue_free()
+	# Focus pad : différé, donc exécuté APRÈS la fin de construction de la
+	# page par le _show_* appelant.
+	_focus_first_deferred.call_deferred()
 
 func _make_spacer() -> Control:
 	var s := Control.new()
@@ -200,10 +208,29 @@ func toggle_menu() -> void:
 	else:
 		show_menu()
 
+## Navigation manette : après construction d'une page (tous les _show_*
+## passent par _clear()), poser le focus sur le premier contrôle pilotable
+## (bouton/option/case — pas les LineEdit : le clavier leur appartiendrait).
+## Les actions ui_up/down/left/right et ui_accept ont des liaisons pad par
+## défaut dans Godot (d-pad + stick gauche + A).
+func _focus_first_deferred() -> void:
+	var stack: Array[Node] = [container]
+	while not stack.is_empty():
+		var n: Node = stack.pop_front()
+		if n.is_queued_for_deletion():
+			continue
+		for c in n.get_children():
+			stack.push_back(c)
+		if n is BaseButton or n is OptionButton or n is CheckBox:
+			n.grab_focus()
+			return
+
 func show_menu() -> void:
 	visible = true
 	_show_main()
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Ne pas forcer MOUSE_MODE_VISIBLE ici : la souris n'apparaît que si
+	# l'utilisateur bouge la souris (géré dans player._input). Les users
+	# pad naviguent au d-pad sans voir le curseur.
 
 func hide_menu() -> void:
 	_waiting_action = ""
@@ -1094,26 +1121,82 @@ func _binding_text(action: String) -> String:
 	var events := InputMap.action_get_events(action)
 	if events.is_empty():
 		return "None"
-	var ev: InputEvent = events[0]
+	# Affiche la liaison clavier/souris ET la liaison pad quand les deux
+	# existent (« Space · Pad A ») : depuis le remappeur pad-aware, une
+	# action peut porter l'un, l'autre, ou les deux.
+	var kb := ""
+	var joy := ""
+	for ev in events:
+		if kb == "" and (ev is InputEventKey or ev is InputEventMouseButton):
+			kb = _kb_event_text(ev)
+		elif joy == "" and (ev is InputEventJoypadButton or ev is InputEventJoypadMotion):
+			joy = _joy_event_text(ev)
+	if kb == "" and joy == "":
+		return "None"
+	if joy == "":
+		return kb
+	if kb == "":
+		return joy
+	return kb + " · " + joy
+
+func _kb_event_text(ev: InputEvent) -> String:
 	if ev is InputEventKey:
 		var kev := ev as InputEventKey
 		var code := kev.physical_keycode
 		if code == 0:
 			code = kev.keycode
 		if code == 0:
-			return "None"
+			return ""
 		var text := OS.get_keycode_string(code)
 		var mods := _mods_to_string(_mods_from_event(kev))
-		if mods != "":
-			return mods + "+" + text
-		return text
+		return mods + "+" + text if mods != "" else text
 	if ev is InputEventMouseButton:
 		var text := _mouse_button_name(ev.button_index)
 		var mods := _mods_to_string(_mods_from_event(ev))
-		if mods != "":
-			return mods + "+" + text
-		return text
-	return "None"
+		return mods + "+" + text if mods != "" else text
+	return ""
+
+## Noms de boutons/axes pad lisibles dans l'UI de rebind.
+const JOY_BTN_NAMES := {
+	JOY_BUTTON_A: "A", JOY_BUTTON_B: "B", JOY_BUTTON_X: "X", JOY_BUTTON_Y: "Y",
+	JOY_BUTTON_BACK: "BACK", JOY_BUTTON_GUIDE: "GUIDE", JOY_BUTTON_START: "START",
+	JOY_BUTTON_LEFT_STICK: "LS", JOY_BUTTON_RIGHT_STICK: "RS",
+	JOY_BUTTON_LEFT_SHOULDER: "LB", JOY_BUTTON_RIGHT_SHOULDER: "RB",
+	JOY_BUTTON_DPAD_UP: "D-Up", JOY_BUTTON_DPAD_DOWN: "D-Down",
+	JOY_BUTTON_DPAD_LEFT: "D-Left", JOY_BUTTON_DPAD_RIGHT: "D-Right",
+}
+const JOY_AXIS_NAMES := ["L-X", "L-Y", "R-X", "R-Y", "LT", "RT"]
+
+func _joy_event_text(ev: InputEvent) -> String:
+	if ev is InputEventJoypadButton:
+		return "Pad " + str(JOY_BTN_NAMES.get(ev.button_index, "Btn%d" % ev.button_index))
+	if ev is InputEventJoypadMotion:
+		var name: String = JOY_AXIS_NAMES[ev.axis] \
+			if ev.axis >= 0 and ev.axis < JOY_AXIS_NAMES.size() else "Axis%d" % ev.axis
+		return "Pad " + name + ("+" if ev.axis_value > 0.0 else "-")
+	return ""
+
+## Remplace uniquement les événements de la MÊME classe d'entrée : rebinde
+## clavier ne détruit plus la liaison pad d'une action, et vice-versa.
+func _event_class(ev: InputEvent) -> String:
+	if ev is InputEventKey:
+		return "key"
+	if ev is InputEventMouseButton:
+		return "mouse"
+	if ev is InputEventJoypadButton or ev is InputEventJoypadMotion:
+		return "joy"
+	return "other"
+
+func _set_action_event(action: String, new_ev: InputEvent) -> void:
+	var cls := _event_class(new_ev)
+	var kept: Array[InputEvent] = []
+	for ev in InputMap.action_get_events(action):
+		if _event_class(ev) != cls:
+			kept.append(ev)
+	InputMap.action_erase_events(action)
+	for ev in kept:
+		InputMap.action_add_event(action, ev)
+	InputMap.action_add_event(action, new_ev)
 
 func _mouse_button_name(button: int) -> String:
 	match button:
@@ -1147,21 +1230,13 @@ func _apply_saved_keybinds() -> void:
 		if not binds[action] is Dictionary:
 			continue
 		var bind: Dictionary = binds[action]
-		match bind.get("type", ""):
-			"mouse":
-				var ev := InputEventMouseButton.new()
-				ev.button_index = bind.get("button", MOUSE_BUTTON_LEFT)
-				_apply_mods(ev, bind.get("mods", {}))
-				InputMap.action_erase_events(action)
-				InputMap.action_add_event(action, ev)
-			"key":
-				var code: int = bind.get("code", 0)
-				if code != 0:
-					var kev := InputEventKey.new()
-					kev.physical_keycode = code
-					_apply_mods(kev, bind.get("mods", {}))
-					InputMap.action_erase_events(action)
-					InputMap.action_add_event(action, kev)
+		if bind.has("kb") or bind.has("joy"):
+			_apply_bind(action, bind)
+			continue
+		# Ancien format mono-entrée (avant le support pad).
+		var prev_ev := _deserialize_event(bind)
+		if prev_ev != null:
+			_set_action_event(action, prev_ev)
 
 func _apply_mods(event: InputEvent, mods: Dictionary) -> void:
 	if event is InputEventWithModifiers:
@@ -1176,21 +1251,69 @@ func _save_keybinds() -> void:
 	for action in REMAPPABLE_ACTIONS:
 		if not InputMap.has_action(action):
 			continue
-		var events := InputMap.action_get_events(action)
-		if events.is_empty():
-			continue
-		var ev: InputEvent = events[0]
-		if ev is InputEventKey:
-			var kev := ev as InputEventKey
-			var code := kev.physical_keycode
-			if code == 0:
-				code = kev.keycode
-			if code != 0:
-				binds[action] = {"type": "key", "code": code, "mods": _mods_from_event(kev)}
-		elif ev is InputEventMouseButton:
-			binds[action] = {"type": "mouse", "button": ev.button_index, "mods": _mods_from_event(ev)}
+		var kb = null
+		var joy = null
+		for ev in InputMap.action_get_events(action):
+			if kb == null and (ev is InputEventKey or ev is InputEventMouseButton):
+				kb = _serialize_event(ev)
+			elif joy == null and _event_class(ev) == "joy":
+				joy = _serialize_event(ev)
+		if kb != null or joy != null:
+			binds[action] = {"kb": kb, "joy": joy}
 	_settings["keybinds"] = binds
 	_save_settings()
+
+## Descripteur JSON d'un événement d'entrée (clé, souris ou pad).
+func _serialize_event(ev: InputEvent) -> Dictionary:
+	if ev is InputEventKey:
+		var kev := ev as InputEventKey
+		var code := kev.physical_keycode
+		if code == 0:
+			code = kev.keycode
+		return {"type": "key", "code": code, "mods": _mods_from_event(kev)}
+	if ev is InputEventMouseButton:
+		return {"type": "mouse", "button": ev.button_index, "mods": _mods_from_event(ev)}
+	if ev is InputEventJoypadButton:
+		return {"type": "joy_button", "button": ev.button_index}
+	if ev is InputEventJoypadMotion:
+		return {"type": "joy_axis", "axis": ev.axis, "value": ev.axis_value}
+	return {}
+
+## Reconstruit un InputEvent depuis un descripteur JSON (null si inconnu).
+static func _deserialize_event(d: Dictionary) -> InputEvent:
+	match d.get("type", ""):
+		"key":
+			var kev := InputEventKey.new()
+			kev.physical_keycode = int(d.get("code", 0))
+			return kev
+		"mouse":
+			var mev := InputEventMouseButton.new()
+			mev.button_index = int(d.get("button", MOUSE_BUTTON_LEFT))
+			return mev
+		"joy_button":
+			var jb := InputEventJoypadButton.new()
+			jb.button_index = int(d.get("button", 0))
+			return jb
+		"joy_axis":
+			var jm := InputEventJoypadMotion.new()
+			jm.axis = int(d.get("axis", 0))
+			jm.axis_value = float(d.get("value", 1.0))
+			return jm
+	return null
+
+## Applique une liaison sauvegardée : remplace la classe correspondante sans
+## toucher à l'autre (rebinde clavier ne tue plus le pad, et inversement).
+func _apply_bind(action: String, bind: Dictionary) -> void:
+	for slot in ["kb", "joy"]:
+		var d = bind.get(slot)
+		if d is Dictionary and not d.is_empty():
+			var ev := _deserialize_event(d)
+			if ev != null and InputMap.has_action(action):
+				_set_action_event(action, ev)
+			elif slot == "kb" and InputMap.has_action(action):
+				# Liaison clavier explicitement vide : on retire l'ancienne
+				# (l'utilisateur a voulu la vider), le pad reste intact.
+				pass
 
 # ── Persistance ──────────────────────────────────────────────────────
 
@@ -1210,6 +1333,7 @@ func _save_settings() -> void:
 		f.store_string(JSON.stringify(_settings, "  "))
 
 func _input(event: InputEvent) -> void:
+	super(event)  # GameMenu : consomme les JoypadMotion
 	if not visible:
 		return
 
@@ -1227,6 +1351,20 @@ func _input(event: InputEvent) -> void:
 				_show_main()
 			get_viewport().set_input_as_handled()
 			return
+
+	# Manette : Start/B = Échap (ferme la page principale, remonte d'une
+	# sous-page). Inactif pendant une capture de touche (rebind/custom) :
+	# on ne rebind pas Start/B avec eux-mêmes ; Échap reste l'annulateur.
+
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [JOY_BUTTON_START, JOY_BUTTON_B] \
+			and not _custom_key_waiting and _waiting_action == "":
+		if _current_view == "main":
+			hide_menu()
+		else:
+			_show_main()
+		get_viewport().set_input_as_handled()
+		return
 
 	if _custom_key_waiting:
 		var custom_captured := false
@@ -1274,13 +1412,22 @@ func _input(event: InputEvent) -> void:
 		ev.alt_pressed = mbtn.alt_pressed
 		ev.meta_pressed = mbtn.meta_pressed
 		new_event = ev
+	elif event is InputEventJoypadButton and event.pressed:
+		var jb := InputEventJoypadButton.new()
+		jb.button_index = event.button_index
+		new_event = jb
+	elif event is InputEventJoypadMotion and absf(event.axis_value) > 0.5:
+		# Stick/gâchette poussé(e) à plus de moitié course : on fige le sens.
+		var jm := InputEventJoypadMotion.new()
+		jm.axis = event.axis
+		jm.axis_value = signf(event.axis_value)
+		new_event = jm
 
 	if new_event == null:
 		return
 
 	var action := _waiting_action
-	InputMap.action_erase_events(action)
-	InputMap.action_add_event(action, new_event)
+	_set_action_event(action, new_event)
 	_save_keybinds()
 	_waiting_action = ""
 	if _keybinds_buttons.has(action):

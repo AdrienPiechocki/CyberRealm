@@ -281,6 +281,30 @@ details: `Game/source/user/README.md`.
 
 All keybinds can be remapped from the pause menu.
 
+### Gamepad
+
+Full controller support, alongside keyboard & mouse (both stay active):
+
+| Input                     | Action                                            |
+| ------------------------- | ------------------------------------------------- |
+| Left stick                | Move (analog)                                     |
+| Right stick               | Look around / point at windows                    |
+| `LT`                      | Mouse cursor mode (left stick moves the pointer)  |
+| `LB` / `RB`               | Left click / right click                          |
+| `R3` / `L3`               | Scroll up / down                                  |
+| `A`                       | Jump                                              |
+| `B`                       | Kill a window                                     |
+| `X`                       | Focus a window (fullscreen 2D mode)               |
+| `Y`                       | Window navigation menu                            |
+| D-pad Up / Down / Left / Right | Pin / hide / grab / share the aimed window   |
+| `Select`                  | Interact mode                                     |
+| `Start`                   | Pause menu                                        |
+
+While `LB` is held, the right stick drives a virtual cursor instead of the
+camera — aim roughly by turning, hold `LB` to click precisely. Menus
+(pause, window menu, capture selector) are fully navigable with d-pad/stick
++ `A`.
+
 ## Capturing with OBS
 
 The game runs its own `xdg-desktop-portal-wlr`, so in OBS you can add a
