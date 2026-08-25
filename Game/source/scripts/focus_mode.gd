@@ -213,6 +213,10 @@ var _alpha_probe_deadline := 0.0
 var _alpha_probing := false
 var _occluder_suspended := false
 
+var mouse_pos := Vector2.ZERO
+const SPEED := 1000.0
+var _stick_scroll_cooldown := 0.0
+
 func _ensure_world_occluder() -> void:
 	if _world_occluder != null and is_instance_valid(_world_occluder):
 		return
@@ -333,6 +337,8 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	player = player_ref
 	ui = ui_ref
 	windows = windows_ref
+
+	mouse_pos = get_viewport().get_mouse_position()
 
 	popup_crop_shader = Shader.new()
 	popup_crop_shader.code = POPUP_CROP_SHADER_CODE
@@ -1205,7 +1211,7 @@ func _update_window_move(mouse_pos: Vector2) -> void:
 
 # Forward les boutons souris vers une fenêtre (chemin commun aux modes
 # souris visible et capturée).
-func _forward_window_buttons(id: int) -> void:
+func _forward_window_buttons(id: int, delta: float) -> void:
 	if _left_press_this_frame():
 		compositor.forward_pointer_button(id, 0x110, true)
 	if _left_release_this_frame():
@@ -1223,10 +1229,14 @@ func _forward_window_buttons(id: int) -> void:
 		compositor.forward_pointer_button(id, 0x112, false)
 
 	# Scroll
-	if Input.is_action_just_pressed("scroll_up"):
-		compositor.forward_pointer_axis(id, 0, -100.0)
-	if Input.is_action_just_pressed("scroll_down"):
-		compositor.forward_pointer_axis(id, 0, 100.0)
+	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down"):
+		_stick_scroll_cooldown -= delta
+		if _stick_scroll_cooldown <= 0.0:
+			var amount := -100 if Input.is_action_pressed("scroll_up") else 100
+			compositor.forward_pointer_axis(id, 0, amount)
+			_stick_scroll_cooldown = 0.08
+	else:
+		_stick_scroll_cooldown = 0.0
 
 func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
@@ -1324,7 +1334,7 @@ func _hide_cursor_overlay() -> void:
 # sur une fenêtre d'arrière-plan la remonte au sommet de la pile et
 # l'active ; Super+clic gauche déplace une fenêtre (fullscreen exclue) en
 # absorbant tous les événements pointeur.
-func handle_focus_input() -> void:
+func handle_focus_input(delta: float) -> void:
 	if remote_focus:
 		return
 	var active_id := _active_id()
@@ -1353,12 +1363,17 @@ func handle_focus_input() -> void:
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
 		compositor.set_window_pointer(active_id, surf_x, surf_y, true)
-		_forward_window_buttons(active_id)
+		_forward_window_buttons(active_id, delta)
 		return
 
-	var mouse_pos := get_viewport().get_mouse_position()
-
-	# Déplacement Super+clic gauche en cours : le compositeur absorbe TOUS les
+	var v := Input.get_vector("left", "right", "forward", "back")
+	if v != Vector2.ZERO:
+		mouse_pos += v * v.length() * SPEED * delta
+		var vs := get_viewport().get_visible_rect().size
+		mouse_pos = mouse_pos.clamp(Vector2.ONE, vs - Vector2.ONE)
+		get_viewport().warp_mouse(mouse_pos)
+	
+	# Déplacement de fenêtre en cours : le compositeur absorbe TOUS les
 	# événements pointeur jusqu'au relâchement du bouton (l'overlay suit le
 	# curseur), aucun motion/bouton/scroll ne part vers les clients.
 	if window_move_id != -1:
@@ -1502,7 +1517,7 @@ func handle_focus_input() -> void:
 	surf_y = tst["mouse_uv"].y * tst["surface_size"].y + tst["content_offset"].y
 	compositor.forward_pointer_motion(target_window, surf_x, surf_y)
 	compositor.set_window_pointer(target_window, surf_x, surf_y, true)
-	_forward_window_buttons(target_window)
+	_forward_window_buttons(target_window, delta)
 
 	if Input.is_action_just_pressed("scroll_up"):
 		compositor.forward_pointer_axis(target_window, 0, -100.0)
@@ -1760,3 +1775,7 @@ func _is_compositor_shortcut(event: InputEventKey) -> bool:
 		if InputMap.event_is_action(event, action, true):
 			return true
 	return false
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		mouse_pos = event.position

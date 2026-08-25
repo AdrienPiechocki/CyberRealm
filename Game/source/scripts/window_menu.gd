@@ -1,4 +1,4 @@
-extends PanelContainer
+extends GameMenu
 ## Menu de navigation entre fenêtres ouvertes.
 ## S'ouvre/ferme avec B. Affiche une preview de la fenêtre sélectionnée,
 ## des onglets en haut, et des actions à gauche.
@@ -158,7 +158,7 @@ func show_menu() -> void:
 		if grabbed_id != -1:
 			selected_window_id = grabbed_id
 	_refresh_tabs()
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	#Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func hide_menu() -> void:
 	visible = false
@@ -323,9 +323,15 @@ func _update_share_label() -> void:
 	_share_button.text = "SHARE: ON" if shared else "SHARE: OFF"
 
 func _input(event: InputEvent) -> void:
+	super(event)  # GameMenu : consomme les JoypadMotion
 	if not visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			hide_menu()
 			get_viewport().set_input_as_handled()
+	# Manette : Start/B ferme le menu fenêtre.
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [JOY_BUTTON_START, JOY_BUTTON_B]:
+		hide_menu()
+		get_viewport().set_input_as_handled()

@@ -1,4 +1,4 @@
-extends PanelContainer
+extends GameMenu
 ## Sélecteur de cible de capture OBS. S'ouvre quand une source
 ## « Screen Capture (PipeWire) » est ajoutée dans OBS : xdg-desktop-portal-wlr
 ## écrit $XDG_RUNTIME_DIR/cyberrealm-capture-pending, le jeu détecte le fichier
@@ -120,7 +120,16 @@ func _make_button(text: String) -> Button:
 func open_selector() -> void:
 	_refresh_options()
 	visible = true
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	#Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	_focus_first_deferred.call_deferred()
+
+# Navigation manette : focus initial sur le premier choix (d-pad/stick +
+# A naviguent via les actions ui_* par défaut de Godot).
+func _focus_first_deferred() -> void:
+	for c in _options_container.get_children():
+		if c is BaseButton and not c.is_queued_for_deletion():
+			c.grab_focus()
+			return
 
 func close_selector() -> void:
 	visible = false
@@ -164,9 +173,17 @@ func _refresh_options() -> void:
 		_options_container.add_child(btn)
 
 func _input(event: InputEvent) -> void:
+	super(event)  # GameMenu : consomme les JoypadMotion
 	if not visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			selector_cancelled.emit()
 			get_viewport().set_input_as_handled()
+			return
+	# Manette : Start ou B annulent (B = retour conventionnel console).
+	if event is InputEventJoypadButton and event.pressed \
+			and (event.button_index == JOY_BUTTON_START \
+				or event.button_index == JOY_BUTTON_B):
+		selector_cancelled.emit()
+		get_viewport().set_input_as_handled()

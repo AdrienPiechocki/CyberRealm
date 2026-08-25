@@ -83,6 +83,9 @@ var session_locked := false
 var session_lock_rect: TextureRect
 var session_lock_surface_id := -1
 
+var _cursor_pos := Vector2.ZERO
+const SPEED := 1000.0
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -90,6 +93,8 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	focus = focus_ref
 	pause_menu = pause_menu_ref
 	window_menu = window_menu_ref
+
+	_cursor_pos = get_viewport().get_visible_rect().size / 2.0
 
 	layer_shader = Shader.new()
 	layer_shader.code = LAYER_SHADER_CODE
@@ -137,10 +142,23 @@ func forward_keyboard_event(event: InputEvent) -> bool:
 	get_viewport().set_input_as_handled()
 	return true
 
+func forward_gamepad_event(event: InputEvent):
+	if not (event is InputEventJoypadButton):
+		return false
+	var key_event := event as InputEventJoypadButton
+	var code = key_event.button_index
+	if code == JOY_BUTTON_START or code == JOY_BUTTON_B:
+		code = KEY_ESCAPE
+	else: 
+		return false
+	compositor.forward_keyboard_key(code, 0, key_event.pressed)
+	get_viewport().set_input_as_handled()
+	return true
+
 # Routage complet du pointeur vers le lockscreen, appelé chaque frame par
 # wayland_room.gd tant que la session est verrouillée.
 func handle_locked_input() -> void:
-	var mp := get_viewport().get_mouse_position()
+	var mp := _cursor_pos
 	compositor.forward_pointer_motion_lock(mp.x, mp.y)
 	if Input.is_action_just_pressed("left_click", false):
 		compositor.forward_pointer_button_lock(0x110, true)
@@ -438,13 +456,23 @@ func _handle_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
 # Routage du pointeur vers les overlays de layer surfaces, appelé chaque
 # frame par wayland_room.gd quand la souris est visible. Renvoie true si la
 # souris survolait une layer surface / popup (input consommé).
-func handle_layer_pointer(mouse_pos: Vector2) -> bool:
+func handle_layer_pointer(delta: float) -> bool:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return false
+	var v := Input.get_vector("left", "right", "forward", "back")
+	if v != Vector2.ZERO:
+		_cursor_pos += v * v.length() * SPEED * delta
+		var vs := get_viewport().get_visible_rect().size
+		_cursor_pos = _cursor_pos.clamp(Vector2.ONE, vs - Vector2.ONE)
+		get_viewport().warp_mouse(_cursor_pos)
 	if layer_rects.is_empty() and layer_popup_rects.is_empty():
 		return false
-	var hit := _layer_at(mouse_pos)
+	var hit := _layer_at(_cursor_pos)
 	if hit.is_empty():
 		return false
-	_handle_pointer(hit, mouse_pos)
+	_handle_pointer(hit, _cursor_pos)
 	return true
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		_cursor_pos = event.position

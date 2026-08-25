@@ -81,6 +81,7 @@ var _modal_files: Label = null
 var _modal_fp: Label = null
 var _user_edit: LineEdit = null
 var _prog_panel: PanelContainer = null
+var _stick_nav_cooldown := 0.0
 var _prog_title: Label = null
 var _prog_bar: ProgressBar = null
 var _prog_detail: Label = null
@@ -763,7 +764,7 @@ func _refuse_offer(notify := true) -> void:
 
 # ── Boucle & timeouts ────────────────────────────────────────────────────────
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	var now := Time.get_ticks_msec()
 	# Offres expirées côté expéditeur.
 	for oid in _pending_offers.keys():
@@ -787,6 +788,34 @@ func _process(_delta: float) -> void:
 			_prog_panel.visible = false
 			_prog_done_msec = 0
 			_prog_hide_at_msec = 0
+	# Poll stick/d-pad pour navigation UI continue dans le modal.
+	if _modal_root != null and _modal_root.visible:
+		var action := ""
+		if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_UP):
+			action = "ui_up"
+		elif Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_DOWN):
+			action = "ui_down"
+		elif Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_LEFT):
+			action = "ui_left"
+		elif Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_RIGHT):
+			action = "ui_right"
+		else:
+			var ui_vec := Input.get_vector("ui_left", "ui_right", "ui_up", "ui_down")
+			if ui_vec != Vector2.ZERO:
+				action = "ui_right" if absf(ui_vec.x) > absf(ui_vec.y) and ui_vec.x > 0 \
+					else "ui_left" if absf(ui_vec.x) > absf(ui_vec.y) \
+					else "ui_down" if ui_vec.y > 0 else "ui_up"
+		if action != "":
+			_stick_nav_cooldown -= delta
+			if _stick_nav_cooldown <= 0.0:
+				var ev := InputEventAction.new()
+				ev.action = action
+				ev.pressed = true
+				ev.strength = 1.0
+				get_viewport().push_input(ev)
+				_stick_nav_cooldown = 0.12
+		else:
+			_stick_nav_cooldown = 0.0
 
 
 func _can_start_transfer() -> bool:
@@ -805,7 +834,21 @@ func _flash_status(text: String) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _incoming.is_empty():
 		return
+	# Consommer les axes stick + d-pad quand le modal est ouvert.
+	if event is InputEventJoypadMotion:
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [11, 12, 13, 14]:  # d-pad
+		get_viewport().set_input_as_handled()
+		return
 	if event.is_action_pressed("ui_cancel"):
+		_refuse_offer()
+		get_viewport().set_input_as_handled()
+		return
+	# Manette : B ou Start refuse l'offre (retour conventionnel console).
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [JOY_BUTTON_B, JOY_BUTTON_START]:
 		_refuse_offer()
 		get_viewport().set_input_as_handled()
 
