@@ -66,13 +66,12 @@ func setup(id: int, pname: String, color: Color) -> void:
 	for mi in meshes:
 		if not mi.visible:
 			continue
-		# Sur un appel subséquent (changement de couleur), le material_override
-		# existe déjà (tint couleur precedent). Mettre à jour sa couleur.
+		# Appel subséquent (changement de couleur) : le material_override existe
+		# déjà (tint couleur precedent). Mettre à jour sa couleur.
 		if mi.material_override is StandardMaterial3D \
 				and mi.material_override in _color_tint_mats:
 			(mi.material_override as StandardMaterial3D).albedo_color = color
 			continue
-		# Premier appel ou mesh sans tint : duplicate pour fade + appliquer tint.
 		_duplicate_material_for_fade(mi)
 		var has_any_mat := false
 		if mi.mesh != null:
@@ -81,7 +80,15 @@ func setup(id: int, pname: String, color: Color) -> void:
 						mi.mesh.surface_get_material(j) != null:
 					has_any_mat = true
 					break
-		if not has_any_mat and mi.material_override == null:
+		if has_any_mat:
+			# Appliquer la couleur directement sur les surface overrides
+			# (material_override est ignoré quand des surface overrides existent).
+			for j in mi.mesh.get_surface_count():
+				var smat: Material = mi.get_surface_override_material(j)
+				if smat is StandardMaterial3D:
+					(smat as StandardMaterial3D).albedo_color = color
+					_color_tint_mats.append(smat as StandardMaterial3D)
+		elif mi.material_override == null:
 			var mat := StandardMaterial3D.new()
 			mat.albedo_color = color
 			mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
