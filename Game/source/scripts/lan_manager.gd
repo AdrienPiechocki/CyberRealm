@@ -349,11 +349,9 @@ func update_local_color(color: Color) -> void:
 		return
 	_players[my_id]["color"] = color
 	if is_host:
-		for id in _players:
-			var entry: Dictionary = _players[id]
-			_spawn_player.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+		_broadcast_player_info()
 	else:
-		_register_player.rpc_id(1, player_name, color)
+		_update_player_info.rpc_id(1, my_id, player_name, color)
 
 func update_local_name(pname: String) -> void:
 	player_name = pname
@@ -408,6 +406,24 @@ func _update_player_info(target_id: int, pname: String, color: Color) -> void:
 		_players[target_id]["name"] = pname
 		_players[target_id]["color"] = color
 	# Mettre à jour l'avatar distant si déjà instancié.
+	if _remote_players.has(target_id):
+		var av: Node = _remote_players[target_id]
+		if is_instance_valid(av) and av.has_method("setup"):
+			av.setup(target_id, pname, color)
+			if _level_stable and av.has_method("start_prewarm"):
+				av.start_prewarm()
+			if _arrived_peers.has(target_id) and av.has_method("set_arrived"):
+				av.set_arrived(true)
+	# Relayer aux autres pairs si c'est l'hôte qui reçoit la MàJ d'un client.
+	if is_host and from != 0:
+		_relay_player_info.rpc(target_id, pname, color)
+	_emit_players()
+
+@rpc("authority", "reliable", "call_remote")
+func _relay_player_info(target_id: int, pname: String, color: Color) -> void:
+	if is_host:
+		return
+	_players[target_id] = {"name": pname, "color": color}
 	if _remote_players.has(target_id):
 		var av: Node = _remote_players[target_id]
 		if is_instance_valid(av) and av.has_method("setup"):
