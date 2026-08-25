@@ -68,6 +68,11 @@ var _custom_mods: Dictionary = {} # {"ctrl": bool, "shift": bool, "alt": bool, "
 var _custom_key_btn: Button = null
 var _custom_cmd_edit: LineEdit = null
 var _editing_index := -1 # index du custom bind en cours d'édition, -1 = aucun
+# Variante gamepad du custom bind
+var _custom_pad_type := "" # "" | "button" | "axis"
+var _custom_pad_button := -1
+var _custom_pad_axis := -1
+var _custom_pad_value := 1.0
 var _quit_btn: Button = null
 var _play_time := 0.0
 # Page LAN
@@ -439,16 +444,24 @@ func _show_custom_binds() -> void:
 		_custom_is_mouse = String(edit_bind.get("type", "key")) == "mouse"
 		_custom_keycode = int(edit_bind.get("code", 0))
 		_custom_mods = edit_bind.get("mods", {})
+		_custom_pad_type = String(edit_bind.get("pad_type", ""))
+		_custom_pad_button = int(edit_bind.get("pad_button", -1))
+		_custom_pad_axis = int(edit_bind.get("pad_axis", -1))
+		_custom_pad_value = float(edit_bind.get("pad_value", 1.0))
 	else:
 		_editing_index = -1
 		_custom_keycode = 0
 		_custom_is_mouse = false
 		_custom_mods = {}
+		_custom_pad_type = ""
+		_custom_pad_button = -1
+		_custom_pad_axis = -1
+		_custom_pad_value = 1.0
 
 	container.add_child(_make_title("CUSTOM BINDS"))
 
 	var hint := Label.new()
-	hint.text = "A key launches a command (hold Ctrl/Shift/Alt/Super to set modifiers)."
+	hint.text = "A key launches a command.\nHold Ctrl/Shift/Alt/Super for keyboard modifiers. Gamepad binds require LT held."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
@@ -1030,21 +1043,52 @@ func _custom_bind_text(bind: Dictionary) -> String:
 	var mods := _mods_to_string(bind.get("mods", {}))
 	if mods != "":
 		key_text = mods + "+" + key_text
+	var pad_text := _pad_bind_label(bind)
 	var cmd: String = bind.get("command", "")
+	if pad_text != "":
+		return "%s → %s" % [pad_text, cmd]
 	return "%s → %s" % [key_text, cmd]
 
 func _custom_key_label() -> String:
-	if _custom_keycode == 0:
-		return "Set key"
 	var key_text := ""
-	if _custom_is_mouse:
-		key_text = _mouse_button_name(_custom_keycode)
-	else:
-		key_text = OS.get_keycode_string(_custom_keycode)
-	var mods := _mods_to_string(_custom_mods)
-	if mods != "":
-		return mods + "+" + key_text
+	if _custom_keycode == 0 and _custom_pad_type == "":
+		return "Set key"
+	if _custom_keycode != 0:
+		if _custom_is_mouse:
+			key_text = _mouse_button_name(_custom_keycode)
+		else:
+			key_text = OS.get_keycode_string(_custom_keycode)
+		var mods := _mods_to_string(_custom_mods)
+		if mods != "":
+			key_text = mods + "+" + key_text
+	var pad_text := _custom_pad_label_text()
+	if key_text != "" and pad_text != "":
+		return key_text + " · " + pad_text
+	if pad_text != "":
+		return pad_text
 	return key_text
+
+func _pad_bind_label(bind: Dictionary) -> String:
+	var pad_type: String = bind.get("pad_type", "")
+	if pad_type == "button":
+		var btn_idx: int = int(bind.get("pad_button", -1))
+		return "LT + " + str(JOY_BTN_NAMES.get(btn_idx, "Btn%d" % btn_idx))
+	elif pad_type == "axis":
+		var axis: int = int(bind.get("pad_axis", -1))
+		var val: float = float(bind.get("pad_value", 1.0))
+		var name: String = JOY_AXIS_NAMES[axis] \
+			if axis >= 0 and axis < JOY_AXIS_NAMES.size() else "Axis%d" % axis
+		return "LT + " + name + ("+" if val > 0.0 else "-")
+	return ""
+
+func _custom_pad_label_text() -> String:
+	if _custom_pad_type == "button":
+		return "LT + " + str(JOY_BTN_NAMES.get(_custom_pad_button, "Btn%d" % _custom_pad_button))
+	elif _custom_pad_type == "axis":
+		var name: String = JOY_AXIS_NAMES[_custom_pad_axis] \
+			if _custom_pad_axis >= 0 and _custom_pad_axis < JOY_AXIS_NAMES.size() else "Axis%d" % _custom_pad_axis
+		return "LT + " + name + ("+" if _custom_pad_value > 0.0 else "-")
+	return ""
 
 func _mods_from_event(event: InputEvent) -> Dictionary:
 	if event is InputEventWithModifiers:
@@ -1084,7 +1128,9 @@ func _start_custom_key_capture() -> void:
 		_custom_key_btn.text = "Press key..."
 
 func _add_custom_bind() -> void:
-	if not _custom_cmd_edit or not _custom_keycode or _custom_cmd_edit.text.strip_edges() == "":
+	if not _custom_cmd_edit or _custom_cmd_edit.text.strip_edges() == "":
+		return
+	if _custom_keycode == 0 and _custom_pad_type == "":
 		return
 	var binds: Array = _settings.get("custom_binds", [])
 	var entry := {
@@ -1093,6 +1139,13 @@ func _add_custom_bind() -> void:
 		"mods": _custom_mods,
 		"command": _custom_cmd_edit.text.strip_edges(),
 	}
+	if _custom_pad_type == "button" and _custom_pad_button >= 0:
+		entry["pad_type"] = "button"
+		entry["pad_button"] = _custom_pad_button
+	elif _custom_pad_type == "axis" and _custom_pad_axis >= 0:
+		entry["pad_type"] = "axis"
+		entry["pad_axis"] = _custom_pad_axis
+		entry["pad_value"] = _custom_pad_value
 	if _editing_index >= 0 and _editing_index < binds.size():
 		binds[_editing_index] = entry
 	else:
@@ -1381,6 +1434,18 @@ func _input(event: InputEvent) -> void:
 			_custom_is_mouse = true
 			_custom_mods = _mods_from_event(event)
 			custom_captured = true
+		elif event is InputEventJoypadButton and event.pressed:
+			if event.button_index != JOY_BUTTON_START \
+					and event.button_index != JOY_BUTTON_B:
+				_custom_pad_type = "button"
+				_custom_pad_button = event.button_index
+				custom_captured = true
+		elif event is InputEventJoypadMotion and absf(event.axis_value) > 0.5:
+			if event.axis != JOY_AXIS_TRIGGER_LEFT:
+				_custom_pad_type = "axis"
+				_custom_pad_axis = event.axis
+				_custom_pad_value = signf(event.axis_value)
+				custom_captured = true
 		if custom_captured:
 			_custom_key_waiting = false
 			if _custom_key_btn:
