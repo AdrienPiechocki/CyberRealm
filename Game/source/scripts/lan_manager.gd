@@ -679,7 +679,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 		if f != null:
 			f.store_buffer(_avatar_blobs[peer_id])
 			f.close()
-			var loaded: PackedScene = load(tmp)
+			var loaded: PackedScene = ResourceLoader.load(tmp, "", ResourceLoader.CACHE_MODE_REPLACE) as PackedScene
 			if loaded != null:
 				scene = loaded
 				_avatar_scene_cache[peer_id] = loaded
@@ -941,7 +941,10 @@ func _cache_avatar_scene(peer_id: int) -> void:
 	f.store_buffer(_avatar_blobs[peer_id])
 	f.close()
 	var t0 := Time.get_ticks_msec()
-	var loaded: PackedScene = load(tmp)
+	# CACHE_MODE_REPLACE pour forcer le rechargement depuis le disque quand
+	# l'avatar change : load() garde en cache l'ancienne scène PackedScene du
+	# même chemin, même après écriture d'un nouveau blob.
+	var loaded: PackedScene = ResourceLoader.load(tmp, "", ResourceLoader.CACHE_MODE_REPLACE) as PackedScene
 	push_warning("LAN: avatar peer %d décodé en %d ms" % [peer_id, Time.get_ticks_msec() - t0])
 	if loaded != null:
 		_avatar_scene_cache[peer_id] = loaded
