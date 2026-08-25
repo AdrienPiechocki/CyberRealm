@@ -353,6 +353,69 @@ func update_local_color(color: Color) -> void:
 	else:
 		_register_player.rpc_id(1, player_name, color)
 
+func update_local_name(pname: String) -> void:
+	player_name = pname
+	if not session_active:
+		return
+	var my_id := multiplayer.get_unique_id()
+	if not _players.has(my_id) or _pending_join:
+		return
+	_players[my_id]["name"] = pname
+	if is_host:
+		_broadcast_player_info()
+	else:
+		_update_player_info.rpc_id(1, pname, _players[my_id].get("color", player_color))
+
+func update_local_avatar() -> void:
+	if not session_active:
+		return
+	var my_id := multiplayer.get_unique_id()
+	if not _players.has(my_id) or _pending_join:
+		return
+	# Invalider le cache d'envoi pour rebake l'avatar avec le nouveau choix.
+	_avatar_send_cache = PackedByteArray()
+	_avatar_send_cache_raw_size = 0
+	_avatar_send_scripts_cache = {}
+	# Envoyer le nouvel avatar à tous les pairs connectés.
+	for id in multiplayer.get_peers():
+		if id == my_id:
+			continue
+		_avatar_sent_to.erase(id)
+		_send_avatar_to(id)
+
+## Diffuse l'info (nom + couleur) de TOUS les joueurs à tous les pairs.
+## Appelé par l'hôte quand un joueur change son nom/couleur.
+func _broadcast_player_info() -> void:
+	for id in _players:
+		var entry: Dictionary = _players[id]
+		_update_player_info.rpc(id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+
+@rpc("any_peer", "reliable", "call_local")
+func _update_player_info(target_id: int, pname: String, color: Color) -> void:
+	# Si target_id == 0, c'est une diffusion de TOUS les joueurs (snapshot).
+	if target_id == 0:
+		return
+	var from := multiplayer.get_remote_sender_id()
+	# L'hôte peut broadcaster ses propres joueurs (from = 0 = local call).
+	# Un client ne peut modifier que son propre profil.
+	if from != 0 and from != target_id and not is_host:
+		return
+	if not _players.has(target_id):
+		_players[target_id] = {"name": pname, "color": color}
+	else:
+		_players[target_id]["name"] = pname
+		_players[target_id]["color"] = color
+	# Mettre à jour l'avatar distant si déjà instancié.
+	if _remote_players.has(target_id):
+		var av: Node = _remote_players[target_id]
+		if is_instance_valid(av) and av.has_method("setup"):
+			av.setup(target_id, pname, color)
+			if _level_stable and av.has_method("start_prewarm"):
+				av.start_prewarm()
+			if _arrived_peers.has(target_id) and av.has_method("set_arrived"):
+				av.set_arrived(true)
+	_emit_players()
+
 func get_last_status() -> String:
 	return _last_status
 
@@ -999,6 +1062,7 @@ static func _avatar_display_name(path: String) -> String:
 ## remet le mode auto. La scène est validée : elle doit charger et porter un
 ## script exposant setup() (celui d'avatar.gd), sinon on retombe en auto.
 func set_selected_avatar(path: String) -> void:
+	var old_path := _selected_avatar_path
 	_selected_avatar_path = ""
 	# La sélection effective change dans tous les cas (nouveau chemin ou
 	# retour en auto) → le blob baké n'est plus valable.
@@ -1006,6 +1070,8 @@ func set_selected_avatar(path: String) -> void:
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
 	if path.is_empty() or path == CUSTOM_AVATAR_PATH or path == DEFAULT_AVATAR_PATH:
+		if session_active and old_path != path:
+			update_local_avatar()
 		return
 	if not ResourceLoader.exists(path):
 		push_warning("LAN: avatar choisi introuvable : %s" % path)
@@ -1022,6 +1088,8 @@ func set_selected_avatar(path: String) -> void:
 		return
 	inst.free()
 	_selected_avatar_path = path
+	if session_active and old_path != path:
+		update_local_avatar()
 
 
 func _bake_avatar() -> Dictionary:
