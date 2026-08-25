@@ -85,7 +85,9 @@ var _level_root: Node3D = null
 var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
 var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
-# Peers dont on a reçu au moins une synchro de transform : ils « sont là ».
+	# peer_id -> {pos, rot} : position à préserver lors du respawn d'un avatar
+	# (changement de couleur/avatar en cours de partie).
+	var _respawn_positions: Dictionary = {}
 # Un avatar n'est visible que pour ces pairs (sinon corps fantôme au spawn
 # pendant que le joueur charge encore le niveau).
 var _arrived_peers: Dictionary = {}
@@ -668,8 +670,16 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	avatar.name = str(peer_id)
 	avatar.setup(peer_id, pname, color)
 	avatar.local_player = local_player
-	avatar.position = _spawn_position()
-	avatar.rotation = _spawn_rotation()
+	# Utiliser la position préservée (respawn après changement d'avatar/couleur)
+	# sinon le spawn par défaut.
+	if _respawn_positions.has(peer_id):
+		var rp: Dictionary = _respawn_positions[peer_id]
+		avatar.position = rp.get("pos", _spawn_position())
+		avatar.rotation = rp.get("rot", _spawn_rotation())
+		_respawn_positions.erase(peer_id)
+	else:
+		avatar.position = _spawn_position()
+		avatar.rotation = _spawn_rotation()
 	avatar.scale = _spawn_scale()
 	# Invisible jusqu'à la première synchro de transform du pair : tant
 	# qu'il charge le niveau (_pending_join) il n'en émet aucune, et on ne
@@ -1282,6 +1292,13 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 	_cache_avatar_scene(recv_from)
 	if _remote_players.has(recv_from):
 		var av: Node = _remote_players[recv_from]
+		# Préserver la position pour le respawn : l'avatar va être détruit et
+		# recréé, on ne veut pas le repositionner au spawn.
+		if av is Node3D:
+			_respawn_positions[recv_from] = {
+				"pos": (av as Node3D).global_position,
+				"rot": (av as Node3D).rotation,
+			}
 		av.queue_free()
 		_remote_players.erase(recv_from)
 	var entry: Dictionary = _players.get(recv_from, {})

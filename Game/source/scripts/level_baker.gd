@@ -204,7 +204,7 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 		else:
 			node.set(pname, v)
 	for c in orig.get_children():
-		if c == exclude or c.owner == null:
+		if c == exclude:
 			continue
 		var sub := _clone(c, exclude, cache)
 		if sub != null:
