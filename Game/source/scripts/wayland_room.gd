@@ -83,6 +83,10 @@ var _last_pinch_factor := 1.0
 var _last_pinch_time_msec := -1
 const PINCH_DEDUP_WINDOW_MS := 100
 
+# LT held → strip gamepad events from InputMap to disable standard binds.
+var _lt_stripped := false
+var _lt_stripped_events: Dictionary = {} # action -> Array[InputEvent]
+
 func _load_level() -> void:
 	# Chargement du niveau custom (res://user/level.tscn) si présent, sinon le
 	# niveau par défaut. Les assets du niveau custom doivent avoir été importés
@@ -503,6 +507,29 @@ func _try_custom_bind(event: InputEvent) -> bool:
 		if matched:
 			compositor.launch_app(command)
 			return true
+	# Gamepad custom binds : requiert LT enfoncé.
+	var lt_pressed := Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.5
+	if lt_pressed:
+		for bind in binds:
+			if not bind is Dictionary:
+				continue
+			var command: String = bind.get("command", "")
+			if command == "":
+				continue
+			var pad_type: String = bind.get("pad_type", "")
+			if pad_type == "button":
+				var btn_idx: int = int(bind.get("pad_button", -1))
+				if btn_idx >= 0 and Input.is_joy_button_pressed(0, btn_idx):
+					compositor.launch_app(command)
+					return true
+			elif pad_type == "axis":
+				var axis: int = int(bind.get("pad_axis", -1))
+				var val: float = float(bind.get("pad_value", 1.0))
+				if axis >= 0:
+					var cur := Input.get_joy_axis(0, axis)
+					if (val > 0.0 and cur > 0.5) or (val < 0.0 and cur < -0.5):
+						compositor.launch_app(command)
+						return true
 	return false
 
 # Vrai si les modificateurs de l'événement correspondent exactement à ceux du bind.
@@ -566,6 +593,29 @@ func _toggle_remote_pin(peer_id: int, wid: int) -> void:
 # ── Boucle principale ────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
+	# LT tenu → désactive les binds gamepad classiques (InputMap) pour que
+	# seuls les custom binds gamepad restent actifs.
+	var lt_down := Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.5
+	if lt_down and not _lt_stripped and not pause_menu.visible:
+		_lt_stripped = true
+		_lt_stripped_events.clear()
+		for action in InputMap.get_actions():
+			var pad_events: Array[InputEvent] = []
+			for ev in InputMap.action_get_events(action):
+				if ev is InputEventJoypadButton or ev is InputEventJoypadMotion:
+					pad_events.append(ev)
+			if not pad_events.is_empty():
+				_lt_stripped_events[action] = pad_events
+				for ev in pad_events:
+					InputMap.action_erase_event(action, ev)
+	elif not lt_down and _lt_stripped:
+		for action in _lt_stripped_events:
+			for ev in _lt_stripped_events[action]:
+				if InputMap.has_action(action):
+					InputMap.action_add_event(action, ev)
+		_lt_stripped = false
+		_lt_stripped_events.clear()
+
 	fx.process(delta)
 
 	# Diagnostic rendu périodique (comparaison entre machines).

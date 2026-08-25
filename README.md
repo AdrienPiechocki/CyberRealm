@@ -293,10 +293,10 @@ Full controller support, alongside keyboard & mouse (both stay active):
 | `LB` / `RB`               | Left click / right click                          |
 | `R3` / `L3`               | Scroll up / down                                  |
 | `A`                       | Jump                                              |
-| `B`                       | Kill a window                                     |
+| `B` (hold)                | Grab a window (drag it around)                    |
 | `X`                       | Focus a window (fullscreen 2D mode)               |
 | `Y`                       | Window navigation menu                            |
-| D-pad Up / Down / Left / Right | Pin / hide / grab / share the aimed window   |
+| D-pad Up / Down / Left / Right | Pin / hide / kill / share the aimed window   |
 | `Select`                  | Interact mode                                     |
 | `Start`                   | Pause menu                                        |
 
