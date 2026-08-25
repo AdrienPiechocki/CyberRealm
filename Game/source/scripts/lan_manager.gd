@@ -85,9 +85,9 @@ var _level_root: Node3D = null
 var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
 var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
-	# peer_id -> {pos, rot} : position à préserver lors du respawn d'un avatar
-	# (changement de couleur/avatar en cours de partie).
-	var _respawn_positions: Dictionary = {}
+# peer_id -> {pos, rot} : position à préserver lors du respawn d'un avatar
+# (changement de couleur/avatar en cours de partie).
+var _respawn_positions: Dictionary = {}
 # Un avatar n'est visible que pour ces pairs (sinon corps fantôme au spawn
 # pendant que le joueur charge encore le niveau).
 var _arrived_peers: Dictionary = {}
