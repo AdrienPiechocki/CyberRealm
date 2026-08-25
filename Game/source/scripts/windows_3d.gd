@@ -48,7 +48,7 @@ const SPAWN_STACK_RADIUS := 0.5 # m, portée de détection des fenêtres déjà 
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
-render_mode unshaded, blend_mix, cull_disabled, depth_draw_always;
+render_mode unshaded, blend_mix, cull_disabled, depth_draw_opaque;
 
 uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
