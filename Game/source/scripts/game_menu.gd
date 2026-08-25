@@ -71,7 +71,7 @@ func _poll_nav_action() -> String:
 		return "ui_left"
 	if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_RIGHT):
 		return "ui_right"
-	var ui_vec := Input.get_vector("left", "right", "forward", "back")
+	var ui_vec = round(Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)))
 	if ui_vec == Vector2.ZERO:
 		return ""
 	if absf(ui_vec.x) > absf(ui_vec.y):
