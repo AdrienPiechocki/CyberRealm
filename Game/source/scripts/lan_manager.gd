@@ -366,6 +366,7 @@ func update_local_name(pname: String) -> void:
 		_broadcast_player_info()
 	else:
 		_update_player_info.rpc_id(1, pname, _players[my_id].get("color", player_color))
+	update_local_avatar()
 
 func update_local_avatar() -> void:
 	if not session_active:
