@@ -352,6 +352,7 @@ func update_local_color(color: Color) -> void:
 		_broadcast_player_info()
 	else:
 		_update_player_info.rpc_id(1, my_id, player_name, color)
+	update_local_avatar()
 
 func update_local_name(pname: String) -> void:
 	player_name = pname
