@@ -373,6 +373,7 @@ func _ready() -> void:
 	lan.local_level_restore_requested.connect(restore_local_level)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_avatar_changed.connect(lan.set_selected_avatar)
+	pause_menu.lan_name_changed.connect(lan.update_local_name)
 	# Avatar choisi au menu LAN (persisté) : appliqué avant tout host/join.
 	lan.set_selected_avatar(pause_menu.get_lan_avatar_path())
 	pause_menu.lan_host_requested.connect(lan.host_game)
@@ -380,6 +381,9 @@ func _ready() -> void:
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)
 	pause_menu.lan_discover_requested.connect(lan.discover_games)
 	lan.status_changed.connect(pause_menu.set_lan_status)
+	lan.status_changed.connect(func(_text: String):
+		pause_menu.set_lan_connected(lan.is_session_active())
+	)
 	lan.players_changed.connect(pause_menu.set_lan_players)
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
 	lan.windows_provider = win3d.get_windows_state

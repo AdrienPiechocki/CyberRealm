@@ -13,6 +13,7 @@ signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
 signal lan_avatar_changed(path: String)
+signal lan_name_changed(name: String)
 
 const LanManagerScript := preload("res://scripts/lan_manager.gd")
 
@@ -81,6 +82,7 @@ var _lan_players_label: Label = null
 var _lan_results_box: VBoxContainer = null
 var _lan_status_text := ""
 var _lan_roster: Array = []
+var _lan_connected := false
 
 func _can_stick_input() -> bool:
 	return not _custom_key_waiting and _waiting_action == ""
@@ -807,6 +809,7 @@ func _save_lan_name(edit: LineEdit) -> void:
 		edit.text = nm
 	_settings["lan_player_name"] = nm
 	_save_settings()
+	lan_name_changed.emit(nm)
 
 func _show_lan() -> void:
 	_clear()
@@ -816,7 +819,10 @@ func _show_lan() -> void:
 	container.add_child(_make_title("LAN GAME"))
 
 	var hint := Label.new()
-	hint.text = "Multiplayer on your local network (2-4 players).\nEach player keeps their own desktop; you see each other's avatar."
+	if _lan_connected:
+		hint.text = "Connected — click Apply to broadcast changes to other players."
+	else:
+		hint.text = "Multiplayer on your local network (2-4 players).\nEach player keeps their own desktop; you see each other's avatar."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
@@ -835,7 +841,21 @@ func _show_lan() -> void:
 	name_edit.text_submitted.connect(func(_t: String):
 		_save_lan_name(name_edit)
 	)
-	container.add_child(name_edit)
+	if _lan_connected:
+		var name_row := HBoxContainer.new()
+		name_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_row.add_child(name_edit)
+		var name_apply := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
+		name_apply.custom_minimum_size = Vector2(80, 36)
+		name_apply.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		name_apply.pressed.connect(func():
+			_save_lan_name(name_edit)
+		)
+		name_row.add_child(name_apply)
+		container.add_child(name_row)
+	else:
+		container.add_child(name_edit)
 
 	var color_row := HBoxContainer.new()
 	color_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -849,12 +869,25 @@ func _show_lan() -> void:
 	color_btn.color = get_lan_player_color()
 	color_btn.custom_minimum_size = Vector2(64, 30)
 	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	color_btn.color_changed.connect(func(c: Color):
-		_settings["lan_player_color"] = c.to_html(true)
-		_save_settings()
-		lan_color_changed.emit(c)
-	)
 	color_row.add_child(color_btn)
+	if _lan_connected:
+		color_btn.color_changed.connect(func(c: Color):
+			_settings["lan_player_color"] = c.to_html(true)
+			_save_settings()
+		)
+		var color_apply := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
+		color_apply.custom_minimum_size = Vector2(80, 30)
+		color_apply.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		color_apply.pressed.connect(func():
+			lan_color_changed.emit(color_btn.color)
+		)
+		color_row.add_child(color_apply)
+	else:
+		color_btn.color_changed.connect(func(c: Color):
+			_settings["lan_player_color"] = c.to_html(true)
+			_save_settings()
+			lan_color_changed.emit(c)
+		)
 	container.add_child(color_row)
 
 	# Choix de l'avatar incarné : tous les avatar.tscn trouvés dans le
@@ -879,12 +912,30 @@ func _show_lan() -> void:
 		avatar_opt.set_item_metadata(avatar_opt.item_count - 1, path)
 	if avatar_opt.item_count > 0:
 		avatar_opt.select(maxi(sel_idx, 0))
-		avatar_opt.item_selected.connect(func(idx: int):
-			var p := String(avatar_opt.get_item_metadata(idx))
-			_settings["lan_avatar_path"] = p
-			_save_settings()
-			lan_avatar_changed.emit(p)
-		)
+		if _lan_connected:
+			avatar_opt.item_selected.connect(func(idx: int):
+				var p := String(avatar_opt.get_item_metadata(idx))
+				_settings["lan_avatar_path"] = p
+				_save_settings()
+			)
+			avatar_row.add_child(avatar_opt)
+			var avatar_apply := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
+			avatar_apply.custom_minimum_size = Vector2(80, 30)
+			avatar_apply.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+			avatar_apply.pressed.connect(func():
+				var idx2 := avatar_opt.selected
+				if idx2 >= 0:
+					var p2 := String(avatar_opt.get_item_metadata(idx2))
+					lan_avatar_changed.emit(p2)
+			)
+			avatar_row.add_child(avatar_apply)
+		else:
+			avatar_opt.item_selected.connect(func(idx: int):
+				var p := String(avatar_opt.get_item_metadata(idx))
+				_settings["lan_avatar_path"] = p
+				_save_settings()
+				lan_avatar_changed.emit(p)
+			)
 		avatar_row.add_child(avatar_opt)
 	else:
 		avatar_label.queue_free()
@@ -958,6 +1009,9 @@ func set_lan_status(text: String) -> void:
 func set_lan_players(roster: Array) -> void:
 	_lan_roster = roster
 	_update_lan_players_label()
+
+func set_lan_connected(connected: bool) -> void:
+	_lan_connected = connected
 
 func _update_lan_players_label() -> void:
 	if _lan_players_label == null:
