@@ -391,7 +391,7 @@ func on_files_dropped(paths: PackedStringArray) -> void:
 		var f := FileAccess.open(p, FileAccess.READ)
 		if f != null:
 			files.append(p)
-			total += int(f.get_len())
+			total += int(f.get_length())
 		elif _debug:
 			print("[FileShare] open() a échoué : ", error_string(FileAccess.get_open_error()))
 	if files.is_empty():
@@ -638,6 +638,7 @@ func _poll_send() -> void:
 	t["last_pct"] = pct
 	t["last_emit_msec"] = now
 	_show_progress("Sending to %s…" % _peer_name(int(t["peer"])), pct, "")
+	_transfer_progress.rpc_id(int(t["peer"]), int(t["id"]), pct)
 
 
 func _finish_send(ok: bool, message: String) -> void:
