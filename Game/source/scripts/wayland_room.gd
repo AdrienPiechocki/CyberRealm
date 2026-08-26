@@ -989,6 +989,8 @@ func _on_radial_action(action: String) -> void:
 			if target.has("local"):
 				win3d.toggle_grab_window(target["local"])
 		"focus":
+			interact_mode_active = false
+			player.interact_mode_active = false
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):
 				layers.deactivate_layer_interact()
