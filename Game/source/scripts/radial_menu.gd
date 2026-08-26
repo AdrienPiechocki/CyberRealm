@@ -29,11 +29,16 @@ var _selected_index: int = 0
 var _is_open := false
 var _open_scale := 0.0
 var _center_offset := Vector2.ZERO
+var _emoji_font: Font
 
 
 func _ready() -> void:
 	visible = false
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Charger une police supportant les emoji (disponible via fontconfig)
+	var sf := SystemFont.new()
+	sf.font_names = PackedStringArray(["Noto Color Emoji", "DejaVu Sans", "Noto Sans Symbols 2"])
+	_emoji_font = sf
 
 
 func _can_stick_input() -> bool:
@@ -224,7 +229,6 @@ func _draw() -> void:
 			_draw_polyline(coords, stroke, 1.0)
 
 	# 2.5. Emojis on ring segments
-	var emoji_font := ThemeDB.fallback_font
 	var emoji_size := 20
 	for i in range(n):
 		var emoji_text: String = _items[i].get("emoji", "")
@@ -233,8 +237,8 @@ func _draw() -> void:
 		var mid_angle := start_angle + (i + 0.5) * item_angle
 		var mid_radius := (inner + outer) * 0.5
 		var emoji_pos := Vector2(cos(mid_angle), sin(mid_angle)) * mid_radius * s + _center_offset
-		var es := emoji_font.get_string_size(emoji_text, HORIZONTAL_ALIGNMENT_CENTER, -1, emoji_size)
-		draw_string(emoji_font, emoji_pos - Vector2(es.x / 2.0, -es.y / 2.5), emoji_text, HORIZONTAL_ALIGNMENT_LEFT, -1, emoji_size, Color.WHITE)
+		var es := _emoji_font.get_string_size(emoji_text, HORIZONTAL_ALIGNMENT_CENTER, -1, emoji_size)
+		draw_string(_emoji_font, emoji_pos - Vector2(es.x / 2.0, -es.y / 2.5), emoji_text, HORIZONTAL_ALIGNMENT_LEFT, -1, emoji_size, Color.WHITE)
 
 	# 3. Selector ring segment
 	if _selected_index >= 0 and _selected_index < n:
