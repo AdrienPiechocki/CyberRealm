@@ -216,6 +216,7 @@ var _occluder_suspended := false
 var mouse_pos := Vector2.ZERO
 const SPEED := 500.0
 var _stick_scroll_cooldown := 0.0
+var virtual_keyboard: VirtualKeyboard
 
 func _ensure_world_occluder() -> void:
 	if _world_occluder != null and is_instance_valid(_world_occluder):
@@ -332,12 +333,12 @@ func _reset_occluder_alpha_state() -> void:
 	_alpha_check_cd = 0.0
 	_alpha_probe_deadline = 0.0
 
-func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D) -> void:
+func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D, keyboard: VirtualKeyboard) -> void:
 	compositor = compositor_ref
 	player = player_ref
 	ui = ui_ref
 	windows = windows_ref
-
+	virtual_keyboard = keyboard
 	mouse_pos = get_viewport().get_mouse_position()
 
 	popup_crop_shader = Shader.new()
@@ -1367,7 +1368,7 @@ func handle_focus_input(delta: float) -> void:
 		return
 	
 	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
-	if v != Vector2.ZERO:
+	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		mouse_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size
 		mouse_pos = mouse_pos.clamp(Vector2.ONE, vs - Vector2.ONE)

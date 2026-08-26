@@ -17,6 +17,7 @@ extends Node3D
 @onready var capture_selector = $Level/Player/CaptureSelectorLayer/CaptureSelector
 @onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
 @onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
+@onready var keyboard: VirtualKeyboard = $Level/Player/KeyboardLayer/VirtualKeyboard
 
 var win3d: Node3D
 var focus: Node3D
@@ -261,7 +262,7 @@ func _ready() -> void:
 	presenter = _add_manager(preload("res://scripts/present_manager.gd"), "PresentManager")
 
 	win3d.setup(compositor, player)
-	focus.setup(compositor, player, ui, win3d)
+	focus.setup(compositor, player, ui, win3d, keyboard)
 	layers.setup(compositor, player, ui, focus, pause_menu, window_menu)
 	pins.setup(ui, focus)
 	fx.setup(win3d)
@@ -366,6 +367,9 @@ func _ready() -> void:
 	pins.set_pins_position(pause_menu.get_pins_position())
 	# Menu radial contextuel (B sur manette)
 	radial_menu.radial_action.connect(_on_radial_action)
+	# Clavier virtuel
+	keyboard.setup(compositor, pause_menu, radial_menu)
+	keyboard.keyboard_closed.connect(_on_keyboard_closed)
 
 	# Multijoueur LAN : l'hôte est serveur, chaque machine garde son propre
 	# compositeur/bureau, seuls les avatars des joueurs sont partagés.
@@ -536,6 +540,8 @@ func _event_matches_mods(event: InputEvent, mods: Dictionary) -> bool:
 func _aim_pos() -> Vector2:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return get_viewport().get_visible_rect().size / 2.0
+	if focus.is_active():
+		return focus.mouse_pos
 	return layers._cursor_pos
 
 # Cast un rayon depuis la souris et renvoie la fenêtre touchée : {"local": wid}
@@ -613,6 +619,10 @@ func _process(delta: float) -> void:
 			sz = Vector2(drag_icon_rect.texture.get_width(),
 				drag_icon_rect.texture.get_height())
 		drag_icon_rect.position = _aim_pos() - sz / 2.0
+		# Adapter le z-index si le mode focus change pendant un drag actif
+		var target_z := 2100 if focus.is_active() else 100
+		if drag_icon_rect.z_index != target_z:
+			drag_icon_rect.z_index = target_z
 
 	# Session verrouillée : tout le pointeur part vers la surface de
 	# verrouillage (le curseur y est visible), rien ne va au jeu.
@@ -899,10 +909,13 @@ func _on_drag_icon_updated(texture: Texture2D, width: int, height: int) -> void:
 	drag_icon_size = Vector2(width, height)
 	drag_icon_rect.visible = true
 	drag_icon_rect.pivot_offset = drag_icon_size / 2.0
+	# Au-dessus des overlays focus (z>=2000) quand le mode focus est actif
+	drag_icon_rect.z_index = 2100 if focus.is_active() else 100
 
 func _on_drag_icon_removed() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.texture = null
+	drag_icon_rect.z_index = 100
 
 # ── Window menu helpers ──────────────────────────────────────────────
 
@@ -946,6 +959,9 @@ func _on_window_menu_quit(wid: int) -> void:
 func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
+func _on_keyboard_closed() -> void:
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
 # ── Menu radial contextuel ────────────────────────────────────────
 
 func _determine_radial_context() -> String:
@@ -967,6 +983,7 @@ func _on_radial_action(action: String) -> void:
 				compositor.release_all_keys()
 			interact_mode_active = not interact_mode_active
 			player.interact_mode_active = not player.interact_mode_active
+			_on_radial_action("keyboard")
 		"grab":
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):
@@ -999,10 +1016,14 @@ func _on_radial_action(action: String) -> void:
 			if target.has("local"):
 				win3d.toggle_hide(target["local"])
 		"exit_focus":
+			keyboard.hide_menu()
 			focus.exit_focus()
 		"kill_focused":
+			keyboard.hide_menu()
 			if focus.is_active() and not focus.is_remote():
 				compositor.close_window(focus.get_focus_window_id())
+		"keyboard":
+			keyboard.toggle_menu()
 		"binds":
 			var binds: Array = pause_menu.get_custom_binds()
 			if binds.size() > 0:
