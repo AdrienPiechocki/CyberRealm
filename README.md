@@ -33,6 +33,14 @@ Vulkan DMA-BUF import**.
 - **X11 support** — X applications run through
   [xwayland-satellite](https://gitlab.freedesktop.org/xwayland-satellite/xwayland-satellite),
   forwarded as XWayland surfaces.
+- **Context-sensitive radial menu** (`B` on gamepad) — a ring-style radial menu
+  with emoji icons that adapts to context: FPS mode shows window menu / mouse
+  mode / keyboard mode / custom binds; aiming at a window shows grab / focus /
+  hide / kill / pin / share; in focus mode shows exit focus / kill. Select with
+  the left stick, confirm with `A`.
+- **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
+  listing all custom key binds, each showing its key combo and target command.
+  Selecting one launches the command via the compositor.
 - **OBS capture built-in** — ships a patched `xdg-desktop-portal-wlr` so OBS can
   add *screen* and *window* capture sources straight from the game, choosing the
   target with an in-game selector UI.
@@ -41,9 +49,10 @@ Vulkan DMA-BUF import**.
 - **Navigation menu** (`SUPER+SHIFT+B`) — a window switcher with live previews (grab, focus,
   hide, find, pin, close) and a **SHARE** action to stream a window to the other
   players.
-- **Pause menu** (`Esc`) — remappable keybinds, startup apps, custom keybinds
-  that launch arbitrary commands inside the compositor, and a **LAN Game** page
-  (host/join, player name & color, avatar picker, LAN discovery).
+- **Pause menu** (`Esc`) — remappable keybinds (keyboard & mouse only, gamepad
+  bindings are fixed), startup apps, custom keybinds that launch arbitrary
+  commands inside the compositor, and a **LAN Game** page (host/join, player
+  name & color, avatar picker, LAN discovery with a single **Apply** button).
 - **KWin integration** — an optional KWin script fullscreens the game when
   launched from Plasma and blocks all KDE global shortcuts while it has focus.
 
@@ -81,14 +90,15 @@ Vulkan DMA-BUF import**.
 ```
             ┌────────────────────────────────────────  CyberRealm  ───────────────────────────────────────┐
             │                                                                                             │
-  Godot 4.7 │  Game scripts (GDScript)                                                                    │
-  + Jolt    │    wayland_room.gd  (orchestrator)                                                          │
-            │       ├─ Windows3D    3D quads, grab/move/resize, raycast pointer                           │
-            │       ├─ FocusMode    fullscreen 2D focus mode (+ remote view-only)                         │
-            │       ├─ LayerSurfaces  waybar/rofi overlays + session lock                                 │
-            │       ├─ PinnedWindows  picture-in-picture (+ remote PiP)                                   │
-            │       ├─ Effects      X-RAY finder + open-flash                                             │
-            │       └─ LanManager   host/join, avatars, shared windows, host level                        │
+   Godot 4.7 │  Game scripts (GDScript)                                                                    │
+   + Jolt    │    wayland_room.gd  (orchestrator)                                                          │
+             │       ├─ Windows3D    3D quads, grab/move/resize, raycast pointer                           │
+             │       ├─ FocusMode    fullscreen 2D focus mode (+ remote view-only)                         │
+             │       ├─ LayerSurfaces  waybar/rofi overlays + session lock                                 │
+             │       ├─ PinnedWindows  picture-in-picture (+ remote PiP)                                   │
+             │       ├─ Effects      X-RAY finder + open-flash                                             │
+             │       ├─ RadialMenu   context-sensitive ring menu with emoji icons                          │
+             │       └─ LanManager   host/join, avatars, shared windows, host level                        │
             │                                                                                             │
             │   GDExtension "libwaylandgodot" (C++, SCons)                                                │
             │     WlrCompositor (Node)  — full wlroots 0.19 compositor                                    │
@@ -137,6 +147,7 @@ transfer.
 │   │   └── avatar.tscn           LAN avatar of another player
 │   ├── scripts/
 │   │   ├── wayland_room.gd       orchestrator
+│   │   ├── radial_menu.gd        context-sensitive ring menu with emoji icons
 │   │   ├── lan_manager.gd        LAN host/join, avatars, window + level sync
 │   │   ├── avatar.gd             avatar interpolation/transparency
 │   │   ├── level_baker.gd        bakes the level into a self-contained blob
@@ -231,7 +242,8 @@ cyberrealm-launch firefox
 ## LAN multiplayer
 
 1. In the pause menu (`Esc`) open **LAN Game** and set your name and avatar
-   color.
+   color. When connected, click **Apply** to broadcast your changes to other
+   players.
 2. On the machine hosting the room press **Host Game**. The other players either
    type the host IP under **Join**, or press **Find LAN games** to scan the
    network and pick the host. Both machines must be on the same network with UDP
@@ -279,7 +291,8 @@ details: `Game/source/user/README.md`.
 | `SUPER+TAB`          | Hand the pointer to a layer overlay (waybar/rofi) |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
 
-All keybinds can be remapped from the pause menu.
+All keybinds can be remapped from the pause menu (keyboard & mouse only;
+gamepad bindings are fixed).
 
 ### Gamepad
 
@@ -289,21 +302,26 @@ Full controller support, alongside keyboard & mouse (both stay active):
 | ------------------------- | ------------------------------------------------- |
 | Left stick                | Move (analog)                                     |
 | Right stick               | Look around / point at windows                    |
-| `LT`                      | Mouse cursor mode (left stick moves the pointer)  |
-| `LB` / `RB`               | Left click / right click                          |
-| `R3` / `L3`               | Scroll up / down                                  |
-| `A`                       | Jump                                              |
-| `B` (hold)                | Grab a window (drag it around)                    |
-| `X`                       | Focus a window (fullscreen 2D mode)               |
-| `Y`                       | Window navigation menu                            |
-| D-pad Up / Down / Left / Right | Pin / hide / kill / share the aimed window   |
+| `A`                       | Jump / confirm in menus                           |
+| `B`                       | Toggle radial menu (context-sensitive ring)       |
+| `X`                       | Left click                                        |
+| `Y`                       | Right click                                       |
 | `Select`                  | Interact mode                                     |
 | `Start`                   | Pause menu                                        |
+| `LB`                      | Scroll Up                                         |
+| `RB`                      | Scroll Down                                       |
 
-While `LB` is held, the right stick drives a virtual cursor instead of the
-camera — aim roughly by turning, hold `LB` to click precisely. Menus
-(pause, window menu, capture selector) are fully navigable with d-pad/stick
-+ `A`.
+#### Radial menu (`B`)
+
+Press `B` to open the context-sensitive radial menu. Navigate with the left
+stick, confirm with `A`, close with `B` or `Esc`. The menu adapts to context:
+
+- **FPS mode** — Window Menu, Mouse Mode, Keyboard Mode, Custom Binds
+- **Aiming at a window** — Grab, Focus, Hide, Kill, Pin, Share (+ the four FPS actions)
+- **Focus mode** — Exit Focus, Kill
+
+The Custom Binds sub-menu lists all configured binds with their key combos
+and launches the bound command when selected.
 
 ## Capturing with OBS
 
