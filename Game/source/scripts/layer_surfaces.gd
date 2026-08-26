@@ -84,7 +84,7 @@ var session_lock_rect: TextureRect
 var session_lock_surface_id := -1
 
 var _cursor_pos := Vector2.ZERO
-const SPEED := 1000.0
+const SPEED := 750.0
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control) -> void:
 	compositor = compositor_ref
