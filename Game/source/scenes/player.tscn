@@ -6,6 +6,7 @@
 [ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
 [ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/radial_menu.gd" id="7_radial_menu"]
+[ext_resource type="Script" uid="uid://c0rashg3vxm4k" path="res://scripts/virtual_keyboard.gd" id="8_virtual_keyboard"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -137,6 +138,18 @@ grow_horizontal = 2
 grow_vertical = 2
 theme_override_styles/panel = SubResource("StyleBoxEmpty_fjrip")
 script = ExtResource("7_radial_menu")
+
+[node name="KeyboardLayer" type="CanvasLayer" parent="." unique_id=1978103214]
+
+[node name="VirtualKeyboard" type="PanelContainer" parent="KeyboardLayer" unique_id=1774359270]
+anchors_preset = 8
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("8_virtual_keyboard")
 
 [node name="PauseMenuLayer" type="CanvasLayer" parent="." unique_id=330881426]
 

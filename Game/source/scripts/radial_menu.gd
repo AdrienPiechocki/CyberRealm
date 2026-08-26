@@ -79,6 +79,7 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			_items.append({label = "SHARE", emoji = "🔗", action = "share"})
 		"focus":
 			_items.append({label = "EXIT FOCUS", emoji = "↩️", action = "exit_focus"})
+			_items.append({label = "VIRTUAL KBD", emoji = "⌨️", action = "keyboard"})
 			_items.append({label = "KILL", emoji = "💀", action = "kill_focused"})
 		"binds":
 			if binds.size() > 0:
