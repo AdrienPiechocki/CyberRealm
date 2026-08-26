@@ -257,7 +257,7 @@ func _rebuild_keys() -> void:
 			c.queue_free()
 
 	var layout_data := _get_current_layout()
-	_title_label.text = "VIRTUAL KEYBOARD — %s" % layout_data.get("label", "?")
+	_title_label.text = "VIRTUAL KEYBOARD"
 
 	var row_index := 0
 	for row in ROWS:
@@ -438,6 +438,14 @@ func _update_all_labels(layout_data: Dictionary) -> void:
 
 func _can_stick_input() -> bool:
 	return _radial_menu == null or not _radial_menu.visible
+
+
+func _process(delta: float) -> void:
+	if _radial_menu != null and _radial_menu.visible:
+		var current := get_viewport().gui_get_focus_owner()
+		if current != null and current in _key_buttons:
+			current.release_focus()
+	super(delta)
 
 
 func _input(event: InputEvent) -> void:
