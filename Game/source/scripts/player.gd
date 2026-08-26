@@ -20,6 +20,7 @@ var pad_look_speed := 2.6
 
 var interact_mode_active := false
 var focus_mode_active := false
+var _menu_just_closed := false
 # Positionné par wayland_room.gd : vrai quand la souris survole une layer
 # surface (waybar/rofi) en mode visible. Empêche le click de recapturer la
 # souris (FPS) pour laisser wayland_room forwarder le clic vers l'overlay.
@@ -50,6 +51,9 @@ func _ready():
 	spawn_pos = position
 	spawn_rotation = rotation
 	spawn_scale = scale
+	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
+	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
+	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
 
 func _get_compositor() -> WlrCompositor:
 	if _compositor == null or not is_instance_valid(_compositor):
@@ -68,7 +72,7 @@ func _physics_process(delta):
 	if velocity.y > jump_speed:
 		velocity.y = jump_speed
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked:
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or $RadialMenuLayer/RadialMenu.visible:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -107,19 +111,26 @@ func _physics_process(delta):
 			climb_time = 0.0
 		if is_on_wall() and climb_time < MaxClimbTime and absf(Vector2(movement_dir.x, movement_dir.z).length()) > 0.0:
 			climb(delta)
-		if is_on_floor() and Input.is_action_just_pressed("jump", true):
+		if is_on_floor() and Input.is_action_just_pressed("jump", true) and not _menu_just_closed:
 			velocity.y = jump_speed
 		$UI/Cursor.label_settings.font_color = Color.WHITE
 	else:
 		$UI/Cursor.label_settings.font_color = Color.BLACK
+	_menu_just_closed = false
 
 func climb(delta):
 	if climbed_distance < MaxClimbDistance:
-		velocity.y += (gravity * delta) * ClimbSpeed
 		climbed_distance += (gravity * delta) * ClimbSpeed
+		velocity.y += (gravity * delta) * ClimbSpeed
 	else:
 		velocity.y = 0.0
 		climbed_distance = 0.0
+
+func _on_menu_visibility_changed() -> void:
+	if not $WindowMenuLayer/WindowMenu.visible \
+			and not $PauseMenuLayer/PauseMenu.visible \
+			and not $RadialMenuLayer/RadialMenu.visible:
+		_menu_just_closed = true
 
 func _input(event):
 	if _pad_diag:
@@ -129,6 +140,8 @@ func _input(event):
 		if _pad_menu_activate(event):
 			return
 	if focus_mode_active:
+		return
+	if $RadialMenuLayer/RadialMenu.visible:
 		return
 	if $PauseMenuLayer/PauseMenu.visible:
 		# Afficher la souris uniquement quand l'utilisateur la bouge (pas au d-pad).
@@ -185,11 +198,8 @@ func _pad_diag_event(event: InputEvent) -> void:
 				d, Input.get_joy_name(d), Input.get_joy_guid(d)])
 
 func _pad_menu_activate(event: InputEventJoypadButton) -> bool:
-	# Si ui_accept contient déjà ce bouton, la voie normale du viewport
-	# s'en charge — on n'interfère pas.
-	for ev in InputMap.action_get_events("ui_accept"):
-		if ev is InputEventJoypadButton and ev.button_index == event.button_index:
-			return false
+	# A sert à la fois de jump (jeu) et de confirm (menus).
+	# Si un bouton UI est focalisé, A l'active (comme ui_accept).
 	if event.button_index != JOY_BUTTON_A:
 		return false
 	var fe := get_viewport().gui_get_focus_owner()

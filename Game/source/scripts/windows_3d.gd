@@ -787,9 +787,13 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
-		if Input.is_action_just_pressed("scroll_up", false):
+		if Input.is_action_pressed("scroll_up", false):
+			move_depth += 0.05
+		elif Input.is_action_just_pressed("scroll_up", false):
 			move_depth += 0.25
-		if Input.is_action_just_pressed("scroll_down", false):
+		if Input.is_action_pressed("scroll_down", false):
+			move_depth -= 0.05
+		elif Input.is_action_just_pressed("scroll_down", false):
 			move_depth -= 0.25
 		_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab", true):
@@ -965,9 +969,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button(wid, 0x111, false)
 
-	if Input.is_action_just_pressed("scroll_up", false):
+	if Input.is_action_just_pressed("scroll_up", false) or Input.is_action_pressed("scroll_up", false):
 		compositor.forward_pointer_axis(wid, 0, -100.0)
-	if Input.is_action_just_pressed("scroll_down", false):
+	if Input.is_action_just_pressed("scroll_down", false) or Input.is_action_pressed("scroll_down", false):
 		compositor.forward_pointer_axis(wid, 0, 100.0)
 
 # Hover + clic gauche sur un popup (menu, dropdown) - même calcul d'uv que

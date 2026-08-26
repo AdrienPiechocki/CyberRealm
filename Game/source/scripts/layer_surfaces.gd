@@ -84,7 +84,7 @@ var session_lock_rect: TextureRect
 var session_lock_surface_id := -1
 
 var _cursor_pos := Vector2.ZERO
-const SPEED := 750.0
+const SPEED := 500.0
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control) -> void:
 	compositor = compositor_ref
@@ -168,9 +168,9 @@ func handle_locked_input() -> void:
 		compositor.forward_pointer_button_lock(0x111, true)
 	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button_lock(0x111, false)
-	if Input.is_action_just_pressed("scroll_up", false):
+	if Input.is_action_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_up", false):
 		compositor.forward_pointer_axis_lock(0.0, -50.0)
-	if Input.is_action_just_pressed("scroll_down", false):
+	if Input.is_action_pressed("scroll_down", false) or Input.is_action_just_pressed("scroll_down", false):
 		compositor.forward_pointer_axis_lock(0.0, 50.0)
 
 # Retour à la capture FPS après la fermeture d'un overlay interactif ou le
@@ -448,9 +448,9 @@ func _handle_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
 		compositor.forward_pointer_button_layer(hit.id, 0x111, true)
 	if Input.is_action_just_released("right_click", false):
 		compositor.forward_pointer_button_layer(hit.id, 0x111, false)
-	if Input.is_action_just_pressed("scroll_up", false):
+	if Input.is_action_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_up", false):
 		compositor.forward_pointer_axis_layer(hit.id, 0, -50.0)
-	if Input.is_action_just_pressed("scroll_down", false):
+	if Input.is_action_pressed("scroll_down", false) or Input.is_action_just_pressed("scroll_down", false):
 		compositor.forward_pointer_axis_layer(hit.id, 0, 50.0)
 
 # Routage du pointeur vers les overlays de layer surfaces, appelé chaque
@@ -459,7 +459,7 @@ func _handle_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
 func handle_layer_pointer(delta: float) -> bool:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return false
-	var v := Input.get_vector("left", "right", "forward", "back")
+	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
 	if v != Vector2.ZERO:
 		_cursor_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size
