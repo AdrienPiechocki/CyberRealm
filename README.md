@@ -35,9 +35,15 @@ Vulkan DMA-BUF import**.
   forwarded as XWayland surfaces.
 - **Context-sensitive radial menu** (`B` on gamepad) — a ring-style radial menu
   with emoji icons that adapts to context: FPS mode shows window menu / mouse
-  mode / keyboard mode / custom binds; aiming at a window shows grab / focus /
-  hide / kill / pin / share; in focus mode shows exit focus / kill. Select with
-  the left stick, confirm with `A`.
+  mode / keyboard mode / custom binds; aiming at a window
+  shows grab / focus / hide / kill / pin / share; in focus mode shows exit focus /
+  kill. Select with the left stick, confirm with `A`.
+- **Virtual keyboard** — an on-screen keyboard opened from the radial menu
+  (VIRTUAL KBD). Supports AZERTY (FR), QWERTY (US), and QWERTZ (DE) layouts,
+  auto-detected from the pause menu settings. D-PAD navigates spatially between
+  keys with warp-around, `A` presses the focused key, mouse clicks also work.
+  Shift / Ctrl / Alt are toggles (press once to lock, again to unlock). Key
+  events are forwarded to the compositor via `forward_keyboard_key()`.
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
@@ -88,8 +94,8 @@ Vulkan DMA-BUF import**.
 ## How it works
 
 ```
-            ┌────────────────────────────────────────  CyberRealm  ───────────────────────────────────────┐
-            │                                                                                             │
+             ┌────────────────────────────────────────  CyberRealm  ───────────────────────────────────────┐
+             │                                                                                             │
    Godot 4.7 │  Game scripts (GDScript)                                                                    │
    + Jolt    │    wayland_room.gd  (orchestrator)                                                          │
              │       ├─ Windows3D    3D quads, grab/move/resize, raycast pointer                           │
@@ -98,18 +104,19 @@ Vulkan DMA-BUF import**.
              │       ├─ PinnedWindows  picture-in-picture (+ remote PiP)                                   │
              │       ├─ Effects      X-RAY finder + open-flash                                             │
              │       ├─ RadialMenu   context-sensitive ring menu with emoji icons                          │
+             │       ├─ VirtualKbd   on-screen keyboard (spatial D-PAD navigation)                         │
              │       └─ LanManager   host/join, avatars, shared windows, host level                        │
-            │                                                                                             │
-            │   GDExtension "libwaylandgodot" (C++, SCons)                                                │
-            │     WlrCompositor (Node)  — full wlroots 0.19 compositor                                    │
-            │       ├─ xdg-shell, layer-shell, session-lock, pointer-constraints,                         │
-            │       │  relative-pointer, primary-selection, data-device (DnD)                             │
-            │       ├─ headless backend + xwayland-satellite (XWayland)                                   │
-            │       ├─ VulkanDmaBufImport — zero-copy DMA-BUF → VkImage → Texture2D                       │
-            │       ├─ VideoShare  — H.264/AV1 inter-frame (VAAPI hw / libx264 sw)                        │
-            │       └─ AudioShare  — OPUS capture of shared windows (PipeWire)                            │
-            │                                                                                             │
-            └─────────────────────┬─────────────────────────────────────┬─────────────────────────────────┘
+             │                                                                                             │
+             │   GDExtension "libwaylandgodot" (C++, SCons)                                                │
+             │     WlrCompositor (Node)  — full wlroots 0.19 compositor                                    │
+             │       ├─ xdg-shell, layer-shell, session-lock, pointer-constraints,                         │
+             │       │  relative-pointer, primary-selection, data-device (DnD)                             │
+             │       ├─ headless backend + xwayland-satellite (XWayland)                                   │
+             │       ├─ VulkanDmaBufImport — zero-copy DMA-BUF → VkImage → Texture2D                       │
+             │       ├─ VideoShare  — H.264/AV1 inter-frame (VAAPI hw / libx264 sw)                        │
+             │       └─ AudioShare  — OPUS capture of shared windows (PipeWire)                            │
+             │                                                                                             │
+             └─────────────────────┬─────────────────────────────────────┬─────────────────────────────────┘
                                   │   Wayland socket                    │   LAN over ENet (UDP 7777)       
                                   │   (XDG_RUNTIME_DIR/cyberrealm-0)    │   discovery on UDP 9999          
                                   │                                     │   avatars · shared windows       
@@ -148,6 +155,7 @@ transfer.
 │   ├── scripts/
 │   │   ├── wayland_room.gd       orchestrator
 │   │   ├── radial_menu.gd        context-sensitive ring menu with emoji icons
+│   │   ├── virtual_keyboard.gd   on-screen keyboard (AZERTY/QWERTY/QWERTZ)
 │   │   ├── lan_manager.gd        LAN host/join, avatars, window + level sync
 │   │   ├── avatar.gd             avatar interpolation/transparency
 │   │   ├── level_baker.gd        bakes the level into a self-contained blob
@@ -317,7 +325,7 @@ Press `B` to open the context-sensitive radial menu. Navigate with the left
 stick, confirm with `A`, close with `B` or `Esc`. The menu adapts to context:
 
 - **FPS mode** — Window Menu, Mouse Mode, Keyboard Mode, Custom Binds
-- **Aiming at a window** — Grab, Focus, Hide, Kill, Pin, Share (+ the four FPS actions)
+- **Aiming at a window** — Grab, Focus, Hide, Kill, Pin, Share (+ the five FPS actions)
 - **Focus mode** — Exit Focus, Kill
 
 The Custom Binds sub-menu lists all configured binds with their key combos
