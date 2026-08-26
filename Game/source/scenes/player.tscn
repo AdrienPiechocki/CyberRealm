@@ -5,6 +5,7 @@
 [ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/window_menu.gd" id="4_window_menu"]
 [ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
+[ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/radial_menu.gd" id="7_radial_menu"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -13,6 +14,8 @@ font_size = 24
 
 [sub_resource type="LabelSettings" id="LabelSettings_jm82k"]
 font_size = 32
+
+[sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_fjrip"]
 
 [node name="Player" type="CharacterBody3D" unique_id=1446411886]
 script = ExtResource("1_3vyb7")
@@ -123,6 +126,17 @@ offset_bottom = 210.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("6_capture_selector")
+
+[node name="RadialMenuLayer" type="CanvasLayer" parent="." unique_id=1732619756]
+
+[node name="RadialMenu" type="PanelContainer" parent="RadialMenuLayer" unique_id=685901423]
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_styles/panel = SubResource("StyleBoxEmpty_fjrip")
+script = ExtResource("7_radial_menu")
 
 [node name="PauseMenuLayer" type="CanvasLayer" parent="." unique_id=330881426]
 

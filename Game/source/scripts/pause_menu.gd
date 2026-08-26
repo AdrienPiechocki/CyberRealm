@@ -52,9 +52,9 @@ var container: VBoxContainer
 const REMAPPABLE_ACTIONS := [
 	"forward", "back", "left", "right", "jump",
 	"look_up", "look_down", "look_left", "look_right",
-	"interact_mode", "window_menu",
+	"interact_mode", "layer_interact", "radial_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
-	"layer_interact", "left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
+	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
 
 var _settings: Dictionary = {}
@@ -841,21 +841,7 @@ func _show_lan() -> void:
 	name_edit.text_submitted.connect(func(_t: String):
 		_save_lan_name(name_edit)
 	)
-	if _lan_connected:
-		var name_row := HBoxContainer.new()
-		name_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		name_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		name_row.add_child(name_edit)
-		var name_apply := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
-		name_apply.custom_minimum_size = Vector2(80, 36)
-		name_apply.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		name_apply.pressed.connect(func():
-			_save_lan_name(name_edit)
-		)
-		name_row.add_child(name_apply)
-		container.add_child(name_row)
-	else:
-		container.add_child(name_edit)
+	container.add_child(name_edit)
 
 	var color_row := HBoxContainer.new()
 	color_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -870,19 +856,7 @@ func _show_lan() -> void:
 	color_btn.custom_minimum_size = Vector2(64, 30)
 	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	color_row.add_child(color_btn)
-	if _lan_connected:
-		color_btn.color_changed.connect(func(c: Color):
-			_settings["lan_player_color"] = c.to_html(true)
-			_save_settings()
-		)
-		var color_apply := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
-		color_apply.custom_minimum_size = Vector2(80, 30)
-		color_apply.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		color_apply.pressed.connect(func():
-			lan_color_changed.emit(color_btn.color)
-		)
-		color_row.add_child(color_apply)
-	else:
+	if not _lan_connected:
 		color_btn.color_changed.connect(func(c: Color):
 			_settings["lan_player_color"] = c.to_html(true)
 			_save_settings()
@@ -912,24 +886,7 @@ func _show_lan() -> void:
 		avatar_opt.set_item_metadata(avatar_opt.item_count - 1, path)
 	if avatar_opt.item_count > 0:
 		avatar_opt.select(maxi(sel_idx, 0))
-		if _lan_connected:
-			avatar_opt.item_selected.connect(func(idx: int):
-				var p := String(avatar_opt.get_item_metadata(idx))
-				_settings["lan_avatar_path"] = p
-				_save_settings()
-			)
-			avatar_row.add_child(avatar_opt)
-			var avatar_apply := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
-			avatar_apply.custom_minimum_size = Vector2(80, 30)
-			avatar_apply.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-			avatar_apply.pressed.connect(func():
-				var idx2 := avatar_opt.selected
-				if idx2 >= 0:
-					var p2 := String(avatar_opt.get_item_metadata(idx2))
-					lan_avatar_changed.emit(p2)
-			)
-			avatar_row.add_child(avatar_apply)
-		else:
+		if not _lan_connected:
 			avatar_opt.item_selected.connect(func(idx: int):
 				var p := String(avatar_opt.get_item_metadata(idx))
 				_settings["lan_avatar_path"] = p
@@ -941,6 +898,24 @@ func _show_lan() -> void:
 		avatar_label.queue_free()
 		avatar_row.queue_free()
 	container.add_child(avatar_row)
+
+	# Bouton Apply unifié : sauvegarde nom/couleur/avatar et émet les signaux
+	if _lan_connected:
+		var apply_btn := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
+		apply_btn.custom_minimum_size = Vector2(0, 36)
+		apply_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		apply_btn.pressed.connect(func():
+			_save_lan_name(name_edit)
+			_settings["lan_player_color"] = color_btn.color.to_html(true)
+			var idx := avatar_opt.selected
+			if idx >= 0:
+				_settings["lan_avatar_path"] = String(avatar_opt.get_item_metadata(idx))
+			_save_settings()
+			lan_color_changed.emit(color_btn.color)
+			if idx >= 0:
+				lan_avatar_changed.emit(String(avatar_opt.get_item_metadata(idx)))
+		)
+		container.add_child(apply_btn)
 
 	var host_btn := _make_btn("Host Game")
 	host_btn.pressed.connect(func():
@@ -1097,10 +1072,7 @@ func _custom_bind_text(bind: Dictionary) -> String:
 	var mods := _mods_to_string(bind.get("mods", {}))
 	if mods != "":
 		key_text = mods + "+" + key_text
-	var pad_text := _pad_bind_label(bind)
 	var cmd: String = bind.get("command", "")
-	if pad_text != "":
-		return "%s → %s" % [pad_text, cmd]
 	return "%s → %s" % [key_text, cmd]
 
 func _custom_key_label() -> String:
@@ -1115,34 +1087,7 @@ func _custom_key_label() -> String:
 		var mods := _mods_to_string(_custom_mods)
 		if mods != "":
 			key_text = mods + "+" + key_text
-	var pad_text := _custom_pad_label_text()
-	if key_text != "" and pad_text != "":
-		return key_text + " · " + pad_text
-	if pad_text != "":
-		return pad_text
 	return key_text
-
-func _pad_bind_label(bind: Dictionary) -> String:
-	var pad_type: String = bind.get("pad_type", "")
-	if pad_type == "button":
-		var btn_idx: int = int(bind.get("pad_button", -1))
-		return "LT + " + str(JOY_BTN_NAMES.get(btn_idx, "Btn%d" % btn_idx))
-	elif pad_type == "axis":
-		var axis: int = int(bind.get("pad_axis", -1))
-		var val: float = float(bind.get("pad_value", 1.0))
-		var name: String = JOY_AXIS_NAMES[axis] \
-			if axis >= 0 and axis < JOY_AXIS_NAMES.size() else "Axis%d" % axis
-		return "LT + " + name + ("+" if val > 0.0 else "-")
-	return ""
-
-func _custom_pad_label_text() -> String:
-	if _custom_pad_type == "button":
-		return "LT + " + str(JOY_BTN_NAMES.get(_custom_pad_button, "Btn%d" % _custom_pad_button))
-	elif _custom_pad_type == "axis":
-		var name: String = JOY_AXIS_NAMES[_custom_pad_axis] \
-			if _custom_pad_axis >= 0 and _custom_pad_axis < JOY_AXIS_NAMES.size() else "Axis%d" % _custom_pad_axis
-		return "LT + " + name + ("+" if _custom_pad_value > 0.0 else "-")
-	return ""
 
 func _mods_from_event(event: InputEvent) -> Dictionary:
 	if event is InputEventWithModifiers:
@@ -1228,23 +1173,13 @@ func _binding_text(action: String) -> String:
 	var events := InputMap.action_get_events(action)
 	if events.is_empty():
 		return "None"
-	# Affiche la liaison clavier/souris ET la liaison pad quand les deux
-	# existent (« Space · Pad A ») : depuis le remappeur pad-aware, une
-	# action peut porter l'un, l'autre, ou les deux.
 	var kb := ""
-	var joy := ""
 	for ev in events:
 		if kb == "" and (ev is InputEventKey or ev is InputEventMouseButton):
 			kb = _kb_event_text(ev)
-		elif joy == "" and (ev is InputEventJoypadButton or ev is InputEventJoypadMotion):
-			joy = _joy_event_text(ev)
-	if kb == "" and joy == "":
-		return "None"
-	if joy == "":
-		return kb
 	if kb == "":
-		return joy
-	return kb + " · " + joy
+		return "None"
+	return kb
 
 func _kb_event_text(ev: InputEvent) -> String:
 	if ev is InputEventKey:
@@ -1263,26 +1198,6 @@ func _kb_event_text(ev: InputEvent) -> String:
 		return mods + "+" + text if mods != "" else text
 	return ""
 
-## Noms de boutons/axes pad lisibles dans l'UI de rebind.
-const JOY_BTN_NAMES := {
-	JOY_BUTTON_A: "A", JOY_BUTTON_B: "B", JOY_BUTTON_X: "X", JOY_BUTTON_Y: "Y",
-	JOY_BUTTON_BACK: "BACK", JOY_BUTTON_GUIDE: "GUIDE", JOY_BUTTON_START: "START",
-	JOY_BUTTON_LEFT_STICK: "LS", JOY_BUTTON_RIGHT_STICK: "RS",
-	JOY_BUTTON_LEFT_SHOULDER: "LB", JOY_BUTTON_RIGHT_SHOULDER: "RB",
-	JOY_BUTTON_DPAD_UP: "D-Up", JOY_BUTTON_DPAD_DOWN: "D-Down",
-	JOY_BUTTON_DPAD_LEFT: "D-Left", JOY_BUTTON_DPAD_RIGHT: "D-Right",
-}
-const JOY_AXIS_NAMES := ["L-X", "L-Y", "R-X", "R-Y", "LT", "RT"]
-
-func _joy_event_text(ev: InputEvent) -> String:
-	if ev is InputEventJoypadButton:
-		return "Pad " + str(JOY_BTN_NAMES.get(ev.button_index, "Btn%d" % ev.button_index))
-	if ev is InputEventJoypadMotion:
-		var name: String = JOY_AXIS_NAMES[ev.axis] \
-			if ev.axis >= 0 and ev.axis < JOY_AXIS_NAMES.size() else "Axis%d" % ev.axis
-		return "Pad " + name + ("+" if ev.axis_value > 0.0 else "-")
-	return ""
-
 ## Remplace uniquement les événements de la MÊME classe d'entrée : rebinde
 ## clavier ne détruit plus la liaison pad d'une action, et vice-versa.
 func _event_class(ev: InputEvent) -> String:
@@ -1290,8 +1205,6 @@ func _event_class(ev: InputEvent) -> String:
 		return "key"
 	if ev is InputEventMouseButton:
 		return "mouse"
-	if ev is InputEventJoypadButton or ev is InputEventJoypadMotion:
-		return "joy"
 	return "other"
 
 func _set_action_event(action: String, new_ev: InputEvent) -> void:
@@ -1337,7 +1250,7 @@ func _apply_saved_keybinds() -> void:
 		if not binds[action] is Dictionary:
 			continue
 		var bind: Dictionary = binds[action]
-		if bind.has("kb") or bind.has("joy"):
+		if bind.has("kb"):
 			_apply_bind(action, bind)
 			continue
 		# Ancien format mono-entrée (avant le support pad).
@@ -1359,14 +1272,11 @@ func _save_keybinds() -> void:
 		if not InputMap.has_action(action):
 			continue
 		var kb = null
-		var joy = null
 		for ev in InputMap.action_get_events(action):
 			if kb == null and (ev is InputEventKey or ev is InputEventMouseButton):
 				kb = _serialize_event(ev)
-			elif joy == null and _event_class(ev) == "joy":
-				joy = _serialize_event(ev)
-		if kb != null or joy != null:
-			binds[action] = {"kb": kb, "joy": joy}
+		if kb != null:
+			binds[action] = {"kb": kb}
 	_settings["keybinds"] = binds
 	_save_settings()
 
@@ -1380,10 +1290,6 @@ func _serialize_event(ev: InputEvent) -> Dictionary:
 		return {"type": "key", "code": code, "mods": _mods_from_event(kev)}
 	if ev is InputEventMouseButton:
 		return {"type": "mouse", "button": ev.button_index, "mods": _mods_from_event(ev)}
-	if ev is InputEventJoypadButton:
-		return {"type": "joy_button", "button": ev.button_index}
-	if ev is InputEventJoypadMotion:
-		return {"type": "joy_axis", "axis": ev.axis, "value": ev.axis_value}
 	return {}
 
 ## Reconstruit un InputEvent depuis un descripteur JSON (null si inconnu).
@@ -1397,21 +1303,12 @@ static func _deserialize_event(d: Dictionary) -> InputEvent:
 			var mev := InputEventMouseButton.new()
 			mev.button_index = int(d.get("button", MOUSE_BUTTON_LEFT))
 			return mev
-		"joy_button":
-			var jb := InputEventJoypadButton.new()
-			jb.button_index = int(d.get("button", 0))
-			return jb
-		"joy_axis":
-			var jm := InputEventJoypadMotion.new()
-			jm.axis = int(d.get("axis", 0))
-			jm.axis_value = float(d.get("value", 1.0))
-			return jm
 	return null
 
 ## Applique une liaison sauvegardée : remplace la classe correspondante sans
 ## toucher à l'autre (rebinde clavier ne tue plus le pad, et inversement).
 func _apply_bind(action: String, bind: Dictionary) -> void:
-	for slot in ["kb", "joy"]:
+	for slot in ["kb"]:
 		var d = bind.get(slot)
 		if d is Dictionary and not d.is_empty():
 			var ev := _deserialize_event(d)
@@ -1531,16 +1428,6 @@ func _input(event: InputEvent) -> void:
 		ev.alt_pressed = mbtn.alt_pressed
 		ev.meta_pressed = mbtn.meta_pressed
 		new_event = ev
-	elif event is InputEventJoypadButton and event.pressed:
-		var jb := InputEventJoypadButton.new()
-		jb.button_index = event.button_index
-		new_event = jb
-	elif event is InputEventJoypadMotion and absf(event.axis_value) > 0.5:
-		# Stick/gâchette poussé(e) à plus de moitié course : on fige le sens.
-		var jm := InputEventJoypadMotion.new()
-		jm.axis = event.axis
-		jm.axis_value = signf(event.axis_value)
-		new_event = jm
 
 	if new_event == null:
 		return

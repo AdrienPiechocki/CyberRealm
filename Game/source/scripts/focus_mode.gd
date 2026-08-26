@@ -214,7 +214,7 @@ var _alpha_probing := false
 var _occluder_suspended := false
 
 var mouse_pos := Vector2.ZERO
-const SPEED := 1000.0
+const SPEED := 500.0
 var _stick_scroll_cooldown := 0.0
 
 func _ensure_world_occluder() -> void:
@@ -1229,10 +1229,10 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 		compositor.forward_pointer_button(id, 0x112, false)
 
 	# Scroll
-	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down"):
+	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down") or Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false):
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
-			var amount := -100 if Input.is_action_pressed("scroll_up") else 100
+			var amount := -100 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 100
 			compositor.forward_pointer_axis(id, 0, amount)
 			_stick_scroll_cooldown = 0.08
 	else:
@@ -1365,8 +1365,8 @@ func handle_focus_input(delta: float) -> void:
 		compositor.set_window_pointer(active_id, surf_x, surf_y, true)
 		_forward_window_buttons(active_id, delta)
 		return
-
-	var v := Input.get_vector("left", "right", "forward", "back")
+	
+	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
 	if v != Vector2.ZERO:
 		mouse_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size
@@ -1519,9 +1519,9 @@ func handle_focus_input(delta: float) -> void:
 	compositor.set_window_pointer(target_window, surf_x, surf_y, true)
 	_forward_window_buttons(target_window, delta)
 
-	if Input.is_action_just_pressed("scroll_up"):
+	if Input.is_action_just_pressed("scroll_up") or Input.is_action_pressed("scroll_up"):
 		compositor.forward_pointer_axis(target_window, 0, -100.0)
-	if Input.is_action_just_pressed("scroll_down"):
+	if Input.is_action_just_pressed("scroll_down") or Input.is_action_pressed("scroll_down"):
 		compositor.forward_pointer_axis(target_window, 0, 100.0)
 
 # Touches mortes AZERTY (^ et ¨) : Godot compose lui-même la séquence dans sa

@@ -16,6 +16,7 @@ extends Node3D
 @onready var window_menu = $Level/Player/WindowMenuLayer/WindowMenu
 @onready var capture_selector = $Level/Player/CaptureSelectorLayer/CaptureSelector
 @onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
+@onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
 
 var win3d: Node3D
 var focus: Node3D
@@ -57,6 +58,7 @@ const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
 const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
 
 var _level_path := ""
+var _menu_just_closed := false
 # Vrai tant que le niveau affiché est celui de l'hôte LAN (apply_host_level) :
 # à la déconnexion, le joueur doit retrouver SON niveau personnel.
 var _level_swapped := false
@@ -349,6 +351,8 @@ func _ready() -> void:
 	capture_selector.selector_cancelled.connect(_on_capture_selector_cancelled)
 
 	pause_menu.visibility_changed.connect(_on_pause_menu_visibility_changed)
+	pause_menu.visibility_changed.connect(_on_menu_visibility_changed)
+	window_menu.visibility_changed.connect(_on_menu_visibility_changed)
 	pause_menu.app_launch_requested.connect(compositor.launch_app)
 	pause_menu.quit_requested.connect(_on_quit_requested)
 	pause_menu.keyboard_layout_changed.connect(compositor.set_keyboard_layout)
@@ -360,6 +364,8 @@ func _ready() -> void:
 	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
 	pins.set_pins_opacity(pause_menu.get_pins_opacity())
 	pins.set_pins_position(pause_menu.get_pins_position())
+	# Menu radial contextuel (B sur manette)
+	radial_menu.radial_action.connect(_on_radial_action)
 
 	# Multijoueur LAN : l'hôte est serveur, chaque machine garde son propre
 	# compositeur/bureau, seuls les avatars des joueurs sont partagés.
@@ -511,29 +517,6 @@ func _try_custom_bind(event: InputEvent) -> bool:
 		if matched:
 			compositor.launch_app(command)
 			return true
-	# Gamepad custom binds : requiert LT enfoncé.
-	var lt_pressed := Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.5
-	if lt_pressed:
-		for bind in binds:
-			if not bind is Dictionary:
-				continue
-			var command: String = bind.get("command", "")
-			if command == "":
-				continue
-			var pad_type: String = bind.get("pad_type", "")
-			if pad_type == "button":
-				var btn_idx: int = int(bind.get("pad_button", -1))
-				if btn_idx >= 0 and Input.is_joy_button_pressed(0, btn_idx):
-					compositor.launch_app(command)
-					return true
-			elif pad_type == "axis":
-				var axis: int = int(bind.get("pad_axis", -1))
-				var val: float = float(bind.get("pad_value", 1.0))
-				if axis >= 0:
-					var cur := Input.get_joy_axis(0, axis)
-					if (val > 0.0 and cur > 0.5) or (val < 0.0 and cur < -0.5):
-						compositor.launch_app(command)
-						return true
 	return false
 
 # Vrai si les modificateurs de l'événement correspondent exactement à ceux du bind.
@@ -597,29 +580,6 @@ func _toggle_remote_pin(peer_id: int, wid: int) -> void:
 # ── Boucle principale ────────────────────────────────────────────────
 
 func _process(delta: float) -> void:
-	# LT tenu → désactive les binds gamepad classiques (InputMap) pour que
-	# seuls les custom binds gamepad restent actifs.
-	var lt_down := Input.get_joy_axis(0, JOY_AXIS_TRIGGER_LEFT) > 0.5
-	if lt_down and not _lt_stripped and not pause_menu.visible:
-		_lt_stripped = true
-		_lt_stripped_events.clear()
-		for action in InputMap.get_actions():
-			var pad_events: Array[InputEvent] = []
-			for ev in InputMap.action_get_events(action):
-				if ev is InputEventJoypadButton or ev is InputEventJoypadMotion:
-					pad_events.append(ev)
-			if not pad_events.is_empty():
-				_lt_stripped_events[action] = pad_events
-				for ev in pad_events:
-					InputMap.action_erase_event(action, ev)
-	elif not lt_down and _lt_stripped:
-		for action in _lt_stripped_events:
-			for ev in _lt_stripped_events[action]:
-				if InputMap.has_action(action):
-					InputMap.action_add_event(action, ev)
-		_lt_stripped = false
-		_lt_stripped_events.clear()
-
 	fx.process(delta)
 
 	# Diagnostic rendu périodique (comparaison entre machines).
@@ -693,6 +653,22 @@ func _process(delta: float) -> void:
 	if lan != null:
 		player.input_locked = lan.is_waiting_for_host_map()
 	if player.input_locked:
+		return
+
+	_menu_just_closed = false
+
+	# Menu radial (B sur manette) : toggle ouverture/fermeture
+	if Input.is_action_just_pressed("radial_menu", true):
+		if radial_menu.visible:
+			radial_menu.hide_menu()
+		elif not _menu_just_closed \
+				and not layers.keyboard_busy() \
+				and not window_menu.visible and not pause_menu.visible:
+			var ctx := _determine_radial_context()
+			radial_menu.show_menu(ctx)
+
+	# Menu radial ouvert : geler le monde
+	if radial_menu.visible:
 		return
 
 	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
@@ -940,23 +916,19 @@ func _on_window_menu_grab(wid: int) -> void:
 	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
 	# caméra ; grab OFF → relâcher la prise, le menu reste ouvert.
 	win3d.toggle_grab_window(wid)
-	if win3d.is_window_grabbed(wid):
-		window_menu.hide_menu()
-	else:
-		window_menu.refresh_preview()
+	window_menu.hide_menu()
 
 func _on_window_menu_focus(wid: int) -> void:
-	window_menu.hide_menu()
 	focus.enter_focus(wid)
+	window_menu.hide_menu()
 
 func _on_window_menu_toggle_hide(wid: int) -> void:
 	win3d.toggle_hide(wid)
-	if window_menu.visible:
-		window_menu.refresh_preview()
+	window_menu.hide_menu()
 
 func _on_window_menu_find(wid: int) -> void:
-	window_menu.hide_menu()
 	fx.toggle_find(wid)
+	window_menu.hide_menu()
 
 func _on_window_menu_pin(wid: int) -> void:
 	_toggle_pin(wid)
@@ -966,14 +938,80 @@ func _on_window_menu_share(wid: int) -> void:
 	# Partage « screenshare » : on ne fait que basculer la visibilité du quad
 	# chez les autres joueurs — aucune interaction distante possible.
 	win3d.set_window_shared(wid, not win3d.is_window_shared(wid))
-	if window_menu.visible:
-		window_menu.refresh_preview()
+	window_menu.hide_menu()
 
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
 
 func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+# ── Menu radial contextuel ────────────────────────────────────────
+
+func _determine_radial_context() -> String:
+	if focus.is_active():
+		return "focus"
+	var target := _raycast_window_target(_aim_pos())
+	if target.has("local") or target.has("remote_peer"):
+		return "window"
+	return "fps"
+
+func _on_radial_action(action: String) -> void:
+	match action:
+		"window_menu":
+			window_menu.show_menu()
+		"layer_interact":
+			layers.toggle_layer_interact()
+		"interact":
+			if interact_mode_active:
+				compositor.release_all_keys()
+			interact_mode_active = not interact_mode_active
+			player.interact_mode_active = not player.interact_mode_active
+		"grab":
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				win3d.toggle_grab_window(target["local"])
+		"focus":
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				layers.deactivate_layer_interact()
+				focus.enter_focus(target["local"])
+			elif target.has("remote_peer"):
+				layers.deactivate_layer_interact()
+				focus.enter_remote_focus(target["remote_peer"], target["remote_wid"],
+					lan.get_remote_window_texture(target["remote_peer"], target["remote_wid"]))
+		"kill":
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				compositor.close_window(target["local"])
+		"pin":
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				_toggle_pin(target["local"])
+			elif target.has("remote_peer"):
+				_toggle_remote_pin(target["remote_peer"], target["remote_wid"])
+		"share":
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				win3d.set_window_shared(target["local"], not win3d.is_window_shared(target["local"]))
+		"hide":
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				win3d.toggle_hide(target["local"])
+		"exit_focus":
+			focus.exit_focus()
+		"kill_focused":
+			if focus.is_active() and not focus.is_remote():
+				compositor.close_window(focus.get_focus_window_id())
+		"binds":
+			var binds: Array = pause_menu.get_custom_binds()
+			if binds.size() > 0:
+				radial_menu.show_menu("binds", -1, binds)
+		_:
+			if action.begins_with("bind:"):
+				var cmd := action.substr(5)
+				if not cmd.is_empty():
+					compositor.launch_app(cmd)
 
 # ── Sélecteur de capture OBS ─────────────────────────────────────────
 
@@ -1131,3 +1169,7 @@ func _on_pause_menu_visibility_changed() -> void:
 			player.interact_mode_active = false
 		if focus.is_active():
 			focus.exit_focus()
+
+func _on_menu_visibility_changed() -> void:
+	if not window_menu.visible and not pause_menu.visible:
+		_menu_just_closed = true
