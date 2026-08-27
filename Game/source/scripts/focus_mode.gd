@@ -216,6 +216,8 @@ var _occluder_suspended := false
 var mouse_pos := Vector2.ZERO
 const SPEED := 700.0
 var _stick_scroll_cooldown := 0.0
+var _scroll_up_held := false
+var _scroll_down_held := false
 var virtual_keyboard: VirtualKeyboard
 
 func _ensure_world_occluder() -> void:
@@ -1217,6 +1219,29 @@ func _update_window_move(mouse_pos: Vector2) -> void:
 # Forward les boutons souris vers une fenêtre (chemin commun aux modes
 # souris visible et capturée).
 func _forward_window_buttons(id: int, delta: float) -> void:
+	# Scroll (gamepad stick + buttons) : forward AVANT le garde-fou in_game().
+	# Les boutons gamepad n'ont pas d'auto-repeat ; le polling maintient le
+	# scroll continu quand le bouton est maintenu (cooldown 80ms).
+	# Utilise l'état tracké manuellement (_scroll_up/down_held) car
+	# set_input_as_handled() dans _input empêche Input.is_action_pressed()
+	# de fonctionner correctement pour les boutons gamepad.
+	var scroll_active := _scroll_up_held or _scroll_down_held \
+		or Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down")
+	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		if scroll_active or _scroll_up_held or _scroll_down_held:
+			print("scroll_poll: up=%s down=%s cooldown=%.3f delta=%.3f" % [
+				_scroll_up_held, _scroll_down_held, _stick_scroll_cooldown, delta])
+	if scroll_active:
+		_stick_scroll_cooldown -= delta
+		if _stick_scroll_cooldown <= 0.0:
+			var amount := -120.0 if _scroll_up_held or Input.is_action_pressed("scroll_up") else 120.0
+			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+				print("scroll_fwd: amount=%.1f" % amount)
+			compositor.forward_pointer_axis(id, 0, amount)
+			_stick_scroll_cooldown = 0.08
+	else:
+		_stick_scroll_cooldown = 0.0
+
 	if in_game():
 		return
 	if _left_press_this_frame():
@@ -1234,16 +1259,6 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 		compositor.forward_pointer_button(id, 0x112, true)
 	if Input.is_action_just_released("middle_click"):
 		compositor.forward_pointer_button(id, 0x112, false)
-
-	# Scroll (gamepad stick only — mouse wheel is forwarded directly in handle_input_event)
-	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down") or Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false):
-		_stick_scroll_cooldown -= delta
-		if _stick_scroll_cooldown <= 0.0:
-			var amount := -120.0 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 120.0
-			compositor.forward_pointer_axis(id, 0, amount)
-			_stick_scroll_cooldown = 0.08
-	else:
-		_stick_scroll_cooldown = 0.0
 
 func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
@@ -1342,6 +1357,13 @@ func _hide_cursor_overlay() -> void:
 # l'active ; Super+clic gauche déplace une fenêtre (fullscreen exclue) en
 # absorbant tous les événements pointeur.
 func handle_focus_input(delta: float) -> void:
+	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+		var active_id_tmp := _active_id()
+		var captured_tmp := false
+		if active_id_tmp != -1 and focus_rects.has(active_id_tmp):
+			captured_tmp = _state(active_id_tmp)["mouse_captured"]
+		print("handle_focus_input: delta=%.3f active=%d captured=%s scroll_up=%s scroll_down=%s" % [
+			delta, active_id_tmp, captured_tmp, _scroll_up_held, _scroll_down_held])
 	if remote_focus:
 		return
 	var active_id := _active_id()
@@ -1370,6 +1392,9 @@ func handle_focus_input(delta: float) -> void:
 		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
 		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
 		compositor.set_window_pointer(active_id, surf_x, surf_y, true)
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			print("forward_buttons: id=%d scroll_up=%s scroll_down=%s" % [
+				active_id, _scroll_up_held, _scroll_down_held])
 		_forward_window_buttons(active_id, delta)
 		return
 	
@@ -1799,5 +1824,15 @@ func in_game() -> bool:
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		mouse_pos = event.position
-	if in_game() and event is InputEventJoypadButton and event.pressed:
-		get_viewport().set_input_as_handled()
+	if event is InputEventJoypadButton:
+		var jpb := event as InputEventJoypadButton
+		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
+			if jpb.button_index == JOY_BUTTON_LEFT_SHOULDER or jpb.button_index == JOY_BUTTON_RIGHT_SHOULDER:
+				print("scroll_input: btn=%d pressed=%s in_game=%s" % [
+					jpb.button_index, jpb.pressed, in_game()])
+		if jpb.button_index == JOY_BUTTON_LEFT_SHOULDER:
+			_scroll_up_held = jpb.pressed
+		elif jpb.button_index == JOY_BUTTON_RIGHT_SHOULDER:
+			_scroll_down_held = jpb.pressed
+		if in_game() and jpb.pressed:
+			get_viewport().set_input_as_handled()
