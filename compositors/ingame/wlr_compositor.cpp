@@ -4384,14 +4384,21 @@ void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double d
     notify_activity();
     WindowState *ws = find_window(window_id);
     if (!ws || !seat) return;
+
+    // delta values are in v120 units (120 = one standard wheel notch).
+    // Convert to degrees for the continuous value parameter:
+    // 120 v120 = 15° (standard 15° click-angle mouse).
+    constexpr double V120_TO_DEGREES = 15.0 / 120.0;
     uint32_t time = get_time_msec();
     if (delta_y != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
-            delta_y, (int32_t)delta_y, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+            delta_y * V120_TO_DEGREES, (int32_t)delta_y,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     if (delta_x != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-            delta_x, (int32_t)delta_x, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+            delta_x * V120_TO_DEGREES, (int32_t)delta_x,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     wlr_seat_pointer_notify_frame(seat);
 }
@@ -4432,14 +4439,17 @@ void WlrCompositor::forward_pointer_axis_layer(int layer_id, double delta_x, dou
     notify_activity();
     LayerSurfaceState *ls = find_layer_surface(layer_id);
     if (!ls || !ls->layer_surface || !seat) return;
+    constexpr double V120_TO_DEGREES = 15.0 / 120.0;
     uint32_t time = get_time_msec();
     if (delta_y != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
-            delta_y, (int32_t)delta_y, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+            delta_y * V120_TO_DEGREES, (int32_t)delta_y,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     if (delta_x != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-            delta_x, (int32_t)delta_x, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+            delta_x * V120_TO_DEGREES, (int32_t)delta_x,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     wlr_seat_pointer_notify_frame(seat);
 }
@@ -4465,14 +4475,17 @@ void WlrCompositor::forward_pointer_axis_lock(double delta_x, double delta_y) {
     notify_activity();
     SessionLockSurfaceState *ss = get_active_lock_surface();
     if (!ss || !ss->lock_surface || !seat) return;
+    constexpr double V120_TO_DEGREES = 15.0 / 120.0;
     uint32_t time = get_time_msec();
     if (delta_y != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
-            delta_y, (int32_t)delta_y, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+            delta_y * V120_TO_DEGREES, (int32_t)delta_y,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     if (delta_x != 0.0) {
         wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
-            delta_x, (int32_t)delta_x, WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+            delta_x * V120_TO_DEGREES, (int32_t)delta_x,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
     }
     wlr_seat_pointer_notify_frame(seat);
 }

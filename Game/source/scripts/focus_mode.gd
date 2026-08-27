@@ -1227,16 +1227,10 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	# de fonctionner correctement pour les boutons gamepad.
 	var scroll_active := _scroll_up_held or _scroll_down_held \
 		or Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down")
-	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-		if scroll_active or _scroll_up_held or _scroll_down_held:
-			print("scroll_poll: up=%s down=%s cooldown=%.3f delta=%.3f" % [
-				_scroll_up_held, _scroll_down_held, _stick_scroll_cooldown, delta])
 	if scroll_active:
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
 			var amount := -120.0 if _scroll_up_held or Input.is_action_pressed("scroll_up") else 120.0
-			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-				print("scroll_fwd: amount=%.1f" % amount)
 			compositor.forward_pointer_axis(id, 0, amount)
 			_stick_scroll_cooldown = 0.08
 	else:
@@ -1547,7 +1541,14 @@ func handle_focus_input(delta: float) -> void:
 
 	surf_x = tst["mouse_uv"].x * tst["surface_size"].x + tst["content_offset"].x
 	surf_y = tst["mouse_uv"].y * tst["surface_size"].y + tst["content_offset"].y
-	compositor.forward_pointer_motion(target_window, surf_x, surf_y)
+	# Le motion redundant avant chaque frame d'axis envoie wl_pointer.motion
+	# + frame INUTILEMENT au client (la souris est stationnaire). Le client
+	# reçoit alors 2 frames par tick de scroll au lieu d'1, ce qui perturbe
+	# le traitement du scroll côté client (Steam/SDL). On skip le motion
+	# quand le scroll est actif — le focus pointeur est déjà établi.
+	var scroll_active := _scroll_up_held or _scroll_down_held
+	if not scroll_active:
+		compositor.forward_pointer_motion(target_window, surf_x, surf_y)
 	compositor.set_window_pointer(target_window, surf_x, surf_y, true)
 	_forward_window_buttons(target_window, delta)
 
