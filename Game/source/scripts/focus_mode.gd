@@ -1239,7 +1239,7 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down") or Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false):
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
-			var amount := -100 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 100
+			var amount := -50 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 50
 			compositor.forward_pointer_axis(id, 0, amount)
 			_stick_scroll_cooldown = 0.08
 	else:
@@ -1525,11 +1525,6 @@ func handle_focus_input(delta: float) -> void:
 	compositor.forward_pointer_motion(target_window, surf_x, surf_y)
 	compositor.set_window_pointer(target_window, surf_x, surf_y, true)
 	_forward_window_buttons(target_window, delta)
-
-	if Input.is_action_just_pressed("scroll_up") or Input.is_action_pressed("scroll_up"):
-		compositor.forward_pointer_axis(target_window, 0, -100.0)
-	if Input.is_action_just_pressed("scroll_down") or Input.is_action_pressed("scroll_down"):
-		compositor.forward_pointer_axis(target_window, 0, 100.0)
 
 # Touches mortes AZERTY (^ et ¨) : Godot compose lui-même la séquence dans sa
 # couche X11 et avale l'appui de la touche morte PUIS le relâchement de la
