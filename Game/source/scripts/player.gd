@@ -77,10 +77,7 @@ func _physics_process(delta):
 		velocity.z = 0
 		move_and_slide()
 		return
-	var input := Vector2(
-		float(Input.is_action_pressed("right", true)) - float(Input.is_action_pressed("left", true)),
-		float(Input.is_action_pressed("back", true)) - float(Input.is_action_pressed("forward", true))
-	)
+	var input := Input.get_vector("left", "right", "forward", "back")
 	var movement_dir = transform.basis * Vector3(input.x, 0, input.y)
 	var pad_cursor_active := Input.is_action_pressed("layer_interact", true) or layer_pointer_active
 	if not pad_cursor_active:
