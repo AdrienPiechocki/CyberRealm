@@ -15,6 +15,7 @@ var _shift_locked := false
 var _ctrl_locked := false
 var _alt_locked := false
 var _key_buttons: Array[Button] = []
+var _target_line_edit: LineEdit = null
 
 # ── Layout data : physical keycode → {normal, shift} label ──────────────
 # Les keycodes sont les positions physiques (US QWERTY = référence).
@@ -355,9 +356,6 @@ func _make_key_button(keycode: int, layout_data: Dictionary) -> Button:
 
 
 func _on_key_pressed(keycode: int, btn: Button) -> void:
-	if _compositor == null:
-		return
-
 	var layout_data := _get_current_layout()
 
 	# Toggle modifiers
@@ -375,6 +373,13 @@ func _on_key_pressed(keycode: int, btn: Button) -> void:
 			_alt_locked = not _alt_locked
 			_update_mod_button_style(btn, _alt_locked)
 			return
+
+	# If a LineEdit in the pause menu has focus, write directly to it
+	if _try_forward_to_line_edit(keycode, layout_data):
+		return
+
+	if _compositor == null:
+		return
 
 	# Apply active modifiers
 	if _shift_locked:
@@ -395,6 +400,28 @@ func _on_key_pressed(keycode: int, btn: Button) -> void:
 		_compositor.forward_keyboard_key(KEY_CTRL, 0, false)
 	if _shift_locked:
 		_compositor.forward_keyboard_key(KEY_SHIFT, 0, false)
+
+
+func _try_forward_to_line_edit(keycode: int, layout_data: Dictionary) -> bool:
+	if _target_line_edit == null or not is_instance_valid(_target_line_edit):
+		return false
+	var le := _target_line_edit
+	match keycode:
+		KEY_BACKSPACE:
+			if not le.text.is_empty():
+				le.text = le.text.left(le.text.length() - 1)
+				le.caret_column = le.text.length()
+		KEY_ENTER:
+			le.text_submitted.emit(le.text)
+			le.release_focus()
+		_:
+			var entry: Dictionary = layout_data.get(keycode, {})
+			if not entry.is_empty():
+				var ch: String = entry.get("s", "") if _shift_locked else entry.get("n", "")
+				if not ch.is_empty():
+					le.text += ch
+					le.caret_column = le.text.length()
+	return true
 
 
 func _update_mod_button_style(btn: Button, active: bool) -> void:
@@ -469,10 +496,11 @@ func toggle_menu() -> void:
 		show_menu()
 
 
-func show_menu() -> void:
+func show_menu(target_line_edit: LineEdit = null) -> void:
 	_shift_locked = false
 	_ctrl_locked = false
 	_alt_locked = false
+	_target_line_edit = target_line_edit
 	var layout_data := _get_current_layout()
 	_update_all_labels(layout_data)
 	# Reset mod button styles
@@ -491,6 +519,9 @@ func show_menu() -> void:
 
 func hide_menu() -> void:
 	visible = false
+	if _target_line_edit != null and is_instance_valid(_target_line_edit):
+		_target_line_edit.grab_focus()
+	_target_line_edit = null
 	keyboard_closed.emit()
 
 

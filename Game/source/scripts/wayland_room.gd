@@ -86,10 +86,6 @@ var _last_pinch_factor := 1.0
 var _last_pinch_time_msec := -1
 const PINCH_DEDUP_WINDOW_MS := 100
 
-# LT held → strip gamepad events from InputMap to disable standard binds.
-var _lt_stripped := false
-var _lt_stripped_events: Dictionary = {} # action -> Array[InputEvent]
-
 func _load_level() -> void:
 	# Chargement du niveau custom (res://user/level.tscn) si présent, sinon le
 	# niveau par défaut. Les assets du niveau custom doivent avoir été importés
@@ -370,6 +366,7 @@ func _ready() -> void:
 	# Clavier virtuel
 	keyboard.setup(compositor, pause_menu, radial_menu)
 	keyboard.keyboard_closed.connect(_on_keyboard_closed)
+	pause_menu.setup_keyboard(keyboard)
 
 	# Multijoueur LAN : l'hôte est serveur, chaque machine garde son propre
 	# compositeur/bureau, seuls les avatars des joueurs sont partagés.
@@ -666,7 +663,6 @@ func _process(delta: float) -> void:
 	if player.input_locked:
 		return
 
-	_menu_just_closed = false
 
 	# Menu radial (B sur manette) : toggle ouverture/fermeture
 	if Input.is_action_just_pressed("radial_menu", true):
@@ -678,6 +674,7 @@ func _process(delta: float) -> void:
 			var ctx := _determine_radial_context()
 			radial_menu.show_menu(ctx)
 
+	_menu_just_closed = false
 	# Menu radial ouvert : geler le monde
 	if radial_menu.visible:
 		return
@@ -793,6 +790,7 @@ func _process(delta: float) -> void:
 	# Cible de drop pendant un drag Wayland (même rayon caméra).
 	if file_share != null:
 		file_share.update_drag(ray_origin, ray_dir)
+	
 
 func _input(event: InputEvent) -> void:
 	# Tout input (même celui du joueur qui ne vise aucune surface : WASD,
