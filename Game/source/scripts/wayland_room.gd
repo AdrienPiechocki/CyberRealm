@@ -673,6 +673,7 @@ func _process(delta: float) -> void:
 		if radial_menu.visible:
 			radial_menu.hide_menu()
 		elif not _menu_just_closed \
+				and not focus.in_game() \
 				and not window_menu.visible and not pause_menu.visible:
 			var ctx := _determine_radial_context()
 			radial_menu.show_menu(ctx)
