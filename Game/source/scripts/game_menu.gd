@@ -40,7 +40,7 @@ func _process(delta: float) -> void:
 		_stick_nav_cooldown -= delta
 		if _stick_nav_cooldown <= 0.0:
 			_move_focus(action)
-			_stick_nav_cooldown = 0.25
+			_stick_nav_cooldown = 0.12
 	else:
 		_stick_nav_cooldown = 0.0
 
