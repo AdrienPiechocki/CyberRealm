@@ -314,7 +314,7 @@ Full controller support, alongside keyboard & mouse (both stay active):
 | `B`                       | Toggle radial menu (context-sensitive ring)       |
 | `X`                       | Left click                                        |
 | `Y`                       | Right click                                       |
-| `Select`                  | Interact mode                                     |
+| `Select`                  | Middle click                                      |
 | `Start`                   | Pause menu                                        |
 | `LB`                      | Scroll Up                                         |
 | `RB`                      | Scroll Down                                       |
