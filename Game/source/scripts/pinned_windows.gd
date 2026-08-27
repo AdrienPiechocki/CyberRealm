@@ -22,8 +22,11 @@ var pins_position := "top_left"
 var _hover_tween: Tween
 var _is_hovering := false
 var _last_mouse_pos := Vector2(-1, -1)
+var mouse_pos := Vector2.ZERO
+var SPEED := 500.0
 
 func setup(ui_ref: CanvasLayer, focus_ref: Node3D) -> void:
+	mouse_pos = get_viewport().get_mouse_position()
 	ui = ui_ref
 	focus = focus_ref
 	if ui != null and ui.get_viewport() != null:
@@ -181,7 +184,7 @@ func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> vo
 		var pip_tex: TextureRect = pinned_windows[key].get_child(0)
 		pip_tex.texture = texture
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	if pinned_windows.is_empty():
 		return
 	# Hover = visée (rayon caméra sur la fenêtre 3D épinglée), quel que soit
@@ -191,7 +194,12 @@ func _process(_delta: float) -> void:
 	if focus.focus_fullscreen_id in pinned_windows:
 		hovering = true
 	elif not hovering and (Input.mouse_mode == Input.MOUSE_MODE_VISIBLE or focus.focus_fullscreen_id != -1):
-		var mouse_pos := get_viewport().get_mouse_position()
+		var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
+		if v != Vector2.ZERO:
+			mouse_pos += v * v.length() * SPEED * delta
+			var vs := get_viewport().get_visible_rect().size
+			mouse_pos = mouse_pos.clamp(Vector2.ONE, vs - Vector2.ONE)
+			get_viewport().warp_mouse(mouse_pos)
 		if mouse_pos == _last_mouse_pos:
 			return
 		_last_mouse_pos = mouse_pos
@@ -243,3 +251,7 @@ func _look_hover() -> bool:
 		var rw: Dictionary = collider.get_meta("remote_window")
 		return pinned_windows.has(_remote_key(int(rw.get("peer_id", -1)), int(rw.get("wid", -1))))
 	return false
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion:
+		mouse_pos = event.position

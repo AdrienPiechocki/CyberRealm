@@ -85,15 +85,17 @@ var session_lock_surface_id := -1
 
 var _cursor_pos := Vector2.ZERO
 const SPEED := 500.0
+var virtual_keyboard: VirtualKeyboard
 
-func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control) -> void:
+func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control, keyboard: VirtualKeyboard) -> void:
 	compositor = compositor_ref
 	player = player_ref
 	ui = ui_ref
 	focus = focus_ref
 	pause_menu = pause_menu_ref
 	window_menu = window_menu_ref
-
+	virtual_keyboard = keyboard
+	
 	_cursor_pos = get_viewport().get_visible_rect().size / 2.0
 
 	layer_shader = Shader.new()
@@ -208,7 +210,7 @@ func toggle_layer_interact() -> void:
 	# Si un overlay interactif (rofi...) a le focus clavier, la touche lui
 	# est routée par _input : ne pas basculer le mode souris par-dessus.
 	if _any_interactive_layer() and compositor.get_keyboard_focus_layer_id() >= 0:
-		return
+		compositor.forward_keyboard_key(KEY_ESCAPE, 0, true)
 	if layer_interact_active:
 		layer_interact_active = false
 		layer_interact_manual = false
@@ -460,7 +462,7 @@ func handle_layer_pointer(delta: float) -> bool:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return false
 	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
-	if v != Vector2.ZERO:
+	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		_cursor_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size
 		_cursor_pos = _cursor_pos.clamp(Vector2.ONE, vs - Vector2.ONE)
@@ -476,3 +478,5 @@ func handle_layer_pointer(delta: float) -> bool:
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		_cursor_pos = event.position
+	if keyboard_busy() and event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B:
+		get_viewport().set_input_as_handled()
