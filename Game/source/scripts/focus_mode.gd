@@ -1239,7 +1239,7 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down") or Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false):
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
-			var amount := -50 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 50
+			var amount := -120.0 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 120.0
 			compositor.forward_pointer_axis(id, 0, amount)
 			_stick_scroll_cooldown = 0.08
 	else:
@@ -1737,6 +1737,18 @@ func handle_input_event(event: InputEvent) -> bool:
 			_left_down = mb.pressed
 			_left_event_pressed = mb.pressed
 			_left_event_frame = Engine.get_process_frames()
+		# Scroll wheel : forward direct au compositeur (pas de cooldown).
+		# Les ticks souris sont ponctuels (1 frame) ; le polling dans
+		# _forward_window_buttons rate les ticks rapides à cause du cooldown
+		# conçu pour le stick gamepad.
+		if mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
+			var target := _active_id()
+			if target != -1:
+				compositor.forward_pointer_axis(target, 0, -120.0)
+		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
+			var target := _active_id()
+			if target != -1:
+				compositor.forward_pointer_axis(target, 0, 120.0)
 		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
 			print("mouse _input: btn=", mb.button_index, " pressed=", mb.pressed,
 				" meta=", mb.meta_pressed, " pos=", mb.position)
