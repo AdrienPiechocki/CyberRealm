@@ -260,6 +260,9 @@ func _process(delta: float) -> void:
 	if focus_mode:
 		_update_world_occluder()
 		_update_occluder_for_alpha(delta)
+		var st = _state(_active_id())
+		if st["mouse_captured"]:
+			st["is_game"] = true
 
 # Analyse par SALVE l'alpha du contenu de la fenêtre focus LOCALE : une seule
 # décision par focus (le contenu change rarement d'opacité en cours de
@@ -401,6 +404,7 @@ func _state(id: int) -> Dictionary:
 		focus_states[id] = {
 		"original_size": Vector2.ONE,
 		"mouse_captured": false,
+		"is_game": false,
 		"mouse_uv": Vector2(0.5, 0.5),
 		"surface_size": Vector2(1, 1),
 		"content_offset": Vector2.ZERO,
@@ -1213,6 +1217,8 @@ func _update_window_move(mouse_pos: Vector2) -> void:
 # Forward les boutons souris vers une fenêtre (chemin commun aux modes
 # souris visible et capturée).
 func _forward_window_buttons(id: int, delta: float) -> void:
+	if in_game():
+		return
 	if _left_press_this_frame():
 		compositor.forward_pointer_button(id, 0x110, true)
 	if _left_release_this_frame():
@@ -1777,6 +1783,14 @@ func _is_compositor_shortcut(event: InputEventKey) -> bool:
 			return true
 	return false
 
+func in_game() -> bool:
+	var st := _state(_active_id())
+	if st["is_game"]:
+		return true
+	return false
+
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		mouse_pos = event.position
+	if in_game() and event is InputEventJoypadButton and event.pressed:
+		get_viewport().set_input_as_handled()
