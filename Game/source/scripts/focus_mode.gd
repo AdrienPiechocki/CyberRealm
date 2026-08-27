@@ -214,7 +214,7 @@ var _alpha_probing := false
 var _occluder_suspended := false
 
 var mouse_pos := Vector2.ZERO
-const SPEED := 500.0
+const SPEED := 700.0
 var _stick_scroll_cooldown := 0.0
 var virtual_keyboard: VirtualKeyboard
 
@@ -1367,7 +1367,7 @@ func handle_focus_input(delta: float) -> void:
 		_forward_window_buttons(active_id, delta)
 		return
 	
-	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
+	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
 	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		mouse_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size
