@@ -263,7 +263,7 @@ func _ready() -> void:
 
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d, keyboard)
-	layers.setup(compositor, player, ui, focus, pause_menu, window_menu)
+	layers.setup(compositor, player, ui, focus, pause_menu, window_menu, keyboard)
 	pins.setup(ui, focus)
 	fx.setup(win3d)
 	presenter.setup(compositor)
@@ -634,6 +634,7 @@ func _process(delta: float) -> void:
 		if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		layers.handle_locked_input()
+		layers.handle_layer_pointer(delta)
 		return
 	player.session_locked = false
 
@@ -672,7 +673,6 @@ func _process(delta: float) -> void:
 		if radial_menu.visible:
 			radial_menu.hide_menu()
 		elif not _menu_just_closed \
-				and not layers.keyboard_busy() \
 				and not window_menu.visible and not pause_menu.visible:
 			var ctx := _determine_radial_context()
 			radial_menu.show_menu(ctx)
@@ -960,7 +960,8 @@ func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_keyboard_closed() -> void:
-	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if not layers.layer_interact_active:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 # ── Menu radial contextuel ────────────────────────────────────────
 
@@ -979,11 +980,11 @@ func _on_radial_action(action: String) -> void:
 		"layer_interact":
 			layers.toggle_layer_interact()
 		"interact":
+			_on_radial_action("keyboard")
 			if interact_mode_active:
 				compositor.release_all_keys()
 			interact_mode_active = not interact_mode_active
 			player.interact_mode_active = not player.interact_mode_active
-			_on_radial_action("keyboard")
 		"grab":
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):
