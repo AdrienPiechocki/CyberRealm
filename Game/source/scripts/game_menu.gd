@@ -83,41 +83,111 @@ func _move_focus(action: String) -> void:
 	if items.is_empty():
 		return
 	var current := get_viewport().gui_get_focus_owner()
-	var idx := items.find(current)
-	if idx < 0:
-		# Pas de focus ou focus hors liste → premier élément.
+	if current == null or items.find(current) < 0:
 		items[0].grab_focus()
 		return
-	var target: int
-	match action:
-		"ui_up":
-			target = items.size() - 1 if idx == 0 else idx - 1
-		"ui_down":
-			target = 0 if idx >= items.size() - 1 else idx + 1
-		"ui_left":
-			target = items.size() - 1 if idx == 0 else idx - 1
-		"ui_right":
-			target = 0 if idx >= items.size() - 1 else idx + 1
-		_:
-			return
-	items[target].grab_focus()
+	# Slider : left/right ajuste la valeur au lieu de naviguer.
+	if current is HSlider and action in ["ui_left", "ui_right"]:
+		var sl := current as HSlider
+		var step: float = sl.step if sl.step > 0 else 1.0
+		if action == "ui_right":
+			sl.value = minf(sl.value + step, sl.max_value)
+		else:
+			sl.value = maxf(sl.value - step, sl.min_value)
+		return
+	var cp := current.global_position + current.size * 0.5
+
+	if action in ["ui_up", "ui_down"]:
+		# Navigation verticale : chercher le plus proche sur l'axe Y,
+		# puis le plus proche horizontalement en cas d'égalité.
+		var candidates: Array = []
+		for item in items:
+			if item == current:
+				continue
+			var iy = item.global_position.y + item.size.y * 0.5
+			var dy = iy - cp.y
+			if action == "ui_up" and dy < -2.0:
+				candidates.append(item)
+			elif action == "ui_down" and dy > 2.0:
+				candidates.append(item)
+		if candidates.is_empty():
+			# Wrap-around : prendre l'élément le plus éloigné dans la direction.
+			var best_item: Control = null
+			var best_main := -1.0
+			for item in items:
+				if item == current:
+					continue
+				var iy = item.global_position.y + item.size.y * 0.5
+				var dy = iy - cp.y
+				var main := absf(dy)
+				if main > best_main:
+					best_main = main
+					best_item = item
+			if best_item:
+				best_item.grab_focus()
+		else:
+			# Trier par distance Y, puis par distance X en cas d'égalité.
+			candidates.sort_custom(func(a: Control, b: Control) -> bool:
+				var ay := absf((a.global_position.y + a.size.y * 0.5) - cp.y)
+				var by := absf((b.global_position.y + b.size.y * 0.5) - cp.y)
+				if absf(ay - by) < 2.0:
+					var ax := absf((a.global_position.x + a.size.x * 0.5) - cp.x)
+					var bx := absf((b.global_position.x + b.size.x * 0.5) - cp.x)
+					return ax < bx
+				return ay < by
+			)
+			candidates[0].grab_focus()
+	else:
+		# Navigation horizontale : chercher d'abord sur la même ligne
+		# (Y proche), sinon le plus proche sur l'axe X.
+		var same_row: Array = []
+		var any: Array = []
+		for item in items:
+			if item == current:
+				continue
+			var ix = item.global_position.x + item.size.x * 0.5
+			var iy = item.global_position.y + item.size.y * 0.5
+			var dx = ix - cp.x
+			var dy = iy - cp.y
+			if action == "ui_left" and dx < -2.0:
+				any.append(item)
+				if absf(dy) < current.size.y * 0.6:
+					same_row.append(item)
+			elif action == "ui_right" and dx > 2.0:
+				any.append(item)
+				if absf(dy) < current.size.y * 0.6:
+					same_row.append(item)
+		var candidates := same_row if not same_row.is_empty() else any
+		if candidates.is_empty():
+			# Wrap-around
+			var best_item: Control = null
+			var best_main := -1.0
+			for item in items:
+				if item == current:
+					continue
+				var ix = item.global_position.x + item.size.x * 0.5
+				var dx = ix - cp.x
+				var main := absf(dx)
+				if main > best_main:
+					best_main = main
+					best_item = item
+			if best_item:
+				best_item.grab_focus()
+		else:
+			candidates.sort_custom(func(a: Control, b: Control) -> bool:
+				var ax := absf((a.global_position.x + a.size.x * 0.5) - cp.x)
+				var bx := absf((b.global_position.x + b.size.x * 0.5) - cp.x)
+				if absf(ax - bx) < 2.0:
+					var ay := absf((a.global_position.y + a.size.y * 0.5) - cp.y)
+					var by := absf((b.global_position.y + b.size.y * 0.5) - cp.y)
+					return ay < by
+				return ax < bx
+			)
+			candidates[0].grab_focus()
 
 func _get_focusable(action: String) -> Array:
 	var items: Array = []
 	_collect_focusable(self, items)
-	# Trier par axe principal : Y pour up/down, X pour left/right.
-	if action in ["ui_up", "ui_down"]:
-		items.sort_custom(func(a: Control, b: Control) -> bool:
-			if absf(a.global_position.y - b.global_position.y) < 4.0:
-				return a.global_position.x < b.global_position.x
-			return a.global_position.y < b.global_position.y
-		)
-	else:
-		items.sort_custom(func(a: Control, b: Control) -> bool:
-			if absf(a.global_position.x - b.global_position.x) < 4.0:
-				return a.global_position.y < b.global_position.y
-			return a.global_position.x < b.global_position.x
-		)
 	return items
 
 func _collect_focusable(node: Node, result: Array) -> void:

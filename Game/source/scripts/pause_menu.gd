@@ -69,13 +69,9 @@ var _custom_mods: Dictionary = {} # {"ctrl": bool, "shift": bool, "alt": bool, "
 var _custom_key_btn: Button = null
 var _custom_cmd_edit: LineEdit = null
 var _editing_index := -1 # index du custom bind en cours d'édition, -1 = aucun
-# Variante gamepad du custom bind
-var _custom_pad_type := "" # "" | "button" | "axis"
-var _custom_pad_button := -1
-var _custom_pad_axis := -1
-var _custom_pad_value := 1.0
 var _quit_btn: Button = null
 var _play_time := 0.0
+var _keyboard: VirtualKeyboard = null
 # Page LAN
 var _lan_status_label: Label = null
 var _lan_players_label: Label = null
@@ -85,7 +81,39 @@ var _lan_roster: Array = []
 var _lan_connected := false
 
 func _can_stick_input() -> bool:
-	return not _custom_key_waiting and _waiting_action == ""
+	if _keyboard != null and _keyboard.visible:
+		return false
+	if not _waiting_action == "" or _custom_key_waiting:
+		return false
+	if _is_popup_open():
+		return false
+	return true
+
+func _is_popup_open() -> bool:
+	return _has_visible_popup(container)
+
+func _has_visible_popup(node: Node) -> bool:
+	for child in node.get_children():
+		if child is OptionButton and child.get_popup().visible:
+			return true
+		if child is ColorPickerButton and child.get_popup().visible:
+			return true
+		if child.get_child_count() > 0 and _has_visible_popup(child):
+			return true
+	return false
+
+func _find_open_color_picker() -> ColorPickerButton:
+	return _find_open_color_picker_in(container)
+
+func _find_open_color_picker_in(node: Node) -> ColorPickerButton:
+	for child in node.get_children():
+		if child is ColorPickerButton and child.get_popup().visible:
+			return child
+		if child.get_child_count() > 0:
+			var found := _find_open_color_picker_in(child)
+			if found != null:
+				return found
+	return null
 
 func _process(delta: float) -> void:
 	super(delta)  # GameMenu : nav/scroll stick
@@ -93,6 +121,78 @@ func _process(delta: float) -> void:
 		_play_time += delta
 	if _quit_btn:
 		_quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
+	# ColorPicker joystick control
+	if visible:
+		var cb := _find_open_color_picker()
+		if cb != null:
+			if _ui_events_backup.is_empty():
+				_disable_joypad_navigation()
+			_handle_color_picker_joystick(delta)
+		elif not _ui_events_backup.is_empty():
+			_restore_joypad_navigation()
+
+var _popup_focus_backup: Array = [] # [{ctrl, original_mode}]
+var _ui_events_backup: Dictionary = {} # action_name → [events]
+
+func _handle_color_picker_joystick(delta: float) -> void:
+	var cb := _find_open_color_picker()
+	if cb == null:
+		return
+	var picker: ColorPicker = cb.get_picker()
+	if picker == null:
+		return
+	# Désactiver la navigation joypad dans le popup (y compris widgets créés tard)
+	_disable_popup_nav_focus(cb.get_popup())
+	var c := cb.color
+	var moved := false
+	# Left stick : saturation (X) + value (Y)
+	var lx := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
+	var ly := Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)
+	if absf(lx) > 0.15:
+		c.s = clampf(c.s + lx * delta * 0.8, 0.0, 1.0)
+		moved = true
+	if absf(ly) > 0.15:
+		c.v = clampf(c.v - ly * delta * 0.8, 0.0, 1.0)
+		moved = true
+	# Right stick : hue
+	var ry := Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y)
+	if absf(ry) > 0.15:
+		c.h = fmod(c.h + ry * delta * 0.8, 1.0)
+		if c.h < 0.0:
+			c.h += 1.0
+		moved = true
+	if moved:
+		picker.set_pick_color(c)
+		cb.color = c
+
+func _disable_joypad_navigation() -> void:
+	for action in ["ui_up", "ui_down", "ui_left", "ui_right"]:
+		var events := InputMap.action_get_events(action)
+		_ui_events_backup[action] = events.duplicate()
+		for event in events:
+			if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+				InputMap.action_erase_event(action, event)
+
+func _restore_joypad_navigation() -> void:
+	for action in _ui_events_backup:
+		for event in _ui_events_backup[action]:
+			InputMap.action_add_event(action, event)
+	_ui_events_backup.clear()
+
+func _disable_popup_nav_focus(node: Node) -> void:
+	for child in node.get_children():
+		if child is Control and child.focus_mode != Control.FOCUS_NONE:
+			_popup_focus_backup.append({"ctrl": child, "mode": child.focus_mode})
+			child.focus_mode = Control.FOCUS_NONE
+		if child.get_child_count() > 0:
+			_disable_popup_nav_focus(child)
+
+func _restore_popup_nav_focus() -> void:
+	for entry in _popup_focus_backup:
+		var ctrl = entry["ctrl"]
+		if is_instance_valid(ctrl):
+			ctrl.focus_mode = entry["mode"]
+	_popup_focus_backup.clear()
 
 func _ready() -> void:
 	visible = false
@@ -232,6 +332,9 @@ func _focus_first_deferred() -> void:
 			n.grab_focus()
 			return
 
+func setup_keyboard(kb: VirtualKeyboard) -> void:
+	_keyboard = kb
+
 func show_menu() -> void:
 	visible = true
 	_show_main()
@@ -243,6 +346,10 @@ func hide_menu() -> void:
 	_waiting_action = ""
 	visible = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	if not _ui_events_backup.is_empty():
+		_restore_joypad_navigation()
+	if not _popup_focus_backup.is_empty():
+		_restore_popup_nav_focus()
 
 func _quit_game() -> void:
 	# Le compositeur (wayland_room._on_quit_requested) ferme d'abord toutes
@@ -446,19 +553,11 @@ func _show_custom_binds() -> void:
 		_custom_is_mouse = String(edit_bind.get("type", "key")) == "mouse"
 		_custom_keycode = int(edit_bind.get("code", 0))
 		_custom_mods = edit_bind.get("mods", {})
-		_custom_pad_type = String(edit_bind.get("pad_type", ""))
-		_custom_pad_button = int(edit_bind.get("pad_button", -1))
-		_custom_pad_axis = int(edit_bind.get("pad_axis", -1))
-		_custom_pad_value = float(edit_bind.get("pad_value", 1.0))
 	else:
 		_editing_index = -1
 		_custom_keycode = 0
 		_custom_is_mouse = false
 		_custom_mods = {}
-		_custom_pad_type = ""
-		_custom_pad_button = -1
-		_custom_pad_axis = -1
-		_custom_pad_value = 1.0
 
 	container.add_child(_make_title("CUSTOM BINDS"))
 
@@ -852,6 +951,7 @@ func _show_lan() -> void:
 	color_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
 	color_row.add_child(color_label)
 	var color_btn := ColorPickerButton.new()
+	color_btn.focus_mode = Control.FOCUS_ALL
 	color_btn.color = get_lan_player_color()
 	color_btn.custom_minimum_size = Vector2(64, 30)
 	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -1077,7 +1177,7 @@ func _custom_bind_text(bind: Dictionary) -> String:
 
 func _custom_key_label() -> String:
 	var key_text := ""
-	if _custom_keycode == 0 and _custom_pad_type == "":
+	if _custom_keycode == 0:
 		return "Set key"
 	if _custom_keycode != 0:
 		if _custom_is_mouse:
@@ -1129,7 +1229,7 @@ func _start_custom_key_capture() -> void:
 func _add_custom_bind() -> void:
 	if not _custom_cmd_edit or _custom_cmd_edit.text.strip_edges() == "":
 		return
-	if _custom_keycode == 0 and _custom_pad_type == "":
+	if _custom_keycode == 0:
 		return
 	var binds: Array = _settings.get("custom_binds", [])
 	var entry := {
@@ -1138,13 +1238,6 @@ func _add_custom_bind() -> void:
 		"mods": _custom_mods,
 		"command": _custom_cmd_edit.text.strip_edges(),
 	}
-	if _custom_pad_type == "button" and _custom_pad_button >= 0:
-		entry["pad_type"] = "button"
-		entry["pad_button"] = _custom_pad_button
-	elif _custom_pad_type == "axis" and _custom_pad_axis >= 0:
-		entry["pad_type"] = "axis"
-		entry["pad_axis"] = _custom_pad_axis
-		entry["pad_value"] = _custom_pad_value
 	if _editing_index >= 0 and _editing_index < binds.size():
 		binds[_editing_index] = entry
 	else:
@@ -1337,10 +1430,44 @@ func _save_settings() -> void:
 		f.store_string(JSON.stringify(_settings, "  "))
 
 func _input(event: InputEvent) -> void:
-	super(event)  # GameMenu : consomme les JoypadMotion
+	# ColorPicker ouvert : empêcher la navigation joypad
+	if visible and _find_open_color_picker() != null \
+			and (event is InputEventJoypadMotion \
+				or (event is InputEventJoypadButton and event.pressed \
+					and event.button_index in DPAD_BUTTONS)):
+		get_viewport().set_input_as_handled()
+		return
+	if visible and not _is_popup_open():
+		super(event)  # GameMenu : consomme les JoypadMotion
 	if not visible:
 		return
 
+	# A sur un LineEdit → ouvrir le clavier virtuel
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index == JOY_BUTTON_A \
+			and _keyboard != null and not _keyboard.visible:
+		var focus_owner := get_viewport().gui_get_focus_owner()
+		if focus_owner is LineEdit:
+			_keyboard.show_menu(focus_owner)
+			get_viewport().set_input_as_handled()
+			return
+
+	# B button closes the keyboard
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B:
+		_keyboard.hide_menu()
+		if _custom_key_waiting:
+			_custom_key_waiting = false
+			if _custom_key_btn:
+				_custom_key_btn.text = _custom_key_label()
+		elif _waiting_action != "":
+			_cancel_rebind()
+		elif _current_view == "main":
+			hide_menu()
+		else:
+			_show_main()
+		get_viewport().set_input_as_handled()
+		return
+	
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			if _custom_key_waiting:
@@ -1385,18 +1512,6 @@ func _input(event: InputEvent) -> void:
 			_custom_is_mouse = true
 			_custom_mods = _mods_from_event(event)
 			custom_captured = true
-		elif event is InputEventJoypadButton and event.pressed:
-			if event.button_index != JOY_BUTTON_START \
-					and event.button_index != JOY_BUTTON_B:
-				_custom_pad_type = "button"
-				_custom_pad_button = event.button_index
-				custom_captured = true
-		elif event is InputEventJoypadMotion and absf(event.axis_value) > 0.5:
-			if event.axis != JOY_AXIS_TRIGGER_LEFT:
-				_custom_pad_type = "axis"
-				_custom_pad_axis = event.axis
-				_custom_pad_value = signf(event.axis_value)
-				custom_captured = true
 		if custom_captured:
 			_custom_key_waiting = false
 			if _custom_key_btn:
