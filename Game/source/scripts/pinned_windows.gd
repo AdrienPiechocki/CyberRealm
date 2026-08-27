@@ -23,10 +23,11 @@ var _hover_tween: Tween
 var _is_hovering := false
 var _last_mouse_pos := Vector2(-1, -1)
 var mouse_pos := Vector2.ZERO
-var SPEED := 700.0
+var _layers: Node3D
 
-func setup(ui_ref: CanvasLayer, focus_ref: Node3D) -> void:
-	mouse_pos = get_viewport().get_mouse_position()
+func setup(ui_ref: CanvasLayer, focus_ref: Node3D, layers: Node3D) -> void:
+	_layers = layers
+	mouse_pos = _layers._cursor_pos
 	ui = ui_ref
 	focus = focus_ref
 	if ui != null and ui.get_viewport() != null:
@@ -194,12 +195,10 @@ func _process(delta: float) -> void:
 	if focus.focus_fullscreen_id in pinned_windows:
 		hovering = true
 	elif not hovering and (Input.mouse_mode == Input.MOUSE_MODE_VISIBLE or focus.focus_fullscreen_id != -1):
-		var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
-		if v != Vector2.ZERO:
-			mouse_pos += v * v.length() * SPEED * delta
-			var vs := get_viewport().get_visible_rect().size
-			mouse_pos = mouse_pos.clamp(Vector2.ONE, vs - Vector2.ONE)
-			get_viewport().warp_mouse(mouse_pos)
+		if focus.focus_mode:
+			mouse_pos = focus.mouse_pos
+		else:
+			mouse_pos = _layers._cursor_pos
 		if mouse_pos == _last_mouse_pos:
 			return
 		_last_mouse_pos = mouse_pos
