@@ -12,7 +12,7 @@ const CENTER_RADIUS := 100.0
 const GAP_SIZE := 4.0
 const SELECTOR_WIDTH := 5.0
 const DECORATOR_WIDTH := 4.0
-const STICK_DEADZONE := 0.35
+const STICK_DEADZONE := 0.5
 
 # Couleurs (thème dark du projet de référence)
 const BG_COLOR := Color(0.125, 0.125, 0.125, 0.9)
