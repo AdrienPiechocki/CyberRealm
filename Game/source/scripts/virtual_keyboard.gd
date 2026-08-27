@@ -24,7 +24,7 @@ const LAYOUTS := {
 	"fr": {
 		"label": "Français (AZERTY)",
 		# Row 0: number row
-		KEY_QUOTELEFT: {"n": "²", "s": ""},
+		KEY_QUOTELEFT: {"n": "<", "s": ">"},
 		KEY_1: {"n": "&", "s": "1"},
 		KEY_2: {"n": "é", "s": "2"},
 		KEY_3: {"n": "\"", "s": "3"},
