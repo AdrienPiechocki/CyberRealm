@@ -128,6 +128,12 @@ var _left_raw_prev := false
 var _left_press_edge := false
 var _left_release_edge := false
 
+# Drapeau pour éviter le double-forward de la molette souris : le wheel est
+# traité dans handle_input_event (InputEventMouseButton) ET dans
+# _forward_window_buttons (polling). Si _wheel_forwarded_this_frame est vrai,
+# _forward_window_buttons saute le bloc scroll.
+var _wheel_forwarded_this_frame := false
+
 # Curseur custom de la fenêtre active dessiné en overlay 2D (TextureRect
 # positionné sur le pointeur) : réplique le wl_pointer.set_cursor de
 # l'application en focus pour les fenêtres X11 remontées via
@@ -1235,8 +1241,8 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	if Input.is_action_just_released("middle_click"):
 		compositor.forward_pointer_button(id, 0x112, false)
 
-	# Scroll
-	if Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down") or Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false):
+	# Scroll (gamepad stick only — mouse wheel is forwarded directly in handle_input_event)
+	if not _wheel_forwarded_this_frame and (Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down") or Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false)):
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
 			var amount := -120.0 if Input.is_action_pressed("scroll_up") or Input.is_action_just_pressed("scroll_up", false) else 120.0
@@ -1354,6 +1360,7 @@ func handle_focus_input(delta: float) -> void:
 	# Front du bouton gauche depuis l'état brut (une seule fois par frame,
 	# avant les deux chemins : visible ET capturé utilisent ces bords).
 	_poll_left_button()
+	_wheel_forwarded_this_frame = false
 
 	# Souris capturée (lock): forward UNIQUEMENT le relatif (via _input).
 	# Ne PAS envoyer de wl_pointer.motion (absolu) ici : un client locké ne doit
@@ -1745,10 +1752,12 @@ func handle_input_event(event: InputEvent) -> bool:
 			var target := _active_id()
 			if target != -1:
 				compositor.forward_pointer_axis(target, 0, -120.0)
+			_wheel_forwarded_this_frame = true
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
 			var target := _active_id()
 			if target != -1:
 				compositor.forward_pointer_axis(target, 0, 120.0)
+			_wheel_forwarded_this_frame = true
 		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
 			print("mouse _input: btn=", mb.button_index, " pressed=", mb.pressed,
 				" meta=", mb.meta_pressed, " pos=", mb.position)
