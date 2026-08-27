@@ -264,7 +264,7 @@ func _ready() -> void:
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d, keyboard)
 	layers.setup(compositor, player, ui, focus, pause_menu, window_menu, keyboard)
-	pins.setup(ui, focus)
+	pins.setup(ui, focus, layers)
 	fx.setup(win3d)
 	presenter.setup(compositor)
 
