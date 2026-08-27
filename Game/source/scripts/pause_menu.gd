@@ -52,7 +52,7 @@ var container: VBoxContainer
 const REMAPPABLE_ACTIONS := [
 	"forward", "back", "left", "right", "jump",
 	"look_up", "look_down", "look_left", "look_right",
-	"interact_mode", "layer_interact", "radial_menu", "window_menu",
+	"interact_mode", "layer_interact", "window_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
