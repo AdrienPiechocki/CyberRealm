@@ -84,7 +84,7 @@ var session_lock_rect: TextureRect
 var session_lock_surface_id := -1
 
 var _cursor_pos := Vector2.ZERO
-const SPEED := 500.0
+const SPEED := 700.0
 var virtual_keyboard: VirtualKeyboard
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control, keyboard: VirtualKeyboard) -> void:
@@ -461,7 +461,7 @@ func _handle_pointer(hit: Dictionary, mouse_pos: Vector2) -> void:
 func handle_layer_pointer(delta: float) -> bool:
 	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		return false
-	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
+	var v = Vector2((Input.get_joy_axis(0, JOY_AXIS_LEFT_X)), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
 	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		_cursor_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size

@@ -16,7 +16,7 @@ var mouse_sensitivity = 0.002
 # quadratique pour la précision en near-center. La souris garde son chemin
 # InputEventMouseMotion, inchangé. Les touches fléchées (actions look_*)
 # suivent le même chemin.
-var pad_look_speed := 2.0
+var pad_look_speed := 2.5
 
 var interact_mode_active := false
 var focus_mode_active := false
@@ -96,7 +96,7 @@ func _physics_process(delta):
 	# RT tenu (mode curseur pad) ou layer focus actif : le stick gauche
 	# appartient au curseur souris, pas au joueur ; la caméra reste libre.
 	if not pad_cursor_active:
-		var look := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y))
+		var look := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y)).limit_length(1.0)
 		if look != Vector2.ZERO:
 			var look_amt: Vector2 = look * look.length()
 			rotate_y(-look_amt.x * pad_look_speed * delta)
