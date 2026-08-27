@@ -1163,7 +1163,7 @@ func _is_super_pressed() -> bool:
 # brut (source primaire, insensible aux modificateurs), complété par l'action
 # Godot et les événements bruts au cas où le sondage passerait à côté.
 func _poll_left_button() -> void:
-	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)
+	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_joy_button_pressed(0, JOY_BUTTON_X)
 	_left_press_edge = now and not _left_raw_prev
 	_left_release_edge = (not now) and _left_raw_prev
 	if _left_press_edge or _left_release_edge:
