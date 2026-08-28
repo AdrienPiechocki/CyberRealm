@@ -211,7 +211,7 @@ func get_window_image(wid: int) -> Image:
 				return cimg
 			if not _debug_share_path.has(wid):
 				_debug_share_path[wid] = "cpu_image_null"
-				print("[share] ", wid, " path=cpu_image NULL (texte ", tex.get_class(), ")")
+				print("[share] ", wid, " path=cpu_image NULL (tex ", tex.get_class(), ")")
 		return null
 	var img := tex.get_image()
 	if img != null and not img.is_empty():

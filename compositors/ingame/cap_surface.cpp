@@ -74,7 +74,7 @@ bool WlrCompositor::probe_dmabuf_vulkan_import() {
     // Initialise les handles Vulkan depuis le RenderingDevice de Godot. En
     // cas d'échec, vulkan_import reste indisponible et on retombe sur Pixman.
     if (!vulkan_import.initialize(vrd)) {
-        UtilityFunctions::print("waylandgodot: sonde dmabuf: Vulkan non initialisé");
+        UtilityFunctions::print("waylandgodot: dmabuf probe: Vulkan not initialized");
         return false;
     }
 
@@ -89,13 +89,13 @@ bool WlrCompositor::probe_dmabuf_vulkan_import() {
 
     wlr_buffer *probe_buf = wlr_allocator_create_buffer(allocator, PROBE_W, PROBE_H, &linear_fmt);
     if (!probe_buf) {
-        UtilityFunctions::print("waylandgodot: sonde dmabuf: gbm_bo_create a échoué");
+        UtilityFunctions::print("waylandgodot: dmabuf probe: gbm_bo_create failed");
         return false;
     }
 
     wlr_dmabuf_attributes attribs = {};
     if (!wlr_buffer_get_dmabuf(probe_buf, &attribs) || attribs.n_planes != 1) {
-        UtilityFunctions::print("waylandgodot: sonde dmabuf: pas de dmabuf mono-plan");
+        UtilityFunctions::print("waylandgodot: dmabuf probe: no single-plane dmabuf");
         wlr_buffer_drop(probe_buf);
         return false;
     }
@@ -104,8 +104,8 @@ bool WlrCompositor::probe_dmabuf_vulkan_import() {
         attribs.fd[0], PROBE_W, PROBE_H, DRM_FORMAT_ABGR8888);
 
     if (vt.vk_image == VK_NULL_HANDLE) {
-        UtilityFunctions::print("waylandgodot: sonde dmabuf: import Vulkan échoué "
-            "(pilote incapable d'importer le dmabuf)");
+        UtilityFunctions::print("waylandgodot: dmabuf probe: Vulkan import failed "
+            "(driver cannot import the dmabuf)");
         wlr_buffer_drop(probe_buf);
         return false;
     }
@@ -113,7 +113,7 @@ bool WlrCompositor::probe_dmabuf_vulkan_import() {
     // Pipeline validé — libère les ressources de test (déférées d'une frame).
     vulkan_import.release_texture(vt);
     wlr_buffer_drop(probe_buf);
-    UtilityFunctions::print("waylandgodot: sonde dmabuf: import Vulkan OK");
+    UtilityFunctions::print("waylandgodot: dmabuf probe: Vulkan import OK");
     return true;
 }
 void CaptureCache::reset(RenderingDevice *rd) {
@@ -309,7 +309,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         const wlr_drm_format_set *formats =
             wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DMABUF);
         if (!formats) {
-            UtilityFunctions::printerr("waylandgodot: renderer ne supporte pas WLR_BUFFER_CAP_DMABUF");
+            UtilityFunctions::printerr("waylandgodot: renderer does not support WLR_BUFFER_CAP_DMABUF");
             return false;
         }
 
@@ -355,15 +355,15 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         }
 
         if (!offscreen) {
-            UtilityFunctions::printerr("waylandgodot: impossible de créer un buffer dmabuf linéaire ",
-                "(le GPU ne supporte peut-être que des formats tiled)");
+            UtilityFunctions::printerr("waylandgodot: unable to create a linear dmabuf buffer ",
+                "(the GPU may only support tiled formats)");
             return false;
         }
 
         // Export dmabuf
         wlr_dmabuf_attributes attribs = {};
         if (!wlr_buffer_get_dmabuf(offscreen, &attribs)) {
-            UtilityFunctions::printerr("waylandgodot: dmabuf: wlr_buffer_get_dmabuf a échoué");
+            UtilityFunctions::printerr("waylandgodot: dmabuf: wlr_buffer_get_dmabuf failed");
             wlr_buffer_drop(offscreen);
             return false;
         }
@@ -393,7 +393,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
                               attribs.fd[0], map_offset);
         if (map_base == MAP_FAILED) {
-            UtilityFunctions::printerr("waylandgodot: dmabuf: mmap a échoué");
+            UtilityFunctions::printerr("waylandgodot: dmabuf: mmap failed");
             wlr_buffer_drop(offscreen);
             return false;
         }
@@ -440,7 +440,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
 
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) {
-        UtilityFunctions::printerr("waylandgodot: dmabuf: begin_buffer_pass a échoué");
+        UtilityFunctions::printerr("waylandgodot: dmabuf: begin_buffer_pass failed");
         return false;
     }
 
@@ -484,14 +484,14 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
     }
 
     if (blitted == 0) {
-        UtilityFunctions::printerr("waylandgodot: dmabuf: aucune sous-surface avec texture à blitter");
+        UtilityFunctions::printerr("waylandgodot: dmabuf: no subsurface with a texture to blit");
         return false;
     }
 
     timespec t_render_start, t_render_end;
     clock_gettime(CLOCK_MONOTONIC, &t_render_start);
     if (!wlr_render_pass_submit(pass)) {
-        UtilityFunctions::printerr("waylandgodot: dmabuf: render_pass_submit a échoué");
+        UtilityFunctions::printerr("waylandgodot: dmabuf: render_pass_submit failed");
         return false;
     }
     clock_gettime(CLOCK_MONOTONIC, &t_render_end);
@@ -563,7 +563,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         cache.debug_sampled = true;
         const uint8_t *s = cache.bytes.ptr();
         auto px = [&](int x, int y) -> String {
-            if (x < 0 || y < 0 || x >= w || y >= h) return String("hors-buffer");
+            if (x < 0 || y < 0 || x >= w || y >= h) return String("out-of-buffer");
             const uint8_t *p = s + ((size_t)y * w + (size_t)x) * 4;
             return String::num(p[0]) + "," + String::num(p[1]) + "," +
                 String::num(p[2]) + "," + String::num(p[3]);
@@ -771,7 +771,7 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
             void *map_base = mmap(nullptr, map_size, PROT_READ, MAP_SHARED,
                                   attribs.fd[0], map_offset);
             if (map_base == MAP_FAILED) {
-                UtilityFunctions::printerr("waylandgodot: vulkan: mmap dmabuf a échoué");
+                UtilityFunctions::printerr("waylandgodot: vulkan: dmabuf mmap failed");
                 map_base = nullptr;
             } else {
                 cache.map_base = map_base;
@@ -978,13 +978,13 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
             wlr_renderer_get_texture_formats(renderer, WLR_BUFFER_CAP_DATA_PTR);
         const wlr_drm_format *fmt = formats ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888) : nullptr;
         if (!fmt) {
-            UtilityFunctions::printerr("waylandgodot: DRM_FORMAT_ARGB8888 non supporté en lecture CPU par ce renderer");
+            UtilityFunctions::printerr("waylandgodot: DRM_FORMAT_ARGB8888 not supported for CPU read by this renderer");
             return false;
         }
 
         wlr_buffer *offscreen = wlr_allocator_create_buffer(allocator, alloc_w, alloc_h, fmt);
         if (!offscreen) {
-            UtilityFunctions::printerr("waylandgodot: échec allocation buffer offscreen");
+            UtilityFunctions::printerr("waylandgodot: offscreen buffer allocation failed");
             return false;
         }
 
@@ -1001,7 +1001,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
 
     wlr_render_pass *pass = wlr_renderer_begin_buffer_pass(renderer, cache.offscreen, nullptr);
     if (!pass) {
-        UtilityFunctions::printerr("waylandgodot: échec begin_buffer_pass");
+        UtilityFunctions::printerr("waylandgodot: begin_buffer_pass failed");
         return false;
     }
 
@@ -1065,7 +1065,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     timespec t_render_start, t_render_end;
     clock_gettime(CLOCK_MONOTONIC, &t_render_start);
     if (!wlr_render_pass_submit(pass)) {
-        UtilityFunctions::printerr("waylandgodot: échec render_pass_submit");
+        UtilityFunctions::printerr("waylandgodot: render_pass_submit failed");
         return false;
     }
     clock_gettime(CLOCK_MONOTONIC, &t_render_end);
@@ -1078,7 +1078,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
     size_t stride = 0;
     if (!wlr_buffer_begin_data_ptr_access(cache.offscreen, WLR_BUFFER_DATA_PTR_ACCESS_READ,
             &pixels, &px_format, &stride)) {
-        UtilityFunctions::printerr("waylandgodot: begin_data_ptr_access a échoué sur le buffer offscreen");
+        UtilityFunctions::printerr("waylandgodot: begin_data_ptr_access failed on the offscreen buffer");
         return false;
     }
 
@@ -1108,7 +1108,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         cache.debug_sampled = true;
         const uint8_t *s = cache.bytes.ptr();
         auto px = [&](int x, int y) -> String {
-            if (x < 0 || y < 0 || x >= w || y >= h) return String("hors-buffer");
+            if (x < 0 || y < 0 || x >= w || y >= h) return String("out-of-buffer");
             const uint8_t *p = s + ((size_t)y * w + (size_t)x) * 4;
             return String::num(p[0]) + "," + String::num(p[1]) + "," +
                 String::num(p[2]) + "," + String::num(p[3]);

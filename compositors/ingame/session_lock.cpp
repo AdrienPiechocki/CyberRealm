@@ -79,7 +79,7 @@ void WlrCompositor::on_new_session_lock(wl_listener *listener, void *data) {
     self->session_lock.destroy_listener.notify = WlrCompositor::on_session_lock_destroy;
     wl_signal_add(&lock->events.destroy, &self->session_lock.destroy_listener);
 
-    UtilityFunctions::print("waylandgodot: session lock demandé");
+    UtilityFunctions::print("waylandgodot: session lock requested");
 }
 void WlrCompositor::on_session_lock_new_surface(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, session_lock.new_surface_listener);
@@ -138,7 +138,7 @@ void WlrCompositor::on_session_lock_surface_map(wl_listener *listener, void *dat
     if (self->session_lock.lock && !self->session_lock.locked_sent) {
         self->session_lock.locked_sent = true;
         wlr_session_lock_v1_send_locked(self->session_lock.lock);
-        UtilityFunctions::print("waylandgodot: session verrouillée (locked envoyé)");
+        UtilityFunctions::print("waylandgodot: session locked (locked sent)");
     }
 
     self->emit_signal("session_lock_locked");
@@ -209,5 +209,5 @@ void WlrCompositor::on_session_lock_destroy(wl_listener *listener, void *data) {
 
     self->session_lock.lock = nullptr;
     self->session_lock.locked_sent = false;
-    UtilityFunctions::print("waylandgodot: session lock détruit");
+    UtilityFunctions::print("waylandgodot: session lock destroyed");
 }

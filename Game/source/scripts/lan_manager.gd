@@ -539,14 +539,14 @@ func _load_dtls_options() -> TLSOptions:
 	var key := load("res://certs/lan_key.pem") as CryptoKey
 	var cert := load("res://certs/lan_cert.crt") as X509Certificate
 	if key == null or cert == null:
-		_lan_log("DTLS: clé/cert introuvables, chiffrement désactivé")
+		_lan_log("DTLS: key/cert not found, encryption disabled")
 		return null
 	return TLSOptions.server(key, cert)
 
 func _dtls_client_options() -> TLSOptions:
 	var cert := load("res://certs/lan_cert.crt") as X509Certificate
 	if cert == null:
-		_lan_log("DTLS: cert introuvable, chiffrement désactivé")
+		_lan_log("DTLS: cert not found, encryption disabled")
 		return null
 	return TLSOptions.client(cert)
 
@@ -568,9 +568,9 @@ func _on_pin_fail(ip: String) -> bool:
 	_pin_blacklist[ip] = Time.get_ticks_msec()
 	var rejected := pin_attempt(ip, false, _pin_fail_counts)
 	if rejected:
-		_lan_log("PIN brute-force: %s blacklisté (%d échecs)" % [ip, PIN_FAIL_LIMIT])
+		_lan_log("PIN brute-force: %s blacklisted (%d failures)" % [ip, PIN_FAIL_LIMIT])
 	else:
-		_lan_log("PIN fail depuis %s (%d)" % [ip, int(_pin_fail_counts.get(ip, 0))])
+		_lan_log("PIN fail from %s (%d)" % [ip, int(_pin_fail_counts.get(ip, 0))])
 	return rejected
 
 ## Réarme l'anti brute-force après un PIN valide d'une adresse donnée.
@@ -605,9 +605,9 @@ func host_game() -> bool:
 		var dtls := _load_dtls_options()
 		if dtls != null:
 			if peer.host.dtls_server_setup(dtls) != OK:
-				_lan_log("DTLS: échec setup serveur, session non chiffrée")
+				_lan_log("DTLS: server setup failed, session not encrypted")
 			else:
-				_lan_log("DTLS: session chiffrée (serveur)")
+				_lan_log("DTLS: session encrypted (server)")
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
@@ -632,7 +632,7 @@ func host_game() -> bool:
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
-	_lan_log("host_game — en attente de clients", true)
+	_lan_log("host_game — waiting for clients", true)
 	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
 	_emit_players()
 	return true
@@ -661,9 +661,9 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 		var dtls := _dtls_client_options()
 		if dtls != null:
 			if peer.host.dtls_client_setup(ip, dtls) != OK:
-				_lan_log("DTLS: échec setup client, session non chiffrée")
+				_lan_log("DTLS: client setup failed, session not encrypted")
 			else:
-				_lan_log("DTLS: session chiffrée (client → %s)" % ip)
+				_lan_log("DTLS: session encrypted (client → %s)" % ip)
 	multiplayer.multiplayer_peer = peer
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
@@ -690,7 +690,7 @@ func session_closed() -> void:
 	if is_host:
 		return
 	_session_closed_received = true
-	_lan_log("session_closed reçu de l'hôte")
+	_lan_log("session_closed received from host")
 
 func _on_connected_to_server() -> void:
 	session_active = true
@@ -718,7 +718,7 @@ func _on_connected_to_server() -> void:
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
-	_lan_log("connecté à l'hôte — auth en cours (pending_join)", true)
+	_lan_log("connected to host — auth in progress (pending_join)", true)
 	_set_status("Connected to server — authenticating…")
 	_emit_players()
 	# S'annoncer DÈS la connexion : envoyer le PIN pour vérification.
@@ -736,7 +736,7 @@ func _finalize_join() -> void:
 	if not _pending_join:
 		return
 	_pending_join = false
-	_lan_log("finalize_join — synchros dégelées")
+	_lan_log("finalize_join — syncs unfrozen")
 	if local_player != null and "input_locked" in local_player:
 		local_player.input_locked = false
 	_set_status("Joined session")
@@ -748,7 +748,7 @@ func _announce_self() -> void:
 	if _announced:
 		return
 	_announced = true
-	_lan_log("annonce: register + avatar → hôte")
+	_lan_log("announce: register + avatar → host")
 	_register_player.rpc_id(1, player_name, player_color)
 	_send_avatar_to(1)
 
@@ -760,7 +760,7 @@ func auth_request(pin: String) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
 		return
-	_lan_log("auth_request de %d — PIN=%s (attendu=%s)" % [from, pin, _pin])
+	_lan_log("auth_request from %d — PIN=%s (expected=%s)" % [from, pin, _pin])
 	if pin == _pin:
 		_pending_auth.erase(from)
 		# PIN valide → réarme l'anti brute-force pour cette adresse.
@@ -775,17 +775,17 @@ func auth_request(pin: String) -> void:
 	else:
 		var ip := _remote_ip(from)
 		if _pin_blocked(ip):
-			_lan_log("auth REJETÉ %d — IP %s blacklistée (trop d'échecs PIN)" % [from, ip])
+			_lan_log("auth REJECTED %d — IP %s blacklisted (too many PIN failures)" % [from, ip])
 			_set_status("Player %d rejected (IP blacklisted)" % from)
 			auth_result.rpc_id(from, false)
 			await get_tree().create_timer(0.5).timeout
 			multiplayer.multiplayer_peer.disconnect_peer(from)
 			return
-		_lan_log("auth FAIL de %d — PIN incorrect" % from)
+		_lan_log("auth FAIL from %d — wrong PIN" % from)
 		_set_status("Player %d rejected (wrong PIN)" % from)
 		auth_result.rpc_id(from, false)
 		if ip != "" and _on_pin_fail(ip):
-			_lan_log("PIN brute-force — déconnexion de %d (%s)" % [from, ip])
+			_lan_log("PIN brute-force — disconnecting %d (%s)" % [from, ip])
 			await get_tree().create_timer(0.5).timeout
 			multiplayer.multiplayer_peer.disconnect_peer(from)
 
@@ -797,10 +797,10 @@ func auth_result(ok: bool) -> void:
 		return
 	_auth_request_sent_msec = 0
 	if ok:
-		_lan_log("auth OK — annonce et envoi avatar")
+		_lan_log("auth OK — announcing and sending avatar")
 		_announce_self()
 	else:
-		_lan_log("auth REJETÉ par l'hôte")
+		_lan_log("auth REJECTED by host")
 		_set_status("Authentication rejected by host (wrong PIN)")
 		_disconnect_session()
 
@@ -828,7 +828,7 @@ func _should_attempt_reconnect() -> bool:
 
 ## Heartbeat expiré côté client → on considère l'hôte injoignable.
 func _on_host_heartbeat_timeout() -> void:
-	_lan_log("heartbeat expiré (%d ms sans host heartbeat)" % HOST_HEARTBEAT_TIMEOUT_MSEC)
+	_lan_log("heartbeat expired (%d ms without host heartbeat)" % HOST_HEARTBEAT_TIMEOUT_MSEC)
 	_begin_reconnect()
 
 func _begin_reconnect() -> void:
@@ -863,11 +863,11 @@ func _register_player(pname: String, color: Color) -> void:
 		return
 	# Rejeter les registrations de pairs non authentifiés (PIN vérifié).
 	if _pending_auth.has(from):
-		_lan_log("registration rejetée de %d — pas encore authentifié" % from)
+		_lan_log("registration rejected from %d — not authenticated yet" % from)
 		return
 	_players[from] = {"name": pname, "color": color}
 	_set_status("Player %d (%s) joined" % [from, pname])
-	_lan_log("registration reçue de %d — broadcast spawns (roster=%d)" % [from, _players.size()])
+	_lan_log("registration received from %d — broadcasting spawns (roster=%d)" % [from, _players.size()])
 	# Snapshot du roster envoyé IMMÉDIATEMENT au nouvel arrivant : minuscule,
 	# il part devant les floods de chunks. Sans lui, le client ne connaît le
 	# roster qu'aux broadcasts (souvent après l'application du niveau) et le
@@ -899,7 +899,7 @@ func _roster_snapshot(entries: Array) -> void:
 		if pid == multiplayer.get_unique_id() or _players.has(pid):
 			continue
 		_players[pid] = {"name": String(e[1]), "color": e[2]}
-	_lan_log("snapshot roster hôte — %s (blobs=%s)" % [str(_players.keys()), str(_avatar_blobs.keys())])
+	_lan_log("host roster snapshot — %s (blobs=%s)" % [str(_players.keys()), str(_avatar_blobs.keys())])
 	_emit_players()
 	# Si le niveau est déjà différé et que le snapshot révèle de nouveaux
 	# joueurs, étendre l'attente (même deadline).
@@ -1064,17 +1064,17 @@ func _on_peer_connected(id: int) -> void:
 # re-baké seulement si le niveau change (on_level_swapped).
 func _send_level_to(id: int) -> void:
 	if not level_bake_provider.is_valid():
-		push_warning("LAN: level_bake_provider invalide")
+		push_warning("LAN: level_bake_provider invalid")
 		return
 	if _level_baked_cache.is_empty():
 		_level_baked_cache = level_bake_provider.call()
 	var data: Dictionary = _level_baked_cache
 	if data.is_empty():
-		push_warning("LAN: bake du niveau vide — rien à envoyer")
+		push_warning("LAN: empty level bake — nothing to send")
 		return
 	var bytes: PackedByteArray = data.get("bytes", PackedByteArray())
 	if bytes.is_empty():
-		push_warning("LAN: blob du niveau vide")
+		push_warning("LAN: empty level blob")
 		return
 	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
 	if compressed.is_empty():
@@ -1094,7 +1094,7 @@ func _send_level_to(id: int) -> void:
 		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
 		"sent": 0,
 	}
-	push_warning("LAN: envoi niveau vers peer %d — brut %d KB, compressé %d KB, %d chunks" % [id, bytes.size() / 1024, compressed.size() / 1024, ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE))])
+	push_warning("LAN: sending level to peer %d — raw %d KB, compressed %d KB, %d chunks" % [id, bytes.size() / 1024, compressed.size() / 1024, ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE))])
 	_set_status("Sending host level to %d (%d KB)…" % [id, compressed.size() / 1024])
 
 # Pousse quelques chunks du niveau vers les peers qui viennent de se connecter,
@@ -1130,8 +1130,8 @@ func _receive_level_scripts(manifest: Dictionary) -> void:
 	if manifest.is_empty() or not UserScriptMirror.valid(manifest):
 		return
 	var count := UserScriptMirror.install(manifest)
-	push_warning("LAN: scripts utilisateur du niveau installés (%d fichiers)" % count)
-	_lan_log("scripts niveau hôte — lot installé (%d fichiers)" % count)
+	push_warning("LAN: host-level user scripts installed (%d files)" % count)
+	_lan_log("host-level scripts — batch installed (%d files)" % count)
 
 # Canal ENet dédié (6) : les milliers de chunks du niveau ne doivent PAS
 # bloquer (ordre fiable) les RPC de contrôle sur le canal 0 — sinon le
@@ -1168,12 +1168,12 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	_level_bake_receive.clear()
 	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
 	if bytes.is_empty() or bytes.size() != recv_size:
-		push_warning("LAN: décompress échoué — reçu %d octets, attendu %d" % [bytes.size(), recv_size])
+		push_warning("LAN: decompress failed — received %d bytes, expected %d" % [bytes.size(), recv_size])
 		_set_status("Host level corrupted (decompress failed) — kept local level")
 		# Transfert mort : ne pas rester bloqué en attente de join.
 		_finalize_join()
 		return
-	push_warning("LAN: niveau reçu — %d KB décompressé" % [bytes.size() / 1024])
+	push_warning("LAN: level received — %d KB decompressed" % [bytes.size() / 1024])
 	var tmp := "user://lan_level.scn"
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	if f == null:
@@ -1184,11 +1184,11 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 	f.close()
 	var scene: PackedScene = load(tmp)
 	if scene == null:
-		push_warning("LAN: impossible de charger la scène du niveau reçu (%s)" % tmp)
+		push_warning("LAN: cannot load received level scene (%s)" % tmp)
 		_set_status("Host level unreadable — kept local level")
 		_finalize_join()
 		return
-	push_warning("LAN: scène du niveau chargée OK")
+	push_warning("LAN: level scene loaded OK")
 	# Mémoriser le transform de spawn de la scène de l'hôte : les avatars
 	# distants sont spawnés selon LUI (pas le Player local de la scène
 	# d'origine), que le niveau soit déjà appliqué ou pas.
@@ -1216,7 +1216,7 @@ func _cache_avatar_scene(peer_id: int) -> void:
 	# l'avatar change : load() garde en cache l'ancienne scène PackedScene du
 	# même chemin, même après écriture d'un nouveau blob.
 	var loaded: PackedScene = ResourceLoader.load(tmp, "", ResourceLoader.CACHE_MODE_REPLACE) as PackedScene
-	push_warning("LAN: avatar peer %d décodé en %d ms" % [peer_id, Time.get_ticks_msec() - t0])
+	push_warning("LAN: avatar peer %d decoded in %d ms" % [peer_id, Time.get_ticks_msec() - t0])
 	if loaded != null:
 		_avatar_scene_cache[peer_id] = loaded
 
@@ -1229,9 +1229,9 @@ func _defer_or_emit_level_apply(scene: PackedScene, pos: Vector3, rot: Vector3, 
 			continue
 		if not _avatar_blobs.has(int(id)):
 			waiting.append(int(id))
-	_lan_log("niveau prêt — roster=%s blobs=%s → %s" % [
+	_lan_log("level ready — roster=%s blobs=%s → %s" % [
 		str(_players.keys()), str(_avatar_blobs.keys()),
-		"application immédiate" if waiting.is_empty() else "différé (attente %s)" % str(waiting)])
+		"applied immediately" if waiting.is_empty() else "deferred (waiting for %s)" % str(waiting)])
 	if waiting.is_empty():
 		level_apply_requested.emit(scene, pos, rot, scl)
 		return
@@ -1242,7 +1242,7 @@ func _defer_or_emit_level_apply(scene: PackedScene, pos: Vector3, rot: Vector3, 
 		"deadline": Time.get_ticks_msec() + AVATAR_LEVEL_WAIT_TIMEOUT_MSEC,
 	}
 	_set_status("Loading players' avatars… (%d pending)" % waiting.size())
-	push_warning("LAN: niveau différé — avatars attendus des peers %s" % str(waiting))
+	push_warning("LAN: level deferred — waiting for avatars from peers %s" % str(waiting))
 
 # Applique le niveau différé dès que plus personne n'est attendu (ou au
 # timeout ; un pair parti/disconnecté cesse d'être attendu).
@@ -1258,8 +1258,8 @@ func _maybe_flush_deferred_level() -> void:
 	var expired: bool = Time.get_ticks_msec() >= int(_deferred_level["deadline"])
 	if waiting.is_empty() or expired:
 		if expired and not waiting.is_empty():
-			push_warning("LAN: timeout avatars (%s) — application du niveau sans eux" % str(waiting))
-		_lan_log("flush niveau différé — %s" % ("timeout, manquants %s" % str(waiting) if not waiting.is_empty() else "blobs complets"))
+			push_warning("LAN: avatar timeout (%s) — applying level without them" % str(waiting))
+		_lan_log("flush deferred level — %s" % ("timeout, missing %s" % str(waiting) if not waiting.is_empty() else "blobs complete"))
 		var d: Dictionary = _deferred_level
 		_deferred_level = {}
 		level_apply_requested.emit(d["scene"], d["pos"], d["rot"], d["scl"])
@@ -1379,15 +1379,15 @@ func set_selected_avatar(path: String) -> void:
 			update_local_avatar()
 		return
 	if not ResourceLoader.exists(path):
-		push_warning("LAN: avatar choisi introuvable : %s" % path)
+		push_warning("LAN: selected avatar not found: %s" % path)
 		return
 	var ps := load(path) as PackedScene
 	if ps == null:
-		push_warning("LAN: avatar illisible : %s" % path)
+		push_warning("LAN: avatar unreadable: %s" % path)
 		return
 	var inst := ps.instantiate()
 	if inst == null or not inst.has_method("setup"):
-		push_warning("LAN: scène sans script avatar (setup manquant) : %s" % path)
+		push_warning("LAN: scene without avatar script (missing setup): %s" % path)
 		if inst != null:
 			inst.free()
 		return
@@ -1497,7 +1497,7 @@ func _send_avatar_to(id: int) -> void:
 			compressed = raw
 		_avatar_send_cache = compressed
 		_avatar_send_cache_raw_size = raw.size()
-		_lan_log("avatar local baké en %d ms — %d KB brut, %d KB compressé, %d scripts" % [
+		_lan_log("local avatar baked in %d ms — %d KB raw, %d KB compressed, %d scripts" % [
 			Time.get_ticks_msec() - t0, raw.size() / 1024, compressed.size() / 1024,
 			_avatar_send_scripts_cache.size()])
 	var bytes := _avatar_send_cache
@@ -1514,7 +1514,7 @@ func _send_avatar_to(id: int) -> void:
 		"total": total,
 		"sent": 0,
 	}
-	push_warning("LAN: envoi avatar vers peer %d — compressé %d KB, %d chunks" % [id, bytes.size() / 1024, total])
+	push_warning("LAN: sending avatar to peer %d — compressed %d KB, %d chunks" % [id, bytes.size() / 1024, total])
 
 func _drain_avatar_send() -> void:
 	if _avatar_send_queue.is_empty():
@@ -1543,7 +1543,7 @@ func _avatar_scripts(from_id: int, manifest: Dictionary) -> void:
 	if manifest.is_empty() or not UserScriptMirror.valid(manifest):
 		return
 	var count := UserScriptMirror.install(manifest)
-	_lan_log("scripts avatar[%d] — lot installé (%d fichiers)" % [from_id, count])
+	_lan_log("avatar[%d] scripts — batch installed (%d files)" % [from_id, count])
 
 # Canal ENet dédié (1) : l'avatar de l'hôte part juste après les chunks de
 # niveau sur sa connexion — sans canal propre il resterait bloqué derrière
@@ -1557,7 +1557,7 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 	if slot.is_empty() or int(slot.get("total", -1)) != total or int(slot.get("size", -1)) != uncompressed_size:
 		slot = {"data": PackedByteArray(), "size": uncompressed_size, "total": total, "next": 0}
 		_avatar_receive_slots[from_id] = slot
-		_lan_log("avatar[%d]: début (%d chunks)" % [from_id, total])
+		_lan_log("avatar[%d]: start (%d chunks)" % [from_id, total])
 	if index < int(slot["next"]):
 		return
 	var data: PackedByteArray = slot["data"]
@@ -1572,9 +1572,9 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 	_avatar_receive_slots.erase(from_id)
 	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
 	if bytes.is_empty() or bytes.size() != recv_size:
-		push_warning("LAN: avatar décompress échoué — reçu %d octets, attendu %d" % [bytes.size(), recv_size])
+		push_warning("LAN: avatar decompress failed — received %d bytes, expected %d" % [bytes.size(), recv_size])
 		return
-	push_warning("LAN: avatar reçu de peer %d — %d KB" % [recv_from, bytes.size() / 1024])
+	push_warning("LAN: avatar received from peer %d — %d KB" % [recv_from, bytes.size() / 1024])
 	_avatar_blobs[recv_from] = bytes
 	# Décodage immédiat : le coût du load() est payé ici (pendant l'attente
 	# du niveau) plutôt qu'au spawn. Invalider le cache précédent pour que la
@@ -1625,7 +1625,7 @@ func _on_peer_disconnected(id: int) -> void:
 	# déconnecte quand une commande reliable (ping/ACK) reste non-acknowledgée
 	# ≥15 s (timeout min) — soit un lien saturé, soit un thread principal
 	# bloqué. Ce log permet de corréler avec les symptômes (lag → déconnexion).
-	print("[lan] peer %d déconnecté — état: video_stream=%s audio=%s nframes=%d" % [
+	print("[lan] peer %d disconnected — state: video_stream=%s audio=%s nframes=%d" % [
 		id,
 		_has_streaming_window(),
 		"on" if _audio_active else "off",
@@ -1729,7 +1729,7 @@ func _physics_process(delta: float) -> void:
 	# lent mais vivant (chunks réguliers) ne déclenche pas ce fallback.
 	if _pending_join and _last_level_chunk_msec > 0 \
 			and Time.get_ticks_msec() - _last_level_chunk_msec > JOIN_FALLBACK_MSEC:
-		push_warning("LAN: niveau hôte jamais reçu — join forcé sur la map locale")
+		push_warning("LAN: host level never received — forced join on local map")
 		_finalize_join()
 	# Filet de sécurité avatars : session rejointe mais niveau toujours pas
 	# stable → préchauffer quand même (le niveau local est déjà stable).
@@ -2027,7 +2027,7 @@ func _drain_encoded_frames() -> void:
 			if a >= 0:
 				gap = s - a
 			break
-		print("[lan] diag env: age=%dms enc=%dms rtt=%dms (n=%d) gap=%d send/s=%.1f bytes=%d" % [
+		print("[lan] diag tx: age=%dms enc=%dms rtt=%dms (n=%d) gap=%d send/s=%.1f bytes=%d" % [
 			age_ms, int(last.get("enc_us", 0)) / 1000, rtt_ms, _diag_rtt_count,
 			gap, float(_diag_sent_in_sec), last_bytes.size()])
 		_diag_rtt_sum = 0
@@ -2235,7 +2235,7 @@ func _drain_decoded_frames() -> void:
 		var rx_ms := -1
 		if _diag_rx_proc_n > 0:
 			rx_ms = _diag_rx_proc_sum / _diag_rx_proc_n
-		print("[lan] diag rx: appliquées/s=%d decode_q=%d rx_proc=%dms" % [
+		print("[lan] diag rx: applied/s=%d decode_q=%d rx_proc=%dms" % [
 			_diag_applied_count, _decode_queue.size(), rx_ms])
 		_diag_applied_count = 0
 		_diag_rx_proc_sum = 0
@@ -2380,20 +2380,20 @@ func _sync_audio_state() -> void:
 			_audio_start_msec = Time.get_ticks_msec()
 			_audio_send_count = 0
 			_audio_no_data_warned = false
-			print("[audio] capture démarrée (audio des fenêtres partagées: %s)" % str(pids))
+			print("[audio] capture started (audio of shared windows: %s)" % str(pids))
 	elif want:
 		# L'ensemble des fenêtres partagées a pu changer : on resynchronise.
 		if pids != _audio_share_pids:
 			_audio_share_pids = pids
 			compositor.set_audio_share_pids(pids)
-			print("[audio] cibles audio mises à jour: %s" % str(pids))
+			print("[audio] audio targets updated: %s" % str(pids))
 	elif not want and _audio_active:
 		compositor.stop_audio_share()
 		_audio_active = false
 		_audio_share_pids = []
 		_audio_send_count = 0
 		_audio_no_data_warned = false
-		print("[audio] capture arrêtée")
+		print("[audio] capture stopped")
 	if not _audio_active:
 		return
 	# Un seul poll par frame (~60/s pour ~50 paquets/s de 20 ms) : le paquet
@@ -2405,7 +2405,7 @@ func _sync_audio_state() -> void:
 		if _audio_send_count == 0 and not _audio_no_data_warned \
 				and Time.get_ticks_msec() - _audio_start_msec > 3000:
 			_audio_no_data_warned = true
-			push_warning("[audio] capture active mais aucun paquet OPUS (stream PipeWire non connecté ?)")
+			push_warning("[audio] capture active but no OPUS packet (PipeWire stream not connected?)")
 		return
 	_audio_send_count += 1
 	var data: PackedByteArray = packet.get("data", PackedByteArray())
@@ -2430,12 +2430,12 @@ func _sync_audio(bytes: PackedByteArray) -> void:
 	if pcm.is_empty():
 		if not _audio_decode_warned:
 			_audio_decode_warned = true
-			push_warning("[audio] paquets reçus mais décodage OPUS vide")
+			push_warning("[audio] packets received but OPUS decoding empty")
 		return
 	_audio_received_count += 1
 	if not _audio_first_printed:
 		_audio_first_printed = true
-		print("[audio] premier paquet reçu et décodé (%d frames)" % (pcm.size() / 4))
+		print("[audio] first packet received and decoded (%d frames)" % (pcm.size() / 4))
 	_ensure_audio_player()
 	var frames := PackedVector2Array()
 	var n := pcm.size() / 4
@@ -2527,10 +2527,10 @@ func _start_video_share() -> void:
 			_video_mode = true
 			_video_codec = compositor.video_share_codec()
 			var hw := compositor.video_share_hardware()
-			print("[video] partage inter-frame démarré: codec=%s matériel=%s bitrate=%d fps=%d" % [
-				_video_codec, "oui" if hw else "non", _video_bitrate, _video_fps])
+			print("[video] inter-frame sharing started: codec=%s hardware=%s bitrate=%d fps=%d" % [
+				_video_codec, "yes" if hw else "no", _video_bitrate, _video_fps])
 			return
-	print("[video] encodeur vidéo indisponible — partage en JPEG")
+	print("[video] video encoder unavailable — sharing in JPEG")
 
 func _stop_video_share() -> void:
 	if _video_mode and compositor != null and compositor.has_method("video_share_stop"):
@@ -2601,7 +2601,7 @@ func _announce_video_configs(force: bool) -> void:
 			var now2 := Time.get_ticks_msec()
 			if now2 - _video_geom_warn_last >= 2000:
 				_video_geom_warn_last = now2
-				print("[video] wid=%d : géométrie indisponible (%dx%d) — config différée" % [wid, w, h])
+				print("[video] wid=%d : geometry unavailable (%dx%d) — config deferred" % [wid, w, h])
 			continue
 		var cfg := [_video_codec, w, h]
 		var changed: bool = _video_config_last.get(wid, []) != cfg
@@ -2662,7 +2662,7 @@ func _drain_video_packets() -> void:
 	if now - _video_diag_last_log >= 1000:
 		_video_diag_last_log = now
 		if _video_diag_sent > 0:
-			print("[video] diag env: %d pkt/s %.1f KB/s pending=%d windows=%d" % [
+			print("[video] diag tx: %d pkt/s %.1f KB/s pending=%d windows=%d" % [
 				_video_diag_sent, float(_video_diag_bytes) / 1024.0,
 				compositor.video_share_pending(), _video_windows_sent.size()])
 		_video_diag_sent = 0
@@ -2682,7 +2682,7 @@ func _check_video_new_peers() -> void:
 		_announce_video_configs(false)
 		for wid in _video_windows_sent:
 			compositor.video_share_request_keyframe(wid)
-		print("[video] peer %d rejoint : config + keyframes demandées (%d fenêtre(s))" % [
+		print("[video] peer %d joined : config + keyframes requested (%d window(s))" % [
 			pid, _video_windows_sent.size()])
 
 # Paquets ≤ VIDEO_PACKET_SINGLE_MAX : 1 RPC (≤ 32 fragments ENet, 1 vague).
@@ -2871,7 +2871,7 @@ func _process_video_receiver() -> void:
 	if Time.get_ticks_msec() - _video_diag_last_applied >= 1000:
 		_video_diag_last_applied = Time.get_ticks_msec()
 		if _video_diag_applied > 0:
-			print("[video] diag rx: appliquées/s=%d" % _video_diag_applied)
+			print("[video] diag rx: applied/s=%d" % _video_diag_applied)
 		_video_diag_applied = 0
 
 # Demande une keyframe à l'émetteur (décodeur désynchronisé, config manquante
@@ -3235,7 +3235,7 @@ func _process(_delta: float) -> void:
 	# Timeout client : si le PIN n'est pas vérifié à temps, déconnexion.
 	if not is_host and _auth_request_sent_msec > 0 and session_active:
 		if Time.get_ticks_msec() - _auth_request_sent_msec > AUTH_TIMEOUT_MSEC:
-			_lan_log("auth timeout — pas de réponse de l'hôte")
+			_lan_log("auth timeout — no response from host")
 			_set_status("Authentication timeout — host did not respond")
 			_disconnect_session()
 	# Heartbeat : l'hôte émet périodiquement, le client surveille le timeout.
@@ -3386,7 +3386,7 @@ func _start_responder() -> void:
 	_responder = PacketPeerUDP.new()
 	_responder.set_broadcast_enabled(true)
 	if _responder.bind(DISCOVERY_PORT) != OK:
-		push_warning("Découverte LAN indisponible (port %d)." % DISCOVERY_PORT)
+		push_warning("LAN discovery unavailable (port %d)." % DISCOVERY_PORT)
 		_responder.close()
 		_responder = null
 

@@ -96,7 +96,7 @@ func _load_level() -> void:
 	_level_path = level_path
 	var scene: PackedScene = load(level_path)
 	if scene == null:
-		push_error("Impossible de charger le niveau '%s'" % level_path)
+		push_error("Unable to load the level '%s'" % level_path)
 		return
 	var level := scene.instantiate()
 	level.name = "Level"
@@ -134,7 +134,7 @@ func restore_local_level() -> bool:
 	if scene == null:
 		scene = load(DEFAULT_LEVEL_PATH)
 	if scene == null:
-		push_error("Impossible de restaurer le niveau personnel '%s'" % _level_path)
+		push_error("Unable to restore the personal level '%s'" % _level_path)
 		return false
 	var t: Dictionary = _local_spawn_transform
 	if _swap_level(scene, t.get("pos", Vector3.ZERO), t.get("rot", Vector3.ZERO), t.get("scale", Vector3.ONE), false):
@@ -204,7 +204,7 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	# derrière les murs/gros volumes). No-op si la scène embarque déjà un
 	# OccluderInstance3D baké dans l'éditeur.
 	if OCCLUSION_BAKER.bake(new_level) > 0:
-		print("[occ] occlusion culling générée pour le niveau appliqué")
+		print("[occ] occlusion culling generated for the applied level")
 	return true
 
 func _add_manager(script: Script, node_name: String) -> Node3D:
@@ -227,11 +227,11 @@ func _ready() -> void:
 	# Occluders runtime pour le niveau de boot (custom ou défaut). Le niveau
 	# est dans l'arbre : les transforms globaux sont valides.
 	if OCCLUSION_BAKER.bake($Level as Node3D) > 0:
-		print("[occ] occlusion culling générée pour le niveau de boot")
+		print("[occ] occlusion culling generated for the boot level")
 
 	# Diagnostic rendu : GPU + méthode de rendu une fois, puis stats
 	# périodiques si CYBERREALM_RENDER_DEBUG=1.
-	print("[render] GPU: %s — méthode: %s" % [
+	print("[render] GPU: %s — method: %s" % [
 		RenderingServer.get_video_adapter_name(),
 		RenderingServer.get_current_rendering_method(),
 	])
@@ -845,7 +845,7 @@ func _input(event: InputEvent) -> void:
 			return
 		_last_pinch_factor = mg.factor
 		_last_pinch_time_msec = now
-		print("[gesture] magnify recu factor=", mg.factor, " hovered=", win3d.is_in_window, " focus=", focus.is_active())
+		print("[gesture] magnify received factor=", mg.factor, " hovered=", win3d.is_in_window, " focus=", focus.is_active())
 		compositor.forward_pointer_pinch(mg.factor, 0.0, 0.0)
 		get_viewport().set_input_as_handled()
 		return

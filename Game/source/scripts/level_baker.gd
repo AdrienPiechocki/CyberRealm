@@ -61,21 +61,21 @@ static func bake(root: Node3D) -> Dictionary:
 	_own_all(clone, clone)
 	var scene := PackedScene.new()
 	if scene.pack(clone) != OK:
-		push_error("LevelBaker: pack du niveau échoué")
+		push_error("LevelBaker: packing the level failed")
 		return {}
 	if ResourceSaver.save(scene, BAKE_TMP_PATH) != OK:
-		push_error("LevelBaker: save du niveau échoué")
+		push_error("LevelBaker: saving the level failed")
 		return {}
 	var f := FileAccess.open(BAKE_TMP_PATH, FileAccess.READ)
 	if f == null:
-		push_error("LevelBaker: impossible de lire le bake temporaire")
+		push_error("LevelBaker: failed to read the temporary bake")
 		return {}
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
 	if bytes.is_empty():
-		push_error("LevelBaker: blob vide après lecture")
+		push_error("LevelBaker: empty blob after reading")
 		return {}
-	push_warning("LevelBaker: bake OK — %d KB (%d scripts user)" % [bytes.size() / 1024, manifest.size()])
+	push_warning("LevelBaker: bake OK — %d KB (%d user scripts)" % [bytes.size() / 1024, manifest.size()])
 	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale, "scripts": manifest}
 
 # ── Scripts utilisateur pour le LAN ──────────────────────────────────
@@ -106,14 +106,14 @@ static func prepare_user_scripts(root: Node) -> Dictionary:
 			if sources.has(r):
 				continue
 			if not FileAccess.file_exists(r):
-				push_warning("LevelBaker: script utilisateur référencé introuvable : %s" % r)
+				push_warning("LevelBaker: referenced user script not found: %s" % r)
 				continue
 			sources[r] = FileAccess.get_file_as_string(r)
 			scan_queue.append(r)
 	for p in sources:
 		if String(sources[p]).is_empty():
-			push_warning("LevelBaker: source vide pour %s — build exporté avec des scripts compilés ? " % p
-				+ "script_export_mode doit valoir 0 (Texte) pour le partage LAN.")
+			push_warning("LevelBaker: empty source for %s — exported build with compiled scripts? " % p
+				+ "script_export_mode must be 0 (Text) for LAN sharing.")
 	if sources.is_empty():
 		return {}
 	var batch := UserScriptMirror.new_batch()
@@ -127,7 +127,7 @@ static func prepare_user_scripts(root: Node) -> Dictionary:
 	for p in found:
 		var copy := load(UserScriptMirror.mirror_path(p, batch)) as Script
 		if copy == null:
-			push_warning("LevelBaker: copie miroir illisible pour %s — script non transmis" % p)
+			push_warning("LevelBaker: unreadable mirror copy for %s — script not transmitted" % p)
 			continue
 		_script_remap[found[p]] = copy
 	return manifest
@@ -366,7 +366,7 @@ static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 		cache[tex] = emb
 		return emb
 	# Fallback : retourner la texture originale (risque d'erreur côté client).
-	push_warning("LevelBaker: texture fallback non convertie — %s (%s)" % [tex.resource_path, tex.get_class()])
+	push_warning("LevelBaker: fallback texture not converted — %s (%s)" % [tex.resource_path, tex.get_class()])
 	cache[tex] = tex
 	return tex
 

@@ -1046,7 +1046,7 @@ func _show_lan() -> void:
 	join_row.add_child(pin_edit)
 	var encryption_btn := CheckButton.new()
 	encryption_btn.text = "TLS"
-	encryption_btn.tooltip_text = "Chiffrer la session (DTLS) avec les certificats embarqués"
+	encryption_btn.tooltip_text = "Encrypt the session (DTLS) with the embedded certificates"
 	encryption_btn.button_pressed = true
 	join_row.add_child(encryption_btn)
 	var join_btn := _make_btn("Join")
@@ -1087,7 +1087,7 @@ func _show_lan() -> void:
 	codec_opt.add_item("H.264")
 	codec_opt.add_item("AV1")
 	codec_opt.select(0)
-	codec_opt.tooltip_text = "H.264 VAAPI est le plus fiable ; AV1 est matériel seulement (peut être lent/instable selon le GPU)"
+	codec_opt.tooltip_text = "H.264 VAAPI is the most reliable; AV1 is hardware only (may be slow/unstable depending on the GPU)"
 	codec_row.add_child(codec_opt)
 	container.add_child(codec_row)
 
@@ -1103,7 +1103,7 @@ func _show_lan() -> void:
 	bitrate_spin.step = 1.0
 	bitrate_spin.value = 6.0
 	bitrate_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	bitrate_spin.tooltip_text = "Débit cible par fenêtre partagée (bits/s ÷ 1e6). Montez-le sur LAN filaire rapide pour moins de compression"
+	bitrate_spin.tooltip_text = "Target bitrate per shared window (bits/s ÷ 1e6). Raise it on fast wired LAN for less compression"
 	bitrate_row.add_child(bitrate_spin)
 	container.add_child(bitrate_row)
 
@@ -1119,7 +1119,7 @@ func _show_lan() -> void:
 	fps_spin.step = 1.0
 	fps_spin.value = 60.0
 	fps_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	fps_spin.tooltip_text = "Cadence d'encodage (10-60). 30 divise la charge CPU par deux"
+	fps_spin.tooltip_text = "Encoding framerate (10-60). 30 halves the CPU load"
 	fps_row.add_child(fps_spin)
 	container.add_child(fps_row)
 

@@ -131,7 +131,7 @@ bool AudioShare::start() {
 
 	thread_loop = pw_thread_loop_new("cyberrealm-audio-share", nullptr);
 	if (!thread_loop) {
-		UtilityFunctions::printerr("waylandgodot: audio: pw_thread_loop_new a échoué");
+		UtilityFunctions::printerr("waylandgodot: audio: pw_thread_loop_new failed");
 		return false;
 	}
 	context = pw_context_new(pw_thread_loop_get_loop((pw_thread_loop *)thread_loop), nullptr, 0);
@@ -146,8 +146,8 @@ bool AudioShare::start() {
 		context = nullptr;
 		pw_thread_loop_destroy((pw_thread_loop *)thread_loop);
 		thread_loop = nullptr;
-		UtilityFunctions::printerr("waylandgodot: audio: pw_context_connect a échoué "
-			"(pas de session PipeWire ?)");
+		UtilityFunctions::printerr("waylandgodot: audio: pw_context_connect failed "
+			"(no PipeWire session ?)");
 		return false;
 	}
 
@@ -160,12 +160,12 @@ bool AudioShare::start() {
 			(struct spa_hook *)registry_hook, &g_registry_events, this);
 
 	if (pw_thread_loop_start((pw_thread_loop *)thread_loop) < 0) {
-		UtilityFunctions::printerr("waylandgodot: audio: pw_thread_loop_start a échoué");
+		UtilityFunctions::printerr("waylandgodot: audio: pw_thread_loop_start failed");
 		stop();
 		return false;
 	}
-	UtilityFunctions::print("waylandgodot: audio: capture PipeWire démarrée "
-		"(audio des fenêtres partagées, par PID) [build client-pid v3]");
+	UtilityFunctions::print("waylandgodot: audio: PipeWire capture started "
+		"(shared windows audio, by PID) [build client-pid v3]");
 	return true;
 }
 
@@ -302,7 +302,7 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 		} else {
 			UtilityFunctions::print("waylandgodot: audio: node ", id, " (",
 				node_name ? node_name : "?", ") client ", client_id,
-				" — pid du client inconnu pour l'instant");
+				" — client pid unknown for now");
 		}
 		// IMPORTANT : on ne détruit PAS nb->proxy / ne free PAS nb ici. Cette
 		// callback info est dispatchée SUR la liste de listeners de ce proxy ;
@@ -497,7 +497,7 @@ void AudioShare::create_stream_for(uint32_t node_id, int pid) {
 
 	s->stream = pw_stream_new((pw_core *)core, "cyberrealm-audio-share", nullptr);
 	if (!s->stream) {
-		UtilityFunctions::printerr("waylandgodot: audio: pw_stream_new a échoué (pid ", pid, ")");
+		UtilityFunctions::printerr("waylandgodot: audio: pw_stream_new failed (pid ", pid, ")");
 		delete s;
 		return;
 	}
@@ -526,14 +526,14 @@ void AudioShare::create_stream_for(uint32_t node_id, int pid) {
 	// sortir normalement ; on ne fait qu'ajouter une prise de capture).
 	if (pw_stream_connect((pw_stream *)s->stream, PW_DIRECTION_INPUT, node_id,
 			PW_STREAM_FLAG_AUTOCONNECT, params, 1) < 0) {
-		UtilityFunctions::printerr("waylandgodot: audio: pw_stream_connect a échoué (node ",
+		UtilityFunctions::printerr("waylandgodot: audio: pw_stream_connect failed (node ",
 			node_id, ", pid ", pid, ")");
 		pw_stream_destroy((pw_stream *)s->stream);
 		free(s->hook);
 		delete s;
 		return;
 	}
-	UtilityFunctions::print("waylandgodot: audio: capture connectée au node ", node_id,
+	UtilityFunctions::print("waylandgodot: audio: capture connected to node ", node_id,
 		" (pid ", pid, ")");
 	// L'appelant (apply_targets) détient déjà streams_mutex.
 	streams.push_back(s);

@@ -36,14 +36,14 @@ bool VulkanDmaBufImport::initialize(RenderingDevice *p_rd) {
     void *vklib = dlopen("libvulkan.so.1", RTLD_LAZY);
     if (!vklib) vklib = dlopen("libvulkan.so", RTLD_LAZY);
     if (!vklib) {
-        UtilityFunctions::printerr("waylandgodot: Vulkan: impossible de charger libvulkan");
+        UtilityFunctions::printerr("waylandgodot: Vulkan: unable to load libvulkan");
         return false;
     }
 
     p_vkGetInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(
         dlsym(vklib, "vkGetInstanceProcAddr"));
     if (!p_vkGetInstanceProcAddr) {
-        UtilityFunctions::printerr("waylandgodot: Vulkan: vkGetInstanceProcAddr introuvable");
+        UtilityFunctions::printerr("waylandgodot: Vulkan: vkGetInstanceProcAddr not found");
         return false;
     }
 
@@ -58,7 +58,7 @@ bool VulkanDmaBufImport::initialize(RenderingDevice *p_rd) {
         rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_VULKAN_QUEUE, RID(), 0));
 
     if (!vk_instance || !vk_physical_device || !vk_device || !vk_queue) {
-        UtilityFunctions::printerr("waylandgodot: Vulkan: handles invalides depuis RenderingDevice");
+        UtilityFunctions::printerr("waylandgodot: Vulkan: invalid handles from RenderingDevice");
         return false;
     }
 
@@ -71,12 +71,12 @@ bool VulkanDmaBufImport::initialize(RenderingDevice *p_rd) {
     // VK_KHR_external_memory_fd is not supported by this driver.
     if (!p_GetMemoryFdPropertiesKHR) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "VK_KHR_external_memory_fd non supporté par le pilote");
+            "VK_KHR_external_memory_fd not supported by the driver");
         return false;
     }
 
     available = true;
-    UtilityFunctions::print("waylandgodot: Vulkan DMA-BUF import initialisé "
+    UtilityFunctions::print("waylandgodot: Vulkan DMA-BUF import initialized "
         "(VK_KHR_external_memory_fd)");
     return true;
 }
@@ -91,7 +91,7 @@ bool VulkanDmaBufImport::load_function_pointers() {
     p_vkGetDeviceProcAddr = reinterpret_cast<PFN_vkGetDeviceProcAddr>(
         p_vkGetInstanceProcAddr(vk_instance, "vkGetDeviceProcAddr"));
     if (!p_vkGetDeviceProcAddr) {
-        UtilityFunctions::printerr("waylandgodot: Vulkan: vkGetDeviceProcAddr introuvable");
+        UtilityFunctions::printerr("waylandgodot: Vulkan: vkGetDeviceProcAddr not found");
         return false;
     }
 
@@ -137,7 +137,7 @@ bool VulkanDmaBufImport::load_function_pointers() {
         !p_AllocateMemory || !p_FreeMemory || !p_BindImageMemory ||
         !p_DeviceWaitIdle) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "fonctions Vulkan core manquantes");
+            "missing core Vulkan functions");
         return false;
     }
 
@@ -145,7 +145,7 @@ bool VulkanDmaBufImport::load_function_pointers() {
     if (!p_CreateFence || !p_DestroyFence || !p_GetFenceStatus ||
         !p_ResetFences || !p_QueueSubmit) {
         UtilityFunctions::print("waylandgodot: Vulkan: "
-            "fonctions fence manquantes, fallback vkDeviceWaitIdle");
+            "fence functions missing, fallback vkDeviceWaitIdle");
     }
 
     return true;
@@ -193,7 +193,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
         static_cast<RenderingDevice::DataFormat>(drm_to_rd_format(drm_format));
     if (rd_format == RenderingDevice::DATA_FORMAT_MAX) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "format DRM non mappé: 0x", String::num_uint64(drm_format));
+            "unmapped DRM format: 0x", String::num_uint64(drm_format));
         return result;
     }
 
@@ -204,7 +204,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     // Dup the fd — Vulkan takes ownership of the dup on import.
     int dup_fd = dup(fd);
     if (dup_fd < 0) {
-        UtilityFunctions::printerr("waylandgodot: Vulkan: dup() a échoué pour dmabuf fd");
+        UtilityFunctions::printerr("waylandgodot: Vulkan: dup() failed for dmabuf fd");
         return result;
     }
 
@@ -225,7 +225,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
         dup_fd, &fd_props);
     if (res != VK_SUCCESS) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "vkGetMemoryFdPropertiesKHR a échoué: ", String::num_int64(res));
+            "vkGetMemoryFdPropertiesKHR failed: ", String::num_int64(res));
         close(dup_fd);
         return result;
     }
@@ -256,7 +256,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     VkImage vk_image = VK_NULL_HANDLE;
     res = p_CreateImage(vk_device, &image_info, nullptr, &vk_image);
     if (res != VK_SUCCESS) {
-        UtilityFunctions::printerr("waylandgodot: Vulkan: vkCreateImage a échoué: ",
+        UtilityFunctions::printerr("waylandgodot: Vulkan: vkCreateImage failed: ",
             String::num_int64(res));
         close(dup_fd);
         return result;
@@ -271,7 +271,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
                                          fd_props.memoryTypeBits);
     if (mem_type == UINT32_MAX) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "aucun type de mémoire compatible entre image et dmabuf");
+            "no memory type compatible between image and dmabuf");
         p_DestroyImage(vk_device, vk_image, nullptr);
         close(dup_fd);
         return result;
@@ -294,7 +294,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     res = p_AllocateMemory(vk_device, &alloc_info, nullptr, &vk_memory);
     if (res != VK_SUCCESS) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "vkAllocateMemory (import dmabuf) a échoué: ",
+            "vkAllocateMemory (dmabuf import) failed: ",
             String::num_int64(res));
         p_DestroyImage(vk_device, vk_image, nullptr);
         close(dup_fd); // Ownership NOT transferred on failure
@@ -305,7 +305,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     res = p_BindImageMemory(vk_device, vk_image, vk_memory, 0);
     if (res != VK_SUCCESS) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "vkBindImageMemory a échoué: ", String::num_int64(res));
+            "vkBindImageMemory failed: ", String::num_int64(res));
         p_FreeMemory(vk_device, vk_memory, nullptr);
         p_DestroyImage(vk_device, vk_image, nullptr);
         return result;
@@ -324,7 +324,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
         VkResult fres = p_CreateFence(vk_device, &fence_info, nullptr, &import_fence);
         if (fres != VK_SUCCESS) {
             UtilityFunctions::printerr("waylandgodot: Vulkan: "
-                "vkCreateFence a échoué: ", String::num_int64(fres));
+                "vkCreateFence failed: ", String::num_int64(fres));
             import_fence = VK_NULL_HANDLE;
         }
     }
@@ -348,7 +348,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
 
     if (!rid.is_valid()) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
-            "texture_create_from_extension a échoué");
+            "texture_create_from_extension failed");
         p_FreeMemory(vk_device, vk_memory, nullptr);
         p_DestroyImage(vk_device, vk_image, nullptr);
         return result;

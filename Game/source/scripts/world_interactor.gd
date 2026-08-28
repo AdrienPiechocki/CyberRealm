@@ -155,7 +155,7 @@ func _apply_net_interact(sender: int, target_path: String, from_peer: int) -> vo
 		return
 	var prefix := String(level.get_path()) + "/"
 	if not target_path.begins_with(prefix):
-		push_warning("Interactor: cible hors niveau rejetée (%s)" % target_path)
+		push_warning("Interactor: out-of-level target rejected (%s)" % target_path)
 		return
 	var n := get_node_or_null(NodePath(target_path))
 	if n != null and n.has_method("interact"):
