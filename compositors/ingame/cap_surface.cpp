@@ -5,6 +5,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <chrono>
+#include <fstream>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
