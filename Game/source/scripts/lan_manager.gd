@@ -46,6 +46,14 @@ var _pin_blacklist: Dictionary = {}
 var _pin_fail_counts: Dictionary = {}
 # Chiffrement demandé pour le dernier join (réutilisé à la reconnexion).
 var _last_join_encrypted := false
+# ── Heartbeat / reconnexion (C1/C2) ──────────────────────────────────
+var _last_heartbeat_msec := 0
+var _session_closed_received := false
+var _last_heartbeat_sent_msec := 0
+var _reconnecting := false
+var _reconnect_attempts := 0
+var _reconnect_ip := ""
+var _reconnect_pin := ""
 # Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
 const AUTH_TIMEOUT_MSEC := 10000
 
@@ -634,6 +642,10 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 		return false
 	_last_join_encrypted = encrypted
 	_pin = pin.strip_edges()
+	# Contexte de reconnexion : capturé au join initial (pas pendant un rejoin).
+	if not _reconnecting:
+		_reconnect_ip = ip
+		_reconnect_pin = pin.strip_edges()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
@@ -654,11 +666,34 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 	return true
 
 func disconnect_session() -> void:
+	# Hôte : notifier proprement les clients avant de couper (pas de reconnexion).
+	if is_host and session_active and multiplayer.multiplayer_peer != null:
+		session_closed.rpc()
 	_disconnect_session()
+
+## Heartbeat de l'hôte vers les clients (fiabilité de session).
+@rpc("authority", "reliable")
+func _host_heartbeat() -> void:
+	if is_host:
+		return
+	_last_heartbeat_msec = Time.get_ticks_msec()
+
+## L'hôte ferme proprement la session : les clients abandonnent la reconnexion.
+@rpc("authority", "reliable")
+func session_closed() -> void:
+	if is_host:
+		return
+	_session_closed_received = true
+	_lan_log("session_closed reçu de l'hôte")
 
 func _on_connected_to_server() -> void:
 	session_active = true
 	is_host = false
+	# Reconnexion : chaque connexion réussie remet les compteurs à zéro.
+	_session_closed_received = false
+	_reconnecting = false
+	_reconnect_attempts = 0
+	_last_heartbeat_msec = Time.get_ticks_msec()
 	# Miroir des scripts utilisateur reparti à zéro : le niveau et les avatars
 	# de CETTE session réinstalleront leurs lots avant tout chargement de blob.
 	UserScriptMirror.clear()
@@ -764,12 +799,51 @@ func auth_result(ok: bool) -> void:
 		_disconnect_session()
 
 func _on_connection_failed() -> void:
-	_disconnect_session()
-	_set_status("Connection failed — IP unreachable. Check: same network, host firewall (UDP %d/%d open), router AP isolation." % [PORT, DISCOVERY_PORT])
+	if _should_attempt_reconnect():
+		_begin_reconnect()
+	else:
+		_disconnect_session()
+		_set_status("Connection failed — IP unreachable. Check: same network, host firewall (UDP %d/%d open), router AP isolation." % [PORT, DISCOVERY_PORT])
 
 func _on_server_disconnected() -> void:
-	_disconnect_session()
-	_set_status("Disconnected from server")
+	if _should_attempt_reconnect():
+		_begin_reconnect()
+	else:
+		_disconnect_session()
+		_set_status("Disconnected from server")
+
+# ── Reconnexion automatique (C2) ─────────────────────────────────────
+
+func _should_attempt_reconnect() -> bool:
+	if is_host or not session_active or _session_closed_received:
+		return false
+	return should_reconnect(_last_heartbeat_msec, Time.get_ticks_msec(),
+		_session_closed_received, RECONNECT_WINDOW_MSEC, _reconnect_attempts)
+
+## Heartbeat expiré côté client → on considère l'hôte injoignable.
+func _on_host_heartbeat_timeout() -> void:
+	_lan_log("heartbeat expiré (%d ms sans host heartbeat)" % HOST_HEARTBEAT_TIMEOUT_MSEC)
+	_begin_reconnect()
+
+func _begin_reconnect() -> void:
+	if _reconnecting or _session_closed_received or _reconnect_ip == "":
+		return
+	_reconnecting = true
+	_reconnect_attempts += 1
+	if _reconnect_attempts >= RECONNECT_MAX_ATTEMPTS:
+		_reconnecting = false
+		_reconnect_ip = ""
+		_disconnect_session()
+		_set_status("Host unreachable — back to local game")
+		return
+	var delay := backoff_delay(_reconnect_attempts - 1)
+	_set_status("Reconnecting… (%d/%d)" % [_reconnect_attempts, RECONNECT_MAX_ATTEMPTS])
+	await get_tree().create_timer(delay).timeout
+	if not session_active and not _reconnecting:
+		_reconnecting = false
+		return
+	_disconnect_session(true)
+	join_game(_reconnect_ip, _reconnect_pin, _last_join_encrypted)
 
 # ── Spawn / despawn des avatars ──────────────────────────────────────
 
@@ -3128,6 +3202,15 @@ func _process(_delta: float) -> void:
 			_lan_log("auth timeout — pas de réponse de l'hôte")
 			_set_status("Authentication timeout — host did not respond")
 			_disconnect_session()
+	# Heartbeat : l'hôte émet périodiquement, le client surveille le timeout.
+	if session_active and multiplayer.multiplayer_peer != null:
+		var now := Time.get_ticks_msec()
+		if is_host:
+			if now - _last_heartbeat_sent_msec >= HEARTBEAT_INTERVAL_MSEC:
+				_last_heartbeat_sent_msec = now
+				_host_heartbeat.rpc()
+		elif now - _last_heartbeat_msec > HOST_HEARTBEAT_TIMEOUT_MSEC:
+			_on_host_heartbeat_timeout()
 
 # Diffuse le curseur du propriétaire pour chaque fenêtre partagée visible :
 # position du pointeur (rpc léger non fiable) + image du curseur custom quand
@@ -3315,7 +3398,7 @@ func _clear_remote_players() -> void:
 	_remote_players.clear()
 	_arrived_peers.clear()
 
-func _disconnect_session() -> void:
+func _disconnect_session(keep_context := false) -> void:
 	_stop_audio_share()
 	_stop_video_share()
 	_pending_auth.clear()
@@ -3379,8 +3462,9 @@ func _disconnect_session() -> void:
 	_emit_players()
 	# Dernier, une fois les avatars distants libérés et l'état réinitialisé :
 	# la restauration recrée le conteneur Players sous le niveau personnel via
-	# on_level_swapped().
-	local_level_restore_requested.emit()
+	# on_level_swapped(). Sautée en reconnexion (on va rejoindre à nouveau).
+	if not keep_context:
+		local_level_restore_requested.emit()
 
 func _exit_tree() -> void:
 	_stop_encode_thread()
