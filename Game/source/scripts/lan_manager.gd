@@ -40,6 +40,41 @@ var _pin: String = ""
 var _pending_auth: Dictionary = {}
 # Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
 const AUTH_TIMEOUT_MSEC := 10000
+
+# ── Reconnexion & anti brute-force PIN (B2) ──────────────────────────
+const RECONNECT_WINDOW_MSEC := 30000
+const RECONNECT_MAX_ATTEMPTS := 12
+const HEARTBEAT_INTERVAL_MSEC := 1000
+const HOST_HEARTBEAT_TIMEOUT_MSEC := 4000
+const PIN_FAIL_LIMIT := 3
+const PIN_BLACKLIST_MSEC := 30000
+
+## Délai d'attente (secondes) avant la tentative de reconnexion n°attempt.
+static func backoff_delay(attempt: int) -> float:
+	var base := 0.5 * pow(2.0, float(attempt))
+	var jitter := randf_range(-0.3, 0.3) * base
+	return clampf(base + jitter, 0.0, 2.5)
+
+## Décide si une reconnexion est encore pertinente. `closed` = on a reçu
+## session_closed (l'hôte a fermé proprement → pas de reconnect). `attempts`
+## = nombre de tentatives déjà effectuées. `window` = fenêtre de tolérance.
+static func should_reconnect(last_hb: int, now: int, closed: bool, window: int, attempts: int) -> bool:
+	if closed or attempts >= RECONNECT_MAX_ATTEMPTS:
+		return false
+	if attempts == 0:
+		return true
+	return (now - last_hb) <= window
+
+## Enregistre une tentative de PIN. Retourne true si l'adresse doit être
+## rejetée (≥ PIN_FAIL_LIMIT échecs consécutifs). Un succès (ok=true) réarme.
+## `state` est une Dictionary externe (testable) : addr -> nb échecs consécutifs.
+static func pin_attempt(addr: String, ok: bool, state: Dictionary) -> bool:
+	if ok:
+		state.erase(addr)
+		return false
+	var fails: int = int(state.get(addr, 0)) + 1
+	state[addr] = fails
+	return fails >= PIN_FAIL_LIMIT
 # Timestamp (ms) de l'envoi de la requête auth par le client.
 var _auth_request_sent_msec := 0
 # Scènes avatar décodées à l'avance : peer_id -> PackedScene. Le coût du

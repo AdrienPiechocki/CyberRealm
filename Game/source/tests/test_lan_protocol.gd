@@ -2,6 +2,7 @@ extends Node
 ## Tests for PIN generation and LAN protocol helpers.
 
 const Runner = preload("res://tests/runner.gd")
+const LANManager = preload("res://scripts/lan_manager.gd")
 
 func test_pin_format():
 	for _i in 100:
@@ -101,3 +102,51 @@ func _reassemble_chunks(chunks: Array):
 	for chunk in chunks:
 		result += chunk
 	return result
+
+# ── Helpers B2 : backoff / reconnect / blacklist ─────────────────────
+
+func test_backoff_schedule():
+	var r = true
+	for a in range(0, 7):
+		var d = LANManager.backoff_delay(a)
+		if d < 0.0 or d > 2.5:
+			r = false
+	return r
+
+func test_backoff_grows():
+	# Croissance stricte uniquement avant le plafond (clamp ≤ 2.5 s) : au-delà
+	# (attempt ≥ 3) le délai sature, la croissance stricte n'est plus garantie.
+	var r = true
+	var prev = LANManager.backoff_delay(0)
+	for a in range(1, 3):
+		var d = LANManager.backoff_delay(a)
+		if d <= prev:
+			r = false
+		prev = d
+	if r != true: return r
+	# Plafond : jamais au-delà de 2.5 s, même en saturant.
+	for a in range(3, 7):
+		if LANManager.backoff_delay(a) > 2.5:
+			r = false
+	return r
+
+func test_should_reconnect_yes():
+	var r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 2), true, "heartbeat expiré → reconnect")
+	if r != true: return r
+	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 12), false, "window épuisée → abandon")
+	if r != true: return r
+	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, true, 30000, 2), false, "session_closed → pas de reconnect")
+	return true
+
+func test_pin_blacklist():
+	var state := {}
+	var r = true
+	for i in range(3):
+		if LANManager.pin_attempt("1.2.3.4", false, state) == true:
+			r = false
+	if r != true: return "doit échouer seulement au 3e"
+	if LANManager.pin_attempt("1.2.3.4", false, state) == false:
+		return "3e échec doit rejeter"
+	if LANManager.pin_attempt("1.2.3.4", true, state) == false:
+		return "un succès réarme"
+	return true
