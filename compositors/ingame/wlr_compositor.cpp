@@ -1522,75 +1522,14 @@ void WlrCompositor::_process(double delta) {
 // réarme ses timers et reporte les notifications idle aux clients abonnés.
 // Appelé par toutes les fonctions de forward d'input ci-dessous, et exposé
 // à Godot pour couvrir l'input du joueur qui ne vise aucune surface.
-void WlrCompositor::notify_activity() {
-    if (idle_notifier && seat) {
-        wlr_idle_notifier_v1_notify_activity(idle_notifier, seat);
-    }
-}
 
 // Recalcule l'état inhibé : vrai si au moins un inhibiteur zwp_idle_inhibit_v1
 // a sa surface visible (mapped). Un inhibiteur posé sur une fenêtre masquée
 // ou un popup fermé ne doit pas bloquer l'idle.
-void WlrCompositor::update_idle_inhibited() {
-    bool inhibited = false;
-    for (auto &pair : idle_inhibitors) {
-        IdleInhibitorState &state = pair.second;
-        if (state.inhibitor && state.inhibitor->surface &&
-            state.inhibitor->surface->mapped) {
-            inhibited = true;
-            break;
-        }
-    }
-    if (idle_notifier) {
-        wlr_idle_notifier_v1_set_inhibited(idle_notifier, inhibited);
-    }
-}
 
-void WlrCompositor::on_new_idle_inhibitor(wl_listener *listener, void *data) {
-    WlrCompositor *self = wl_container_of(listener, self, new_idle_inhibitor_listener);
-    auto *inhibitor = static_cast<wlr_idle_inhibitor_v1 *>(data);
-    UtilityFunctions::print("[idle] NEW inhibitor, surface mapped=", inhibitor->surface->mapped);
 
-    IdleInhibitorState &state = self->idle_inhibitors[inhibitor];
-    state.inhibitor = inhibitor;
-    state.owner = self;
 
-    state.destroy_listener.notify = WlrCompositor::on_idle_inhibitor_destroy;
-    wl_signal_add(&inhibitor->events.destroy, &state.destroy_listener);
 
-    state.surface_map_listener.notify = WlrCompositor::on_idle_inhibitor_surface_map;
-    wl_signal_add(&inhibitor->surface->events.map, &state.surface_map_listener);
-
-    state.surface_unmap_listener.notify = WlrCompositor::on_idle_inhibitor_surface_unmap;
-    wl_signal_add(&inhibitor->surface->events.unmap, &state.surface_unmap_listener);
-
-    self->update_idle_inhibited();
-}
-
-void WlrCompositor::on_idle_inhibitor_destroy(wl_listener *listener, void *data) {
-    IdleInhibitorState *state = wl_container_of(listener, state, destroy_listener);
-    WlrCompositor *self = state->owner;
-    UtilityFunctions::print("[idle] inhibitor DESTROYED, remaining=", self->idle_inhibitors.size() - 1);
-
-    wl_list_remove(&state->destroy_listener.link);
-    wl_list_remove(&state->surface_map_listener.link);
-    wl_list_remove(&state->surface_unmap_listener.link);
-
-    self->idle_inhibitors.erase(state->inhibitor);
-    self->update_idle_inhibited();
-}
-
-void WlrCompositor::on_idle_inhibitor_surface_map(wl_listener *listener, void *data) {
-    IdleInhibitorState *state = wl_container_of(listener, state, surface_map_listener);
-    (void)data;
-    state->owner->update_idle_inhibited();
-}
-
-void WlrCompositor::on_idle_inhibitor_surface_unmap(wl_listener *listener, void *data) {
-    IdleInhibitorState *state = wl_container_of(listener, state, surface_unmap_listener);
-    (void)data;
-    state->owner->update_idle_inhibited();
-}
 
 
 
@@ -1639,66 +1578,8 @@ void WlrCompositor::on_idle_inhibitor_surface_unmap(wl_listener *listener, void 
 
 
 
-void WlrCompositor::on_request_start_drag(wl_listener *listener, void *data) {
-    WlrCompositor *self = wl_container_of(listener, self, request_start_drag_listener);
-    if (!self->seat) return;
-    wlr_seat_request_start_drag_event *event = (wlr_seat_request_start_drag_event *)data;
 
-    static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
-    if (dbg) {
-        fprintf(stderr, "waylandgodot: request_start_drag serial=%u drag_serial=%u focused=%p origin=%p "
-            "origin_is_window=%d\n",
-            event->serial, self->seat->pointer_state.grab_serial,
-            (void *)self->seat->pointer_state.focused_surface,
-            (void *)event->origin,
-            event->origin ? (wlr_xdg_surface_try_from_wlr_surface(event->origin) != nullptr) : 0);
-    }
 
-    if (wlr_seat_validate_pointer_grab_serial(self->seat, event->origin, event->serial)) {
-        wlr_seat_start_pointer_drag(self->seat, event->drag, event->serial);
-        return;
-    }
-
-    struct wlr_touch_point *point;
-    if (wlr_seat_validate_touch_grab_serial(self->seat, event->origin, event->serial, &point)) {
-        wlr_seat_start_touch_drag(self->seat, event->drag, event->serial, point);
-        return;
-    }
-
-    UtilityFunctions::print("waylandgodot: ignoring drag request, serial ", event->serial, " not valid");
-}
-
-void WlrCompositor::on_start_drag(wl_listener *listener, void *data) {
-    WlrCompositor *self = wl_container_of(listener, self, start_drag_listener);
-    wlr_drag *drag = (wlr_drag *)data;
-
-    static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
-    if (dbg) {
-        fprintf(stderr, "waylandgodot: drag STARTED icon=%p\n", (void *)(drag->icon ? drag->icon->surface : nullptr));
-    }
-
-    self->active_drag = drag;
-
-    if (drag->icon && drag->icon->surface) {
-        RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
-        self->drag_icon_cache.reset(rd);
-    }
-
-    self->drag_destroy_listener.notify = WlrCompositor::on_drag_destroy;
-    wl_signal_add(&drag->events.destroy, &self->drag_destroy_listener);
-}
-
-void WlrCompositor::on_drag_destroy(wl_listener *listener, void *data) {
-    WlrCompositor *self = wl_container_of(listener, self, drag_destroy_listener);
-    wl_list_remove(&self->drag_destroy_listener.link);
-    self->active_drag = nullptr;
-    self->drag_icon_texture = Ref<Texture2D>();
-    self->drag_icon_width = 0;
-    self->drag_icon_height = 0;
-    RenderingDevice *rd = RenderingServer::get_singleton()->get_rendering_device();
-    self->drag_icon_cache.reset(rd);
-    self->emit_signal("drag_icon_removed");
-}
 
 // --- Drop de fichiers sur le monde 3D --------------------------------------
 // Lit text/uri-list depuis la source du drag via un tube. La remontée du
@@ -1708,149 +1589,13 @@ void WlrCompositor::on_drag_destroy(wl_listener *listener, void *data) {
 // Timeout de sécurité si la source ne répond pas (sélection géante, app
 // bloquée) : le drag se termine alors normalement, éventuellement sans
 // données.
-#define FILE_DROP_URI_MIME "text/uri-list"
-#define FILE_DROP_READ_TIMEOUT_MS 1000
-
-bool WlrCompositor::extract_file_drop_start() {
-    wlr_data_source *source = seat->drag->source;
-
-    bool has_uris = false;
-    char **mimes = (char **)source->mime_types.data;
-    size_t mime_count = source->mime_types.size / sizeof(char *);
-    for (size_t i = 0; i < mime_count; i++) {
-        if (strcmp(mimes[i], FILE_DROP_URI_MIME) == 0) {
-            has_uris = true;
-            break;
-        }
-    }
-    if (!has_uris) {
-        return false; // pas des fichiers : comportement historique (annulation)
-    }
-
-    int fds[2];
-    if (pipe(fds) != 0) {
-        return false;
-    }
-    // La requête send part AVANT toute notification du relâchement : le
-    // client verra .send puis .cancelled dans cet ordre.
-    wlr_data_source_send(source, FILE_DROP_URI_MIME, fds[1]);
-    close(fds[1]);
-
-    const uint32_t time_msec = get_time_msec();
-    const int button = (int)seat->pointer_state.grab_button;
-    const int read_fd = fds[0];
-    auto guard = alive_guard;
-
-    std::thread([this, guard, read_fd, time_msec, button]() {
-        std::string data;
-        char buf[4096];
-        const auto deadline = std::chrono::steady_clock::now() +
-            std::chrono::milliseconds(FILE_DROP_READ_TIMEOUT_MS);
-        for (;;) {
-            const auto now = std::chrono::steady_clock::now();
-            long remain_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-                deadline - now).count();
-            if (remain_ms <= 0) break;
-            pollfd p{};
-            p.fd = read_fd;
-            p.events = POLLIN;
-            if (::poll(&p, 1, (int)remain_ms) <= 0) break;
-            ssize_t r = ::read(read_fd, buf, sizeof(buf));
-            if (r > 0) {
-                data.append(buf, (size_t)r);
-                continue; // EOF uniquement quand la source ferme son fd
-            }
-            break;
-        }
-        ::close(read_fd);
-
-        PackedStringArray paths;
-        size_t pos = 0;
-        while (pos < data.size()) {
-            size_t eol = data.find('\n', pos);
-            if (eol == std::string::npos) eol = data.size();
-            std::string line = data.substr(pos, eol - pos);
-            pos = eol + 1;
-            if (!line.empty() && line.back() == '\r') line.pop_back();
-            if (line.empty() || line[0] == '#') continue;
-            const std::string prefix = "file://";
-            if (line.compare(0, prefix.size(), prefix) != 0) continue;
-            std::string rest = line.substr(prefix.size());
-            // file:///chemin → /chemin ; file://localhost/… accepté ; tout
-            // autre hôte n'est pas un chemin local.
-            if (!rest.empty() && rest[0] != '/') {
-                size_t slash = rest.find('/');
-                if (slash == std::string::npos || rest.substr(0, slash) != "localhost") {
-                    continue;
-                }
-                rest = rest.substr(slash);
-            }
-            // Décodage %XX (%20 pour les espaces, %2F…).
-            std::string decoded;
-            for (size_t i = 0; i < rest.size(); i++) {
-                if (rest[i] == '%' && i + 2 < rest.size() &&
-                        isxdigit((unsigned char)rest[i + 1]) &&
-                        isxdigit((unsigned char)rest[i + 2])) {
-                    auto hexval = [](char c) -> int {
-                        c |= 0x20; // minuscule
-                        return c <= '9' ? c - '0' : c - 'a' + 10;
-                    };
-                    decoded += (char)((hexval(rest[i + 1]) << 4) | hexval(rest[i + 2]));
-                    i += 2;
-                } else {
-                    decoded += rest[i];
-                }
-            }
-            // String(const char*) interprète octet par octet (Latin-1) :
-            // « é » devient « Ã© ». Il faut décoder l'UTF-8 explicitement.
-            paths.append(String::utf8(decoded.c_str(), (int64_t)decoded.size()));
-        }
-
-        if (!guard->load()) return;
-        call_deferred("_finish_file_drop", paths, time_msec, button);
-    }).detach();
-    return true;
-}
 
 // Fil d'exécution principal : émission vers GDScript puis délivrance du
 // relâchement différé au grab wlroots (qui annule le drag sans focus client,
 // comme avant cette fonctionnalité).
-void WlrCompositor::_finish_file_drop(PackedStringArray paths, uint32_t time_msec,
-        int button) {
-    static const bool dbg_drop =
-        getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
-    if (dbg_drop) {
-        UtilityFunctions::print("waylandgodot: file_drop n=", paths.size());
-        for (int i = 0; i < paths.size(); i++) {
-            UtilityFunctions::print("waylandgodot:   path[", i, "]=", paths[i]);
-        }
-    }
-    if (!paths.is_empty()) {
-        emit_signal("file_drop_received", paths);
-    }
-    if (!seat) return;
-    wlr_seat_pointer_notify_button(seat, time_msec, (uint32_t)button,
-        WL_POINTER_BUTTON_STATE_RELEASED);
-    wlr_seat_pointer_notify_frame(seat);
-}
 
-void WlrCompositor::on_request_set_selection(wl_listener *listener, void *data) {
-    WlrCompositor *self = wl_container_of(listener, self, request_set_selection_listener);
-    if (!self->seat) return;
-    wlr_seat_request_set_selection_event *event = (wlr_seat_request_set_selection_event *)data;
-    wlr_seat_set_selection(self->seat, event->source, event->serial);
-}
 
-void WlrCompositor::on_request_set_primary_selection(wl_listener *listener, void *data) {
-    WlrCompositor *self = wl_container_of(listener, self, request_set_primary_selection_listener);
-    if (!self->seat) return;
-    wlr_seat_request_set_primary_selection_event *event = (wlr_seat_request_set_primary_selection_event *)data;
-    wlr_seat_set_primary_selection(self->seat, event->source, event->serial);
-}
 
-bool WlrCompositor::is_drag_active() const {
-    return active_drag != nullptr;
-}
 
 
 // --- Utilitaires -----------------------------------------------------------
