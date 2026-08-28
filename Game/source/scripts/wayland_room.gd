@@ -18,6 +18,7 @@ extends Node3D
 @onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
 @onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
 @onready var keyboard: VirtualKeyboard = $Level/Player/KeyboardLayer/VirtualKeyboard
+@onready var tutorial = $Level/Player/TutorialLayer/Tutorial
 
 var win3d: Node3D
 var focus: Node3D
@@ -60,6 +61,9 @@ const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
 
 var _level_path := ""
 var _menu_just_closed := false
+# Vrai si le tuto a été lancé automatiquement au premier lancement : à sa
+# fermeture on mémorise tutorial_seen dans les settings persistants.
+var _tutorial_first_run := false
 # Vrai tant que le niveau affiché est celui de l'hôte LAN (apply_host_level) :
 # à la déconnexion, le joueur doit retrouver SON niveau personnel.
 var _level_swapped := false
@@ -368,6 +372,11 @@ func _ready() -> void:
 	keyboard.keyboard_closed.connect(_on_keyboard_closed)
 	pause_menu.setup_keyboard(keyboard)
 
+	# Tutoriel de premier lancement : capture les menus réels et montre les
+	# commandes. Se relance via pause_menu → Tutorial.
+	tutorial.setup(pause_menu, radial_menu, window_menu)
+	tutorial.closed.connect(_on_tutorial_closed)
+
 	# Multijoueur LAN : l'hôte est serveur, chaque machine garde son propre
 	# compositeur/bureau, seuls les avatars des joueurs sont partagés.
 	lan = Node.new()
@@ -387,6 +396,7 @@ func _ready() -> void:
 	pause_menu.lan_join_requested.connect(lan.join_game)
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)
 	pause_menu.lan_discover_requested.connect(lan.discover_games)
+	pause_menu.tutorial_requested.connect(func(): tutorial.show_tutorial())
 	pause_menu.lan_video_settings_changed.connect(lan.set_video_settings)
 	lan.status_changed.connect(pause_menu.set_lan_status)
 	lan.status_changed.connect(func(_text: String):
@@ -440,6 +450,13 @@ func _ready() -> void:
 	drag_icon_rect.visible = false
 	drag_icon_rect.z_index = 100
 	ui.add_child(drag_icon_rect)
+
+	# Tutoriel au premier lancement (mémorisé via settings). Le await laisse
+	# le viewport se rendre une première fois avant la capture des menus.
+	if not pause_menu.get_tutorial_seen():
+		_tutorial_first_run = true
+		await get_tree().process_frame
+		tutorial.show_tutorial()
 
 # ── Dispatch des signaux compositeur vers les sous-systèmes ─────────
 
@@ -643,6 +660,10 @@ func _process(delta: float) -> void:
 	_poll_capture_pending()
 
 	if capture_selector.visible:
+		return
+
+	# Tutoriel ouvert : le monde est gelé pendant les pages d'onboarding.
+	if tutorial.is_visible_open():
 		return
 
 	# Menu pause ouvert : aucun input ne doit aller au monde — ni clics
@@ -1198,3 +1219,12 @@ func _on_pause_menu_visibility_changed() -> void:
 func _on_menu_visibility_changed() -> void:
 	if not window_menu.visible and not pause_menu.visible:
 		_menu_just_closed = true
+
+# Fermeture du tutoriel (bouton Close ou Esc). Au premier lancement
+# (déclenché automatiquement), on mémorise tutorial_seen pour ne plus
+# le rejouer au démarrage.
+func _on_tutorial_closed() -> void:
+	if _tutorial_first_run:
+		_tutorial_first_run = false
+		pause_menu.set_tutorial_seen(true)
+	_menu_just_closed = true
