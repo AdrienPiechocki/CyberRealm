@@ -8,7 +8,7 @@ signal pins_layer_changed(above: bool)
 signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
 signal lan_host_requested
-signal lan_join_requested(ip: String)
+signal lan_join_requested(ip: String, pin: String)
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
@@ -79,6 +79,7 @@ var _lan_results_box: VBoxContainer = null
 var _lan_status_text := ""
 var _lan_roster: Array = []
 var _lan_connected := false
+var _lan_pin_label: Label = null
 
 func _can_stick_input() -> bool:
 	if _keyboard != null and _keyboard.visible:
@@ -1024,19 +1025,33 @@ func _show_lan() -> void:
 	)
 	container.add_child(host_btn)
 
+	# PIN label (visible when hosting — shows the generated PIN).
+	_lan_pin_label = Label.new()
+	_lan_pin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_pin_label.add_theme_font_size_override("font_size", 16)
+	_lan_pin_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
+	_lan_pin_label.visible = false
+	container.add_child(_lan_pin_label)
+
 	var join_row := HBoxContainer.new()
 	join_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	var ip_edit := _make_line_edit()
 	ip_edit.placeholder_text = "Host IP (ex: 192.168.1.5)"
 	join_row.add_child(ip_edit)
+	var pin_edit := _make_line_edit()
+	pin_edit.placeholder_text = "PIN"
+	pin_edit.custom_minimum_size = Vector2(80, 36)
+	pin_edit.max_length = 4
+	join_row.add_child(pin_edit)
 	var join_btn := _make_btn("Join")
 	join_btn.custom_minimum_size = Vector2(100, 36)
 	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	join_btn.pressed.connect(func():
 		_save_lan_name(name_edit)
 		var ip := ip_edit.text.strip_edges()
+		var pin := pin_edit.text.strip_edges()
 		if ip != "":
-			lan_join_requested.emit(ip)
+			lan_join_requested.emit(ip, pin)
 	)
 	join_row.add_child(join_btn)
 	container.add_child(join_row)
@@ -1088,6 +1103,15 @@ func set_lan_players(roster: Array) -> void:
 func set_lan_connected(connected: bool) -> void:
 	_lan_connected = connected
 
+func set_lan_pin(pin: String) -> void:
+	if _lan_pin_label == null:
+		return
+	if pin != "":
+		_lan_pin_label.text = "Session PIN: %s" % pin
+		_lan_pin_label.visible = true
+	else:
+		_lan_pin_label.visible = false
+
 func _update_lan_players_label() -> void:
 	if _lan_players_label == null:
 		return
@@ -1118,7 +1142,7 @@ func set_lan_discovery_results(results: Array) -> void:
 
 func _join_discovered(ip: String) -> void:
 	if ip != "":
-		lan_join_requested.emit(ip)
+		lan_join_requested.emit(ip, "")
 
 # ── Startup apps ─────────────────────────────────────────────────────
 

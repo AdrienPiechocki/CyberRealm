@@ -16,14 +16,18 @@ struct VulkanDmaBufTexture {
     Ref<Texture2DRD> texture;
     VkImage vk_image = VK_NULL_HANDLE;
     VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
 };
 
 // Holds deferred-release resources that must not be destroyed yet
 // because Godot may still reference them in in-flight GPU commands.
+// A VkFence tracks when the GPU is done with this resource, allowing
+// non-blocking checks in flush_pending() instead of a full device stall.
 struct PendingRelease {
     RID rid;
     VkImage vk_image = VK_NULL_HANDLE;
     VkDeviceMemory vk_memory = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
 };
 
 // Imports DMA-BUF file descriptors into Godot's Vulkan renderer as
@@ -68,6 +72,11 @@ class VulkanDmaBufImport {
     PFN_vkBindImageMemory p_BindImageMemory = nullptr;
     PFN_vkQueueWaitIdle p_QueueWaitIdle = nullptr;
     PFN_vkDeviceWaitIdle p_DeviceWaitIdle = nullptr;
+    PFN_vkCreateFence p_CreateFence = nullptr;
+    PFN_vkDestroyFence p_DestroyFence = nullptr;
+    PFN_vkGetFenceStatus p_GetFenceStatus = nullptr;
+    PFN_vkResetFences p_ResetFences = nullptr;
+    PFN_vkQueueSubmit p_QueueSubmit = nullptr;
 
     // Extension: VK_KHR_external_memory_fd.
     PFN_vkGetMemoryFdPropertiesKHR p_GetMemoryFdPropertiesKHR = nullptr;
@@ -105,7 +114,8 @@ public:
 
     // Actually destroy resources that were queued for deferred release.
     // Call once per frame, ideally at the start of the frame before
-    // any new captures.  Calls vkDeviceWaitIdle internally.
+    // any new captures.  Uses per-fence non-blocking checks instead of
+    // a global vkDeviceWaitIdle to avoid stalling the main thread.
     void flush_pending();
 
     // Release all state.  Call during extension shutdown.

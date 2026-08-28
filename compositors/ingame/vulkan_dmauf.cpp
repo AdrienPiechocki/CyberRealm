@@ -117,6 +117,18 @@ bool VulkanDmaBufImport::load_function_pointers() {
     p_DeviceWaitIdle = reinterpret_cast<PFN_vkDeviceWaitIdle>(
         p_vkGetDeviceProcAddr(vk_device, "vkDeviceWaitIdle"));
 
+    // Fence functions (for non-blocking flush_pending).
+    p_CreateFence = reinterpret_cast<PFN_vkCreateFence>(
+        p_vkGetDeviceProcAddr(vk_device, "vkCreateFence"));
+    p_DestroyFence = reinterpret_cast<PFN_vkDestroyFence>(
+        p_vkGetDeviceProcAddr(vk_device, "vkDestroyFence"));
+    p_GetFenceStatus = reinterpret_cast<PFN_vkGetFenceStatus>(
+        p_vkGetDeviceProcAddr(vk_device, "vkGetFenceStatus"));
+    p_ResetFences = reinterpret_cast<PFN_vkResetFences>(
+        p_vkGetDeviceProcAddr(vk_device, "vkResetFences"));
+    p_QueueSubmit = reinterpret_cast<PFN_vkQueueSubmit>(
+        p_vkGetDeviceProcAddr(vk_device, "vkQueueSubmit"));
+
     // Extension: VK_KHR_external_memory_fd.
     p_GetMemoryFdPropertiesKHR = reinterpret_cast<PFN_vkGetMemoryFdPropertiesKHR>(
         p_vkGetDeviceProcAddr(vk_device, "vkGetMemoryFdPropertiesKHR"));
@@ -127,6 +139,13 @@ bool VulkanDmaBufImport::load_function_pointers() {
         UtilityFunctions::printerr("waylandgodot: Vulkan: "
             "fonctions Vulkan core manquantes");
         return false;
+    }
+
+    // Fence functions are optional — fallback to vkDeviceWaitIdle if missing.
+    if (!p_CreateFence || !p_DestroyFence || !p_GetFenceStatus ||
+        !p_ResetFences || !p_QueueSubmit) {
+        UtilityFunctions::print("waylandgodot: Vulkan: "
+            "fonctions fence manquantes, fallback vkDeviceWaitIdle");
     }
 
     return true;
@@ -292,6 +311,24 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
         return result;
     }
 
+    // --- Create a VkFence for deferred-release synchronization ---------
+    //     The fence is created already signaled so that flush_pending()
+    //     can safely destroy the resources once the previous frame's GPU
+    //     work is guaranteed complete (import_dma_buf calls
+    //     vkDeviceWaitIdle before this point).
+    VkFence import_fence = VK_NULL_HANDLE;
+    if (p_CreateFence) {
+        VkFenceCreateInfo fence_info = {};
+        fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+        VkResult fres = p_CreateFence(vk_device, &fence_info, nullptr, &import_fence);
+        if (fres != VK_SUCCESS) {
+            UtilityFunctions::printerr("waylandgodot: Vulkan: "
+                "vkCreateFence a échoué: ", String::num_int64(fres));
+            import_fence = VK_NULL_HANDLE;
+        }
+    }
+
     // --- Cross-device sync (EGL → Vulkan) ----------------------------
     //     On AMD/Intel with Mesa, implicit sync via the DMA-BUF
     //     reservation object handles cross-device synchronisation.
@@ -326,6 +363,7 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     result.texture = tex_rd;
     result.vk_image = vk_image;
     result.vk_memory = vk_memory;
+    result.fence = import_fence;
 
     return result;
 }
@@ -337,17 +375,19 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
 void VulkanDmaBufImport::release_texture(VulkanDmaBufTexture &tex) {
     // Defer the destruction: Godot may still reference the RID in
     // in-flight GPU command buffers.  We queue the resources and
-    // destroy them on the next flush_pending() call (one frame later),
-    // which first calls vkDeviceWaitIdle to ensure the GPU is done.
+    // destroy them once the fence signals (checked non-blockingly in
+    // flush_pending).
     if (tex.rid.is_valid() || tex.vk_image != VK_NULL_HANDLE) {
         PendingRelease pr;
         pr.rid = tex.rid;
         pr.vk_image = tex.vk_image;
         pr.vk_memory = tex.vk_memory;
+        pr.fence = tex.fence;
         pending.push_back(pr);
         tex.rid = RID();
         tex.vk_image = VK_NULL_HANDLE;
         tex.vk_memory = VK_NULL_HANDLE;
+        tex.fence = VK_NULL_HANDLE;
     }
     tex.texture.unref();
 }
@@ -359,12 +399,81 @@ void VulkanDmaBufImport::release_texture(VulkanDmaBufTexture &tex) {
 void VulkanDmaBufImport::flush_pending() {
     if (pending.empty()) return;
 
-    // Wait for the GPU to finish all work — safe now because we call
-    // this at the start of the frame, before any new captures.
-    if (p_DeviceWaitIdle) {
-        p_DeviceWaitIdle(vk_device);
+    // Safety net: if pending grows too large (e.g., fence functions
+    // unavailable or fence never signaled), force a full device wait
+    // to prevent unbounded memory growth.
+    constexpr size_t MAX_PENDING = 16;
+    bool force_wait = !p_GetFenceStatus || !p_DestroyFence ||
+                      !p_FreeMemory || pending.size() > MAX_PENDING;
+
+    if (force_wait) {
+        // Fallback: wait for all GPU work to complete.
+        if (p_DeviceWaitIdle) {
+            p_DeviceWaitIdle(vk_device);
+        }
+        for (auto &pr : pending) {
+            if (pr.rid.is_valid() && rd) {
+                rd->free_rid(pr.rid);
+            }
+            if (pr.vk_image != VK_NULL_HANDLE && p_DestroyImage) {
+                p_DestroyImage(vk_device, pr.vk_image, nullptr);
+            }
+            if (pr.vk_memory != VK_NULL_HANDLE && p_FreeMemory) {
+                p_FreeMemory(vk_device, pr.vk_memory, nullptr);
+            }
+            if (pr.fence != VK_NULL_HANDLE && p_DestroyFence) {
+                p_DestroyFence(vk_device, pr.fence, nullptr);
+            }
+        }
+        pending.clear();
+        return;
     }
 
+    // Fast path: check each fence non-blockingly.  Resources whose
+    // fence has signaled are safe to destroy immediately.  The rest
+    // stay in `pending` for the next frame.
+    size_t dst = 0;
+    for (size_t src = 0; src < pending.size(); ++src) {
+        auto &pr = pending[src];
+        bool ready = true;
+
+        if (pr.fence != VK_NULL_HANDLE) {
+            VkResult fres = p_GetFenceStatus(vk_device, pr.fence);
+            ready = (fres == VK_SUCCESS);
+        }
+
+        if (ready) {
+            if (pr.rid.is_valid() && rd) {
+                rd->free_rid(pr.rid);
+            }
+            if (pr.vk_image != VK_NULL_HANDLE && p_DestroyImage) {
+                p_DestroyImage(vk_device, pr.vk_image, nullptr);
+            }
+            if (pr.vk_memory != VK_NULL_HANDLE && p_FreeMemory) {
+                p_FreeMemory(vk_device, pr.vk_memory, nullptr);
+            }
+            if (pr.fence != VK_NULL_HANDLE && p_DestroyFence) {
+                p_DestroyFence(vk_device, pr.fence, nullptr);
+            }
+        } else {
+            // Not ready yet — keep in pending.
+            if (dst != src) {
+                pending[dst] = std::move(pr);
+            }
+            ++dst;
+        }
+    }
+    pending.resize(dst);
+}
+
+// =====================================================================
+// cleanup — release all state (called at extension shutdown)
+// =====================================================================
+
+void VulkanDmaBufImport::cleanup() {
+    available = false;
+
+    // Destroy any remaining pending resources (including fences).
     for (auto &pr : pending) {
         if (pr.rid.is_valid() && rd) {
             rd->free_rid(pr.rid);
@@ -375,16 +484,12 @@ void VulkanDmaBufImport::flush_pending() {
         if (pr.vk_memory != VK_NULL_HANDLE && p_FreeMemory) {
             p_FreeMemory(vk_device, pr.vk_memory, nullptr);
         }
+        if (pr.fence != VK_NULL_HANDLE && p_DestroyFence) {
+            p_DestroyFence(vk_device, pr.fence, nullptr);
+        }
     }
     pending.clear();
-}
 
-// =====================================================================
-// cleanup — release all state (called at extension shutdown)
-// =====================================================================
-
-void VulkanDmaBufImport::cleanup() {
-    available = false;
     // We do NOT own vk_device / vk_instance — Godot does.
     vk_instance = VK_NULL_HANDLE;
     vk_physical_device = VK_NULL_HANDLE;
@@ -401,6 +506,11 @@ void VulkanDmaBufImport::cleanup() {
     p_BindImageMemory = nullptr;
     p_QueueWaitIdle = nullptr;
     p_DeviceWaitIdle = nullptr;
+    p_CreateFence = nullptr;
+    p_DestroyFence = nullptr;
+    p_GetFenceStatus = nullptr;
+    p_ResetFences = nullptr;
+    p_QueueSubmit = nullptr;
     p_GetMemoryFdPropertiesKHR = nullptr;
     rd = nullptr;
 }

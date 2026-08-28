@@ -393,6 +393,7 @@ func _ready() -> void:
 	)
 	lan.players_changed.connect(pause_menu.set_lan_players)
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
+	lan.pin_changed.connect(pause_menu.set_lan_pin)
 	lan.windows_provider = win3d.get_windows_state
 	lan.windows_moving_provider = win3d.is_window_interacting
 	lan.window_image_provider = win3d.get_window_image
