@@ -131,11 +131,11 @@ func test_backoff_grows():
 	return r
 
 func test_should_reconnect_yes():
-	var r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 2), true, "heartbeat expiré → reconnect")
+	var r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 2), true, "heartbeat expired → reconnect")
 	if r != true: return r
-	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 12), false, "window épuisée → abandon")
+	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 12), false, "window exhausted → give up")
 	if r != true: return r
-	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, true, 30000, 2), false, "session_closed → pas de reconnect")
+	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, true, 30000, 2), false, "session_closed → no reconnect")
 	return true
 
 func test_pin_blacklist():
@@ -145,11 +145,11 @@ func test_pin_blacklist():
 	for i in range(2):
 		if LANManager.pin_attempt("1.2.3.4", false, state) == true:
 			r = false
-	if r != true: return "1er/2e échec ne doit pas rejeter"
+	if r != true: return "1st/2nd failure must not reject"
 	# 3e échec : rejet.
 	if LANManager.pin_attempt("1.2.3.4", false, state) == false:
-		return "3e échec doit rejeter"
+		return "3rd failure must reject"
 	# Un succès réarme.
 	if LANManager.pin_attempt("1.2.3.4", true, state) == false:
-		return "un succès réarme"
+		return "a success must reset"
 	return true

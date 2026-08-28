@@ -9,12 +9,12 @@ sudo pacman -S --needed base-devel godot wayland wayland-protocols pixman libdrm
                libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr \
                ffmpeg libva-mesa-driver libva libx11 openssh rsync
 
-# wlroots 0.19 n'est plus dans les dépôts officiels d'Arch (retiré au profit de
-# wlroots0.20) alors que le compositeur du jeu est codé contre son API. Si
-# pkg-config ne le trouve pas, on compile le paquet AUR wlroots0.19 (0.19.3)
-# avec makepkg puis on l'installe avec pacman -U.
+# wlroots 0.19 is no longer in the official Arch repos (removed in favor of
+# wlroots 0.20) while the game's compositor is written against its API. If
+# pkg-config cannot find it, build the AUR package wlroots0.19 (0.19.3) with
+# makepkg and install it with pacman -U.
 if ! pkg-config --exists wlroots-0.19; then
-    echo "install: wlroots-0.19 absent des dépôts officiels — build depuis AUR ..."
+    echo "install: wlroots-0.19 missing from official repos — building from AUR ..."
     WLR_AUR="$(mktemp -d)"
     git clone --depth 1 https://aur.archlinux.org/wlroots0.19.git "$WLR_AUR/wlroots0.19"
     (cd "$WLR_AUR/wlroots0.19" && makepkg -s --noconfirm)
@@ -29,13 +29,13 @@ fi
 scons target=template_debug platform=linux
 scons target=template_release platform=linux
 
-# --- xdg-desktop-portal-wlr (build customisé) ------------------------------
-# Clone le vrai xdg-desktop-portal-wlr (tag v0.8.2) puis écrase les fichiers
-# customisés par ceux de compositors/portal-wlr (capture fenêtre via
-# ext_foreign_toplevel + sélecteur interactif cyberrealm-capture-pending /
-# cyberrealm-capture-choice). Compilation meson/ninja dans build/portal-src,
-# install dans build/portal : le jeu lance ce binaire (launch_portals dans
-# wlr_compositor.cpp pointe vers build/portal/libexec/xdg-desktop-portal-wlr).
+# --- xdg-desktop-portal-wlr (custom build) ------------------------------
+# Clone the real xdg-desktop-portal-wlr (tag v0.8.2) and overwrite the custom
+# files with those from compositors/portal-wlr (window capture via
+# ext_foreign_toplevel + interactive selector cyberrealm-capture-pending /
+# cyberrealm-capture-choice). meson/ninja build into build/portal-src, install
+# into build/portal: the game launches that binary (launch_portals in
+# wlr_compositor.cpp points to build/portal/libexec/xdg-desktop-portal-wlr).
 PORTAL_SRC="$SCRIPT_DIR/build/portal-src"
 PORTAL_PREFIX="$SCRIPT_DIR/build/portal"
 if [[ ! -d "$PORTAL_SRC" ]]; then
@@ -60,17 +60,18 @@ fi
 ninja -C "$PORTAL_SRC/build"
 meson install -C "$PORTAL_SRC/build"
 
-# --- Template d'export Godot (Linux) ---------------------------------------
-# Le paquet `godot` d'Arch fournit l'éditeur mais PAS les templates d'export,
-# et `godot-export-templates` n'est pas dans les dépôts officiels. On compile
-# donc le template Linux depuis les sources godot, à la version exacte de
-# l'éditeur installé, et on l'installe dans le dossier export_templates que
-# `godot --export-release` cherche (~/.local/share/godot/export_templates/).
+# --- Godot export template (Linux) ------------------------------------------
+# The `godot` package from Arch provides the editor but NOT the export
+# templates, and `godot-export-templates` is not in the official repos. We
+# therefore build the Linux template from the godot sources at the exact
+# version of the installed editor, and install it into the export_templates
+# directory that `godot --export-release` looks for
+# (~/.local/share/godot/export_templates/).
 GODOT_TAG="4.7.2-stable"
 GODOT_VER="4.7.2.stable"
 TEMPLATES_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
 if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
-    echo "install: build du template Linux Godot $GODOT_VER (scons platform=linuxbsd target=template_release) ..."
+    echo "install: building Linux Godot $GODOT_VER template (scons platform=linuxbsd target=template_release) ..."
     GODOT_SRC="$SCRIPT_DIR/build/godot-src"
     if [[ ! -d "$GODOT_SRC" ]]; then
         git clone --depth 1 --branch "$GODOT_TAG" https://github.com/godotengine/godot.git "$GODOT_SRC"
@@ -82,32 +83,32 @@ if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_release.x86_64"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_debug.x86_64"
 else
-    echo "install: template Linux Godot $GODOT_VER déjà présent, rien à faire."
+    echo "install: Linux Godot $GODOT_VER template already present, nothing to do."
 fi
 
-# --- Export du jeu Godot ---------------------------------------------------
-# L'extension GDExtension (libwaylandgodot) est déjà compilée par scons
-# ci-dessus ; on exporte ensuite le projet (preset "Linux" de
-# export_presets.cfg) vers Game/build/CyberRealm.x86_64.
-echo "install: export du jeu (godot --headless) ..."
+# --- Godot game export ------------------------------------------------------
+# The GDExtension (libwaylandgodot) is already built by scons above; then we
+# export the project (preset "Linux" of export_presets.cfg) to
+# Game/build/CyberRealm.x86_64.
+echo "install: exporting the game (godot --headless) ..."
 mkdir -p Game/build
 godot --headless --path "$SCRIPT_DIR/Game/source" --export-release "Linux" "$GAME"
 if [[ ! -x "$GAME" ]]; then
-    echo "install: échec de l'export Godot, binaire absent : $GAME" >&2
+    echo "install: Godot export failed, binary missing: $GAME" >&2
     exit 1
 fi
 
-# --- Script KWin -----------------------------------------------------------
-# Remplace la session dwl : le jeu se lance depuis Plasma (menu applications
-# ou bureau). Ce script KWin passe sa fenêtre en plein écran + focus et bloque
-# les raccourcis globaux KDE tant que le jeu détient le focus.
+# --- KWin script -----------------------------------------------------------
+# Replaces the dwl session: the game is launched from Plasma (applications menu
+# or desktop). This KWin script puts its window fullscreen + focus and blocks
+# KDE global shortcuts while the game holds focus.
 KWIN_SRC="$SCRIPT_DIR/compositors/kwin/cyberrealm.kwinscript"
 if command -v kpackagetool6 >/dev/null 2>&1; then
     if ! kpackagetool6 -t KWin/Script -i "$KWIN_SRC" >/dev/null 2>&1; then
         kpackagetool6 -t KWin/Script -u "$KWIN_SRC" >/dev/null
     fi
 else
-    # Fallback manuel (kpackagetool6 absent)
+    # Manual fallback (kpackagetool6 missing)
     KWIN_DST="$HOME/.local/share/kwin/scripts/cyberrealm"
     mkdir -p "$KWIN_DST/contents/code"
     install -m644 "$KWIN_SRC/metadata.json" "$KWIN_DST/metadata.json"
@@ -115,33 +116,33 @@ else
 fi
 
 kwriteconfig6 --file kwinrc --group Plugins --key cyberrealmEnabled true
-# reconfigure ne recharge PAS le code du script : il faut le décharger d'abord,
-# sinon une mise à jour de main.js n'est jamais prise en compte.
+# reconfigure does NOT reload the script code: you must unload it first,
+# otherwise a main.js update is never taken into account.
 if qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.isScriptLoaded cyberrealm 2>/dev/null; then
     qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.unloadScript cyberrealm 2>/dev/null || true
     sleep 1
 fi
 qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
 
-# --- Wrapper de lancement d'apps dans le jeu -------------------------------
-# cyberrealm-launch <cmd> : redirige une commande vers le compositeur du jeu
-# (socket cyberrealm-0) quand celui-ci est actif. Utilisez-le dans les .desktop
-# pour lancer des apps dans les quads 3D depuis Plasma.
+# --- App launch wrapper inside the game -------------------------------------
+# cyberrealm-launch <cmd>: redirects a command to the game's compositor
+# (cyberrealm-0 socket) while it is active. Use it in .desktop entries to
+# launch apps inside the 3D quads from Plasma.
 install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-launch" "$HOME/.local/bin/cyberrealm-launch"
 
-# --- Lanceur du jeu (cyberrealm-run) ---------------------------------------
-# Lance le jeu dans un scope systemd (cgroup) puis tue tout le cgroup quand le
-# jeu se ferme (crash, SIGKILL, fermeture normale…) : aucun daemon lancé dans
-# le jeu ne survit à sa fermeture. Installe aussi le .desktop dessus.
+# --- Game launcher (cyberrealm-run) -----------------------------------------
+# Launches the game in a systemd scope (cgroup) then kills the whole cgroup
+# when the game exits (crash, SIGKILL, normal close...): no daemon launched
+# inside the game survives its shutdown. Also installs the .desktop on top.
 install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-run" "$HOME/.local/bin/cyberrealm-run"
 
-# --- Commandes runtime (cyberrealm-exec) -----------------------------------
-# Exécute des commandes sur le jeu en runtime via IPC fichier.
-# Usage : cyberrealm-exec launch firefox
-#         cyberrealm-exec windows
+# --- Runtime commands (cyberrealm-exec) -------------------------------------
+# Executes commands on the game at runtime via file IPC.
+# Usage: cyberrealm-exec launch firefox
+#        cyberrealm-exec windows
 install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-exec" "$HOME/.local/bin/cyberrealm-exec"
 
-# --- Lanceur .desktop du jeu ----------------------------------------------
+# --- Game .desktop launcher ------------------------------------------------
 mkdir -p "$HOME/.local/share/applications"
 cat > "$HOME/.local/share/applications/cyberrealm.desktop" <<EOF
 [Desktop Entry]
@@ -154,9 +155,9 @@ StartupNotify=false
 EOF
 
 # for multiplayer
-# Pour les ports UDP 7777/9999 (LAN multiplayer) et TCP 22 (drag & drop,
-# rsync-over-ssh). On détecte le backend firewall actif pour être portable
-# entre distributions (ufw, firewalld, nftables, iptables).
+# For UDP ports 7777/9999 (LAN multiplayer) and TCP 22 (drag & drop,
+# rsync-over-ssh). Detect the active firewall backend for portability across
+# distributions (ufw, firewalld, nftables, iptables).
 firewall_open() {
     local proto="$1" port="$2"
     if command -v ufw >/dev/null 2>&1 && sudo ufw status >/dev/null 2>&1; then
@@ -164,7 +165,7 @@ firewall_open() {
     elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
         sudo firewall-cmd --permanent --add-port="$port/$proto"
     elif command -v nft >/dev/null 2>&1 && sudo nft list ruleset >/dev/null 2>&1; then
-        # Ajout non destructif si une règle identique est déjà présente.
+        # Non-destructive add if an identical rule is already present.
         sudo nft add rule inet filter input tcp dport "$port" accept 2>/dev/null || true
         sudo nft add rule inet filter input udp dport "$port" accept 2>/dev/null || true
     elif command -v iptables >/dev/null 2>&1; then
@@ -173,23 +174,23 @@ firewall_open() {
         sudo iptables -C INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null \
             || sudo iptables -I INPUT -p udp --dport "$port" -j ACCEPT
     else
-        echo "install: aucun backend firewall détecté (ufw/firewalld/nft/iptables)."
-        echo "          Ouvrez manuellement les ports UDP 7777 & 9999 et TCP 22."
+        echo "install: no firewall backend detected (ufw/firewalld/nft/iptables)."
+        echo "          Manually open UDP ports 7777 & 9999 and TCP 22."
     fi
 }
 firewall_open udp 7777
 firewall_open udp 9999
 firewall_open tcp 22
 
-# Applicabilité : firewalld/nft/iptables sont permanents dans la session mais
-# peuvent ne pas survivre au reboot selon la config ; pour un effet persistant,
-# préférez ufw (actif) ou la config firewalld.
+# Applicability: firewalld/nft/iptables are permanent for this session but may
+# not survive a reboot depending on the config; for persistent effect, prefer
+# ufw (active) or the firewalld config.
 
-# --- Partage de fichiers (drag & drop) --------------------------------------
-# openssh + rsync sont installés ci-dessus. Recevoir des fichiers exige en plus
-# le démon ssh du destinataire : on ne l'active PAS automatiquement (décision
-# de sécurité propre à chaque machine), simple rappel.
+# --- File sharing (drag & drop) ---------------------------------------------
+# openssh + rsync are installed above. Receiving files additionally requires
+# the recipient's ssh daemon: we do NOT enable it automatically (a security
+# decision for each machine), just a reminder.
 if ! systemctl is-active --quiet sshd && ! systemctl is-enabled --quiet sshd; then
-    echo "install: sshd inactif — pour RECEVOIR des fichiers par drag & drop :"
+    echo "install: sshd inactive — to RECEIVE files via drag & drop:"
     echo "          sudo systemctl enable --now sshd"
 fi
