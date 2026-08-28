@@ -387,6 +387,7 @@ func _ready() -> void:
 	pause_menu.lan_join_requested.connect(lan.join_game)
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)
 	pause_menu.lan_discover_requested.connect(lan.discover_games)
+	pause_menu.lan_video_settings_changed.connect(lan.set_video_settings)
 	lan.status_changed.connect(pause_menu.set_lan_status)
 	lan.status_changed.connect(func(_text: String):
 		pause_menu.set_lan_connected(lan.is_session_active())

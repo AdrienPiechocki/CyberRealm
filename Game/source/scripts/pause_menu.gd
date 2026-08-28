@@ -9,6 +9,7 @@ signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
 signal lan_host_requested
 signal lan_join_requested(ip: String, pin: String, encrypted: bool)
+signal lan_video_settings_changed(bitrate: int, codec: String, fps: int)
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
@@ -1067,6 +1068,71 @@ func _show_lan() -> void:
 		lan_discover_requested.emit()
 	)
 	container.add_child(find_btn)
+
+	var video_title := Label.new()
+	video_title.text = "Video share"
+	video_title.add_theme_font_size_override("font_size", 16)
+	video_title.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
+	container.add_child(video_title)
+
+	var codec_row := HBoxContainer.new()
+	codec_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var codec_label := Label.new()
+	codec_label.text = "Codec"
+	codec_label.custom_minimum_size = Vector2(90, 36)
+	codec_row.add_child(codec_label)
+	var codec_opt := OptionButton.new()
+	codec_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	codec_opt.add_item("Auto (h264, av1)")
+	codec_opt.add_item("H.264")
+	codec_opt.add_item("AV1")
+	codec_opt.select(0)
+	codec_opt.tooltip_text = "H.264 VAAPI est le plus fiable ; AV1 est matériel seulement (peut être lent/instable selon le GPU)"
+	codec_row.add_child(codec_opt)
+	container.add_child(codec_row)
+
+	var bitrate_row := HBoxContainer.new()
+	bitrate_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var bitrate_label := Label.new()
+	bitrate_label.text = "Bitrate (Mb/s)"
+	bitrate_label.custom_minimum_size = Vector2(90, 36)
+	bitrate_row.add_child(bitrate_label)
+	var bitrate_spin := SpinBox.new()
+	bitrate_spin.min_value = 1.0
+	bitrate_spin.max_value = 20.0
+	bitrate_spin.step = 1.0
+	bitrate_spin.value = 6.0
+	bitrate_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bitrate_spin.tooltip_text = "Débit cible par fenêtre partagée (bits/s ÷ 1e6). Montez-le sur LAN filaire rapide pour moins de compression"
+	bitrate_row.add_child(bitrate_spin)
+	container.add_child(bitrate_row)
+
+	var fps_row := HBoxContainer.new()
+	fps_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var fps_label := Label.new()
+	fps_label.text = "FPS"
+	fps_label.custom_minimum_size = Vector2(90, 36)
+	fps_row.add_child(fps_label)
+	var fps_spin := SpinBox.new()
+	fps_spin.min_value = 10.0
+	fps_spin.max_value = 60.0
+	fps_spin.step = 1.0
+	fps_spin.value = 60.0
+	fps_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	fps_spin.tooltip_text = "Cadence d'encodage (10-60). 30 divise la charge CPU par deux"
+	fps_row.add_child(fps_spin)
+	container.add_child(fps_row)
+
+	var apply_video_btn := _make_btn("Apply video settings")
+	apply_video_btn.pressed.connect(func():
+		var codec := "auto"
+		if codec_opt.selected == 1:
+			codec = "h264"
+		elif codec_opt.selected == 2:
+			codec = "av1"
+		lan_video_settings_changed.emit(int(bitrate_spin.value) * 1_000_000, codec, int(fps_spin.value))
+	)
+	container.add_child(apply_video_btn)
 
 	_lan_results_box = VBoxContainer.new()
 	_lan_results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
