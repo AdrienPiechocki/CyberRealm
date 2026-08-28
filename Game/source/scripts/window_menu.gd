@@ -214,7 +214,7 @@ func _refresh_tabs() -> void:
 		var app_id: String = entry["app_id"]
 		var display_name := title if title != "" else app_id
 		if display_name == "":
-			display_name = "Fenêtre #" + str(wid)
+			display_name = "Window #" + str(wid)
 
 		var btn := Button.new()
 		btn.text = "  " + display_name + "  "

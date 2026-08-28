@@ -64,7 +64,7 @@ static func valid(manifest: Dictionary) -> bool:
 			return false
 		total += String(manifest[k]).length()
 	if total > MAX_MANIFEST_BYTES:
-		push_warning("UserScriptMirror: manifeste trop volumineux (%d Ko) — ignoré" % (total / 1024))
+		push_warning("UserScriptMirror: manifest too large (%d KB) — ignored" % (total / 1024))
 		return false
 	return true
 
@@ -80,11 +80,11 @@ static func install(manifest: Dictionary) -> int:
 		if f == null:
 			var dir_err := DirAccess.make_dir_recursive_absolute(p.get_base_dir())
 			if dir_err != OK:
-				push_warning("UserScriptMirror: impossible de créer %s (%s)" % [p.get_base_dir(), error_string(dir_err)])
+				push_warning("UserScriptMirror: failed to create %s (%s)" % [p.get_base_dir(), error_string(dir_err)])
 				continue
 			f = FileAccess.open(p, FileAccess.WRITE)
 		if f == null:
-			push_warning("UserScriptMirror: impossible d'écrire %s" % p)
+			push_warning("UserScriptMirror: failed to write %s" % p)
 			continue
 		f.store_string(String(manifest[k]))
 		f.close()

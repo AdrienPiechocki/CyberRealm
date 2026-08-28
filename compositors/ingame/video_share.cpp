@@ -118,21 +118,21 @@ bool VideoShare::start(const String &codec, int bitrate, int fps_override) {
 			// AV1 matériel seulement : pas de fallback logiciel dans cette
 			// version (libsvtav1 non lié).
 			va_cleanup();
-			UtilityFunctions::print("waylandgodot: video_share: AV1 matériel indisponible, "
-				"pas de fallback logiciel — partage vidéo désactivé");
+			UtilityFunctions::print("waylandgodot: video_share: hardware AV1 unavailable, "
+				"no software fallback — video sharing disabled");
 			return false;
 		}
 		const AVCodec *c = avcodec_find_encoder_by_name("libx264");
 		if (!c) {
 			va_cleanup();
-			UtilityFunctions::print("waylandgodot: video_share: libx264 introuvable — "
-				"partage vidéo désactivé");
+			UtilityFunctions::print("waylandgodot: video_share: libx264 not found — "
+				"video sharing disabled");
 			return false;
 		}
 	}
 
-	UtilityFunctions::print("waylandgodot: video_share: démarré codec=", codec_name.c_str(),
-		" mode=", hw_mode ? "matériel (VAAPI)" : "LOGICIEL (libx264, CPU)",
+	UtilityFunctions::print("waylandgodot: video_share: started codec=", codec_name.c_str(),
+		" mode=", hw_mode ? "hardware (VAAPI)" : "SOFTWARE (libx264, CPU)",
 		" fps=", fps, " bitrate=", this->bitrate / 1000, " kb/s");
 
 	active = true;
@@ -391,7 +391,7 @@ void VideoShare::worker_loop() {
 					std::chrono::steady_clock::now().time_since_epoch()).count();
 				if ((uint64_t)now_us - enc_last_log_us >= 1'000'000) {
 					enc_last_log_us = (uint64_t)now_us;
-					UtilityFunctions::print("waylandgodot: video_share: [diag] encode lente: ",
+					UtilityFunctions::print("waylandgodot: video_share: [diag] slow encode: ",
 						enc_ms, " ms (wid=", w->wid, " ", w->content_w, "x", w->content_h,
 						" hw=", hw_mode, " codec=", codec_name.c_str(), ")");
 				}
@@ -500,8 +500,8 @@ void VideoShare::push_packet(int wid, uint64_t seq, bool keyframe, const uint8_t
 			// chaîne de P-frames → on force une keyframe pour la resynchronisation.
 			dropped = true;
 			delete p;
-			UtilityFunctions::print("waylandgodot: video_share: paquet vidéo dropé (file pleine), "
-				"keyframe demandée");
+			UtilityFunctions::print("waylandgodot: video_share: video packet dropped (queue full), "
+				"keyframe requested");
 		}
 		out_cv.notify_all();
 	}
@@ -528,7 +528,7 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 	if (hw_mode) {
 		AVBufferRef *frames_ref = av_hwframe_ctx_alloc((AVBufferRef *)hw_device_ctx);
 		if (!frames_ref) {
-			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_ctx_alloc a échoué");
+			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_ctx_alloc failed");
 			return false;
 		}
 		AVHWFramesContext *frames = (AVHWFramesContext *)frames_ref->data;
@@ -543,7 +543,7 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		// compositeur sautait presque toutes les captures (6 ips au lieu de 60).
 		frames->initial_pool_size = 8;
 		if (av_hwframe_ctx_init(frames_ref) < 0) {
-			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_ctx_init a échoué");
+			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_ctx_init failed");
 			av_buffer_unref(&frames_ref);
 			return false;
 		}
@@ -551,7 +551,7 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		const char *name = hw_av1 ? "av1_vaapi" : "h264_vaapi";
 		const AVCodec *codec = avcodec_find_encoder_by_name(name);
 		if (!codec) {
-			UtilityFunctions::printerr("waylandgodot: video_share: encodeur ", name, " introuvable");
+			UtilityFunctions::printerr("waylandgodot: video_share: encoder ", name, " not found");
 			av_buffer_unref(&frames_ref);
 			return false;
 		}
@@ -574,7 +574,7 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		// latence vaut mieux que les ~10-15 % de compression des B-frames.
 		ctx->max_b_frames = 0;
 		if (avcodec_open2(ctx, codec, nullptr) < 0) {
-			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(", name, ") a échoué");
+			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(", name, ") failed");
 			av_buffer_unref(&frames_ref);
 			avcodec_free_context(&ctx);
 			return false;
@@ -586,7 +586,7 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 
 	const AVCodec *codec = avcodec_find_encoder_by_name("libx264");
 	if (!codec) {
-		UtilityFunctions::printerr("waylandgodot: video_share: libx264 introuvable");
+		UtilityFunctions::printerr("waylandgodot: video_share: libx264 not found");
 		return false;
 	}
 	AVCodecContext *ctx = avcodec_alloc_context3(codec);
@@ -604,7 +604,7 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 	// n'importe quelle IDR sans recevoir d'extradata séparé.
 	av_opt_set(ctx->priv_data, "x264-params", "repeat-headers=1", 0);
 	if (avcodec_open2(ctx, codec, nullptr) < 0) {
-		UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(libx264) a échoué");
+		UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(libx264) failed");
 		avcodec_free_context(&ctx);
 		return false;
 	}
@@ -651,7 +651,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	// tracer d'éventuelles évolutions (encode de la zone pleine).
 
 	if (!ensure_encoder(w)) {
-		UtilityFunctions::printerr("waylandgodot: video_share: échec de création de l'encodeur "
+		UtilityFunctions::printerr("waylandgodot: video_share: encoder creation failed "
 			"(wid=", w->wid, ")");
 		close(fd);
 		return;
@@ -677,7 +677,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	size_t map_size = map_delta + (size_t)stride * (size_t)alloc_h;
 	void *map = mmap(nullptr, map_size, PROT_READ, MAP_SHARED, fd, map_offset);
 	if (map == MAP_FAILED) {
-		UtilityFunctions::printerr("waylandgodot: video_share: mmap dmabuf a échoué (wid=", w->wid, ")");
+		UtilityFunctions::printerr("waylandgodot: video_share: dmabuf mmap failed (wid=", w->wid, ")");
 		close(fd);
 		return;
 	}
@@ -701,7 +701,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		w->sws_fourcc = fourcc;
 	}
 	if (!w->sws) {
-		UtilityFunctions::printerr("waylandgodot: video_share: sws_getContext a échoué (wid=", w->wid, ")");
+		UtilityFunctions::printerr("waylandgodot: video_share: sws_getContext failed (wid=", w->wid, ")");
 		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
 		ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
 		munmap(map, map_size);
@@ -716,7 +716,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		frame->width = content_w;
 		frame->height = content_h;
 		if (av_frame_get_buffer(frame, 32) < 0) {
-			UtilityFunctions::printerr("waylandgodot: video_share: av_frame_get_buffer a échoué (wid=", w->wid, ")");
+			UtilityFunctions::printerr("waylandgodot: video_share: av_frame_get_buffer failed (wid=", w->wid, ")");
 			sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
 			ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
 			munmap(map, map_size);
@@ -774,12 +774,12 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 				w->hw_frame->pict_type = frame->pict_type;
 				input = w->hw_frame;
 			} else {
-				UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_transfer_data a échoué (wid=", w->wid, ")");
+				UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_transfer_data failed (wid=", w->wid, ")");
 				av_frame_unref(w->hw_frame);
 				input = nullptr;
 			}
 		} else {
-			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_get_buffer a échoué (wid=", w->wid, ")");
+			UtilityFunctions::printerr("waylandgodot: video_share: av_hwframe_get_buffer failed (wid=", w->wid, ")");
 			input = nullptr;
 		}
 	}
@@ -790,7 +790,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		int ret = avcodec_send_frame(ctx, input);
 		av_frame_unref(input);
 		if (ret < 0) {
-			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_send_frame a échoué (", ret, ") (wid=", w->wid, ")");
+			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_send_frame failed (", ret, ") (wid=", w->wid, ")");
 		} else {
 			if (!w->packet) w->packet = av_packet_alloc();
 			while (w->packet && avcodec_receive_packet(ctx, (AVPacket *)w->packet) == 0) {
@@ -828,8 +828,8 @@ UtilityFunctions::print("waylandgodot: video_share: [diag] encode ", w->wid, "x"
 			" hw=", hw_mode, " codec=", (hw_av1 ? "av1" : "h264"),
 			" mmap=", std::chrono::duration<double, std::milli>(t_mmap - t_sws0).count(),
 			"ms sync=", std::chrono::duration<double, std::milli>(t_sync - t_mmap).count(),
-			"ms copie+sws=", std::chrono::duration<double, std::milli>(t_sws1 - t_sync).count(),
-			"ms transfert=", d_xfer, "ms encodage=", d_enc, "ms");
+			"ms copy+sws=", std::chrono::duration<double, std::milli>(t_sws1 - t_sync).count(),
+			"ms transfer=", d_xfer, "ms encode=", d_enc, "ms");
 		}
 	} else {
 		// L'échec d'upload laisse une frame sans encodage → demande une
@@ -857,7 +857,7 @@ bool VideoShare::va_init() {
 	// Vérifie que l'encodeur matériel existe AVANT d'ouvrir le display.
 	const char *probe_name = hw_av1 ? "av1_vaapi" : "h264_vaapi";
 	if (!avcodec_find_encoder_by_name(probe_name)) {
-		UtilityFunctions::print("waylandgodot: video_share: encodeur ", probe_name, " absent — backend logiciel");
+		UtilityFunctions::print("waylandgodot: video_share: encoder ", probe_name, " missing — software backend");
 		return false;
 	}
 
@@ -881,12 +881,12 @@ bool VideoShare::va_init() {
 		}
 		va_display = dpy;
 		va_drm_fd = fd;
-		UtilityFunctions::print("waylandgodot: video_share: VAAPI display ouvert sur ", path,
+		UtilityFunctions::print("waylandgodot: video_share: VAAPI display opened on ", path,
 			" (v", maj, ".", min, ")");
 		break;
 	}
 	if (!va_display) {
-		UtilityFunctions::print("waylandgodot: video_share: aucun render node VAAPI — backend logiciel");
+		UtilityFunctions::print("waylandgodot: video_share: no VAAPI render node — software backend");
 		return false;
 	}
 
@@ -900,7 +900,7 @@ bool VideoShare::va_init() {
 	AVVAAPIDeviceContext *va = (AVVAAPIDeviceContext *)hwdev->hwctx;
 	va->display = va_display;
 	if (av_hwdevice_ctx_init(ref) < 0) {
-		UtilityFunctions::printerr("waylandgodot: video_share: av_hwdevice_ctx_init a échoué — backend logiciel");
+		UtilityFunctions::printerr("waylandgodot: video_share: av_hwdevice_ctx_init failed — software backend");
 		av_buffer_unref(&ref);
 		va_cleanup();
 		return false;

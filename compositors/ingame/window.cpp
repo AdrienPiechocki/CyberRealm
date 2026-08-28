@@ -82,8 +82,8 @@ void WlrCompositor::on_new_toplevel(wl_listener *listener, void *data) {
     ws.set_title_listener.notify = WlrCompositor::on_toplevel_set_title;
     wl_signal_add(&toplevel->events.set_title, &ws.set_title_listener);
 
-    UtilityFunctions::print("waylandgodot: new_toplevel reçu, id=", id,
-        " app_id=", toplevel->app_id ? String::utf8(toplevel->app_id) : String("(pas encore fixé)"));
+    UtilityFunctions::print("waylandgodot: new_toplevel received, id=", id,
+        " app_id=", toplevel->app_id ? String::utf8(toplevel->app_id) : String("(not set yet)"));
 
     (void)id;
 }
@@ -162,8 +162,8 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
         }
     }
 
-    UtilityFunctions::print("waylandgodot: toplevel mappé id=", ws->id,
-        " app_id=", app_id, " title=\"", title, "\" taille=",
+    UtilityFunctions::print("waylandgodot: toplevel mapped id=", ws->id,
+        " app_id=", app_id, " title=\"", title, "\" size=",
         ws->toplevel->base->surface->current.width, "x",
         ws->toplevel->base->surface->current.height);
 
@@ -419,7 +419,7 @@ void WlrCompositor::on_new_popup(wl_listener *listener, void *data) {
     ps.parent_popup_id = -1;
     self->wire_popup(ps, popup);
 
-    UtilityFunctions::print("waylandgodot: new_popup reçu, id=", id, " parent_window_id=", ws->id);
+    UtilityFunctions::print("waylandgodot: new_popup received, id=", id, " parent_window_id=", ws->id);
 }
 void WlrCompositor::on_new_popup_from_popup(wl_listener *listener, void *data) {
     PopupState *parent_ps = wl_container_of(listener, parent_ps, new_popup_listener);
@@ -433,7 +433,7 @@ void WlrCompositor::on_new_popup_from_popup(wl_listener *listener, void *data) {
     ps.parent_popup_id = parent_ps->id;
     self->wire_popup(ps, popup);
 
-    UtilityFunctions::print("waylandgodot: new_popup (sous-menu) reçu, id=", id,
+    UtilityFunctions::print("waylandgodot: new_popup (submenu) received, id=", id,
         " parent_popup_id=", parent_ps->id);
 }
 void WlrCompositor::focus_surface(wlr_surface *surface) {

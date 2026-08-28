@@ -100,7 +100,7 @@ func setup(p_player: CharacterBody3D, p_lan: Node, p_compositor: WlrCompositor) 
 	# Clé générée DÈS le setup : l'annonce des contacts (roster change) part
 	# souvent avant le premier drop et doit transporter une clé réelle.
 	if not ensure_local_keypair():
-		push_warning("FileShare: outils ssh absents (openssh) — partage de fichiers inactif")
+		push_warning("FileShare: ssh tools missing (openssh) — file sharing inactive")
 	# Filet de sécurité : lignes authorized_keys oubliées d'une session
 	# précédente (crash, déconnexion pendant un transfert…).
 	_sweep_stale_keys()
@@ -254,7 +254,7 @@ func _sweep_stale_keys() -> void:
 			removed_any = remove_peer_key(tag) or removed_any
 	f.close()
 	if removed_any:
-		push_warning("FileShare: lignes authorized_keys expirées nettoyées")
+		push_warning("FileShare: expired authorized_keys lines cleaned up")
 
 
 # ── Survol / cible du drop ────────────────────────────────────────────────────
@@ -291,16 +291,16 @@ func _diag_targeting(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if now - _diag_last_msec < 500:
 		return
 	_diag_last_msec = now
-	var info := "[FileShare] diag: mode_souris=%d curseur_godot=%s" % [
+	var info := "[FileShare] diag: mouse_mode=%d godot_cursor=%s" % [
 		Input.mouse_mode, str(get_viewport().get_mouse_position())]
 	var query := PhysicsRayQueryParameters3D.create(
 		ray_origin, ray_origin + ray_dir * DROP_REACH)
 	query.exclude = [player.get_rid()] if player != null and is_instance_valid(player) else []
 	var hit := get_world_3d().direct_space_state.intersect_ray(query)
-	info += " | rayon: " + ("rien" if hit.is_empty() else str(hit["collider"].name))
+	info += " | ray: " + ("nothing" if hit.is_empty() else str(hit["collider"].name))
 	var container: Node3D = lan.get_players_container()
 	if container == null or not is_instance_valid(container):
-		info += " | conteneur joueurs INVALIDE"
+		info += " | players container INVALID"
 	else:
 		info += " | avatars=%d:" % container.get_child_count()
 		for child in container.get_children():
@@ -360,7 +360,7 @@ func _nearest_avatar_in_cone(ray_origin: Vector3, ray_dir: Vector3) -> int:
 			continue
 		var angle := ray_dir.angle_to(to_avatar)
 		if _debug and angle < DROP_CONE_RAD * 2.0:
-			print("[FileShare] candidat %s dist=%.1fm angle=%.1f°" % [
+			print("[FileShare] candidate %s dist=%.1fm angle=%.1f°" % [
 				pid, dist, rad_to_deg(angle)])
 		if angle < best_angle:
 			best_angle = angle
@@ -380,20 +380,20 @@ func _peer_name(pid: int) -> String:
 ## Connecté à WlrCompositor.file_drop_received : fichiers lâchés sur le monde
 ## 3D. S'il y a un avatar sous le curseur → offre de transfert.
 func on_files_dropped(paths: PackedStringArray) -> void:
-	push_warning("FileShare: drop reçu (%d chemins, hover=%d, session=%s)" % [
+	push_warning("FileShare: drop received (%d paths, hover=%d, session=%s)" % [
 		paths.size(), _hover_peer,
 		str(lan != null and lan.is_session_active())])
 	var files := PackedStringArray()
 	var total := 0
 	for p in paths:
 		if _debug:
-			print("[FileShare] chemin brut : [", p, "]")
+			print("[FileShare] raw path : [", p, "]")
 		var f := FileAccess.open(p, FileAccess.READ)
 		if f != null:
 			files.append(p)
 			total += int(f.get_length())
 		elif _debug:
-			print("[FileShare] open() a échoué : ", error_string(FileAccess.get_open_error()))
+			print("[FileShare] open() failed : ", error_string(FileAccess.get_open_error()))
 	if files.is_empty():
 		_flash_status("Drop ignored: no readable file")
 		return
@@ -630,7 +630,7 @@ func _poll_send() -> void:
 		if code == 0:
 			_finish_send(true, "")
 		else:
-			_finish_send(false, "rsync a échoué (code %d)%s" % [code, _err_hint(err_tail)])
+			_finish_send(false, "rsync failed (code %d)%s" % [code, _err_hint(err_tail)])
 		return
 	var pct := parse_progress(_read_tail(String(t["prog_path"])))
 	if pct < 0 or pct == int(t["last_pct"]) or now - int(t["last_emit_msec"]) < PROGRESS_INTERVAL_MSEC:
@@ -673,11 +673,11 @@ static func _read_tail(path: String, max_bytes := 4096) -> String:
 ## Message d'erreur court à partir de la fin de stderr rsync/ssh.
 static func _err_hint(err_tail: String) -> String:
 	if err_tail.contains("Permission denied"):
-		return ", clé refusée par le serveur ssh"
+		return ", key rejected by the ssh server"
 	if err_tail.contains("Connection refused"):
-		return ", serveur ssh injoignable"
+		return ", ssh server unreachable"
 	if err_tail.contains("Host key verification failed"):
-		return ", clé d'hôte ssh modifiée"
+		return ", ssh host key changed"
 	return ""
 
 
@@ -694,7 +694,7 @@ func _apply_progress(sender: int, offer_id: int, pct: int) -> void:
 		return
 	if int(t["peer"]) != sender or int(t["id"]) != offer_id:
 		return
-	_show_progress("Réception de %s…" % _peer_name(sender), pct, "")
+	_show_progress("Receiving from %s…" % _peer_name(sender), pct, "")
 
 
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
@@ -914,7 +914,7 @@ func _build_ui() -> void:
 	grid.add_theme_constant_override("h_separation", 12)
 	vbox.add_child(grid)
 
-	grid.add_child(_make_form_label("Votre utilisateur (SSH)"))
+	grid.add_child(_make_form_label("Your username (SSH)"))
 	_user_edit = LineEdit.new()
 	_user_edit.custom_minimum_size = Vector2(220, 0)
 	_user_edit.text = OS.get_environment("USER")
@@ -990,12 +990,12 @@ static func _truncate_list(names: Array[String]) -> String:
 	var shown := names.slice(0, mini(names.size(), MAX_LIST_LINES))
 	var text := "• " + "\n• ".join(shown)
 	if names.size() > MAX_LIST_LINES:
-		text += "\n… et %d autre(s)" % (names.size() - MAX_LIST_LINES)
+		text += "\n… and %d more" % (names.size() - MAX_LIST_LINES)
 	return text
 
 
 static func human_size(nbytes: int) -> String:
-	var units := ["o", "Kio", "Mio", "Gio"]
+	var units := ["B", "KiB", "MiB", "GiB"]
 	var v := float(maxi(nbytes, 0))
 	var u := 0
 	while v >= 1024.0 and u < units.size() - 1:

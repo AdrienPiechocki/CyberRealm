@@ -41,7 +41,7 @@ static func bake(root: Node3D) -> int:
 	# Respect d'un bake éditeur (ou d'une génération précédente) : ne rien
 	# générer.
 	if root.find_children("*", "OccluderInstance3D", true, false).size() > 0:
-		_debug("occluders existants détectés — génération auto sautée")
+		_debug("existing occluders detected — auto generation skipped")
 		return 0
 	# Le joueur ne doit JAMAIS devenir un occludeur figé.
 	var exclude := root.get_node_or_null("Player")
@@ -90,7 +90,7 @@ static func bake(root: Node3D) -> int:
 	# Indépendant du repère de la racine (qui peut être rotée/décalée en LAN) :
 	# les sommets sont déjà en coordonnées monde.
 	occ.global_transform = Transform3D.IDENTITY
-	_debug("%d triangles occludeurs issus de %d meshes" % [indices.size() / 3, contributors])
+	_debug("%d occluder triangles from %d meshes" % [indices.size() / 3, contributors])
 	return contributors
 
 # Copie les triangles opaques d'un mesh dans les buffers communs (repère

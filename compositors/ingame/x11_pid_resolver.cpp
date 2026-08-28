@@ -258,7 +258,7 @@ void X11PidResolver::rebuild() {
 	}
 	::Display *dpy = XOpenDisplay(display_name.empty() ? nullptr : display_name.c_str());
 	if (!dpy) {
-		fprintf(stderr, "waylandgodot: x11: XOpenDisplay(%s) a échoué\n",
+		fprintf(stderr, "waylandgodot: x11: XOpenDisplay(%s) failed\n",
 				display_name.c_str());
 		return;
 	}

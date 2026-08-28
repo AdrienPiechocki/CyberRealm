@@ -290,7 +290,7 @@ func _update_occluder_for_alpha(delta: float) -> void:
 	var img: Image = windows.get_window_image(focus_fullscreen_id)
 	if img == null or img.is_empty():
 		if _alpha_probe_deadline <= 0.0:
-			print("[focus-alpha] pas d'image CPU disponible — occludeur maintenu")
+			print("[focus-alpha] no CPU image available — occluder maintained")
 			_finish_alpha_probe()
 		return
 	img.convert(Image.FORMAT_RGBA8)
@@ -308,7 +308,7 @@ func _update_occluder_for_alpha(delta: float) -> void:
 			if img.get_pixel(x, y).a * 255.0 < float(ALPHA_OPAQUE_MIN):
 				clear += 1
 	var frac := float(clear) / maxf(total, 1)
-	print("[focus-alpha] fenêtre %d — pixels non opaques : %d%%" % [
+	print("[focus-alpha] window %d — non-opaque pixels: %d%%" % [
 		focus_fullscreen_id, int(frac * 100.0)])
 	if frac > OCCLUDER_OFF_FRAC:
 		_occluder_suspended = true
@@ -1462,7 +1462,7 @@ func handle_focus_input(delta: float) -> void:
 	if press_left and _is_super_pressed() and popup_target.is_empty():
 		if target_window == focus_fullscreen_id:
 			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-				print("focus-move: refusé, fenêtre fullscreen id=", target_window)
+				print("focus-move: refused, fullscreen window id=", target_window)
 		else:
 			_start_window_move(target_window, mouse_pos)
 			return
@@ -1633,12 +1633,12 @@ func _set_client_shift(down: bool) -> void:
 func _prepare_key_forward(key_event: InputEventKey, code: int) -> void:
 	if _client_shift and code == KEY_SHIFT and key_event.pressed:
 		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-			print("key heal shift-up (re-appui Shift)")
+			print("key heal shift-up (re-press Shift)")
 		compositor.forward_keyboard_key(KEY_SHIFT, 0, false)
 		_client_shift = false
 	if _client_shift and not key_event.shift_pressed and code != KEY_SHIFT:
 		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-			print("key heal shift-up (release avalé par l'IM)")
+			print("key heal shift-up (release swallowed by IM)")
 		compositor.forward_keyboard_key(KEY_SHIFT, 0, false)
 		_client_shift = false
 	# Cas miroir : l'événement est shifté mais le client n'a pas Shift enfoncé.

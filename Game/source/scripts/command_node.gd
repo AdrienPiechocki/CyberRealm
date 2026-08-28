@@ -115,13 +115,13 @@ func _dispatch(cmd: String, args: String) -> Dictionary:
 		"quit":
 			return _cmd_quit()
 		_:
-			return {"ok": false, "error": " commande inconnue: " + cmd}
+			return {"ok": false, "error": " unknown command: " + cmd}
 
 # ── Commandes ──────────────────────────────────────────────────────
 
 func _cmd_launch(cmd: String) -> Dictionary:
 	if cmd.is_empty():
-		return {"ok": false, "error": "aucune commande spécifiée"}
+		return {"ok": false, "error": "no command specified"}
 	compositor.launch_app(cmd)
 	return {"ok": true, "output": cmd}
 
@@ -134,14 +134,14 @@ func _cmd_windows() -> Dictionary:
 func _cmd_close(args: String) -> Dictionary:
 	var wid := args.to_int()
 	if wid == 0 and args != "0":
-		return {"ok": false, "error": "id de fenêtre invalide: " + args}
+		return {"ok": false, "error": "invalid window id: " + args}
 	compositor.close_window(wid)
 	return {"ok": true, "output": wid}
 
 func _cmd_focus(args: String) -> Dictionary:
 	var wid := args.to_int()
 	if wid == 0 and args != "0":
-		return {"ok": false, "error": "id de fenêtre invalide: " + args}
+		return {"ok": false, "error": "invalid window id: " + args}
 	if focus != null and focus.has_method("enter_focus"):
 		focus.enter_focus(wid)
 	return {"ok": true, "output": wid}
@@ -156,36 +156,36 @@ func _cmd_pin(args: String) -> Dictionary:
 	if wid == 0 and args != "0":
 		return {"ok": false, "error": "id de fenêtre invalide: " + args}
 	if pins == null or win3d == null:
-		return {"ok": false, "error": "système PiP non disponible"}
+		return {"ok": false, "error": "PiP system unavailable"}
 	if pins.has_method("is_pinned") and pins.is_pinned(wid):
 		pins.unpin(wid)
 		return {"ok": true, "output": "unpinned"}
 	var quads: Dictionary = win3d.quads
 	if not quads.has(wid):
-		return {"ok": false, "error": "fenêtre introuvable: " + args}
+		return {"ok": false, "error": "window not found: " + args}
 	pins.pin(wid, win3d.get_window_texture(wid))
 	return {"ok": true, "output": "pinned"}
 
 func _cmd_hide(args: String) -> Dictionary:
 	var wid := args.to_int()
 	if wid == 0 and args != "0":
-		return {"ok": false, "error": "id de fenêtre invalide: " + args}
+		return {"ok": false, "error": "invalid window id: " + args}
 	if win3d != null and win3d.has_method("toggle_hide"):
 		win3d.toggle_hide(wid)
 		return {"ok": true, "output": wid}
-	return {"ok": false, "error": "système de fenêtres non disponible"}
+	return {"ok": false, "error": "window system unavailable"}
 
 func _cmd_share(args: String) -> Dictionary:
 	var wid := args.to_int()
 	if wid == 0 and args != "0":
-		return {"ok": false, "error": "id de fenêtre invalide: " + args}
+		return {"ok": false, "error": "invalid window id: " + args}
 	if win3d == null:
-		return {"ok": false, "error": "système de fenêtres non disponible"}
+		return {"ok": false, "error": "window system unavailable"}
 	if win3d.has_method("is_window_shared") and win3d.has_method("set_window_shared"):
 		var current: bool = win3d.is_window_shared(wid)
 		win3d.set_window_shared(wid, not current)
 		return {"ok": true, "output": not current}
-	return {"ok": false, "error": "méthode share non disponible"}
+	return {"ok": false, "error": "share method unavailable"}
 
 func _cmd_focus_mode() -> Dictionary:
 	var active := false
@@ -200,7 +200,7 @@ func _cmd_layer_interact() -> Dictionary:
 	if layers != null and layers.has_method("toggle_layer_interact"):
 		layers.toggle_layer_interact()
 		return {"ok": true, "output": "toggled"}
-	return {"ok": false, "error": "layers non disponibles"}
+	return {"ok": false, "error": "layers unavailable"}
 
 func _cmd_keyboard_layout(args: String) -> Dictionary:
 	var parts := args.split(" ")

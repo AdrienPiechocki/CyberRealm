@@ -236,7 +236,7 @@ void WlrCompositor::on_new_layer_surface(wl_listener *listener, void *data) {
 
     UtilityFunctions::print("waylandgodot: new_layer_surface id=", id,
         " namespace=", waylandgodot_layer_surface_get_namespace(layer_surface)
-            ? String::utf8(waylandgodot_layer_surface_get_namespace(layer_surface)) : String("(vide)"),
+            ? String::utf8(waylandgodot_layer_surface_get_namespace(layer_surface)) : String("(empty)"),
         " layer=", (int)layer_surface->pending.layer);
 }
 void WlrCompositor::on_layer_surface_map(wl_listener *listener, void *data) {

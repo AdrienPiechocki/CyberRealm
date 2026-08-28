@@ -418,7 +418,7 @@ void WlrCompositor::forward_pointer_pinch(double factor, double dx, double dy) {
         dx, dy, pinch_scale, 0.0);
     pinch_last_update_ms = time;
     UtilityFunctions::print("[gesture] forward_pinch factor=", factor, " scale=", pinch_scale,
-        " focus=", (seat && seat->pointer_state.focused_surface) ? "oui" : "non");
+        " focus=", (seat && seat->pointer_state.focused_surface) ? "yes" : "no");
 }
 void WlrCompositor::forward_pointer_pinch_end(bool cancelled) {
     notify_activity();
@@ -438,7 +438,7 @@ void WlrCompositor::forward_keyboard_key(int godot_physical_keycode, int key_loc
     static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
     auto log_unmapped = [&](int code) {
         if (dbg) {
-            fprintf(stderr, "waylandgodot: keyboard keycode non mappé godot=%d loc=%d pressed=%d\n",
+            fprintf(stderr, "waylandgodot: keyboard keycode unmapped godot=%d loc=%d pressed=%d\n",
                 code, key_location, pressed);
         }
     };
@@ -543,7 +543,7 @@ void WlrCompositor::reload_keymap() {
     if (!ctx) return;
     xkb_keymap *keymap = xkb_keymap_new_from_names(ctx, &rule_names, XKB_KEYMAP_COMPILE_NO_FLAGS);
     if (!keymap) {
-        UtilityFunctions::printerr("waylandgodot: impossible de compiler le keymap xkb (layout=",
+        UtilityFunctions::printerr("waylandgodot: unable to compile xkb keymap (layout=",
             keyboard_layout, ", variant=", keyboard_variant, ")");
         xkb_context_unref(ctx);
         return;

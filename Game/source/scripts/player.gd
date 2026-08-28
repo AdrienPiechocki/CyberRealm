@@ -191,7 +191,7 @@ func _pad_diag_event(event: InputEvent) -> void:
 	elif _pad_diag_axes.is_empty() or not _pad_diag_axes.has("_pads_listed"):
 		_pad_diag_axes["_pads_listed"] = true
 		for d in Input.get_connected_joypads():
-			print("[PadDiag] pad connecté : device=%d name=\"%s\" guid=%s" % [
+			print("[PadDiag] pad connected : device=%d name=\"%s\" guid=%s" % [
 				d, Input.get_joy_name(d), Input.get_joy_guid(d)])
 
 func _pad_menu_activate(event: InputEventJoypadButton) -> bool:

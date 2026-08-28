@@ -114,7 +114,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 	if not pitch_pivot_path.is_empty():
 		_pitch_pivot = get_node_or_null(pitch_pivot_path) as Node3D
 		if _pitch_pivot == null:
-			push_warning("Avatar %s: pitch_pivot_path '%s' introuvable ou pas Node3D." %
+			push_warning("Avatar %s: pitch_pivot_path '%s' not found or not a Node3D." %
 					[name, pitch_pivot_path])
 
 	_interp_pos = position

@@ -809,7 +809,7 @@ void WlrCompositor::start_headless() {
 
     backend = wlr_headless_backend_create(event_loop);
     if (!backend) {
-        UtilityFunctions::printerr("waylandgodot: échec création backend headless");
+        UtilityFunctions::printerr("waylandgodot: failed to create headless backend");
         return;
     }
 
@@ -821,13 +821,13 @@ void WlrCompositor::start_headless() {
         setenv("WLR_RENDERER", "pixman", 1);
         renderer = wlr_renderer_autocreate(backend);
         if (!renderer) {
-            UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate a échoué ",
-                "(même Pixman n'est pas disponible ?)");
+            UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate failed ",
+                "(is even Pixman unavailable?)");
             return;
         }
         allocator = wlr_allocator_autocreate(backend, renderer);
         dmabuf_available = false;
-        UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU, forcé)");
+        UtilityFunctions::print("waylandgodot: using Pixman renderer (CPU, forced)");
     }
 
     // Try GPU renderer first — enables DMA-BUF + Vulkan zero-copy. Le
@@ -845,12 +845,12 @@ void WlrCompositor::start_headless() {
                 dmabuf_available = true;
                 gpu_pipeline_active = true;
                 UtilityFunctions::print("waylandgodot: renderer GPU (GLES2/GBM), "
-                    "pipeline Vulkan zero-copy actif (DMA-BUF → VkImage → Texture2DRD)");
+                    "pipeline Vulkan zero-copy active (DMA-BUF → VkImage → Texture2DRD)");
             } else {
                 dmabuf_available = false;
                 gpu_pipeline_active = false;
-                UtilityFunctions::print("waylandgodot: renderer GPU créé mais pipeline "
-                    "dmabuf/Vulkan inutilisable (sonde échouée), fallback Pixman");
+                UtilityFunctions::print("waylandgodot: GPU renderer created but pipeline "
+                    "dmabuf/Vulkan unusable (probe failed), Pixman fallback");
             }
         }
     }
@@ -869,14 +869,14 @@ void WlrCompositor::start_headless() {
         setenv("WLR_RENDERER", "pixman", 1);
         renderer = wlr_renderer_autocreate(backend);
         if (!renderer) {
-            UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate a échoué ",
-                "(même Pixman n'est pas disponible ?)");
+            UtilityFunctions::printerr("waylandgodot: wlr_renderer_autocreate failed ",
+                "(is even Pixman unavailable?)");
             return;
         }
         allocator = wlr_allocator_autocreate(backend, renderer);
         dmabuf_available = false;
         gpu_pipeline_active = false;
-        UtilityFunctions::print("waylandgodot: utilisation du renderer Pixman (CPU, fallback)");
+        UtilityFunctions::print("waylandgodot: using Pixman renderer (CPU, fallback)");
     }
 
     wlr_renderer_init_wl_display(renderer, display);
@@ -907,8 +907,8 @@ void WlrCompositor::start_headless() {
         // primary_swapchain, wlroots tue le processus dans create_swapchain
         // (assertion output->allocator != NULL, types/output/swapchain.c).
         if (!wlr_output_init_render(fake_output, allocator, renderer)) {
-            UtilityFunctions::printerr("waylandgodot: wlr_output_init_render a échoué "
-                "(caps allocator/renderer incompatibles avec le backend headless)");
+            UtilityFunctions::printerr("waylandgodot: wlr_output_init_render failed "
+                "(allocator/renderer caps incompatible with headless backend)");
         }
         wlr_output_state state;
         wlr_output_state_init(&state);
@@ -918,7 +918,7 @@ void WlrCompositor::start_headless() {
         wlr_output_state_finish(&state);
         wlr_output_create_global(fake_output, display);
     } else {
-        UtilityFunctions::printerr("waylandgodot: échec création output factice");
+        UtilityFunctions::printerr("waylandgodot: failed to create dummy output");
     }
 
     // zxdg_output_manager_v1 : requis par waybar 0.15 (et ses modules GTK),
@@ -928,10 +928,10 @@ void WlrCompositor::start_headless() {
     if (output_layout) {
         wlr_output_layout_add_auto(output_layout, fake_output);
         if (!wlr_xdg_output_manager_v1_create(display, output_layout)) {
-            UtilityFunctions::printerr("waylandgodot: échec création global zxdg_output_manager_v1");
+            UtilityFunctions::printerr("waylandgodot: failed to create zxdg_output_manager_v1 global");
         }
     } else {
-        UtilityFunctions::printerr("waylandgodot: échec création output layout");
+        UtilityFunctions::printerr("waylandgodot: failed to create output layout");
     }
 
     compositor = wlr_compositor_create(display, 6, renderer);
@@ -945,7 +945,7 @@ void WlrCompositor::start_headless() {
     // github-desktop) → protocol error → panic → plus aucun X11 ne marche.
     xdg_decoration_manager = wlr_xdg_decoration_manager_v1_create(display);
     if (!xdg_decoration_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global xdg_decoration_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create xdg_decoration_manager_v1 global");
     } else {
         new_toplevel_decoration_listener.notify = WlrCompositor::on_new_toplevel_decoration;
         wl_signal_add(&xdg_decoration_manager->events.new_toplevel_decoration,
@@ -956,7 +956,7 @@ void WlrCompositor::start_headless() {
     // header de protocole est généré depuis protocols/ par le SConstruct.
     layer_shell = wlr_layer_shell_v1_create(display, 4);
     if (!layer_shell) {
-        UtilityFunctions::printerr("waylandgodot: échec création global wlr-layer-shell-v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create wlr-layer-shell-v1 global");
     } else {
         new_layer_surface_listener.notify = WlrCompositor::on_new_layer_surface;
         wl_signal_add(&layer_shell->events.new_surface, &new_layer_surface_listener);
@@ -968,7 +968,7 @@ void WlrCompositor::start_headless() {
     // verrouillage ne peut être créée → écran noir/rien ne s'affiche.
     session_lock_manager = wlr_session_lock_manager_v1_create(display);
     if (!session_lock_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global ext_session_lock_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create ext_session_lock_manager_v1 global");
     } else {
         new_session_lock_listener.notify = WlrCompositor::on_new_session_lock;
         wl_signal_add(&session_lock_manager->events.new_lock, &new_session_lock_listener);
@@ -982,11 +982,11 @@ void WlrCompositor::start_headless() {
     // via update_idle_inhibited().
     idle_notifier = wlr_idle_notifier_v1_create(display);
     if (!idle_notifier) {
-        UtilityFunctions::printerr("waylandgodot: échec création global ext_idle_notifier_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create ext_idle_notifier_v1 global");
     }
     idle_inhibit_manager = wlr_idle_inhibit_v1_create(display);
     if (!idle_inhibit_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global zwp_idle_inhibit_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create zwp_idle_inhibit_manager_v1 global");
     } else {
         new_idle_inhibitor_listener.notify = WlrCompositor::on_new_idle_inhibitor;
         wl_signal_add(&idle_inhibit_manager->events.new_inhibitor, &new_idle_inhibitor_listener);
@@ -1001,27 +1001,27 @@ void WlrCompositor::start_headless() {
     // ext_foreign_toplevel_image_capture_source.c).
     image_copy_capture_manager = wlr_ext_image_copy_capture_manager_v1_create(display, 1);
     if (!image_copy_capture_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global ext_image_copy_capture_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create ext_image_copy_capture_manager_v1 global");
     }
     output_image_capture_source_manager = wlr_ext_output_image_capture_source_manager_v1_create(display, 1);
     if (!output_image_capture_source_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global ext_output_image_capture_source_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create ext_output_image_capture_source_manager_v1 global");
     }
     foreign_toplevel_list = wlr_ext_foreign_toplevel_list_v1_create(display, 1);
     if (!foreign_toplevel_list) {
-        UtilityFunctions::printerr("waylandgodot: échec création global ext_foreign_toplevel_list_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create ext_foreign_toplevel_list_v1 global");
     }
     foreign_toplevel_source_manager = wl_global_create(display,
         &ext_foreign_toplevel_image_capture_source_manager_v1_interface, 1, this,
         WlrCompositor::on_foreign_toplevel_source_manager_bind);
     if (!foreign_toplevel_source_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global ext_foreign_toplevel_image_capture_source_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create ext_foreign_toplevel_image_capture_source_manager_v1 global");
     }
     // Fallback zwlr_screencopy_v1 pour les clients qui ne connaissent que ce
     // protocole (capture depuis les commits output, cf. present_viewport_frame).
     screencopy_manager = wlr_screencopy_manager_v1_create(display);
     if (!screencopy_manager) {
-        UtilityFunctions::printerr("waylandgodot: échec création global zwlr_screencopy_manager_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create zwlr_screencopy_manager_v1 global");
     }
 
     // Nécessaire pour les clients qui rendent via GPU/dmabuf (ex: Firefox
@@ -1069,7 +1069,7 @@ void WlrCompositor::start_headless() {
     // implémenter via wlr_pointer_gestures_v1_send_*_*.
     pointer_gestures = wlr_pointer_gestures_v1_create(display);
     if (!pointer_gestures) {
-        UtilityFunctions::printerr("waylandgodot: échec création global zwp_pointer_gestures_v1");
+        UtilityFunctions::printerr("waylandgodot: failed to create zwp_pointer_gestures_v1 global");
     }
 
     new_constraint_listener.notify = WlrCompositor::on_new_constraint;
@@ -1125,7 +1125,7 @@ void WlrCompositor::start_headless() {
         }
     }
     if (!socket) {
-        UtilityFunctions::printerr("waylandgodot: impossible de créer le socket Wayland");
+        UtilityFunctions::printerr("waylandgodot: unable to create Wayland socket");
         return;
     }
     setenv("WAYLAND_DISPLAY", socket, 1);
@@ -1165,7 +1165,7 @@ void WlrCompositor::start_headless() {
     }
 
     if (!wlr_backend_start(backend)) {
-        UtilityFunctions::printerr("waylandgodot: échec démarrage backend");
+        UtilityFunctions::printerr("waylandgodot: backend start failed");
         return;
     }
 
@@ -1185,13 +1185,13 @@ void WlrCompositor::start_headless() {
             wlr_xcursor_manager_load(cursor_manager, 1.0f);
             UtilityFunctions::print("waylandgodot: wlr_cursor + xcursor_manager OK");
         } else {
-            UtilityFunctions::printerr("waylandgodot: échec création xcursor_manager");
+            UtilityFunctions::printerr("waylandgodot: xcursor_manager creation failed");
         }
     } else {
-        UtilityFunctions::printerr("waylandgodot: échec création wlr_cursor");
+        UtilityFunctions::printerr("waylandgodot: wlr_cursor creation failed");
     }
 
-    UtilityFunctions::print("waylandgodot: compositeur headless prêt sur ", socket);
+    UtilityFunctions::print("waylandgodot: headless compositor ready on ", socket);
 }
 
 static void wlr_surface_send_frame_done_tree(wlr_surface *surface,
@@ -1278,8 +1278,8 @@ void WlrCompositor::_process(double delta) {
         }
         if (capture_pressure != capture_pressure_logged) {
             UtilityFunctions::print("waylandgodot: [capture] frame=", capture_frame_ms_ema,
-                "ms -> pression ", capture_pressure, " (fenêtres non partagées: ",
-                SLOW_INTERVALS_US[capture_pressure] / 1000, " ms, partagées: ",
+                "ms -> pressure ", capture_pressure, " (unshared windows: ",
+                SLOW_INTERVALS_US[capture_pressure] / 1000, " ms, shared: ",
                 FAST_INTERVALS_US[capture_pressure] / 1000, " ms)");
             capture_pressure_logged = capture_pressure;
         }
@@ -1661,9 +1661,9 @@ void WlrCompositor::launch_polkit_agent() {
     } else if (pid > 0) {
         polkit_agent_pid = pid;
         child_pids.push_back(pid);
-        UtilityFunctions::print("waylandgodot: lancé agent polkit (pid ", pid, ")");
+        UtilityFunctions::print("waylandgodot: launched polkit agent (pid ", pid, ")");
     } else {
-        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour polkit_agent");
+        UtilityFunctions::printerr("waylandgodot: fork() failed for polkit_agent");
     }
 }
 
@@ -1689,7 +1689,7 @@ void WlrCompositor::launch_app(const String &command) {
     if (pid > 0) {
         child_pids.push_back(pid);
     } else {
-        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_app");
+        UtilityFunctions::printerr("waylandgodot: fork() failed for launch_app");
     }
 }
 
@@ -1895,7 +1895,7 @@ String WlrCompositor::write_portal_config() const {
     std::string path = std::string(rt) + "/cyberrealm-portal-wlr.conf";
     FILE *f = fopen(path.c_str(), "w");
     if (!f) {
-        UtilityFunctions::printerr("waylandgodot: impossible d'écrire la config portal-wlr ",
+        UtilityFunctions::printerr("waylandgodot: unable to write portal-wlr config ",
             path.c_str());
         return String();
     }
@@ -1932,7 +1932,7 @@ void WlrCompositor::launch_portals() {
     if (pid > 0) {
         child_pids.push_back(pid);
     } else {
-        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour launch_portals");
+        UtilityFunctions::printerr("waylandgodot: fork() failed for launch_portals");
     }
     launch_secrets_daemon();
 }
@@ -1953,7 +1953,7 @@ void WlrCompositor::launch_secrets_daemon() {
     }
     const char *daemon = "/usr/bin/gnome-keyring-daemon";
     if (access(daemon, X_OK) != 0) {
-        UtilityFunctions::print("waylandgodot: gnome-keyring-daemon absent, org.freedesktop.secrets non servi");
+        UtilityFunctions::print("waylandgodot: gnome-keyring-daemon missing, org.freedesktop.secrets not served");
         return;
     }
     const char *rt = getenv("XDG_RUNTIME_DIR");
@@ -1967,9 +1967,9 @@ void WlrCompositor::launch_secrets_daemon() {
     pid_t pid = fork_launch(String(cmd.c_str()), String());
     if (pid > 0) {
         child_pids.push_back(pid);
-        UtilityFunctions::print("waylandgodot: lancé gnome-keyring-daemon (org.freedesktop.secrets, pid ", pid, ")");
+        UtilityFunctions::print("waylandgodot: launched gnome-keyring-daemon (org.freedesktop.secrets, pid ", pid, ")");
     } else {
-        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour gnome-keyring-daemon");
+        UtilityFunctions::printerr("waylandgodot: fork() failed for gnome-keyring-daemon");
     }
 }
 
@@ -1982,7 +1982,7 @@ void WlrCompositor::start_private_dbus() {
 
     int pipefd[2];
     if (pipe(pipefd) != 0) {
-        UtilityFunctions::printerr("waylandgodot: pipe() a échoué pour le bus D-Bus privé");
+        UtilityFunctions::printerr("waylandgodot: pipe() failed for private D-Bus bus");
         return;
     }
 
@@ -1997,7 +1997,7 @@ void WlrCompositor::start_private_dbus() {
     } else if (pid < 0) {
         close(pipefd[0]);
         close(pipefd[1]);
-        UtilityFunctions::printerr("waylandgodot: fork() a échoué pour le bus D-Bus privé");
+        UtilityFunctions::printerr("waylandgodot: fork() failed for private D-Bus bus");
         return;
     }
 
@@ -2338,7 +2338,7 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     if (width <= 0 || height <= 0) return;
     if (rgba.size() < (int64_t)width * height * 4) {
         wlr_log(WLR_ERROR, "waylandgodot: present: rgba.size=%lld < %dx%d*4 "
-            "(image non-RGBA8 ?)",
+            "(non-RGBA8 image ?)",
             (long long)rgba.size(), width, height);
         return;
     }
@@ -2359,16 +2359,16 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
             ? wlr_drm_format_set_get(formats, DRM_FORMAT_ARGB8888)
             : nullptr;
         if (!fmt) {
-            UtilityFunctions::printerr("waylandgodot: present: ARGB8888 non supporté en DATA_PTR");
+            UtilityFunctions::printerr("waylandgodot: present: ARGB8888 not supported in DATA_PTR");
             return;
         }
         present_buffer = present_shm_buffer_create(width, height, fmt->format);
         if (!present_buffer) {
-            UtilityFunctions::printerr("waylandgodot: present: échec allocation buffer");
-            wlr_log(WLR_ERROR, "waylandgodot: present: échec allocation buffer");
+            UtilityFunctions::printerr("waylandgodot: present: buffer allocation failed");
+            wlr_log(WLR_ERROR, "waylandgodot: present: buffer allocation failed");
             return;
         }
-        wlr_log(WLR_DEBUG, "waylandgodot: present: buffer shm %dx%d créé",
+        wlr_log(WLR_DEBUG, "waylandgodot: present: shm buffer %dx%d created",
             width, height);
         present_width = width;
         present_height = height;
@@ -2380,8 +2380,8 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     size_t stride = 0;
     if (!wlr_buffer_begin_data_ptr_access(present_buffer,
             WLR_BUFFER_DATA_PTR_ACCESS_WRITE, &data, &format, &stride)) {
-        wlr_log(WLR_ERROR, "waylandgodot: present: begin_data_ptr_access a échoué "
-            "(buffer non-shm ?)");
+        wlr_log(WLR_ERROR, "waylandgodot: present: begin_data_ptr_access failed "
+            "(non-shm buffer ?)");
         return;
     }
     const uint8_t *src = rgba.ptr();
@@ -2515,8 +2515,8 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     wlr_output_state_set_damage(&state, &damage);
     pixman_region32_fini(&damage);
     if (!wlr_output_commit_state(headless_output, &state)) {
-        UtilityFunctions::printerr("waylandgodot: present: échec commit output");
-        wlr_log(WLR_ERROR, "waylandgodot: present: échec commit output");
+        UtilityFunctions::printerr("waylandgodot: present: output commit failed");
+        wlr_log(WLR_ERROR, "waylandgodot: present: output commit failed");
     } else {
         wlr_log(WLR_DEBUG, "waylandgodot: present: commit %dx%d OK",
             width, height);
