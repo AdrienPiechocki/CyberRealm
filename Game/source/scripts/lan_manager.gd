@@ -1640,6 +1640,18 @@ func _on_peer_disconnected(id: int) -> void:
 	_video_acked.erase(id)
 	_video_config_sent.erase(id)
 	_video_ack_pending.erase(id)
+	# Purge exhaustive des slots par-peer (reconnexion → nouveau peer_id).
+	_video_nack_last.erase(id)
+	_video_configs.erase(id)
+	_video_applied.erase(id)
+	_video_chunks.erase(id)
+	_frame_fingerprint_last.erase(id)
+	_last_keyframe_msec.erase(id)
+	_frame_enqueued_msec.erase(id)
+	_last_cursor_pointer_send.erase(id)
+	_last_cursor_image_send.erase(id)
+	_avatar_receive_slots.erase(id)
+	_remote_shared.erase(id)
 	_set_status("Player %d disconnected" % id)
 
 func _has_streaming_window() -> bool:
