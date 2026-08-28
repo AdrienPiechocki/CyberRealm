@@ -268,6 +268,28 @@ Remote windows are view-only: `SUPER+F` opens a fullscreen view of them (with th
 owner's cursor overlaid), `SUPER+P` pins them as PiP. You cannot type or click into
 them.
 
+### LAN security
+
+Joining is protected by a 4-digit **PIN** the host shares with its friends (shown
+on the host's LAN page). The client sends it on every join; the host validates it
+and, on failure, applies exponential back-off anti brute-force — after 3 wrong PINs
+in a row the source IP is blacklisted for 30 s. Optionally (checkbox **TLS** when
+joining), the session is additionally encrypted with **DTLS** using the
+self-signed certificate shipped in `Game/source/certs/` (`lan_cert.crt` /
+`lan_key.pem`). Host and clients must both enable TLS for a session to be
+encrypted; a TLS client joining a plain host is refused at the DTLS handshake.
+
+The room also self-heals: the host broadcasts a heartbeat every second and, if a
+client loses it for more than 4 s or is disconnected unexpectedly, it
+automatically reconnects with back-off (`should_reconnect`) for up to 12 attempts
+within a 30 s window — unless the host closed the session gracefully.
+
+A headless GDScript test suite verifies the LAN protocol logic:
+
+```bash
+cd Game/source && godot --headless --script tests/runner.gd
+```
+
 ### File sharing by drag & drop
 
 Drag files from any in-game application onto another player's avatar to send
