@@ -11,6 +11,8 @@ signal level_apply_requested(scene: PackedScene, spawn: Vector3, spawn_rotation:
 # Déconnexion d'une session : le client doit retrouver SON niveau personnel
 # (wayland_room filtre : no-op si aucun niveau hôte n'avait été appliqué).
 signal local_level_restore_requested
+# Émis quand le PIN de session est généré (hôte) ou reçu (client).
+signal pin_changed(pin: String)
 
 const PORT := 7777
 const DISCOVERY_PORT := 9999
@@ -32,6 +34,14 @@ const DEFAULT_AVATAR_PATH := "res://scenes/avatar.tscn"
 
 var _avatar_scene: PackedScene = null
 var _avatar_blobs: Dictionary = {} # peer_id -> PackedByteArray (scène binaire)
+# PIN de la session LAN (4 chiffres). L'hôte le génère, les clients le saisissent.
+var _pin: String = ""
+# peer_id -> true : client en attente de vérification du PIN par l'hôte.
+var _pending_auth: Dictionary = {}
+# Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
+const AUTH_TIMEOUT_MSEC := 10000
+# Timestamp (ms) de l'envoi de la requête auth par le client.
+var _auth_request_sent_msec := 0
 # Scènes avatar décodées à l'avance : peer_id -> PackedScene. Le coût du
 # load() (parse + ressources embarquées des avatars lourds, plusieurs
 # secondes) est payé dès l'arrivée du blob — idéalement pendant l'écran de
@@ -331,6 +341,12 @@ func setup(level_root: Node3D, name: String, color: Color) -> void:
 	_remote_windows_root.name = "RemoteWindows"
 	add_child(_remote_windows_root)
 
+func _generate_pin() -> String:
+	return "%04d" % (randi() % 10000)
+
+func get_pin() -> String:
+	return _pin
+
 func is_session_active() -> bool:
 	return session_active
 
@@ -474,6 +490,9 @@ func host_game() -> bool:
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
+	_pin = _generate_pin()
+	pin_changed.emit(_pin)
+	_lan_log("host PIN: " + _pin)
 	# Miroir des scripts utilisateur reparti à zéro pour cette session (les
 	# manifests reçus — avatars des clients — réinstallent leurs lots).
 	UserScriptMirror.clear()
@@ -499,13 +518,14 @@ func host_game() -> bool:
 
 # ── Join ─────────────────────────────────────────────────────────────
 
-func join_game(ip: String) -> bool:
+func join_game(ip: String, pin: String = "") -> bool:
 	if session_active:
 		_set_status("Already in a LAN session")
 		return false
 	ip = ip.strip_edges()
 	if ip == "":
 		return false
+	_pin = pin.strip_edges()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
@@ -542,16 +562,15 @@ func _on_connected_to_server() -> void:
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
-	_lan_log("connecté à l'hôte — annonce immédiate (pending_join)", true)
-	_set_status("Connected to server")
+	_lan_log("connecté à l'hôte — auth en cours (pending_join)", true)
+	_set_status("Connected to server — authenticating…")
 	_emit_players()
-	# S'annoncer DÈS la connexion (et non à la fin du chargement) : l'hôte
-	# re-broadcaste notre spawn, les autres pairs nous envoient leurs avatars
-	# pendant que le niveau se télécharge — et le niveau reçu n'est appliqué
-	# qu'une fois ces avatars décodés (voir _defer_or_emit_level_apply) pour
-	# que tout apparaisse ensemble. Les synchros restent gelées (_pending_join).
+	# S'annoncer DÈS la connexion : envoyer le PIN pour vérification.
+	# L'hôte répondra par auth_result ; _announce_self() partira uniquement
+	# si le PIN est valide.
 	_pending_join = true
-	_announce_self()
+	_auth_request_sent_msec = Time.get_ticks_msec()
+	auth_request.rpc_id(1, _pin)
 
 # Entrée effective dans la session : la map de l'hôte est appliquée (ou le
 # délai de secours a expiré — on joue alors sur la map locale). L'annonce
@@ -577,6 +596,46 @@ func _announce_self() -> void:
 	_register_player.rpc_id(1, player_name, player_color)
 	_send_avatar_to(1)
 
+# ── Authentification PIN ─────────────────────────────────────────────
+
+## Le client envoie le PIN saisi au serveur (hôte) pour vérification.
+@rpc("authority", "reliable")
+func auth_request(pin: String) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
+		return
+	_lan_log("auth_request de %d — PIN=%s (attendu=%s)" % [from, pin, _pin])
+	if pin == _pin:
+		_pending_auth.erase(from)
+		_set_status("Player %d authenticated (PIN OK)" % from)
+		auth_result.rpc_id(from, true)
+		# Enregistrer le joueur (registration) et démarrer les transferts.
+		# On utilise les mêmes paramètres que _register_player mais via le
+		# canal auth pour éviter les courses.
+		_players[from] = {"name": "Player %d" % from, "color": Color.WHITE}
+		_register_player.rpc_id(from, player_name, player_color)
+	else:
+		_lan_log("auth FAIL de %d — PIN incorrect" % from)
+		_set_status("Player %d rejected (wrong PIN)" % from)
+		auth_result.rpc_id(from, false)
+		await get_tree().create_timer(0.5).timeout
+		multiplayer.multiplayer_peer.disconnect_peer(from)
+
+## Réponse du serveur (hôte) à la tentative d'authentification du client.
+@rpc("any_peer", "reliable")
+func auth_result(ok: bool) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if from != 1:
+		return
+	_auth_request_sent_msec = 0
+	if ok:
+		_lan_log("auth OK — annonce et envoi avatar")
+		_announce_self()
+	else:
+		_lan_log("auth REJETÉ par l'hôte")
+		_set_status("Authentication rejected by host (wrong PIN)")
+		_disconnect_session()
+
 func _on_connection_failed() -> void:
 	_disconnect_session()
 	_set_status("Connection failed — IP unreachable. Check: same network, host firewall (UDP %d/%d open), router AP isolation." % [PORT, DISCOVERY_PORT])
@@ -594,6 +653,10 @@ func _on_server_disconnected() -> void:
 func _register_player(pname: String, color: Color) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
+		return
+	# Rejeter les registrations de pairs non authentifiés (PIN vérifié).
+	if _pending_auth.has(from):
+		_lan_log("registration rejetée de %d — pas encore authentifié" % from)
 		return
 	_players[from] = {"name": pname, "color": color}
 	_set_status("Player %d (%s) joined" % [from, pname])
@@ -774,12 +837,13 @@ func _remove_player(peer_id: int) -> void:
 
 func _on_peer_connected(id: int) -> void:
 	if is_host:
-		_set_status("Player %d connected…" % id)
+		_set_status("Player %d connected — waiting for PIN…" % id)
 		# Timeouts ENet généreux : pendant un stream partagé (vidéo/audio), le
 		# thread principal fait de l'encodage/décodage JPEG par frame ; un à-coup
 		# de quelques secondes ne doit pas faire tomber la session (défaut ENet :
 		# déconnexion après ~5 s sans ACK).
 		_set_peer_timeout(id)
+		_pending_auth[id] = true
 		# PAS d'envoi de niveau/avatar ici : attendre la registration du pair
 		# (voir _register_player). Les paquets de contrôle (snapshot roster,
 		# broadcasts) doivent partir sur un tube VIDE — s'ils se disputent le
@@ -1349,6 +1413,7 @@ func _set_peer_timeout(id: int) -> void:
 func _on_peer_disconnected(id: int) -> void:
 	_avatar_blobs.erase(id)
 	_avatar_send_queue.erase(id)
+	_pending_auth.erase(id)
 	# Diagnostique : la déconnexion survient pendant un partage vidéo. ENet
 	# déconnecte quand une commande reliable (ping/ACK) reste non-acknowledgée
 	# ≥15 s (timeout min) — soit un lien saturé, soit un thread principal
@@ -2930,6 +2995,12 @@ func _process(_delta: float) -> void:
 	if _scanner:
 		_poll_scanner()
 	_sync_cursor_state(_delta)
+	# Timeout client : si le PIN n'est pas vérifié à temps, déconnexion.
+	if not is_host and _auth_request_sent_msec > 0 and session_active:
+		if Time.get_ticks_msec() - _auth_request_sent_msec > AUTH_TIMEOUT_MSEC:
+			_lan_log("auth timeout — pas de réponse de l'hôte")
+			_set_status("Authentication timeout — host did not respond")
+			_disconnect_session()
 
 # Diffuse le curseur du propriétaire pour chaque fenêtre partagée visible :
 # position du pointeur (rpc léger non fiable) + image du curseur custom quand
@@ -3120,6 +3191,9 @@ func _clear_remote_players() -> void:
 func _disconnect_session() -> void:
 	_stop_audio_share()
 	_stop_video_share()
+	_pending_auth.clear()
+	_auth_request_sent_msec = 0
+	_pin = ""
 	_level_send_queue.clear()
 	_level_bake_receive.clear()
 	_level_baked_cache.clear()
