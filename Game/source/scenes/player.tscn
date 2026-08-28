@@ -7,6 +7,7 @@
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
 [ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/radial_menu.gd" id="7_radial_menu"]
 [ext_resource type="Script" uid="uid://c0rashg3vxm4k" path="res://scripts/virtual_keyboard.gd" id="8_virtual_keyboard"]
+[ext_resource type="Script" path="res://scripts/tutorial.gd" id="9_tutorial"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -166,3 +167,14 @@ offset_bottom = 300.0
 grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("5_pause_menu")
+
+[node name="TutorialLayer" type="CanvasLayer" parent="." unique_id=390218741]
+
+[node name="Tutorial" type="Control" parent="TutorialLayer" unique_id=390218742]
+visible = false
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+script = ExtResource("9_tutorial")

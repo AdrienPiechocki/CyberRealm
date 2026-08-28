@@ -72,7 +72,7 @@ func _physics_process(delta):
 	if velocity.y > jump_speed:
 		velocity.y = jump_speed
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or $RadialMenuLayer/RadialMenu.visible:
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -139,6 +139,13 @@ func _input(event):
 	if focus_mode_active:
 		return
 	if $RadialMenuLayer/RadialMenu.visible:
+		return
+	if $TutorialLayer/Tutorial.visible:
+		# Tutoriel ouvert : la souris reste libre (les boutons du tuto
+		# capturent le clic) et aucun input ne touche au jeu.
+		if event is InputEventMouseMotion or (event is InputEventMouseButton and event.pressed):
+			if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		return
 	if $PauseMenuLayer/PauseMenu.visible:
 		# Afficher la souris uniquement quand l'utilisateur la bouge (pas au d-pad).

@@ -10,6 +10,7 @@ signal pins_position_changed(position: String)
 signal lan_host_requested
 signal lan_join_requested(ip: String, pin: String, encrypted: bool)
 signal lan_video_settings_changed(bitrate: int, codec: String, fps: int)
+signal tutorial_requested
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
@@ -396,6 +397,13 @@ func _show_main() -> void:
 	var lan_btn := _make_btn("LAN Game")
 	lan_btn.pressed.connect(_show_lan)
 	container.add_child(lan_btn)
+	
+	var tutorial_btn := _make_btn("Tutorial")
+	tutorial_btn.pressed.connect(func():
+		hide_menu()
+		tutorial_requested.emit()
+	)
+	container.add_child(tutorial_btn)
 	
 	container.add_child(_make_spacer())
 	
@@ -869,6 +877,15 @@ func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSli
 	_show_main()
 
 # ── LAN multiplayer ──────────────────────────────────────────────────
+
+func get_tutorial_seen() -> bool:
+	return bool(_settings.get("tutorial_seen", false))
+
+func set_tutorial_seen(val: bool) -> void:
+	if bool(_settings.get("tutorial_seen", false)) == val:
+		return
+	_settings["tutorial_seen"] = val
+	_save_settings()
 
 func get_lan_player_name() -> String:
 	var nm := String(_settings.get("lan_player_name", "")).strip_edges()
