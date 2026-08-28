@@ -8,7 +8,7 @@ signal pins_layer_changed(above: bool)
 signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
 signal lan_host_requested
-signal lan_join_requested(ip: String, pin: String)
+signal lan_join_requested(ip: String, pin: String, encrypted: bool)
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
@@ -1043,6 +1043,11 @@ func _show_lan() -> void:
 	pin_edit.custom_minimum_size = Vector2(80, 36)
 	pin_edit.max_length = 4
 	join_row.add_child(pin_edit)
+	var encryption_btn := CheckButton.new()
+	encryption_btn.text = "TLS"
+	encryption_btn.tooltip_text = "Chiffrer la session (DTLS) avec les certificats embarqués"
+	encryption_btn.button_pressed = true
+	join_row.add_child(encryption_btn)
 	var join_btn := _make_btn("Join")
 	join_btn.custom_minimum_size = Vector2(100, 36)
 	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
@@ -1051,7 +1056,7 @@ func _show_lan() -> void:
 		var ip := ip_edit.text.strip_edges()
 		var pin := pin_edit.text.strip_edges()
 		if ip != "":
-			lan_join_requested.emit(ip, pin)
+			lan_join_requested.emit(ip, pin, encryption_btn.button_pressed)
 	)
 	join_row.add_child(join_btn)
 	container.add_child(join_row)
@@ -1142,7 +1147,7 @@ func set_lan_discovery_results(results: Array) -> void:
 
 func _join_discovered(ip: String) -> void:
 	if ip != "":
-		lan_join_requested.emit(ip, "")
+		lan_join_requested.emit(ip, "", true)
 
 # ── Startup apps ─────────────────────────────────────────────────────
 

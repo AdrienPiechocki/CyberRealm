@@ -141,12 +141,15 @@ func test_should_reconnect_yes():
 func test_pin_blacklist():
 	var state := {}
 	var r = true
-	for i in range(3):
+	# 2 premiers échecs : pas de rejet.
+	for i in range(2):
 		if LANManager.pin_attempt("1.2.3.4", false, state) == true:
 			r = false
-	if r != true: return "doit échouer seulement au 3e"
+	if r != true: return "1er/2e échec ne doit pas rejeter"
+	# 3e échec : rejet.
 	if LANManager.pin_attempt("1.2.3.4", false, state) == false:
 		return "3e échec doit rejeter"
+	# Un succès réarme.
 	if LANManager.pin_attempt("1.2.3.4", true, state) == false:
 		return "un succès réarme"
 	return true
