@@ -38,6 +38,14 @@ var _avatar_blobs: Dictionary = {} # peer_id -> PackedByteArray (scène binaire)
 var _pin: String = ""
 # peer_id -> true : client en attente de vérification du PIN par l'hôte.
 var _pending_auth: Dictionary = {}
+# Chiffrement DTLS de la session (toggle pause_menu). Exposé en var publique.
+var encryption_enabled := true
+# anti brute-force PIN : adresse IP -> timestamp (ms) du dernier échec (purge).
+var _pin_blacklist: Dictionary = {}
+# Compteur d'échecs PIN consécutifs par adresse (alimenté par pin_attempt).
+var _pin_fail_counts: Dictionary = {}
+# Chiffrement demandé pour le dernier join (réutilisé à la reconnexion).
+var _last_join_encrypted := false
 # Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
 const AUTH_TIMEOUT_MSEC := 10000
 
@@ -511,6 +519,63 @@ func get_players_container() -> Node3D:
 func get_remote_players() -> Dictionary:
 	return _remote_players
 
+# ── DTLS (chiffrement de session) & anti brute-force PIN ─────────────
+
+func _load_dtls_options() -> TLSOptions:
+	var key := load("res://certs/lan_key.pem") as CryptoKey
+	var cert := load("res://certs/lan_cert.crt") as X509Certificate
+	if key == null or cert == null:
+		_lan_log("DTLS: clé/cert introuvables, chiffrement désactivé")
+		return null
+	return TLSOptions.server(key, cert)
+
+func _dtls_client_options() -> TLSOptions:
+	var cert := load("res://certs/lan_cert.crt") as X509Certificate
+	if cert == null:
+		_lan_log("DTLS: cert introuvable, chiffrement désactivé")
+		return null
+	return TLSOptions.client(cert)
+
+## true si l'adresse est actuellement blacklistée (verrou intact et non expiré).
+func _pin_blocked(ip: String) -> bool:
+	if ip == "" or not _pin_blacklist.has(ip):
+		return false
+	if Time.get_ticks_msec() - int(_pin_blacklist[ip]) >= PIN_BLACKLIST_MSEC:
+		_pin_blacklist.erase(ip)
+		_pin_fail_counts.erase(ip)
+		return false
+	return true
+
+## Enregistre un échec de PIN depuis une adresse IP. Retourne true si
+## l'adresse doit être blacklistée (verrou atteint).
+func _on_pin_fail(ip: String) -> bool:
+	if ip == "":
+		return false
+	_pin_blacklist[ip] = Time.get_ticks_msec()
+	var rejected := pin_attempt(ip, false, _pin_fail_counts)
+	if rejected:
+		_lan_log("PIN brute-force: %s blacklisté (%d échecs)" % [ip, PIN_FAIL_LIMIT])
+	else:
+		_lan_log("PIN fail depuis %s (%d)" % [ip, int(_pin_fail_counts.get(ip, 0))])
+	return rejected
+
+## Réarme l'anti brute-force après un PIN valide d'une adresse donnée.
+func _on_pin_success(ip: String) -> void:
+	if ip == "":
+		return
+	pin_attempt(ip, true, _pin_fail_counts)
+	_pin_blacklist.erase(ip)
+
+## Adresse IP d'un peer distant (côté hôte). "" si indisponible.
+func _remote_ip(peer_id: int) -> String:
+	var mp := multiplayer.multiplayer_peer
+	if mp == null or not mp is ENetMultiplayerPeer:
+		return ""
+	var p = mp.get_peer(peer_id)
+	if p == null or not p is ENetPacketPeer:
+		return ""
+	return String(p.get_remote_address())
+
 # ── Host ─────────────────────────────────────────────────────────────
 
 func host_game() -> bool:
@@ -522,6 +587,13 @@ func host_game() -> bool:
 	if err != OK:
 		_set_status("Host error: " + error_string(err))
 		return false
+	if encryption_enabled:
+		var dtls := _load_dtls_options()
+		if dtls != null:
+			if peer.host.dtls_server_setup(dtls) != OK:
+				_lan_log("DTLS: échec setup serveur, session non chiffrée")
+			else:
+				_lan_log("DTLS: session chiffrée (serveur)")
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
@@ -553,19 +625,27 @@ func host_game() -> bool:
 
 # ── Join ─────────────────────────────────────────────────────────────
 
-func join_game(ip: String, pin: String = "") -> bool:
+func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 	if session_active:
 		_set_status("Already in a LAN session")
 		return false
 	ip = ip.strip_edges()
 	if ip == "":
 		return false
+	_last_join_encrypted = encrypted
 	_pin = pin.strip_edges()
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_client(ip, PORT, 8)
 	if err != OK:
 		_set_status("Connection error: " + error_string(err))
 		return false
+	if encrypted:
+		var dtls := _dtls_client_options()
+		if dtls != null:
+			if peer.host.dtls_client_setup(ip, dtls) != OK:
+				_lan_log("DTLS: échec setup client, session non chiffrée")
+			else:
+				_lan_log("DTLS: session chiffrée (client → %s)" % ip)
 	multiplayer.multiplayer_peer = peer
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
 	multiplayer.connection_failed.connect(_on_connection_failed)
@@ -642,6 +722,8 @@ func auth_request(pin: String) -> void:
 	_lan_log("auth_request de %d — PIN=%s (attendu=%s)" % [from, pin, _pin])
 	if pin == _pin:
 		_pending_auth.erase(from)
+		# PIN valide → réarme l'anti brute-force pour cette adresse.
+		_on_pin_success(_remote_ip(from))
 		_set_status("Player %d authenticated (PIN OK)" % from)
 		auth_result.rpc_id(from, true)
 		# Enregistrer le joueur (registration) et démarrer les transferts.
@@ -650,11 +732,21 @@ func auth_request(pin: String) -> void:
 		_players[from] = {"name": "Player %d" % from, "color": Color.WHITE}
 		_register_player.rpc_id(from, player_name, player_color)
 	else:
+		var ip := _remote_ip(from)
+		if _pin_blocked(ip):
+			_lan_log("auth REJETÉ %d — IP %s blacklistée (trop d'échecs PIN)" % [from, ip])
+			_set_status("Player %d rejected (IP blacklisted)" % from)
+			auth_result.rpc_id(from, false)
+			await get_tree().create_timer(0.5).timeout
+			multiplayer.multiplayer_peer.disconnect_peer(from)
+			return
 		_lan_log("auth FAIL de %d — PIN incorrect" % from)
 		_set_status("Player %d rejected (wrong PIN)" % from)
 		auth_result.rpc_id(from, false)
-		await get_tree().create_timer(0.5).timeout
-		multiplayer.multiplayer_peer.disconnect_peer(from)
+		if ip != "" and _on_pin_fail(ip):
+			_lan_log("PIN brute-force — déconnexion de %d (%s)" % [from, ip])
+			await get_tree().create_timer(0.5).timeout
+			multiplayer.multiplayer_peer.disconnect_peer(from)
 
 ## Réponse du serveur (hôte) à la tentative d'authentification du client.
 @rpc("any_peer", "reliable")
