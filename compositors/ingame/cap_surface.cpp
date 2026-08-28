@@ -25,6 +25,7 @@ extern "C" {
 #include <wlr/render/swapchain.h>
 #include <wlr/render/pass.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
 #include <wlr/util/log.h>
 #include <wlr/util/box.h>
 #include <libdrm/drm_fourcc.h>
