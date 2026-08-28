@@ -88,7 +88,7 @@ VideoShare::~VideoShare() {
 // Cycle de vie
 // ---------------------------------------------------------------------------
 
-bool VideoShare::start(const String &codec, int bitrate) {
+bool VideoShare::start(const String &codec, int bitrate, int fps_override) {
 	if (active.load()) return false;
 
 	this->bitrate = bitrate > 0 ? bitrate : 8'000'000;
@@ -97,9 +97,12 @@ bool VideoShare::start(const String &codec, int bitrate) {
 
 	// Framerate d'encodage surchargeable : 60 ips mobilise en continu un cœur
 	// CPU (mmap + swscale) plus l'encodeur ; 30 suffit pour la plupart des
-	// partages et divise la charge par deux.
+	// partages et divise la charge par deux. Un fps_override explicite (depuis
+	// Godot, exposé dans le menu pause) prime sur la variable d'environnement.
 	fps = 60;
-	if (const char *env = getenv("CYBERREALM_SHARE_FPS")) {
+	if (fps_override >= 10 && fps_override <= 60) {
+		fps = fps_override;
+	} else if (const char *env = getenv("CYBERREALM_SHARE_FPS")) {
 		int v = atoi(env);
 		if (v >= 10 && v <= 60) fps = v;
 	}
@@ -445,16 +448,13 @@ void VideoShare::reconcile_windows() {
 	for (auto it = windows.begin(); it != windows.end();) {
 		VideoEncodeWindow *w = *it;
 		if (wanted.count(w->wid) == 0) {
+			// encode_mutex pris une seule fois pour : signale l'arrêt, attend
+			// toute soumission (thread principal) encore en cours, puis libère
+			// la fenêtre. Un fd encore en attente de traitement (jamais réclamé
+			// par le worker) est fermé ici.
 			{
 				std::lock_guard<std::mutex> wg(w->encode_mutex);
 				w->stop_encoding = true;
-			}
-			// encode_mutex pris pour attendre toute soumission (thread
-			// principal) encore en cours avant de libérer la fenêtre. Un fd
-			// encore en attente de traitement (jamais réclamé par le worker)
-			// est fermé ici.
-			{
-				std::lock_guard<std::mutex> wg(w->encode_mutex);
 				if (w->fd >= 0) {
 					close(w->fd);
 					w->fd = -1;

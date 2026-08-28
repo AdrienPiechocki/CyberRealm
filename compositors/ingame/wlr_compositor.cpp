@@ -146,7 +146,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("stop_audio_share"), &WlrCompositor::stop_audio_share);
     ClassDB::bind_method(D_METHOD("poll_audio_packet"), &WlrCompositor::poll_audio_packet);
     ClassDB::bind_method(D_METHOD("audio_decode", "packet", "sender_id"), &WlrCompositor::audio_decode);
-    ClassDB::bind_method(D_METHOD("video_share_start", "codec", "bitrate"), &WlrCompositor::video_share_start);
+    ClassDB::bind_method(D_METHOD("video_share_start", "codec", "bitrate", "fps"), &WlrCompositor::video_share_start);
     ClassDB::bind_method(D_METHOD("video_share_stop"), &WlrCompositor::video_share_stop);
     ClassDB::bind_method(D_METHOD("video_share_active"), &WlrCompositor::video_share_active);
     ClassDB::bind_method(D_METHOD("video_share_hardware"), &WlrCompositor::video_share_hardware);
@@ -2080,8 +2080,8 @@ PackedByteArray WlrCompositor::audio_decode(const PackedByteArray &packet, int s
 // Partage vidéo (stream LAN) : encodeur inter-frame (VideoShare).
 // ---------------------------------------------------------------------
 
-bool WlrCompositor::video_share_start(const String &codec, int bitrate) {
-    return video_share.start(codec, bitrate);
+bool WlrCompositor::video_share_start(const String &codec, int bitrate, int fps) {
+    return video_share.start(codec, bitrate, fps);
 }
 
 void WlrCompositor::video_share_stop() {

@@ -288,8 +288,14 @@ const WINDOW_MAX_AHEAD := 3 # flow control : au plus 3 frames non appliquées en
 # petites (P-frames) mais dépendantes : pas de drop possible (le compositeur
 # saute une capture si l'encodeur lit encore le buffer), les keyframes
 # resynchronisent.
-const VIDEO_BITRATE := 6_000_000 # débit cible par fenêtre (bits/s) ; total = n_fenêtres × ceci. 6 Mb/s à 60 ips ≈ 12,5 KB/frame, tenable en LAN et suffisant pour du 1080p fluide
-const VIDEO_CODEC_PREF := ["h264", "av1"] # essai dans cet ordre. h264 VAAPI d'abord : l'encodeur AV1 matériel de Mesa est lent/instable sur RDNA3 (le worker VAAPI tombait à ~6 ips alors que h264_vaapi encodera confortablement le 1080p à 60 ips). av1 = matériel seulement (pas de fallback logiciel)
+var _video_bitrate := 6_000_000 # débit cible par fenêtre (bits/s) ; total = n_fenêtres × ceci. 6 Mb/s à 60 ips ≈ 12,5 KB/frame, tenable en LAN et suffisant pour du 1080p fluide
+# codecs à essayer, dans cet ordre. h264 VAAPI d'abord : l'encodeur AV1 matériel
+# de Mesa est lent/instable sur RDNA3 (le worker VAAPI tombait à ~6 ips alors que
+# h264_vaapi encodera confortablement le 1080p à 60 ips). av1 = matériel
+# seulement (pas de fallback logiciel). Réglable (menu pause) : ["h264"] / ["av1"]
+# / ["h264", "av1"] (auto).
+var _video_codec_pref: Array = ["h264", "av1"]
+var _video_fps := 60 # cadence d'encodage (10-60) ; divise la charge CPU quand baissée
 const VIDEO_PACKET_SINGLE_MAX := 40000 # paquet ≤ ceci : 1 RPC (≤ 32 fragments ENet, 1 vague)
 const VIDEO_CHUNK_SIZE := 30000 # au-delà : découpage, chaque morceau ≤ 1 vague ENet
 const VIDEO_CHUNK_STALE_MSEC := 2000 # purge des assemblages de chunks incomplets
@@ -2516,13 +2522,13 @@ func _sync_video_state() -> void:
 func _start_video_share() -> void:
 	if compositor == null or not compositor.has_method("video_share_start"):
 		return
-	for codec in VIDEO_CODEC_PREF:
-		if compositor.video_share_start(codec, VIDEO_BITRATE):
+	for codec in _video_codec_pref:
+		if compositor.video_share_start(codec, _video_bitrate, _video_fps):
 			_video_mode = true
 			_video_codec = compositor.video_share_codec()
 			var hw := compositor.video_share_hardware()
-			print("[video] partage inter-frame démarré: codec=%s matériel=%s bitrate=%d" % [
-				_video_codec, "oui" if hw else "non", VIDEO_BITRATE])
+			print("[video] partage inter-frame démarré: codec=%s matériel=%s bitrate=%d fps=%d" % [
+				_video_codec, "oui" if hw else "non", _video_bitrate, _video_fps])
 			return
 	print("[video] encodeur vidéo indisponible — partage en JPEG")
 
@@ -2537,6 +2543,24 @@ func _stop_video_share() -> void:
 	_video_last_sent.clear()
 	_video_acked.clear()
 
+# Applique les réglages de partage vidéo (menu pause) : bitrate (bits/s),
+# codec ("auto" | "h264" | "av1") et fps. Si le partage est actif, il est
+# redémarré pour prendre effet immédiatement.
+func set_video_settings(bitrate: int, codec: String, fps: int) -> void:
+	_video_bitrate = maxi(bitrate, 0)
+	_video_fps = clampi(fps, 10, 60)
+	match codec:
+		"h264", "av1":
+			_video_codec_pref = [codec]
+		_:
+			_video_codec_pref = ["h264", "av1"]
+	_compositor_video_restart()
+
+func _compositor_video_restart() -> void:
+	if _video_mode and compositor != null and compositor.has_method("video_share_start"):
+		_stop_video_share()
+		_start_video_share()
+		_announce_video_configs(true)
 # Maintient l'ensemble des fenêtres partagées envoyé à l'encodeur (C++).
 func _update_video_windows() -> void:
 	var wids := PackedInt32Array()

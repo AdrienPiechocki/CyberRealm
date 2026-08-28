@@ -1048,7 +1048,7 @@ public:
     // capture_surface_vulkan/dmabuf). Côté récepteur : video_decoder_configure
     // initialise un flux (clé (from, wid)) puis video_decoder_feed décode un
     // paquet en Image RGBA.
-    bool video_share_start(const String &codec, int bitrate);
+    bool video_share_start(const String &codec, int bitrate, int fps = -1);
     void video_share_stop();
     bool video_share_active();
     bool video_share_hardware();

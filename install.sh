@@ -154,10 +154,36 @@ StartupNotify=false
 EOF
 
 # for multiplayer
-sudo ufw allow 7777/udp
-sudo ufw allow 9999/udp
-# for drag & drop file sharing between players (rsync-over-ssh, port ssh)
-sudo ufw allow 22/tcp
+# Pour les ports UDP 7777/9999 (LAN multiplayer) et TCP 22 (drag & drop,
+# rsync-over-ssh). On détecte le backend firewall actif pour être portable
+# entre distributions (ufw, firewalld, nftables, iptables).
+firewall_open() {
+    local proto="$1" port="$2"
+    if command -v ufw >/dev/null 2>&1 && sudo ufw status >/dev/null 2>&1; then
+        sudo ufw allow "$port/$proto"
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+        sudo firewall-cmd --permanent --add-port="$port/$proto"
+    elif command -v nft >/dev/null 2>&1 && sudo nft list ruleset >/dev/null 2>&1; then
+        # Ajout non destructif si une règle identique est déjà présente.
+        sudo nft add rule inet filter input tcp dport "$port" accept 2>/dev/null || true
+        sudo nft add rule inet filter input udp dport "$port" accept 2>/dev/null || true
+    elif command -v iptables >/dev/null 2>&1; then
+        sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null \
+            || sudo iptables -I INPUT -p tcp --dport "$port" -j ACCEPT
+        sudo iptables -C INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null \
+            || sudo iptables -I INPUT -p udp --dport "$port" -j ACCEPT
+    else
+        echo "install: aucun backend firewall détecté (ufw/firewalld/nft/iptables)."
+        echo "          Ouvrez manuellement les ports UDP 7777 & 9999 et TCP 22."
+    fi
+}
+firewall_open udp 7777
+firewall_open udp 9999
+firewall_open tcp 22
+
+# Applicabilité : firewalld/nft/iptables sont permanents dans la session mais
+# peuvent ne pas survivre au reboot selon la config ; pour un effet persistant,
+# préférez ufw (actif) ou la config firewalld.
 
 # --- Partage de fichiers (drag & drop) --------------------------------------
 # openssh + rsync sont installés ci-dessus. Recevoir des fichiers exige en plus

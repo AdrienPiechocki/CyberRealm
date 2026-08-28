@@ -105,7 +105,7 @@ public:
 	// matériel (radeonsi), et retombe en logiciel (libx264) si indisponible.
 	// codec = "h264" | "av1" ; bitrate = débit cible en bits/s (0 → défaut).
 	// Renvoie false si aucun backend n'a pu démarrer.
-	bool start(const String &codec, int bitrate);
+	bool start(const String &codec, int bitrate, int fps = -1);
 	void stop();
 	bool is_active() const;
 	bool is_hardware() const;
