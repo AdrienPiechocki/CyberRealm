@@ -62,7 +62,7 @@ Vulkan DMA-BUF import**.
 - **KWin integration** — an optional KWin script fullscreens the game when
   launched from Plasma and blocks all KDE global shortcuts while it has focus.
 - **GNOME Shell integration** — the same fullscreen/focus helper ships as a
-  GNOME Shell extension (45–48). Because a GNOME extension cannot bind
+  GNOME Shell extension (45–50). Because a GNOME extension cannot bind
   `zwp_keyboard_shortcuts_inhibit_v1` on the game's behalf, blocking Super,
   Alt+Tab, PrtScr… during play is done by the game itself: the Wayland driver
   of the exported Godot template is patched

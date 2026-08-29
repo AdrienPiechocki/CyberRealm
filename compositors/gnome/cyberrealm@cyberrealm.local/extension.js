@@ -53,7 +53,7 @@ export default class CyberRealmExtension extends Extension {
 
         const display = global.display;
 
-        // Signal de création de fenêtre. En GNOME 45-48, global.display est un
+        // Signal de création de fenêtre. En GNOME 45-50, global.display est un
         // Meta.Display qui émet 'window-created' (avec la MetaWindow en arg).
         // Les signaux GObject ne sont pas des propriétés JS : on ne peut pas
         // les détecter par `typeof display['window-created']`. On connecte en
@@ -147,6 +147,9 @@ export default class CyberRealmExtension extends Extension {
         if (this._gameWindow !== win) {
             this._untrackGameWindow();
             this._gameWindow = win;
+
+            console.log('cyberrealm: tracking game window, fullscreen =',
+                this._fullscreenOnLaunch);
 
             // Quand la fenêtre du jeu disparaît, on cesse de la suivre et on
             // oublie tout (le jeu gère la suite via le protocole Wayland).
