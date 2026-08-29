@@ -2,7 +2,7 @@ extends Node
 ## Tests for PIN generation and LAN protocol helpers.
 
 const Runner = preload("res://tests/runner.gd")
-const LANManager = preload("res://scripts/lan_manager.gd")
+const LANManager = preload("res://scripts/network/lan_manager.gd")
 
 func test_pin_format():
 	for _i in 100:

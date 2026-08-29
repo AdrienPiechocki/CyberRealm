@@ -1,6 +1,6 @@
 [gd_scene format=4 uid="uid://qod8yxdgi26e"]
 
-[ext_resource type="Script" uid="uid://beamlslooas0m" path="res://scripts/avatar.gd" id="1_remote"]
+[ext_resource type="Script" uid="uid://beamlslooas0m" path="res://scripts/player/avatar.gd" id="1_remote"]
 
 [sub_resource type="CapsuleMesh" id="CapsuleMesh_body"]
 

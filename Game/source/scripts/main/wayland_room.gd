@@ -31,9 +31,9 @@ var cmd: Node # drone de commandes IPC (cyberrealm-exec)
 var interactor: Node3D # clic gauche sur les objets du niveau (scripts user)
 var file_share: Node3D # drag & drop de fichiers sur un avatar → rsync LAN
 
-const LEVEL_BAKER := preload("res://scripts/level_baker.gd")
-const OCCLUSION_BAKER := preload("res://scripts/occlusion_baker.gd")
-const COMMAND_NODE := preload("res://scripts/command_node.gd")
+const LEVEL_BAKER := preload("res://scripts/baking/level_baker.gd")
+const OCCLUSION_BAKER := preload("res://scripts/baking/occlusion_baker.gd")
+const COMMAND_NODE := preload("res://scripts/ipc/command_node.gd")
 
 # Diagnostic rendu (CYBERREALM_RENDER_DEBUG=1) : FPS + draw calls + primitives
 # + VRAM toutes les RENDER_DEBUG_PERIOD_SEC, pour comparer deux machines.
@@ -254,12 +254,12 @@ func _ready() -> void:
 	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
 
 	# Sous-systèmes, créés avant toute connexion de signal.
-	win3d = _add_manager(preload("res://scripts/windows_3d.gd"), "Windows3D")
-	focus = _add_manager(preload("res://scripts/focus_mode.gd"), "FocusMode")
-	layers = _add_manager(preload("res://scripts/layer_surfaces.gd"), "LayerSurfaces")
-	pins = _add_manager(preload("res://scripts/pinned_windows.gd"), "PinnedWindows")
-	fx = _add_manager(preload("res://scripts/effects.gd"), "Effects")
-	presenter = _add_manager(preload("res://scripts/present_manager.gd"), "PresentManager")
+	win3d = _add_manager(preload("res://scripts/windows/windows_3d.gd"), "Windows3D")
+	focus = _add_manager(preload("res://scripts/windows/focus_mode.gd"), "FocusMode")
+	layers = _add_manager(preload("res://scripts/windows/layer_surfaces.gd"), "LayerSurfaces")
+	pins = _add_manager(preload("res://scripts/windows/pinned_windows.gd"), "PinnedWindows")
+	fx = _add_manager(preload("res://scripts/windows/effects.gd"), "Effects")
+	presenter = _add_manager(preload("res://scripts/windows/present_manager.gd"), "PresentManager")
 
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d, keyboard)
@@ -381,7 +381,7 @@ func _ready() -> void:
 	# compositeur/bureau, seuls les avatars des joueurs sont partagés.
 	lan = Node.new()
 	lan.name = "LAN"
-	lan.set_script(preload("res://scripts/lan_manager.gd"))
+	lan.set_script(preload("res://scripts/network/lan_manager.gd"))
 	add_child(lan)
 	lan.setup($Level, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
 	lan.level_bake_provider = _bake_level_for_lan
@@ -430,7 +430,7 @@ func _ready() -> void:
 	# Le relais RPC passe par ce node (même NodePath sur tous les pairs).
 	interactor = Node3D.new()
 	interactor.name = "Interactor"
-	interactor.set_script(preload("res://scripts/world_interactor.gd"))
+	interactor.set_script(preload("res://scripts/interaction/world_interactor.gd"))
 	add_child(interactor)
 	interactor.setup(player, lan)
 
@@ -438,7 +438,7 @@ func _ready() -> void:
 	# rsync (prompt mot de passe SSH chez le destinataire, cf. README).
 	file_share = Node3D.new()
 	file_share.name = "FileShare"
-	file_share.set_script(preload("res://scripts/file_share_manager.gd"))
+	file_share.set_script(preload("res://scripts/network/file_share_manager.gd"))
 	add_child(file_share)
 	file_share.setup(player, lan, compositor)
 	compositor.file_drop_received.connect(file_share.on_files_dropped)
