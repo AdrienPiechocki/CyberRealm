@@ -5,6 +5,30 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 GAME="$SCRIPT_DIR/Game/build/CyberRealm.x86_64"
 
+# --- Options -------------------------------------------------------------
+# --with-gnome / --without-gnome : override l'auto-détection (présence d'une
+# session GNOME). Par défaut, l'extension GNOME et le template Godot patché
+# (zwp_keyboard_shortcuts_inhibit_v1) ne sont gérés que si gnome-shell est
+# installé.
+GNOME_WANTED="auto"
+for arg in "$@"; do
+    case "$arg" in
+        --with-gnome)   GNOME_WANTED="yes" ;;
+        --without-gnome) GNOME_WANTED="no" ;;
+    esac
+done
+
+GNOME_INSTALL=0
+GNOME_AVAILABLE=0
+if command -v gnome-shell >/dev/null 2>&1 || command -v gnome-extensions >/dev/null 2>&1; then
+    GNOME_AVAILABLE=1
+fi
+case "$GNOME_WANTED" in
+    yes) GNOME_INSTALL=1 ;;
+    no)  GNOME_INSTALL=0 ;;
+    auto) GNOME_INSTALL="$GNOME_AVAILABLE" ;;
+esac
+
 sudo pacman -S --needed base-devel godot wayland wayland-protocols pixman libdrm xwayland-satellite \
                libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader xdg-desktop-portal-wlr \
                ffmpeg libva-mesa-driver libva libx11 openssh rsync
@@ -70,7 +94,30 @@ meson install -C "$PORTAL_SRC/build"
 GODOT_TAG="4.7.2-stable"
 GODOT_VER="4.7.2.stable"
 TEMPLATES_DIR="$HOME/.local/share/godot/export_templates/$GODOT_VER"
+
+# -- Patch Godot (zwp_keyboard_shortcuts_inhibit_v1) --------------------------
+# Sur GNOME, le blocage des raccourcis (Super, Alt+Tab, PrtScr…) pendant la
+# partie exige que le jeu lui-même lie le protocole : on patche le driver
+# Wayland de Godot (compositors/gnome/godot-4.7-shortcuts-inhibit.patch) et on
+# reconstruit le template. Idempotent : ne reconstruit que si nécessaire et ne
+# réapplique jamais deux fois.
+GODOT_PATCH="$SCRIPT_DIR/compositors/gnome/godot-4.7-shortcuts-inhibit.patch"
+GODOT_KSI_XML="/usr/share/wayland-protocols/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml"
+GODOT_KSI_DEST="thirdparty/wayland-protocols/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml"
+# Marqueur : le template installé vient-il réellement d'une source patchée ?
+GODOT_PATCH_STAMP="$TEMPLATES_DIR/linux_release.x86_64.shortcuts-inhibit"
+
+REBUILD_TEMPLATE=0
 if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
+    REBUILD_TEMPLATE=1
+elif [[ "$GNOME_INSTALL" -eq 1 ]] \
+    && ( [[ ! -f "$GODOT_PATCH_STAMP" ]] || ! cmp -s "$GODOT_PATCH" "$GODOT_PATCH_STAMP" ); then
+    # Session GNOME : le template doit embarquer le patch, sinon rien ne
+    # bloque les raccourcis du compositeur.
+    REBUILD_TEMPLATE=1
+fi
+
+if [[ "$REBUILD_TEMPLATE" -eq 1 ]]; then
     echo "install: building Linux Godot $GODOT_VER template (scons platform=linuxbsd target=template_release) ..."
     GODOT_SRC="$SCRIPT_DIR/build/godot-src"
     if [[ ! -d "$GODOT_SRC" ]]; then
@@ -78,10 +125,36 @@ if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
     else
         (cd "$GODOT_SRC" && git fetch --depth 1 origin tag "$GODOT_TAG" && git checkout "$GODOT_TAG")
     fi
+
+    PATCH_OK=0
+    if [[ -f "$GODOT_KSI_XML" ]]; then
+        # Copie du XML du protocole dans l'arbre vendu (dépend de
+        # wayland-protocols, déjà installé ci-dessus).
+        mkdir -p "$(dirname "$GODOT_SRC/$GODOT_KSI_DEST")"
+        cp "$GODOT_KSI_XML" "$GODOT_SRC/$GODOT_KSI_DEST"
+        PATCH_OK=1
+    else
+        echo "install: $GODOT_KSI_XML introuvable (package wayland-protocols) — template non patché." >&2
+    fi
+
+    if [[ "$PATCH_OK" -eq 1 ]]; then
+        if (cd "$GODOT_SRC" && git apply --check "$GODOT_PATCH" 2>/dev/null); then
+            (cd "$GODOT_SRC" && git apply "$GODOT_PATCH")
+        elif (cd "$GODOT_SRC" && git apply --reverse --check "$GODOT_PATCH" 2>/dev/null); then
+            echo "install: patch godot déjà appliqué dans $GODOT_SRC"
+        else
+            echo "install: conflit de patch dans $GODOT_SRC (arbre localement modifié ?)" >&2
+            exit 1
+        fi
+    fi
+
     (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release)
     mkdir -p "$TEMPLATES_DIR"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_release.x86_64"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_debug.x86_64"
+    if [[ "$PATCH_OK" -eq 1 ]]; then
+        cp "$GODOT_PATCH" "$GODOT_PATCH_STAMP"
+    fi
 else
     echo "install: Linux Godot $GODOT_VER template already present, nothing to do."
 fi
@@ -193,4 +266,30 @@ firewall_open tcp 22
 if ! systemctl is-active --quiet sshd && ! systemctl is-enabled --quiet sshd; then
     echo "install: sshd inactive — to RECEIVE files via drag & drop:"
     echo "          sudo systemctl enable --now sshd"
+fi
+
+# --- GNOME Shell extension -----------------------------------------------------
+# Ne s'installe que si une session GNOME est présente (ou --with-gnome). Usine
+# à gaz volontairement minimale : l'extension ne fait que mettre la fenêtre du
+# jeu en plein écran + focus. Le blocage réel des raccourcis (Super, Alt+Tab,
+# PrtScr…) pendant la partie est assuré par le jeu lui-même via le driver
+# Godot patché (zwp_keyboard_shortcuts_inhibit_v1), dont le template a été
+# reconstruit ci-dessus.
+GNOME_UUID="cyberrealm@cyberrealm.local"
+if [[ "$GNOME_INSTALL" -eq 1 ]] && command -v gnome-extensions >/dev/null 2>&1; then
+    GNOME_SRC="$SCRIPT_DIR/compositors/gnome/$GNOME_UUID"
+    GNOME_DST="$HOME/.local/share/gnome-shell/extensions/$GNOME_UUID"
+    echo "install: installing GNOME Shell extension $GNOME_UUID ..."
+    mkdir -p "$GNOME_DST"
+    install -m644 "$GNOME_SRC/metadata.json" "$GNOME_DST/metadata.json"
+    install -m644 "$GNOME_SRC/extension.js" "$GNOME_DST/extension.js"
+    install -m644 "$GNOME_SRC/prefs.js" "$GNOME_DST/prefs.js"
+    cp -r "$GNOME_SRC/schemas" "$GNOME_DST/schemas"
+    if command -v glib-compile-schemas >/dev/null 2>&1; then
+        glib-compile-schemas "$GNOME_DST/schemas"
+    fi
+    gnome-extensions enable "$GNOME_UUID" >/dev/null 2>&1 || true
+    echo "install: GNOME extension active after a shell restart (Alt+F2 → r, or logout)."
+else
+    echo "install: no GNOME session detected — GNOME extension and the Godot patch ignored (--with-gnome to force)."
 fi

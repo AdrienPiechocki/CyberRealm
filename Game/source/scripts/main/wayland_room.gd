@@ -52,6 +52,10 @@ var interact_mode_active := false
 # relance à la sortie. L'adresse du bus D-Bus du host est capturée AVANT que
 # launch_portals() remplace DBUS_SESSION_BUS_ADDRESS par le bus privé du jeu.
 var _host_session_bus := ""
+# Valeur d'origine de WAYLAND_DISPLAY, capturée au boot avec _host_session_bus :
+# nécessaire pour relancer l'agent polkit hôte sur le display du DESKTOP si le
+# jeu a pivoté WAYLAND_DISPLAY vers un autre compositeur.
+var _host_wayland_display := ""
 var _host_agent_stopped := false
 
 # Niveaux : on charge d'abord le level custom de l'utilisateur s'il existe
@@ -252,6 +256,10 @@ func _ready() -> void:
 	# Capturé avant launch_portals() qui remplace DBUS_SESSION_BUS_ADDRESS par
 	# le bus privé du jeu (sinon systemctl --user viserait le mauvais bus).
 	_host_session_bus = OS.get_environment("DBUS_SESSION_BUS_ADDRESS")
+	# Display Wayland d'origine du desktop (même garde-fou que ci-dessus : si le
+	# jeu pivote WAYLAND_DISPLAY, on conserve la valeur hôte pour relancer
+	# l'agent polkit GNOME sur le bon display à la sortie).
+	_host_wayland_display = OS.get_environment("WAYLAND_DISPLAY")
 
 	# Sous-systèmes, créés avant toute connexion de signal.
 	win3d = _add_manager(preload("res://scripts/windows/windows_3d.gd"), "Windows3D")
@@ -1172,15 +1180,51 @@ func _stop_host_polkit_agent() -> void:
 	# systemctl --user stop est synchrone : à son retour l'agent KDE a quitté
 	# et polkitd a libéré l'enregistrement d'agent de la session logind.
 	if _host_systemctl(PackedStringArray(["stop", "plasma-polkit-agent.service"])) != 0:
-		# Fallback si le service n'existe pas (autre distribution).
-		OS.execute("pkill", ["-f", "polkit-kde-authentication-agent-1"], [], true)
+		# Fallback si le service n'existe pas (GNOME, autre distribution) :
+		# tue les deux agents hôte trouvables par pkill.
+		OS.execute("pkill", ["-f", "polkit-kde-authentication-agent-1"], [], true) \
+			&& OS.execute("pkill", ["-f", "polkit-gnome-authentication-agent-1"], [], true)
 	_host_agent_stopped = true
 
 func _restore_host_polkit_agent() -> void:
 	if not _host_agent_stopped:
 		return
-	_host_systemctl(PackedStringArray(["start", "plasma-polkit-agent.service"]))
+	if _host_systemctl(PackedStringArray(["start", "plasma-polkit-agent.service"])) != 0:
+		# Pas de service KDE (GNOME) : relance l'agent polkit-gnome en
+		# arrière-plan sur le bus D-Bus et le display du host, pour que ses
+		# dialogues s'affichent sur le DESKTOP (pas le bus privé du jeu).
+		_restart_gnome_polkit_agent()
 	_host_agent_stopped = false
+
+# Relance l'agent polkit-gnome sur le bus D-Bus du host, en arrière-plan.
+func _restart_gnome_polkit_agent() -> void:
+	# Préfère le réglage utilisateur s'il pointe vers un binaire polkit-gnome,
+	# sinon le candidat détecté (rien à faire si aucun n'existe).
+	var agent_path: String = pause_menu.get_polkit_agent().strip_edges()
+	if agent_path.find("polkit-gnome") == -1:
+		agent_path = ""
+	if agent_path == "":
+		for candidate in POLKIT_AGENT_CANDIDATES:
+			if candidate.find("polkit-gnome") != -1 and FileAccess.file_exists(candidate):
+				agent_path = candidate
+				break
+	if agent_path == "":
+		return
+	# Bus D-Bus du host (capturé au boot) ; display Wayland hôte si le jeu l'a
+	# pivoté. On préfixe la commande pour que l'agent s'inscrive au bon endroit.
+	var env := {}
+	if not _host_session_bus.is_empty():
+		env["DBUS_SESSION_BUS_ADDRESS"] = _host_session_bus
+	if not _host_wayland_display.is_empty():
+		env["WAYLAND_DISPLAY"] = _host_wayland_display
+	if env.is_empty():
+		# Aucun env hôte à restaurer (Fallback X11, XDG_SESSION_TYPE, etc.) :
+		# lance avec l'env actuel en laissant faire.
+		OS.execute("sh", ["-c", "%s >/dev/null 2>&1 &" % agent_path], [], true)
+		return
+	var prefix := " ".join(env.keys().map(func(k): return "%s='%s'" % [k, env[k]]))
+	var cmd := "%s %s >/dev/null 2>&1 &" % [prefix, agent_path]
+	OS.execute("sh", ["-c", cmd], [], true)
 
 func _on_polkit_agent_changed(path: String) -> void:
 	if path.strip_edges() != "":
