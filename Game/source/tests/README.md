@@ -32,9 +32,9 @@ extends Node
 const Runner := preload("res://tests/test_runner.gd")
 
 func test_example() -> void:
-    var r := Runner.assert_eq(2 + 2, 4, "Basic math")
-    if r != true: return r
-    return true
+	var r := Runner.assert_eq(2 + 2, 4, "Basic math")
+	if r != true: return r
+	return true
 ```
 
 ## Exit Codes

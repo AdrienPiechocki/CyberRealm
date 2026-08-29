@@ -54,6 +54,7 @@ func _run_test_script(resource_path: String) -> void:
 			_total += 1
 			var short := resource_path.get_file() + "::" + mname
 			var result = instance.call(mname)
+			print(result)
 			if result == true:
 				_passed += 1
 				print("  ✓ " + short)

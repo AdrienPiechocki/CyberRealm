@@ -34,12 +34,24 @@ var _image_rect: TextureRect = null
 var _prev_btn: Button = null
 var _next_btn: Button = null
 var _counter_label: Label = null
+var _scroll: ScrollContainer = null
 var _captured := false
 var _nb_keys := 12
 
-# Navigation manette (d-pad / stick gauche) avec cooldown, comme GameMenu.
+# Manette : navigation pages (d-pad gauche/droite + stick X) et scroll
+# (d-pad haut/bas + sticks Y) avec cooldowns — pattern GameMenu.
 const PAD_NAV_COOLDOWN := 0.12
+const PAD_SCROLL_COOLDOWN := 0.08
+const STICK_SCROLL_SPEED := 500.0
+const STICK_SCROLL_DEADZONE := 0.25
+const STICK_NAV_DEADZONE := 0.5
+const DPAD_BUTTONS := [
+	JOY_BUTTON_DPAD_UP, JOY_BUTTON_DPAD_DOWN,
+	JOY_BUTTON_DPAD_LEFT, JOY_BUTTON_DPAD_RIGHT,
+]
+
 var _pad_nav_cooldown := 0.0
+var _pad_scroll_cooldown := 0.0
 
 func _ready() -> void:
 	visible = false
@@ -63,13 +75,13 @@ func show_tutorial() -> void:
 	_render_page()
 	visible = true
 	set_process_input(true)
-	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	# Aucun bouton focalisé : A navigue en pages (évite le double-déclenchement
 	# avec _pad_menu_activate de player.gd).
 	get_viewport().gui_release_focus()
 
 func hide_tutorial() -> void:
 	visible = false
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	set_process_input(false)
 	closed.emit()
 
@@ -144,36 +156,36 @@ func _build_pages() -> void:
 		"Your desktop lives inside a 3D world. Every window is a real Wayland \
 surface floating in the room.\n\nThis short guide shows you the menus and \
 the main commands. You can reopen it anytime from the Pause menu (Esc), \
-button Tutorial.\n\nYou can also move the mouse to look around.",
+button Tutorial.\n\nPress the Next and Previous buttons (or A and B on a gamepad) to navigate the tutorial.",
 		[]))
 	_pages.append(_page(
 		"Moving around",
 		"You control a first-person camera inside the room.",
-		[_key("forward"), _key("back"), _key("left"), _key("right"),
+		["Move: " + _key("forward") + _key("left") + _key("back") + _key("right"),
 			"Jump: " + _key("jump")],
 		12))
 	_pages.append(_page(
 		"Interacting with windows",
 		"Point at a floating window and click to interact with it (click goes \
 to the app, like a real desktop).",
-		["Click (left mouse): interact / pick",
-			"Middle mouse: toggle keyboard mode on a window"]))
+		["Click (left or right): interact",
+			"Middle click: toggle keyboard mode"]))
 	_pages.append(_page(
 		"Window shortcuts",
 		"Each window can be focused fullscreen, pinned as a picture-in-picture, \
 shared with friends or closed.",
-		[_keys("focus_window"), _keys("pin_window"), _keys("share_window"),
-			_keys("kill_window"), _keys("hide_window"), _keys("grab")],
+		["Focus: " + _keys("focus_window"), "Pin: " + _keys("pin_window"), "Share: " + _keys("share_window"),
+			"Kill: " + _keys("kill_window"), "Hide: " + _keys("hide_window"), "Grab: " + _keys("grab")],
 		13))
 	_pages.append(_page(
 		"Window menu",
 		"Open the window menu to list, preview, focus, pin, share or close the \
-open windows.\n\n(Image: the window menu, if it could be captured at startup.)",
-		[_key("window_menu")],
+open windows.\n\n(Image: the window menu)",
+		[_key("window_menu") + ": open window menu"],
 		1, "window"))
 	_pages.append(_page(
 		"Radial menu (gamepad)",
-		"On a gamepad, hold B to open the radial menu with quick actions.",
+		"On a gamepad, press B to open the radial menu with quick actions.",
 		["B (gamepad): open radial menu"],
 		2, "radial"))
 	_pages.append(_page(
@@ -183,25 +195,25 @@ open windows.\n\n(Image: the window menu, if it could be captured at startup.)",
 	_pages.append(_page(
 		"Pause menu",
 		"Press Esc to open the Pause menu: remap keybinds, startup apps, custom \
-binds, keyboard layout, polkit agent, pinned windows, LAN game and this \
-tutorial.\n\n(Image: the pause menu, if it could be captured at startup.)",
+binds, keyboard layout, polkit agent, pinned windows settings, setup LAN game and this \
+tutorial.\n\n(Image: the pause menu)",
 		[_key("pause_menu")],
 		1, "pause"))
 	_pages.append(_page(
 		"Layer surfaces & capture",
 		"You can also toggle interaction with the layer surfaces (waybar, rofi) \
-and capture the screen for OBS.",
+and capture the screen for Discord screenshare or OBS.",
 		[_key("layer_interact"),
-			"OBS: add a PipeWire source; a capture selector appears"]))
+			"Whenever you capture the screen, a capture selector appears"]))
 	_pages.append(_page(
 		"Drag & drop files",
-		"Drag files from any in-game application onto another player's avatar \
+		"Drag files from and to any in-game application. Or drop them to another player's avatar \
 to send them over the LAN (rsync, no password transmitted).",
 		[]))
 	_pages.append(_page(
 		"LAN multiplayer",
 		"From the Pause menu > LAN Game: Host a room (a PIN is shown) or Join by \
-IP with the PIN. Friends can share windows, audio and your level.",
+IP with the PIN. Friends can share windows, audio and your map.",
 		[_key("pause_menu") + " → LAN Game"]))
 	_pages.append(_page(
 		"Enjoy!",
@@ -306,6 +318,8 @@ func _build_ui() -> void:
 	vbox.add_child(_title_label)
 
 	var scroll := ScrollContainer.new()
+	scroll.name = "scroll"
+	_scroll = scroll
 	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	vbox.add_child(scroll)
@@ -371,6 +385,9 @@ func _make_btn(text: String) -> Button:
 func _render_page() -> void:
 	if _pages.is_empty():
 		return
+	# Nouvelle page : remettre le scroll en haut.
+	if _scroll != null:
+		_scroll.scroll_vertical = 0
 	var p: Dictionary = _pages[_index]
 	_title_label.text = String(p[TITLE])
 	_body_label.text = "[color=#cdd6e6]" + String(p[BODY]) + "[/color]"
@@ -426,13 +443,18 @@ func _prev_page() -> void:
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
-	# Manette : consommer sticks + d-pad (la navigation se fait en _process,
-	# comme GameMenu) pour que rien ne fuie vers le reste de la scène.
+	# Curseur : souris → visible, manette → caché.
+	if event is InputEventMouseMotion:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	elif event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	# Sticks + d-pad gérés en _process (scroll + pages) : les consommer
+	# pour que rien ne fuie vers le reste de la scène.
 	if event is InputEventJoypadMotion:
 		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventJoypadButton and event.pressed \
-			and event.button_index in [JOY_BUTTON_DPAD_LEFT, JOY_BUTTON_DPAD_RIGHT]:
+			and event.button_index in DPAD_BUTTONS:
 		get_viewport().set_input_as_handled()
 		return
 	# B : page précédente ; ferme le tuto si déjà sur la première page.
@@ -463,6 +485,34 @@ func _input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	if not visible:
 		return
+	_pad_scroll(delta)
+	_pad_nav(delta)
+
+func _pad_scroll(delta: float) -> void:
+	var scroll := _scroll
+	if scroll == null:
+		return
+	# Scroll analogique : sticks gauche/droit sur l'axe Y (le plus défléchi
+	# l'emporte), vitesse proportionnelle à la déflexion.
+	var stick := Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)
+	var stick_r := Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y)
+	if absf(stick_r) > absf(stick):
+		stick = stick_r
+	if absf(stick) > STICK_SCROLL_DEADZONE:
+		scroll.scroll_vertical += int(stick * STICK_SCROLL_SPEED * delta)
+		return
+	# D-pad haut/bas : pas discret, répété tant que maintenu.
+	if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_UP) \
+			or Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_DOWN):
+		_pad_scroll_cooldown -= delta
+		if _pad_scroll_cooldown <= 0.0:
+			var amount := -40 if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_UP) else 40
+			scroll.scroll_vertical += amount
+			_pad_scroll_cooldown = PAD_SCROLL_COOLDOWN
+	else:
+		_pad_scroll_cooldown = 0.0
+
+func _pad_nav(delta: float) -> void:
 	var dir := _poll_nav_dir()
 	if dir == 0:
 		_pad_nav_cooldown = 0.0
@@ -482,8 +532,8 @@ func _poll_nav_dir() -> int:
 	if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_RIGHT):
 		return 1
 	var lx := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
-	if lx <= -0.5:
+	if lx <= -STICK_NAV_DEADZONE:
 		return -1
-	if lx >= 0.5:
+	if lx >= STICK_NAV_DEADZONE:
 		return 1
 	return 0

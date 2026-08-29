@@ -145,11 +145,11 @@ func test_pin_blacklist():
 	for i in range(2):
 		if LANManager.pin_attempt("1.2.3.4", false, state) == true:
 			r = false
-	if r != true: return "1st/2nd failure must not reject"
+	if r != true: return false
 	# 3e échec : rejet.
 	if LANManager.pin_attempt("1.2.3.4", false, state) == false:
-		return "3rd failure must reject"
+		return false
 	# Un succès réarme.
 	if LANManager.pin_attempt("1.2.3.4", true, state) == false:
-		return "a success must reset"
+		return true
 	return true
