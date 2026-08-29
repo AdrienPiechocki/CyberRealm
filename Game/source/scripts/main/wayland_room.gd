@@ -702,9 +702,12 @@ func _process(delta: float) -> void:
 	if radial_menu.visible:
 		return
 
-	if Input.is_action_just_pressed("window_menu", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
-		layers.deactivate_layer_interact()
-		window_menu.toggle_menu()
+	if Input.is_action_just_pressed("window_menu", true) and not focus.is_active() and not layers.keyboard_busy():
+		if window_menu.visible:
+			layers.deactivate_layer_interact()
+			window_menu.hide_menu()
+		else:
+			_open_window_menu()
 
 	# Tab : bascule le mode "interaction layer" — libère la souris pour
 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
@@ -947,6 +950,17 @@ func _get_window_texture(wid: int) -> Texture2D:
 func _get_window_shared(wid: int) -> bool:
 	return win3d.is_window_shared(wid)
 
+# Ouvre le menu fenêtres et coupe les modes souris/clavier (MOUSE MODE =
+# layer_interact, KEYBOARD MODE = interact) : le menu est un overlay 2D,
+# aucune interaction ne doit fuir vers les apps pendant qu'il est affiché.
+func _open_window_menu() -> void:
+	layers.deactivate_layer_interact()
+	if interact_mode_active:
+		compositor.release_all_keys()
+		interact_mode_active = false
+		player.interact_mode_active = false
+	window_menu.show_menu()
+
 func _on_window_menu_grab(wid: int) -> void:
 	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
 	# caméra ; grab OFF → relâcher la prise, le menu reste ouvert.
@@ -998,7 +1012,7 @@ func _determine_radial_context() -> String:
 func _on_radial_action(action: String) -> void:
 	match action:
 		"window_menu":
-			window_menu.show_menu()
+			_open_window_menu()
 		"layer_interact":
 			layers.toggle_layer_interact()
 		"interact":

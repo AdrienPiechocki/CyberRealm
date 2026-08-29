@@ -37,6 +37,10 @@ var _counter_label: Label = null
 var _captured := false
 var _nb_keys := 12
 
+# Navigation manette (d-pad / stick gauche) avec cooldown, comme GameMenu.
+const PAD_NAV_COOLDOWN := 0.12
+var _pad_nav_cooldown := 0.0
+
 func _ready() -> void:
 	visible = false
 	set_process_input(visible)
@@ -60,6 +64,9 @@ func show_tutorial() -> void:
 	visible = true
 	set_process_input(true)
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Aucun bouton focalisé : A navigue en pages (évite le double-déclenchement
+	# avec _pad_menu_activate de player.gd).
+	get_viewport().gui_release_focus()
 
 func hide_tutorial() -> void:
 	visible = false
@@ -356,6 +363,7 @@ func _build_ui() -> void:
 func _make_btn(text: String) -> Button:
 	var btn := Button.new()
 	btn.text = text
+	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = Vector2(130, 40)
 	btn.add_theme_font_size_override("font_size", 15)
 	return btn
@@ -418,6 +426,23 @@ func _prev_page() -> void:
 func _input(event: InputEvent) -> void:
 	if not visible:
 		return
+	# Manette : consommer sticks + d-pad (la navigation se fait en _process,
+	# comme GameMenu) pour que rien ne fuie vers le reste de la scène.
+	if event is InputEventJoypadMotion:
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [JOY_BUTTON_DPAD_LEFT, JOY_BUTTON_DPAD_RIGHT]:
+		get_viewport().set_input_as_handled()
+		return
+	# B : page précédente ; ferme le tuto si déjà sur la première page.
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B:
+		get_viewport().set_input_as_handled()
+		if _index <= 0:
+			hide_tutorial()
+		else:
+			_prev_page()
+		return
 	if event.is_action_pressed("ui_cancel"):
 		get_viewport().set_input_as_handled()
 		hide_tutorial()
@@ -434,3 +459,31 @@ func _input(event: InputEvent) -> void:
 				_prev_page()
 			else:
 				_next_page()
+
+func _process(delta: float) -> void:
+	if not visible:
+		return
+	var dir := _poll_nav_dir()
+	if dir == 0:
+		_pad_nav_cooldown = 0.0
+		return
+	_pad_nav_cooldown -= delta
+	if _pad_nav_cooldown > 0.0:
+		return
+	_pad_nav_cooldown = PAD_NAV_COOLDOWN
+	if dir < 0:
+		_prev_page()
+	else:
+		_next_page()
+
+func _poll_nav_dir() -> int:
+	if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_LEFT):
+		return -1
+	if Input.is_joy_button_pressed(0, JOY_BUTTON_DPAD_RIGHT):
+		return 1
+	var lx := Input.get_joy_axis(0, JOY_AXIS_LEFT_X)
+	if lx <= -0.5:
+		return -1
+	if lx >= 0.5:
+		return 1
+	return 0
