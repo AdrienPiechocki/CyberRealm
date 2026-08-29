@@ -1,0 +1,7 @@
+{
+    "uuid": "cyberrealm@cyberrealm.local",
+    "name": "CyberRealm",
+    "description": "GNOME Shell integration for the CyberRealm game: detect the game window, put it fullscreen and focus it on launch.",
+    "shell-version": [ "45", "46", "47", "48" ],
+    "settings-schema": "org.gnome.shell.extensions.cyberrealm"
+}

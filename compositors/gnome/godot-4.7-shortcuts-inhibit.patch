@@ -1,0 +1,165 @@
+diff --git a/platform/linuxbsd/wayland/SCsub b/platform/linuxbsd/wayland/SCsub
+index e8531a1..6f90e28 100644
+--- a/platform/linuxbsd/wayland/SCsub
++++ b/platform/linuxbsd/wayland/SCsub
+@@ -77,6 +77,10 @@ generated_sources = [
+     generate_from_xml(
+         "idle_inhibit", "#thirdparty/wayland-protocols/unstable/idle-inhibit/idle-inhibit-unstable-v1.xml"
+     ),
++    generate_from_xml(
++        "keyboard_shortcuts_inhibit",
++        "#thirdparty/wayland-protocols/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml",
++    ),
+     generate_from_xml(
+         "pointer_constraints",
+         "#thirdparty/wayland-protocols/unstable/pointer-constraints/pointer-constraints-unstable-v1.xml",
+diff --git a/platform/linuxbsd/wayland/wayland_thread.cpp b/platform/linuxbsd/wayland/wayland_thread.cpp
+index 08f5400..6bfd946 100644
+--- a/platform/linuxbsd/wayland/wayland_thread.cpp
++++ b/platform/linuxbsd/wayland/wayland_thread.cpp
+@@ -647,6 +647,10 @@ void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_re
+ 			registry->wayland_thread->_set_current_seat(wl_seat);
+ 		}
+ 
++		// Un nouvel wl_seat est disponible : les inhibiteurs de raccourcis qui
++		// attendaient un seat peuvent enfin être créés.
++		registry->wayland_thread->window_setup_keyboard_shortcuts_inhibitors();
++
+ 		return;
+ 	}
+ 
+@@ -762,6 +766,19 @@ void WaylandThread::_wl_registry_on_global(void *data, struct wl_registry *wl_re
+ 		return;
+ 	}
+ 
++	if (strcmp(interface, zwp_keyboard_shortcuts_inhibit_manager_v1_interface.name) == 0) {
++		registry->wp_keyboard_shortcuts_inhibit_manager = (struct zwp_keyboard_shortcuts_inhibit_manager_v1 *)wl_registry_bind(wl_registry, name, &zwp_keyboard_shortcuts_inhibit_manager_v1_interface, 1);
++		registry->wp_keyboard_shortcuts_inhibit_manager_name = name;
++
++		// Ce protocole bloque les raccourcis du compositeur pendant que la
++		// surface a le focus clavier (zwp_keyboard_shortcuts_inhibitor_v1).
++		// Le manager peut arriver après les fenêtres : on (ré)essaie la
++		// création des inhibiteurs maintenant.
++		registry->wayland_thread->window_setup_keyboard_shortcuts_inhibitors();
++
++		return;
++	}
++
+ 	if (strcmp(interface, zwp_tablet_manager_v2_interface.name) == 0) {
+ 		registry->wp_tablet_manager = (struct zwp_tablet_manager_v2 *)wl_registry_bind(wl_registry, name, &zwp_tablet_manager_v2_interface, 1);
+ 		registry->wp_tablet_manager_name = name;
+@@ -1154,6 +1171,17 @@ void WaylandThread::_wl_registry_on_global_remove(void *data, struct wl_registry
+ 		return;
+ 	}
+ 
++	if (name == registry->wp_keyboard_shortcuts_inhibit_manager_name) {
++		if (registry->wp_keyboard_shortcuts_inhibit_manager) {
++			zwp_keyboard_shortcuts_inhibit_manager_v1_destroy(registry->wp_keyboard_shortcuts_inhibit_manager);
++			registry->wp_keyboard_shortcuts_inhibit_manager = nullptr;
++		}
++
++		registry->wp_keyboard_shortcuts_inhibit_manager_name = 0;
++
++		return;
++	}
++
+ 	if (name == registry->wp_tablet_manager_name) {
+ 		if (registry->wp_tablet_manager) {
+ 			zwp_tablet_manager_v2_destroy(registry->wp_tablet_manager);
+@@ -4437,6 +4465,13 @@ void WaylandThread::window_create(DisplayServerEnums::WindowID p_window_id, cons
+ 		zxdg_exported_v1_add_listener(ws.xdg_exported_v1, &xdg_exported_v1_listener, &ws);
+ 	}
+ 
++	// L'inhibiteur de raccourcis (zwp_keyboard_shortcuts_inhibit_v1) : une fois
++	// créé sur la surface de la fenêtre, le compositeur bloque ses propres
++	// raccourcis tant que cette surface a le focus clavier (ex. GNOME/Mutter,
++	// utilisé par le jeu pour empêcher Super/Alt+Tab/PrtScr de gêner pendant la
++	// partie). Passe en no-op si le compositeur n'expose pas le protocole.
++	window_state_setup_keyboard_shortcuts_inhibitor(ws);
++
+ 	wl_surface_commit(ws.wl_surface);
+ }
+ 
+@@ -4535,6 +4570,11 @@ void WaylandThread::window_destroy(DisplayServerEnums::WindowID p_window_id) {
+ 		zxdg_toplevel_decoration_v1_destroy(ws.xdg_toplevel_decoration);
+ 	}
+ 
++	if (ws.wp_keyboard_shortcuts_inhibitor) {
++		zwp_keyboard_shortcuts_inhibitor_v1_destroy(ws.wp_keyboard_shortcuts_inhibitor);
++		ws.wp_keyboard_shortcuts_inhibitor = nullptr;
++	}
++
+ 	if (ws.xdg_toplevel) {
+ 		xdg_toplevel_destroy(ws.xdg_toplevel);
+ 	}
+@@ -5266,6 +5306,31 @@ bool WaylandThread::window_get_idle_inhibition(DisplayServerEnums::WindowID p_wi
+ 	return ws.wp_idle_inhibitor != nullptr;
+ }
+ 
++void WaylandThread::window_state_setup_keyboard_shortcuts_inhibitor(WindowState &p_ws) {
++	// No-op silencieux si le compositeur n'expose pas le protocole ou si aucun
++	// seat n'est encore disponible : l'appelant (création de fenêtre, arrivée
++	// du manager global ou d'un wl_seat) retentera plus tard.
++	if (p_ws.wp_keyboard_shortcuts_inhibitor || !registry.wp_keyboard_shortcuts_inhibit_manager || registry.wl_seats.is_empty()) {
++		return;
++	}
++	ERR_FAIL_COND(p_ws.wl_surface == nullptr);
++
++	struct wl_seat *wl_seat = registry.wl_seats.front()->get();
++	p_ws.wp_keyboard_shortcuts_inhibitor = zwp_keyboard_shortcuts_inhibit_manager_v1_inhibit_shortcuts(registry.wp_keyboard_shortcuts_inhibit_manager, p_ws.wl_surface, wl_seat);
++
++	// Le compositeur active/désactive l'inhibiteur automatiquement quand la
++	// surface gagne ou perd le focus clavier (événements active/inactive
++	// purement informatifs) : rien d'autre à faire côté client.
++}
++
++void WaylandThread::window_setup_keyboard_shortcuts_inhibitors() {
++	// (Ré)essaie la création d'un inhibiteur pour toutes les fenêtres existantes
++	// (appelé quand le manager global arrive ou qu'un wl_seat est ajouté).
++	for (KeyValue<DisplayServerEnums::WindowID, WindowState> &E : windows) {
++		window_state_setup_keyboard_shortcuts_inhibitor(E.value);
++	}
++}
++
+ void WaylandThread::window_set_color_profile(DisplayServerEnums::WindowID p_window_id, ColorProfile p_profile) {
+ 	ERR_FAIL_COND(!windows.has(p_window_id));
+ 	const WindowState &ws = windows[p_window_id];
+diff --git a/platform/linuxbsd/wayland/wayland_thread.h b/platform/linuxbsd/wayland/wayland_thread.h
+index 25f8e67..ec8b1b7 100644
+--- a/platform/linuxbsd/wayland/wayland_thread.h
++++ b/platform/linuxbsd/wayland/wayland_thread.h
+@@ -51,6 +51,7 @@
+ 
+ // These must go after the Wayland client include to work properly.
+ #include "wayland/protocol/idle_inhibit.gen.h"
++#include "wayland/protocol/keyboard_shortcuts_inhibit.gen.h"
+ #include "wayland/protocol/primary_selection.gen.h"
+ 
+ // These protocol headers name wl_pointer method arguments as `pointer`,
+@@ -268,6 +269,9 @@ public:
+ 		struct zwp_idle_inhibit_manager_v1 *wp_idle_inhibit_manager = nullptr;
+ 		uint32_t wp_idle_inhibit_manager_name = 0;
+ 
++		struct zwp_keyboard_shortcuts_inhibit_manager_v1 *wp_keyboard_shortcuts_inhibit_manager = nullptr;
++		uint32_t wp_keyboard_shortcuts_inhibit_manager_name = 0;
++
+ 		struct zwp_tablet_manager_v2 *wp_tablet_manager = nullptr;
+ 		uint32_t wp_tablet_manager_name = 0;
+ 
+@@ -368,6 +372,7 @@ public:
+ 		struct zxdg_toplevel_decoration_v1 *xdg_toplevel_decoration = nullptr;
+ 
+ 		struct zwp_idle_inhibitor_v1 *wp_idle_inhibitor = nullptr;
++		struct zwp_keyboard_shortcuts_inhibitor_v1 *wp_keyboard_shortcuts_inhibitor = nullptr;
+ 
+ #ifdef LIBDECOR_ENABLED
+ 		// If this is null the xdg_* variables must be set and vice-versa. This way we
+@@ -1322,6 +1327,8 @@ public:
+ 	// Optional - require idle_inhibit_unstable_v1
+ 	void window_set_idle_inhibition(DisplayServerEnums::WindowID p_window_id, bool p_enable);
+ 	bool window_get_idle_inhibition(DisplayServerEnums::WindowID p_window_id) const;
++	void window_state_setup_keyboard_shortcuts_inhibitor(WindowState &p_ws);
++	void window_setup_keyboard_shortcuts_inhibitors();
+ 
+ 	// Optional - require wp_color_management_v1
+ 	void window_set_color_profile(DisplayServerEnums::WindowID p_window_id, ColorProfile p_profile);

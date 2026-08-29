@@ -61,6 +61,16 @@ Vulkan DMA-BUF import**.
   name & color, avatar picker, LAN discovery with a single **Apply** button).
 - **KWin integration** — an optional KWin script fullscreens the game when
   launched from Plasma and blocks all KDE global shortcuts while it has focus.
+- **GNOME Shell integration** — the same fullscreen/focus helper ships as a
+  GNOME Shell extension (45–48). Because a GNOME extension cannot bind
+  `zwp_keyboard_shortcuts_inhibit_v1` on the game's behalf, blocking Super,
+  Alt+Tab, PrtScr… during play is done by the game itself: the Wayland driver
+  of the exported Godot template is patched
+  (`compositors/gnome/godot-4.7-shortcuts-inhibit.patch`) to expose the
+  keyboard-shortcuts-inhibit protocol and request it on every window the game
+  creates. The polkit agent of the host session is stopped at launch and
+  restarted (or relaunched) on exit so the game can take over the whole
+  desktop, mirroring the KWin behavior.
 
 ### LAN multiplayer
 
@@ -172,6 +182,10 @@ transfer.
 │   ├── kwin/             KWin script (fullscreen + block global shortcuts),
 │   │                     the `cyberrealm-launch` app launcher wrapper and the
 │   │                     `cyberrealm-run` game launcher (systemd scope cleanup)
+│   ├── gnome/            GNOME Shell extension (fullscreen + focus) and the
+│   │                     Godot Wayland driver patch adding
+│   │                     zwp_keyboard_shortcuts_inhibit_v1 so the game blocks
+│   │                     the composite shortcuts while it has keyboard focus
 │   └── protocols/        vendored/protocol-generated headers
 ├── godot-cpp/            godot-cpp dependency (built via SCons)
 ├── install.sh            one-shot build & install (Arch Linux)
@@ -194,7 +208,7 @@ transfer.
 - `openssh` + `rsync` on **every** machine playing (drag & drop file sharing
   over a throwaway SSH keypair), and an enabled `sshd` on machines that want
   to *receive* files (`systemctl enable --now sshd`)
-- A running Wayland session (e.g. KDE/Plasma) to launch the game from
+- A running Wayland session (e.g. KDE/Plasma or GNOME) to launch the game from
 
 ## Build & install
 
@@ -210,10 +224,16 @@ cd CyberRealm
 2. Clones `godot-cpp` and builds the GDExtension (`scons target=template_debug`
    and `template_release`).
 3. Clones and patches `xdg-desktop-portal-wlr` (v0.8.2) into `build/portal`.
-4. Exports the Godot project to `Game/build/CyberRealm.x86_64`.
-5. Installs the KWin script, the `cyberrealm-launch` wrapper, and a
-   `.desktop` launcher.
-6. Opens the firewall for LAN multiplayer (`ufw allow 7777/udp` and
+4. Builds the Linux Godot export template from source. If a GNOME session is
+   detected (or `--with-gnome` is passed), it first applies
+   `compositors/gnome/godot-4.7-shortcuts-inhibit.patch` (keyboard-shortcuts
+   inhibition for the Wayland driver) and stores a checksum stamp next to the
+   template so a later patch change triggers a rebuild — idempotent.
+5. Exports the Godot project to `Game/build/CyberRealm.x86_64`.
+6. Installs the KWin script, the `cyberrealm-launch` wrapper, and a
+   `.desktop` launcher. On GNOME it additionally installs and enables the
+   `cyberrealm@cyberrealm.local` Shell extension (fullscreen + focus).
+7. Opens the firewall for LAN multiplayer (`ufw allow 7777/udp` and
    `9999/udp`) and for file sharing (`22/tcp`), then reminds you to enable
    `sshd` if you want to receive files by drag & drop.
 
@@ -363,7 +383,8 @@ choice is fed back to the portal and OBS starts streaming the game view.
 ## Notes & limitations
 
 - The project currently targets a Linux Wayland environment (KDE Plasma was the
-  reference session); the embedded compositor requires wlroots 0.19.
+  reference session, GNOME Shell is supported); the embedded compositor
+  requires wlroots 0.19.
 - The GDExtension must be rebuilt if your wlroots version differs (see the
   `pkg-config` line in `SConstruct`).
 - LAN multiplayer is local-network only (no NAT traversal / internet play).

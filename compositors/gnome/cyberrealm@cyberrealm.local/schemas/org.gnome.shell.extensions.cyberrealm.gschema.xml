@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.cyberrealm"
+          path="/org/gnome/shell/extensions/cyberrealm/">
+    <key name="fullscreen-on-launch" type="b">
+      <default>true</default>
+      <summary>Go fullscreen when the game launches</summary>
+      <description>Whether the CyberRealm game window should be shown fullscreen and focused as soon as it appears.</description>
+    </key>
+  </schema>
+</schemalist>
