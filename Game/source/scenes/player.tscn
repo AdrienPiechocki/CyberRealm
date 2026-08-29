@@ -1,13 +1,13 @@
 [gd_scene format=3 uid="uid://dl5med4hn5t14"]
 
-[ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player.gd" id="1_3vyb7"]
-[ext_resource type="Script" uid="uid://ce843jf4p7swo" path="res://scripts/fps.gd" id="2_qlg0r"]
-[ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/window_menu.gd" id="4_window_menu"]
-[ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/pause_menu.gd" id="5_pause_menu"]
-[ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/capture_selector.gd" id="6_capture_selector"]
-[ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/radial_menu.gd" id="7_radial_menu"]
-[ext_resource type="Script" uid="uid://c0rashg3vxm4k" path="res://scripts/virtual_keyboard.gd" id="8_virtual_keyboard"]
-[ext_resource type="Script" path="res://scripts/tutorial.gd" id="9_tutorial"]
+[ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player/player.gd" id="1_3vyb7"]
+[ext_resource type="Script" uid="uid://ce843jf4p7swo" path="res://scripts/ui/fps.gd" id="2_qlg0r"]
+[ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/ui/window_menu.gd" id="4_window_menu"]
+[ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/ui/pause_menu.gd" id="5_pause_menu"]
+[ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/ui/capture_selector.gd" id="6_capture_selector"]
+[ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/ui/radial_menu.gd" id="7_radial_menu"]
+[ext_resource type="Script" uid="uid://c0rashg3vxm4k" path="res://scripts/ui/virtual_keyboard.gd" id="8_virtual_keyboard"]
+[ext_resource type="Script" path="res://scripts/ui/tutorial.gd" id="9_tutorial"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 

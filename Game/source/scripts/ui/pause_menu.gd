@@ -17,7 +17,7 @@ signal lan_color_changed(color: Color)
 signal lan_avatar_changed(path: String)
 signal lan_name_changed(name: String)
 
-const LanManagerScript := preload("res://scripts/lan_manager.gd")
+const LanManagerScript := preload("res://scripts/network/lan_manager.gd")
 
 const SETTINGS_PATH := "user://settings.json"
 
