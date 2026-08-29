@@ -1,10 +1,10 @@
 /*
  * CyberRealm — préférences de l'extension GNOME Shell
  *
- * Fenêtre de préférences compatible GNOME 45-48. Adw (libadwaita) est présent
+ * Fenêtre de préférences compatible GNOME 45-50. Adw (libadwaita) est présent
  * sur toute la plage visée (libadwaita est obligatoire depuis GNOME 42), donc
  * un simple Adw.PreferencesGroup + Adw.SwitchRow suffit et est la voie la plus
- * robuste entre 45 et 48.
+ * robuste entre 45 et 50.
  */
 
 import Adw from 'gi://Adw';
