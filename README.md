@@ -71,6 +71,10 @@ Vulkan DMA-BUF import**.
   creates. The polkit agent of the host session is stopped at launch and
   restarted (or relaunched) on exit so the game can take over the whole
   desktop, mirroring the KWin behavior.
+- **Hyprland integration** — a Lua window rule
+  (`compositors/hyprland/cyberrealm.lua`) reproduces the same fullscreen/focus
+  behavior on Hyprland via `hl.window_rule` (`fullscreen` + `stay_focused`).
+  Global shortcuts are not blocked host-side, mirroring the GNOME/KWin tradeoff.
 
 ### LAN multiplayer
 
@@ -186,6 +190,8 @@ transfer.
 │   │                     Godot Wayland driver patch adding
 │   │                     zwp_keyboard_shortcuts_inhibit_v1 so the game blocks
 │   │                     the composite shortcuts while it has keyboard focus
+│   ├── hyprland/         Hyprland Lua window rule (fullscreen + focus),
+│   │                     mirroring the GNOME/KWin behavior
 │   └── protocols/        vendored/protocol-generated headers
 ├── godot-cpp/            godot-cpp dependency (built via SCons)
 ├── install.sh            one-shot build & install (Arch Linux)
@@ -232,7 +238,10 @@ cd CyberRealm
 5. Exports the Godot project to `Game/build/CyberRealm.x86_64`.
 6. Installs the KWin script, the `cyberrealm-launch` wrapper, and a
    `.desktop` launcher. On GNOME it additionally installs and enables the
-   `cyberrealm@cyberrealm.local` Shell extension (fullscreen + focus).
+   `cyberrealm@cyberrealm.local` Shell extension (fullscreen + focus). On
+   Hyprland it copies `compositors/hyprland/cyberrealm.lua` into
+   `~/.config/hypr/` and appends `require("cyberrealm")` to
+   `~/.config/hypr/hyprland.lua` only if it is not already present.
 7. Opens the firewall for LAN multiplayer (`ufw allow 7777/udp` and
    `9999/udp`) and for file sharing (`22/tcp`), then reminds you to enable
    `sshd` if you want to receive files by drag & drop.

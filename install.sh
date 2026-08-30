@@ -293,3 +293,30 @@ if [[ "$GNOME_INSTALL" -eq 1 ]] && command -v gnome-extensions >/dev/null 2>&1; 
 else
     echo "install: no GNOME session detected — GNOME extension and the Godot patch ignored (--with-gnome to force)."
 fi
+
+# --- Hyprland (config Lua) ---------------------------------------------------
+# La règle de fenêtre (compositors/hyprland/cyberrealm.lua) reproduit le plein
+# écran + focus permanent de l'extension GNOME / du script KWin. On la copie
+# dans ~/.config/hypr puis, si elle n'y est pas déjà, on ajoute
+# require("cyberrealm") à la config. Idempotent : ne modifie hyprland.lua que
+# si l'include manque.
+HYPR_RULE="$SCRIPT_DIR/compositors/hyprland/cyberrealm.lua"
+HYPR_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/hypr"
+HYPR_CONFIG="$HYPR_DIR/hyprland.lua"
+if [[ -f "$HYPR_CONFIG" ]]; then
+    install -Dm644 "$HYPR_RULE" "$HYPR_DIR/cyberrealm.lua"
+    if grep -q 'require("cyberrealm")' "$HYPR_CONFIG"; then
+        echo "install: Hyprland — require(\"cyberrealm\") déjà présent dans hyprland.lua."
+    else
+        printf '\nrequire("cyberrealm")\n' >> "$HYPR_CONFIG"
+        echo "install: Hyprland — require(\"cyberrealm\") ajouté à hyprland.lua."
+    fi
+    # Rechargement non bloquant si une session Hyprland tourne.
+    if hyprctl reload >/dev/null 2>&1; then
+        echo "install: Hyprland — configuration rechargée."
+    fi
+else
+    # Aucune config : rien à modifier (Hyprland génère hyprland.lua au premier
+    # démarrage ; relancer install.sh ensuite pour activer la règle).
+    echo "install: pas de config Hyprland ($HYPR_CONFIG) — la règle cyberrealm ne s'active qu'après la première génération de la config."
+fi
