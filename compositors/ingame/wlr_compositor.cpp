@@ -406,7 +406,7 @@ WlrCompositor::~WlrCompositor() {
     }
 
     // Nettoyer le fichier d'adresse D-Bus utilisé par les apps lancées dans
-    // le jeu (cyberrealm-launch, compositors/kwin/cyberrealm-launch)
+    // le jeu (cyberrealm-launch, compositors/cyberrealm-launch)
     {
         const char *rt = getenv("XDG_RUNTIME_DIR");
         if (rt) {
@@ -2014,7 +2014,7 @@ void WlrCompositor::start_private_dbus() {
             dbus_daemon_pid = pid;
 
             // Écrire l'adresse du bus dans un fichier pour que
-            // cyberrealm-launch (compositors/kwin/cyberrealm-launch) la
+            // cyberrealm-launch (compositors/cyberrealm-launch) la
             // propage aux apps lancées depuis Plasma.
             // Sans ça, les apps héritent du bus D-Bus système (KDE) et
             // ne trouvent pas les portails CyberRealm → OBS ne voit pas

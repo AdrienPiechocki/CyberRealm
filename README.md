@@ -183,9 +183,11 @@ transfer.
 │   │   ├── audio_share.*         OPUS capture of shared windows (PipeWire)
 │   │   └── register_types.cpp    GDExtension entry point
 │   ├── portal-wlr/       patches for xdg-desktop-portal-wlr (window capture)
-│   ├── kwin/             KWin script (fullscreen + block global shortcuts),
-│   │                     the `cyberrealm-launch` app launcher wrapper and the
-│   │                     `cyberrealm-run` game launcher (systemd scope cleanup)
+│   ├── cyberrealm-*      host-independent launchers: `cyberrealm-launch`
+│   │                     (launch an app inside the game's compositor),
+│   │                     `cyberrealm-run` (game launcher, systemd scope
+│   │                     cleanup) and `cyberrealm-exec` (runtime IPC commands)
+│   ├── kwin/             KWin script (fullscreen + block global shortcuts)
 │   ├── gnome/            GNOME Shell extension (fullscreen + focus) and the
 │   │                     Godot Wayland driver patch adding
 │   │                     zwp_keyboard_shortcuts_inhibit_v1 so the game blocks
@@ -236,8 +238,9 @@ cd CyberRealm
    inhibition for the Wayland driver) and stores a checksum stamp next to the
    template so a later patch change triggers a rebuild — idempotent.
 5. Exports the Godot project to `Game/build/CyberRealm.x86_64`.
-6. Installs the KWin script, the `cyberrealm-launch` wrapper, and a
-   `.desktop` launcher. On GNOME it additionally installs and enables the
+6. Installs the KWin script and the `cyberrealm-launch`, `cyberrealm-run` and
+   `cyberrealm-exec` launchers (`compositors/`), plus a `.desktop` launcher.
+   On GNOME it additionally installs and enables the
    `cyberrealm@cyberrealm.local` Shell extension (fullscreen + focus). On
    Hyprland it copies `compositors/hyprland/cyberrealm.lua` into
    `~/.config/hypr/` and appends `require("cyberrealm")` to

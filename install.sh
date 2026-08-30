@@ -201,19 +201,19 @@ qdbus6 org.kde.KWin /KWin reconfigure 2>/dev/null || true
 # cyberrealm-launch <cmd>: redirects a command to the game's compositor
 # (cyberrealm-0 socket) while it is active. Use it in .desktop entries to
 # launch apps inside the 3D quads from Plasma.
-install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-launch" "$HOME/.local/bin/cyberrealm-launch"
+install -Dm755 "$SCRIPT_DIR/compositors/cyberrealm-launch" "$HOME/.local/bin/cyberrealm-launch"
 
 # --- Game launcher (cyberrealm-run) -----------------------------------------
 # Launches the game in a systemd scope (cgroup) then kills the whole cgroup
 # when the game exits (crash, SIGKILL, normal close...): no daemon launched
 # inside the game survives its shutdown. Also installs the .desktop on top.
-install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-run" "$HOME/.local/bin/cyberrealm-run"
+install -Dm755 "$SCRIPT_DIR/compositors/cyberrealm-run" "$HOME/.local/bin/cyberrealm-run"
 
 # --- Runtime commands (cyberrealm-exec) -------------------------------------
 # Executes commands on the game at runtime via file IPC.
 # Usage: cyberrealm-exec launch firefox
 #        cyberrealm-exec windows
-install -Dm755 "$SCRIPT_DIR/compositors/kwin/cyberrealm-exec" "$HOME/.local/bin/cyberrealm-exec"
+install -Dm755 "$SCRIPT_DIR/compositors/cyberrealm-exec" "$HOME/.local/bin/cyberrealm-exec"
 
 # --- Game .desktop launcher ------------------------------------------------
 mkdir -p "$HOME/.local/share/applications"
