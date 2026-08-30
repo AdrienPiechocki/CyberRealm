@@ -28,7 +28,7 @@ fi
 
 if [[ -z "$GAME" ]]; then
     SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
-    GAME="$SCRIPT_DIR/../../Game/build/CyberRealm.x86_64"
+    GAME="$SCRIPT_DIR/../Game/build/CyberRealm.x86_64"
 fi
 
 if [[ ! -x "$GAME" ]]; then
