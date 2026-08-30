@@ -306,17 +306,17 @@ HYPR_CONFIG="$HYPR_DIR/hyprland.lua"
 if [[ -f "$HYPR_CONFIG" ]]; then
     install -Dm644 "$HYPR_RULE" "$HYPR_DIR/cyberrealm.lua"
     if grep -q 'require("cyberrealm")' "$HYPR_CONFIG"; then
-        echo "install: Hyprland — require(\"cyberrealm\") déjà présent dans hyprland.lua."
+        echo "install: Hyprland — require(\"cyberrealm\") already in hyprland.lua."
     else
         printf '\nrequire("cyberrealm")\n' >> "$HYPR_CONFIG"
-        echo "install: Hyprland — require(\"cyberrealm\") ajouté à hyprland.lua."
+        echo "install: Hyprland — require(\"cyberrealm\") added to hyprland.lua."
     fi
     # Rechargement non bloquant si une session Hyprland tourne.
     if hyprctl reload >/dev/null 2>&1; then
-        echo "install: Hyprland — configuration rechargée."
+        echo "install: Hyprland — configuration reloaded."
     fi
 else
     # Aucune config : rien à modifier (Hyprland génère hyprland.lua au premier
     # démarrage ; relancer install.sh ensuite pour activer la règle).
-    echo "install: pas de config Hyprland ($HYPR_CONFIG) — la règle cyberrealm ne s'active qu'après la première génération de la config."
+    echo "install: no Hyprland config found ($HYPR_CONFIG)."
 fi
