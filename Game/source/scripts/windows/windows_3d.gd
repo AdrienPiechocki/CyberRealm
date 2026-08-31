@@ -74,6 +74,30 @@ void fragment() {
 }
 """
 
+# Variante sans depth test : utilisée quand l'effet "find" est actif pour
+# que le contenu de la fenêtre reste visible même derrière d'autres quads.
+const WAYLAND_SHADER_NO_DEPTH_CODE = """
+shader_type spatial;
+render_mode unshaded, blend_mix, cull_disabled, depth_test_disabled;
+
+uniform sampler2D window_texture : filter_linear_mipmap;
+uniform vec2 content_size = vec2(0.0, 0.0);
+
+void fragment() {
+	vec2 ts = vec2(textureSize(window_texture, 0));
+	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
+		? UV * content_size / ts : UV;
+	vec4 tex = texture(window_texture, mapped_uv);
+	if (tex.a > 0.01) {
+		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
+		ALBEDO = pow(unmultiplied, vec3(2.2));
+		ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
+	} else {
+		discard;
+	}
+}
+"""
+
 var compositor: WlrCompositor
 var player: Node3D
 
@@ -93,6 +117,7 @@ var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_p
 # (uniformes window_texture/content_size), seule la ressource Shader est
 # partagée.
 var _shared_window_shader: Shader = null
+var _shared_window_shader_no_depth: Shader = null
 
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 
@@ -136,6 +161,12 @@ func _window_shader() -> Shader:
 		_shared_window_shader = Shader.new()
 		_shared_window_shader.code = WAYLAND_SHADER_CODE
 	return _shared_window_shader
+
+func _window_shader_no_depth() -> Shader:
+	if _shared_window_shader_no_depth == null:
+		_shared_window_shader_no_depth = Shader.new()
+		_shared_window_shader_no_depth.code = WAYLAND_SHADER_NO_DEPTH_CODE
+	return _shared_window_shader_no_depth
 
 func next_spawn_pos() -> Vector3:
 	var camera: Camera3D = _camera()
