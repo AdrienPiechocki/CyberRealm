@@ -10,7 +10,8 @@ var windows: Node3D
 var xray_windows: Dictionary = {} # window_id (int) -> bool
 var xray_time: float = 0.0
 var xray_overlay: StandardMaterial3D # material pour l'effet X-RAY (no_depth_test)
-var flash_windows: Dictionary = {} # window_id (int) -> {mat, elapsed} — flash blanc à l'ouverture
+var flash_windows: Dictionary = {} # window_id (int) -> {mat, elapsed, xray: bool} — flash blanc à l'ouverture
+var _original_shaders: Dictionary = {} # window_id (int) -> Shader (shader d'origine du material_override)
 
 func setup(windows_ref: Node3D) -> void:
 	windows = windows_ref
@@ -28,18 +29,36 @@ func on_window_created(id: int, quad: MeshInstance3D) -> void:
 
 func on_window_unmapped(id: int) -> void:
 	xray_windows.erase(id)
+	_original_shaders.erase(id)
 	_end_flash(id)
 
 # Bascule le highlight X-RAY d'une fenêtre (action FIND du menu fenêtres).
+# Quand l'effet est actif, le shader de base est remplacé par une variante
+# sans depth test pour que le contenu reste visible même derrière d'autres
+# fenêtres (pas seulement le highlight rouge).
 func toggle_find(id: int) -> void:
 	xray_windows[id] = not xray_windows.get(id, false)
 	var active: bool = xray_windows.get(id, false)
 	if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
+		var quad: MeshInstance3D = windows.quads[id]
 		if not active:
-			windows.quads[id].material_overlay = null
+			_end_flash(id)
+			quad.material_overlay = null
+			# Restaurer le shader d'origine du material de base.
+			if _original_shaders.has(id):
+				var mat: ShaderMaterial = quad.material_override
+				mat.shader = _original_shaders[id]
+				_original_shaders.erase(id)
 		else:
 			set_quad_visible(id, true)
-			windows.quads[id].material_overlay = xray_overlay
+			quad.material_overlay = xray_overlay
+			# Passer le material de base en mode sans depth test pour que
+			# le contenu reste visible même quand une autre fenêtre est
+			# devant.
+			var mat: ShaderMaterial = quad.material_override
+			if not _original_shaders.has(id):
+				_original_shaders[id] = mat.shader
+			mat.shader = windows._window_shader_no_depth()
 
 func set_quad_visible(id: int, visible: bool) -> void:
 	if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
@@ -76,7 +95,21 @@ func _start_flash(id: int, quad: MeshInstance3D) -> void:
 	mat.render_priority = 10
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
 	quad.material_overlay = mat
-	flash_windows[id] = {"mat": mat, "elapsed": 0.0}
+	flash_windows[id] = {"mat": mat, "elapsed": 0.0, "xray": false}
+
+# Flash rouge quand l'effet "find" est activé. Le flash joue d'abord,
+# puis le material overlay xray_overlay est appliqué en persistant.
+func _start_xray_flash(id: int, quad: MeshInstance3D) -> void:
+	_end_flash(id)
+	var mat := StandardMaterial3D.new()
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = Color(1.0, 0.15, 0.15, 0.9)
+	mat.no_depth_test = true
+	mat.render_priority = 10
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	quad.material_overlay = mat
+	flash_windows[id] = {"mat": mat, "elapsed": 0.0, "xray": true}
 
 func _end_flash(id: int) -> void:
 	if not flash_windows.has(id):
@@ -93,7 +126,13 @@ func _update_flashes(delta: float) -> void:
 		entry["elapsed"] += delta
 		var t: float = entry["elapsed"] / FLASH_DURATION
 		if t >= 1.0:
+			var is_xray: bool = entry.get("xray", false)
 			_end_flash(id)
+			# Si c'était le flash rouge du find, appliquer le highlight
+			# xray_overlay persistant une fois le flash terminé.
+			if is_xray and xray_windows.get(id, false):
+				if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
+					windows.quads[id].material_overlay = xray_overlay
 		else:
 			var mat: StandardMaterial3D = entry.get("mat")
 			if mat:
