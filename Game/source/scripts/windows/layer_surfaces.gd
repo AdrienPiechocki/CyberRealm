@@ -84,7 +84,7 @@ var session_lock_rect: TextureRect
 var session_lock_surface_id := -1
 
 var _cursor_pos := Vector2.ZERO
-const SPEED := 700.0
+var SPEED := 700.0
 var virtual_keyboard: VirtualKeyboard
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, focus_ref: Node3D, pause_menu_ref: Control, window_menu_ref: Control, keyboard: VirtualKeyboard) -> void:
