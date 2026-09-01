@@ -373,6 +373,24 @@ func _ready() -> void:
 	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
 	pins.set_pins_opacity(pause_menu.get_pins_opacity())
 	pins.set_pins_position(pause_menu.get_pins_position())
+	# Appliquer les réglages graphiques & contrôles
+	pause_menu._apply_aa(pause_menu.get_aa_mode())
+	Engine.max_fps = pause_menu.get_fps_limit()
+	player.mouse_sensitivity = 0.002 * pause_menu.get_mouse_sens_mult()
+	player.pad_look_speed = 2.5 * pause_menu.get_pad_look_sens_mult()
+	focus.SPEED = 700.0 * pause_menu.get_focus_stick_sens_mult()
+	pause_menu.mouse_sens_changed.connect(func(mult: float):
+		player.mouse_sensitivity = 0.002 * mult
+	)
+	pause_menu.pad_look_sens_changed.connect(func(mult: float):
+		player.pad_look_speed = 2.5 * mult
+	)
+	pause_menu.focus_stick_sens_changed.connect(func(mult: float):
+		focus.SPEED = 700.0 * mult
+	)
+	pause_menu.graphics_settings_changed.connect(func(_aa: String, fps: int):
+		Engine.max_fps = fps
+	)
 	# Menu radial contextuel (B sur manette)
 	radial_menu.radial_action.connect(_on_radial_action)
 	# Clavier virtuel
