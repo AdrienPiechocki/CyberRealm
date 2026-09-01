@@ -1461,6 +1461,7 @@ func _apply_saved_keybinds() -> void:
 		# Ancien format mono-entrée (avant le support pad).
 		var prev_ev := _deserialize_event(bind)
 		if prev_ev != null:
+			_apply_mods(prev_ev, bind.get("mods", {}))
 			_set_action_event(action, prev_ev)
 
 func _apply_mods(event: InputEvent, mods: Dictionary) -> void:
@@ -1517,8 +1518,10 @@ func _apply_bind(action: String, bind: Dictionary) -> void:
 		var d = bind.get(slot)
 		if d is Dictionary and not d.is_empty():
 			var ev := _deserialize_event(d)
-			if ev != null and InputMap.has_action(action):
-				_set_action_event(action, ev)
+			if ev != null:
+				_apply_mods(ev, d.get("mods", {}))
+				if InputMap.has_action(action):
+					_set_action_event(action, ev)
 			elif slot == "kb" and InputMap.has_action(action):
 				# Liaison clavier explicitement vide : on retire l'ancienne
 				# (l'utilisateur a voulu la vider), le pad reste intact.

@@ -1236,8 +1236,6 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	else:
 		_stick_scroll_cooldown = 0.0
 
-	if in_game():
-		return
 	if _left_press_this_frame():
 		compositor.forward_pointer_button(id, 0x110, true)
 	if _left_release_this_frame():
@@ -1253,6 +1251,9 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 		compositor.forward_pointer_button(id, 0x112, true)
 	if Input.is_action_just_released("middle_click"):
 		compositor.forward_pointer_button(id, 0x112, false)
+
+	if in_game():
+		return
 
 func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
