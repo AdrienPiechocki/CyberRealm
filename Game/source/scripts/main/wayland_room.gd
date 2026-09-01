@@ -379,6 +379,7 @@ func _ready() -> void:
 	player.mouse_sensitivity = 0.002 * pause_menu.get_mouse_sens_mult()
 	player.pad_look_speed = 2.5 * pause_menu.get_pad_look_sens_mult()
 	focus.SPEED = 700.0 * pause_menu.get_focus_stick_sens_mult()
+	layers.SPEED = 700.0 * pause_menu.get_focus_stick_sens_mult()
 	pause_menu.mouse_sens_changed.connect(func(mult: float):
 		player.mouse_sensitivity = 0.002 * mult
 	)
@@ -387,6 +388,7 @@ func _ready() -> void:
 	)
 	pause_menu.focus_stick_sens_changed.connect(func(mult: float):
 		focus.SPEED = 700.0 * mult
+		layers.SPEED = 700.0 * mult
 	)
 	pause_menu.graphics_settings_changed.connect(func(_aa: String, fps: int):
 		Engine.max_fps = fps
