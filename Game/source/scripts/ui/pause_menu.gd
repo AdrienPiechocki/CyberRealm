@@ -1128,7 +1128,7 @@ func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSl
 	var aa_idx := aa_opt.selected
 	if aa_idx < 0 or aa_idx >= AA_MODES.size():
 		aa_idx = 0
-	var aa_mode := AA_MODES[aa_idx]
+	var aa_mode = AA_MODES[aa_idx]
 	var mouse_mult: float = mouse_s.value
 	var pad_mult: float = pad_s.value
 	var focus_mult: float = focus_s.value
