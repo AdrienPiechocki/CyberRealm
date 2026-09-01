@@ -402,7 +402,11 @@ func _show_main() -> void:
 	var lan_btn := _make_btn("LAN Game")
 	lan_btn.pressed.connect(_show_lan)
 	container.add_child(lan_btn)
-	
+
+	var gc_btn := _make_btn("Graphics & Controls")
+	gc_btn.pressed.connect(_show_graphics_controls)
+	container.add_child(gc_btn)
+
 	var tutorial_btn := _make_btn("Tutorial")
 	tutorial_btn.pressed.connect(func():
 		hide_menu()
@@ -948,6 +952,202 @@ func _save_lan_name(edit: LineEdit) -> void:
 	_settings["lan_player_name"] = nm
 	_save_settings()
 	lan_name_changed.emit(nm)
+
+func _show_graphics_controls() -> void:
+	_clear()
+	_current_view = "graphics_controls"
+
+	container.add_child(_make_title("GRAPHICS & CONTROLS"))
+
+	# ── Antialiasing ──
+	var aa_label := Label.new()
+	aa_label.text = "Antialiasing"
+	aa_label.add_theme_font_size_override("font_size", 14)
+	aa_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(aa_label)
+
+	var aa_opt := OptionButton.new()
+	aa_opt.add_item("Off", 0)       # index 0 → "off"
+	aa_opt.add_item("FXAA", 1)      # index 1 → "fxaa"
+	aa_opt.add_item("MSAA 2x", 2)   # index 2 → "msaa_2x"
+	aa_opt.add_item("MSAA 4x", 3)   # index 3 → "msaa_4x"
+	aa_opt.add_item("MSAA 8x", 4)   # index 4 → "msaa_8x"
+	aa_opt.custom_minimum_size = Vector2(0, 36)
+	aa_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	aa_opt.add_theme_font_size_override("font_size", 14)
+	var current_aa := get_aa_mode()
+	match current_aa:
+		"fxaa": aa_opt.selected = 1
+		"msaa_2x": aa_opt.selected = 2
+		"msaa_4x": aa_opt.selected = 3
+		"msaa_8x": aa_opt.selected = 4
+		_: aa_opt.selected = 0
+	container.add_child(aa_opt)
+
+	container.add_child(_make_spacer())
+
+	# ── Mouse sensitivity ──
+	var mouse_label := Label.new()
+	mouse_label.text = "Mouse Sensitivity"
+	mouse_label.add_theme_font_size_override("font_size", 14)
+	mouse_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(mouse_label)
+
+	var mouse_slider := HSlider.new()
+	mouse_slider.min_value = 0.5
+	mouse_slider.max_value = 3.0
+	mouse_slider.step = 0.1
+	mouse_slider.value = get_mouse_sens_mult()
+	mouse_slider.custom_minimum_size = Vector2(0, 30)
+	mouse_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(mouse_slider)
+
+	var mouse_val := Label.new()
+	mouse_val.text = "%.1fx" % mouse_slider.value
+	mouse_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	mouse_val.add_theme_font_size_override("font_size", 13)
+	mouse_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(mouse_val)
+
+	mouse_slider.value_changed.connect(func(v: float):
+		mouse_val.text = "%.1fx" % v
+	)
+
+	# ── Right stick sensitivity ──
+	var pad_label := Label.new()
+	pad_label.text = "Right Stick Sensitivity"
+	pad_label.add_theme_font_size_override("font_size", 14)
+	pad_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(pad_label)
+
+	var pad_slider := HSlider.new()
+	pad_slider.min_value = 0.5
+	pad_slider.max_value = 3.0
+	pad_slider.step = 0.1
+	pad_slider.value = get_pad_look_sens_mult()
+	pad_slider.custom_minimum_size = Vector2(0, 30)
+	pad_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(pad_slider)
+
+	var pad_val := Label.new()
+	pad_val.text = "%.1fx" % pad_slider.value
+	pad_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pad_val.add_theme_font_size_override("font_size", 13)
+	pad_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(pad_val)
+
+	pad_slider.value_changed.connect(func(v: float):
+		pad_val.text = "%.1fx" % v
+	)
+
+	# ── Focus mode stick sensitivity ──
+	var focus_label := Label.new()
+	focus_label.text = "Focus Mode Stick Sensitivity"
+	focus_label.add_theme_font_size_override("font_size", 14)
+	focus_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(focus_label)
+
+	var focus_slider := HSlider.new()
+	focus_slider.min_value = 0.5
+	focus_slider.max_value = 3.0
+	focus_slider.step = 0.1
+	focus_slider.value = get_focus_stick_sens_mult()
+	focus_slider.custom_minimum_size = Vector2(0, 30)
+	focus_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(focus_slider)
+
+	var focus_val := Label.new()
+	focus_val.text = "%.1fx" % focus_slider.value
+	focus_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	focus_val.add_theme_font_size_override("font_size", 13)
+	focus_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(focus_val)
+
+	focus_slider.value_changed.connect(func(v: float):
+		focus_val.text = "%.1fx" % v
+	)
+
+	# ── FPS limit ──
+	var fps_label := Label.new()
+	fps_label.text = "FPS Limit"
+	fps_label.add_theme_font_size_override("font_size", 14)
+	fps_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(fps_label)
+
+	var fps_slider := HSlider.new()
+	fps_slider.min_value = 30
+	fps_slider.max_value = 240
+	fps_slider.step = 10
+	fps_slider.value = get_fps_limit()
+	fps_slider.custom_minimum_size = Vector2(0, 30)
+	fps_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(fps_slider)
+
+	var fps_val := Label.new()
+	fps_val.text = "%d" % int(fps_slider.value)
+	fps_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	fps_val.add_theme_font_size_override("font_size", 13)
+	fps_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(fps_val)
+
+	fps_slider.value_changed.connect(func(v: float):
+		fps_val.text = "%d" % int(v)
+	)
+
+	# ── Apply ──
+	container.add_child(_make_spacer())
+
+	var apply_btn := _make_btn("Apply")
+	apply_btn.pressed.connect(_apply_graphics_controls.bind(aa_opt, mouse_slider, pad_slider, focus_slider, fps_slider))
+	container.add_child(apply_btn)
+
+	container.add_child(_make_back_btn())
+
+const AA_MODES := ["off", "fxaa", "msaa_2x", "msaa_4x", "msaa_8x"]
+
+func _apply_aa(mode: String) -> void:
+	var vp := get_viewport()
+	match mode:
+		"fxaa":
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+		"msaa_2x":
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+			vp.msaa_3d = Viewport.MSAA_2X
+		"msaa_4x":
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+			vp.msaa_3d = Viewport.MSAA_4X
+		"msaa_8x":
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+			vp.msaa_3d = Viewport.MSAA_8X
+		_:
+			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+			vp.msaa_3d = Viewport.MSAA_DISABLED
+
+func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, fps_s: HSlider) -> void:
+	var aa_idx := aa_opt.selected
+	if aa_idx < 0 or aa_idx >= AA_MODES.size():
+		aa_idx = 0
+	var aa_mode := AA_MODES[aa_idx]
+	var mouse_mult: float = mouse_s.value
+	var pad_mult: float = pad_s.value
+	var focus_mult: float = focus_s.value
+	var fps_limit: int = int(fps_s.value)
+
+	_settings["aa_mode"] = aa_mode
+	_settings["mouse_sens_mult"] = mouse_mult
+	_settings["pad_look_sens_mult"] = pad_mult
+	_settings["focus_stick_sens_mult"] = focus_mult
+	_settings["fps_limit"] = fps_limit
+	_save_settings()
+
+	_apply_aa(aa_mode)
+	Engine.max_fps = fps_limit
+	graphics_settings_changed.emit(aa_mode, fps_limit)
+	mouse_sens_changed.emit(mouse_mult)
+	pad_look_sens_changed.emit(pad_mult)
+	focus_stick_sens_changed.emit(focus_mult)
+	_show_main()
 
 func _show_lan() -> void:
 	_clear()
