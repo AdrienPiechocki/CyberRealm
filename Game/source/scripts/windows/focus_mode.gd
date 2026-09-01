@@ -214,7 +214,7 @@ var _alpha_probing := false
 var _occluder_suspended := false
 
 var mouse_pos := Vector2.ZERO
-const SPEED := 700.0
+var SPEED := 700.0
 var _stick_scroll_cooldown := 0.0
 var _scroll_up_held := false
 var _scroll_down_held := false
