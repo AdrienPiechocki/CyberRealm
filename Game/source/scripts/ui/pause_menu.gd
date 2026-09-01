@@ -17,6 +17,11 @@ signal lan_color_changed(color: Color)
 signal lan_avatar_changed(path: String)
 signal lan_name_changed(name: String)
 
+signal graphics_settings_changed(aa_mode: String, fps_limit: int)
+signal mouse_sens_changed(mult: float)
+signal pad_look_sens_changed(mult: float)
+signal focus_stick_sens_changed(mult: float)
+
 const LanManagerScript := preload("res://scripts/network/lan_manager.gd")
 
 const SETTINGS_PATH := "user://settings.json"
@@ -777,6 +782,21 @@ func get_pins_position() -> String:
 		if String(entry.get("id", "")) == pos:
 			return pos
 	return "top_left"
+
+func get_aa_mode() -> String:
+	return _settings.get("aa_mode", "off")
+
+func get_mouse_sens_mult() -> float:
+	return _settings.get("mouse_sens_mult", 1.0)
+
+func get_pad_look_sens_mult() -> float:
+	return _settings.get("pad_look_sens_mult", 1.0)
+
+func get_focus_stick_sens_mult() -> float:
+	return _settings.get("focus_stick_sens_mult", 1.0)
+
+func get_fps_limit() -> int:
+	return _settings.get("fps_limit", 60)
 
 func _show_pins() -> void:
 	_clear()
