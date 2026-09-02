@@ -994,22 +994,32 @@ func _refresh_popups() -> void:
 			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
 				pinfo.x, pinfo.y, pinfo.width, pinfo.height)
 
-# Zone écran réellement occupée par le CONTENU d'un overlay : le TextureRect
-# est en STRETCH_KEEP_ASPECT_CENTERED, seules les barres letterbox autour du
-# contenu sont « traversantes » (cliquables vers la fenêtre du dessous).
+# Zone écran réellement occupée par le CONTENU d'un overlay.
+# Fenêtre plein écran (STRETCH_SCALE + crop shader) : le contenu couvre la
+# totalité du viewport → le rect affiché est le viewport lui-même.
+# Autres fenêtres (STRETCH_KEEP_ASPECT_CENTERED) : seules les barres
+# letterbox autour du contenu sont « traversantes » (cliquables vers la
+# fenêtre du dessous).
 # Rect vide si la fenêtre n'a pas d'overlay ou pas encore de texture.
 func _displayed_rect(id: int) -> Rect2:
 	var rect: TextureRect = focus_rects.get(id)
 	if rect == null or not is_instance_valid(rect):
 		return Rect2()
+	var crect := rect.get_global_rect()
+	if crect.size.x <= 0.0 or crect.size.y <= 0.0:
+		return Rect2()
+	# La fenêtre plein écran utilise STRETCH_SCALE + crop shader : le contenu
+	# remplit tout le viewport, pas de barres letterbox. Retourner le rect
+	# complet évite que les bords de l'écran soient hors de la zone affichée
+	# (bug : clics droite non routés car _displayed_rect计算 un rect plus
+	# étroit via KEEP_ASPECT_CENTERED sur le buffer arrondi au multiple de 64).
+	if id == focus_fullscreen_id:
+		return crect
 	var tex := rect.texture
 	if tex == null:
 		return Rect2()
 	var tex_size := tex.get_size()
 	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
-		return Rect2()
-	var crect := rect.get_global_rect()
-	if crect.size.x <= 0.0 or crect.size.y <= 0.0:
 		return Rect2()
 	var aspect := tex_size.x / maxf(tex_size.y, 1.0)
 	var rect_aspect := crect.size.x / maxf(crect.size.y, 0.001)
@@ -1518,8 +1528,9 @@ func handle_focus_input(delta: float) -> void:
 			window_press_buttons = 0
 
 	# Position souris → UV du contenu de la fenêtre ciblée : mapping via la
-	# zone réellement affichée par son TextureRect (KEEP_ASPECT_CENTERED),
-	# cohérente avec le rendu et avec la conversion UV → surface.
+	# zone réellement affichée par son TextureRect (fullscreen = plein
+	# viewport, autres = KEEP_ASPECT_CENTERED), cohérente avec le rendu et
+	# avec la conversion UV → surface.
 	var tst := _state(target_window)
 	var disp := _displayed_rect(target_window)
 	if disp.size.x > 0.0 and disp.size.y > 0.0:
