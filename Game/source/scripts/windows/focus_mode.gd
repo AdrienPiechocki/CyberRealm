@@ -1103,15 +1103,26 @@ func _sync_title_bar(id: int) -> void:
 	if id == focus_fullscreen_id or not focus_stack.has(id):
 		bar.visible = false
 		return
-	# La barre épouse le CONTENU VISIBLE (pas le buffer) : collée au bord
-	# supérieur du contenu, même largeur que lui.
-	var content := _displayed_content_rect(id)
-	if content.size.x <= 0.0:
-		bar.visible = false
-		return
+	# Clients CSD (Firefox, GTK, Qt) : la window_geometry xdg ne couvre que
+	# la zone de contenu client, PAS la barre d'onglets/decoration dessinée
+	# par le client. Utiliser le haut du displayed_rect (buffer entier rendu)
+	# pour placer la titlebar au-dessus de TOUT le contenu rendu, y compris
+	# les onglets du client.
+	var is_csd: bool = not windows.window_server_side.get(id, true)
+	var bar_rect: Rect2
+	if is_csd:
+		bar_rect = _displayed_rect(id)
+		if bar_rect.size.x <= 0.0:
+			bar.visible = false
+			return
+	else:
+		bar_rect = _displayed_content_rect(id)
+		if bar_rect.size.x <= 0.0:
+			bar.visible = false
+			return
 	bar.visible = true
-	bar.size = Vector2(content.size.x, FOCUS_TITLEBAR_H)
-	bar.position = Vector2(content.position.x, content.position.y - FOCUS_TITLEBAR_H)
+	bar.size = Vector2(bar_rect.size.x, FOCUS_TITLEBAR_H)
+	bar.position = Vector2(bar_rect.position.x, bar_rect.position.y - FOCUS_TITLEBAR_H)
 	var lbl: Label = bar.get_node_or_null("Title")
 	if lbl != null:
 		lbl.text = String(windows.window_titles.get(id, ""))
