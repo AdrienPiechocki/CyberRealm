@@ -108,6 +108,7 @@ var window_titles: Dictionary = {} # window_id (int) -> String
 var window_shared: Dictionary = {} # window_id (int) -> bool (visible par les autres joueurs)
 var _texture_versions: Dictionary = {} # window_id (int) -> int (version du contenu, pour le LAN)
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
+var window_server_side: Dictionary = {} # window_id (int) -> true si SSD, false si CSD
 var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_popup_id, x, y, width, height}
 
 # Shader UNIQUE partagé par toutes les fenêtres/popups. Le créer une seule
@@ -566,6 +567,7 @@ func _set_titlebar_buttons(titlebar: MeshInstance3D, enabled: bool) -> void:
 # même la barre du jeu (titre + zone de drag) mais SANS les boutons, car le
 # client a déjà ses propres boutons dans son contenu.
 func on_window_decorations_changed(id: int, server_side: bool) -> void:
+	window_server_side[id] = server_side
 	if not quads.has(id):
 		return
 	var quad: MeshInstance3D = quads[id]
@@ -582,6 +584,7 @@ func on_window_unmapped(id: int) -> void:
 	
 	window_textures.erase(id)
 	window_shared.erase(id)
+	window_server_side.erase(id)
 	_texture_versions.erase(id)
 	if quads.has(id):
 		var quad = quads[id]
