@@ -895,6 +895,7 @@ public:
     void forward_pointer_button(int window_id, int button, bool pressed);
     void forward_pointer_button_popup(int popup_id, int button, bool pressed);
     void forward_pointer_axis(int window_id, double delta_x, double delta_y);
+    void forward_pointer_axis_popup(int popup_id, double delta_x, double delta_y);
     // Gestes touchpad (zwp_pointer_gestures_v1). Le jeu forward les events
     // InputEventMagnifyGesture de Godot (factor incrémental) ; le routing
     // vers le client se fait via le focus pointeur du seat. begin implicite

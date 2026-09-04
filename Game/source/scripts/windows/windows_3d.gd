@@ -1052,6 +1052,11 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vect
 		" mesh_size=", mesh.size)
 	compositor.forward_pointer_motion_popup(pid, px, py)
 
+	if Input.is_action_just_pressed("scroll_up", false) or Input.is_action_pressed("scroll_up", false):
+		compositor.forward_pointer_axis_popup(pid, 0, -100.0)
+	if Input.is_action_just_pressed("scroll_down", false) or Input.is_action_pressed("scroll_down", false):
+		compositor.forward_pointer_axis_popup(pid, 0, 100.0)
+
 	if Input.is_action_just_pressed("left_click", false):
 		compositor.forward_pointer_button_popup(pid, 0x110, true)
 	if Input.is_action_just_released("left_click", false):

@@ -105,6 +105,8 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_pointer_button_popup);
     ClassDB::bind_method(D_METHOD("forward_pointer_axis", "window_id", "delta_x", "delta_y"),
         &WlrCompositor::forward_pointer_axis);
+    ClassDB::bind_method(D_METHOD("forward_pointer_axis_popup", "popup_id", "delta_x", "delta_y"),
+        &WlrCompositor::forward_pointer_axis_popup);
     ClassDB::bind_method(D_METHOD("forward_pointer_leave"), &WlrCompositor::forward_pointer_leave);
     ClassDB::bind_method(D_METHOD("forward_keyboard_key", "godot_physical_keycode", "key_location", "pressed"),
         &WlrCompositor::forward_keyboard_key);
