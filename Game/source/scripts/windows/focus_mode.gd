@@ -59,6 +59,7 @@ var ui: CanvasLayer
 var windows: Node3D
 
 var focus_mode := false
+
 # Pile des fenêtres focalisées : le DERNIER élément est la fenêtre active
 # (celle qui reçoit l'input et dont l'overlay est au-dessus des autres).
 var focus_stack: Array = []
@@ -119,6 +120,20 @@ var _super_down := false
 var _left_down := false
 var _left_event_pressed := false
 var _left_event_frame := -1
+
+# Pointeur wayland : dernière cible (fenêtre OU popup) et dernière position
+# envoyées au client. Un vrai desktop ne délivre wl_pointer.motion qu'en cas
+# de MOUVEMENT ; handle_focus_input tournant chaque frame, sans trace on
+# floodait le client de motions identiques à ~90/s. Des clients comme Steam
+# re-testent leur hover de menu à CHAQUE motion reçue : ce flood redondant
+# (pointeur immobile sur le bouton) leur fermait les popups en quelques
+# frames. On skip donc toute motion dont la cible ET la position sont
+# inchangées (entrées incluses : wlroots gère l'enter). Valeurs par défaut
+# impossibles (-1, très loin) pour forcer l'envoi au démarrage.
+var _last_sent_window_id := -1
+var _last_sent_window_surf := Vector2(-1e9, -1e9)
+var _last_sent_popup_id := -1
+var _last_sent_popup_surf := Vector2(-1e9, -1e9)
 
 # Sondage direct de l'état brut du bouton gauche (Input.is_mouse_button_
 # pressed) avec détection de front : ni le cache d'actions ni la propagation
@@ -400,6 +415,25 @@ func get_focus_window_id() -> int:
 
 func _active_id() -> int:
 	return focus_stack[-1] if not focus_stack.is_empty() else -1
+
+# Renvoie true si la motion (cible, position) est identique à la dernière
+# envoyée (dans l'epsilon) ET met à jour la trace. À appeler juste avant le
+# forward motion pour éviter le flood des frames stationnaires (un vrai
+# desktop ne délivre wl_pointer.motion qu'en cas de MOUVEMENT).
+func _motion_is_duplicate(window_id: int, surf: Vector2, epsilon := 0.001) -> bool:
+	var dup := window_id == _last_sent_window_id and surf.distance_to(_last_sent_window_surf) < epsilon
+	_last_sent_window_id = window_id
+	_last_sent_window_surf = surf
+	return dup
+
+# Idem pour les popups ; invalide aussi la trace fenêtre (changer de cible
+# doit re-sync l'enter du client).
+func _popup_motion_is_duplicate(popup_id: int, surf: Vector2, epsilon := 0.001) -> bool:
+	var dup := popup_id == _last_sent_popup_id and surf.distance_to(_last_sent_popup_surf) < epsilon
+	_last_sent_popup_id = popup_id
+	_last_sent_popup_surf = surf
+	_last_sent_window_id = -1
+	return dup
 
 func _state(id: int) -> Dictionary:
 	if not focus_states.has(id):
@@ -921,7 +955,8 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 	if global_rect.size.x > 0.0 and global_rect.size.y > 0.0:
 		px = (mouse_pos.x - global_rect.position.x) / global_rect.size.x * content_size.x
 		py = (mouse_pos.y - global_rect.position.y) / global_rect.size.y * content_size.y
-	compositor.forward_pointer_motion_popup(popup_id, px, py)
+	if not _popup_motion_is_duplicate(popup_id, Vector2(px, py)):
+		compositor.forward_pointer_motion_popup(popup_id, px, py)
 	# Grab bouton pour le drag-and-drop : mémoriser le popup qui reçoit un
 	# appui et compter les boutons enfoncés, pour router vers lui tant que le
 	# drag est actif même hors de ses bords (voir handle_focus_input).
@@ -1571,7 +1606,8 @@ func handle_focus_input(delta: float) -> void:
 	# quand le scroll est actif — le focus pointeur est déjà établi.
 	var scroll_active := _scroll_up_held or _scroll_down_held
 	if not scroll_active:
-		compositor.forward_pointer_motion(target_window, surf_x, surf_y)
+		if not _motion_is_duplicate(target_window, Vector2(surf_x, surf_y)):
+			compositor.forward_pointer_motion(target_window, surf_x, surf_y)
 	compositor.set_window_pointer(target_window, surf_x, surf_y, true)
 	_forward_window_buttons(target_window, delta)
 
@@ -1789,15 +1825,21 @@ func handle_input_event(event: InputEvent) -> bool:
 		# Scroll wheel : forward direct au compositeur (pas de cooldown).
 		# Les ticks souris sont ponctuels (1 frame) ; le polling dans
 		# _forward_window_buttons rate les ticks rapides à cause du cooldown
-		# conçu pour le stick gamepad.
-		if mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
-			var target := _active_id()
-			if target != -1:
-				compositor.forward_pointer_axis(target, 0, -120.0)
-		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
-			var target := _active_id()
-			if target != -1:
-				compositor.forward_pointer_axis(target, 0, 120.0)
+		# conçu pour le stick gamepad. Si le curseur survole un popup de la
+		# fenêtre active, son contenu reçoit la molette (ex: menu déroulant),
+		# sinon c'est la fenêtre active qui scroll.
+		if (mb.button_index == MOUSE_BUTTON_WHEEL_UP or mb.button_index == MOUSE_BUTTON_WHEEL_DOWN) and mb.pressed:
+			var delta := -120.0 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 120.0
+			var popup_hit := _popup_at(mb.position)
+			if not popup_hit.is_empty():
+				_forward_to_popup(popup_hit, mb.position)
+				var content_size: Vector2 = popup_hit.rect.get_meta("content_size", popup_hit.rect.size)
+				if content_size.x > 0.0 and content_size.y > 0.0:
+					compositor.forward_pointer_axis_popup(int(popup_hit.id), 0, delta)
+			else:
+				var target := _active_id()
+				if target != -1:
+					compositor.forward_pointer_axis(target, 0, delta)
 		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
 			print("mouse _input: btn=", mb.button_index, " pressed=", mb.pressed,
 				" meta=", mb.meta_pressed, " pos=", mb.position)

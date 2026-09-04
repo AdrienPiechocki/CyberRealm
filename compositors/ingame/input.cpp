@@ -320,6 +320,29 @@ void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double d
     }
     wlr_seat_pointer_notify_frame(seat);
 }
+// Rotation de molette vers un popup : officialise par l'axis la surface du
+// popup déjà focalisée par forward_pointer_motion_popup. Le seat route
+// l'axis vers sa surface focalisée (ou vers le grab popup actif, qui pour
+// xdg-popup est un grab de type pointer_axis à destination du popup).
+void WlrCompositor::forward_pointer_axis_popup(int popup_id, double delta_x, double delta_y) {
+    notify_activity();
+    PopupState *ps = find_popup(popup_id);
+    if (!ps || !seat) return;
+
+    constexpr double V120_TO_DEGREES = 15.0 / 120.0;
+    uint32_t time = get_time_msec();
+    if (delta_y != 0.0) {
+        wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
+            delta_y * V120_TO_DEGREES, (int32_t)delta_y,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    }
+    if (delta_x != 0.0) {
+        wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+            delta_x * V120_TO_DEGREES, (int32_t)delta_x,
+            WL_POINTER_AXIS_SOURCE_WHEEL, WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+    }
+    wlr_seat_pointer_notify_frame(seat);
+}
 void WlrCompositor::forward_pointer_leave() {
     if (!seat) return;
     wlr_seat_pointer_notify_clear_focus(seat);
