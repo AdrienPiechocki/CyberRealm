@@ -11,3 +11,6 @@ build/
 Game/source/user/*
 !Game/source/user/README.md
 Game/build/
+
+# Worktrees
+.worktrees/
