@@ -161,6 +161,10 @@ handle_input_locally = false
 size = Vector2i(696, 560)
 render_target_update_mode = 4
 
+[node name="Camera3D" type="Camera3D" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview/AvatarViewport" unique_id=533849335]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 3.2)
+current = true
+
 [node name="VSeparator" type="VSeparator" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=-94967287]
 layout_mode = 2
 

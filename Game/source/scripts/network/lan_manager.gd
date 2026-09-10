@@ -807,7 +807,7 @@ func _announce_self() -> void:
 # ── Authentification PIN ─────────────────────────────────────────────
 
 ## Le client envoie le PIN saisi au serveur (hôte) pour vérification.
-@rpc("authority", "reliable")
+@rpc("any_peer", "reliable")
 func auth_request(pin: String) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:

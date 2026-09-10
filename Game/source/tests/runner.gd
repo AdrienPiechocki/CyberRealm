@@ -55,12 +55,12 @@ func _run_test_script(resource_path: String) -> void:
 			var short := resource_path.get_file() + "::" + mname
 			var result = instance.call(mname)
 			print(result)
-			if result == true:
+			if result is bool and result == true:
 				_passed += 1
 				print("  ✓ " + short)
 			else:
 				_failed += 1
-				var msg := str(result) if result != false else "assertion failed"
+				var msg := str(result) if result is bool and result == false else "assertion failed"
 				print("  ✗ " + short + " — " + msg)
 				_errors.append(short + " — " + msg)
 
