@@ -13,6 +13,7 @@ func _structure_checks() -> Array:
 	checks.append([vp != null, "AvatarViewport trouvable"])
 	if vp != null:
 		checks.append([vp.transparent_bg == true, "fond transparent actif sur l'AvatarViewport"])
+		checks.append([vp.own_world_3d == true, "monde 3D isolé (own_world_3d) : la preview ne rend pas le level"])
 		var light := false
 		for c in vp.get_children():
 			if c is DirectionalLight3D:

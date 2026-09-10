@@ -94,6 +94,9 @@ var _lan_status_text := ""
 var _lan_roster: Array = []
 var _lan_connected := false
 var _lan_pin_label: Label = null
+var _lan_pin_value := ""
+var _lan_pin_visible := true
+var _lan_pin_toggle_btn: Button = null
 var _lan_ip_edit: LineEdit = null
 var _lan_pin_edit: LineEdit = null
 var _lan_encryption_btn: CheckButton = null
@@ -1273,13 +1276,29 @@ func _show_lan() -> void:
 	)
 	container.add_child(host_btn)
 
-	# PIN label (visible when hosting — shows the generated PIN).
+	# PIN label (visible when hosting — shows the generated PIN) + bouton 👁
+	# pour le masquer à l'écran sans l'oublier (état persistant dans le membre).
+	var pin_row := HBoxContainer.new()
+	pin_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pin_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	_lan_pin_label = Label.new()
 	_lan_pin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_lan_pin_label.add_theme_font_size_override("font_size", 16)
 	_lan_pin_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
 	_lan_pin_label.visible = false
-	container.add_child(_lan_pin_label)
+	pin_row.add_child(_lan_pin_label)
+	_lan_pin_toggle_btn = Button.new()
+	_lan_pin_toggle_btn.text = "👁"
+	_lan_pin_toggle_btn.flat = true
+	_lan_pin_toggle_btn.tooltip_text = "Mask / show the session PIN"
+	_lan_pin_toggle_btn.visible = false
+	_lan_pin_toggle_btn.pressed.connect(_toggle_lan_pin_visibility)
+	pin_row.add_child(_lan_pin_toggle_btn)
+	container.add_child(pin_row)
+	# Le PIN vit dans le lan_manager : on le restaure après un rebuild de l'UI
+	# (BACK → retour dans le menu LAN) au lieu de le perdre.
+	if _lan != null and bool(_lan.get("is_host")) and String(_lan.get_pin()) != "":
+		set_lan_pin(String(_lan.get_pin()))
 
 	var join_row := HBoxContainer.new()
 	join_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1471,13 +1490,31 @@ func set_lan_connected(connected: bool) -> void:
 	_lan_connected = connected
 
 func set_lan_pin(pin: String) -> void:
-	if _lan_pin_label == null:
+	_lan_pin_value = pin
+	if _lan_pin_label == null or _lan_pin_toggle_btn == null:
 		return
 	if pin != "":
-		_lan_pin_label.text = "Session PIN: %s" % pin
 		_lan_pin_label.visible = true
+		_lan_pin_toggle_btn.visible = true
+		_render_lan_pin()
 	else:
 		_lan_pin_label.visible = false
+		_lan_pin_toggle_btn.visible = false
+
+func _toggle_lan_pin_visibility() -> void:
+	_lan_pin_visible = not _lan_pin_visible
+	_render_lan_pin()
+
+func _render_lan_pin() -> void:
+	if _lan_pin_label == null:
+		return
+	if _lan_pin_visible:
+		_lan_pin_label.text = "Session PIN: %s" % _lan_pin_value
+	else:
+		var masked := ""
+		for i in _lan_pin_value.length():
+			masked += "• "
+		_lan_pin_label.text = "Session PIN: %s" % masked.strip_edges()
 
 func _update_lan_players_label() -> void:
 	if _lan_players_label == null:
