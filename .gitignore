@@ -14,3 +14,7 @@ Game/build/
 
 # Worktrees
 .worktrees/
+
+# Artefacts de processus agentiques (planification/DDD) — hors repo
+.superpowers/
+docs/superpowers/
