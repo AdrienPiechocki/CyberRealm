@@ -1,0 +1,61 @@
+# Review package: 3b56a80..bfef283
+
+## Commits
+bfef283 fix(ui): clear stale confirm/message state on tab switch and write file-pick done marker on zenity cancel
+
+## Files changed
+ Game/source/scripts/ui/players_menu.gd | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+## Diff
+diff --git a/Game/source/scripts/ui/players_menu.gd b/Game/source/scripts/ui/players_menu.gd
+index 878e97e..c4f17bc 100644
+--- a/Game/source/scripts/ui/players_menu.gd
++++ b/Game/source/scripts/ui/players_menu.gd
+@@ -313,20 +313,23 @@ func _empty_state(text: String) -> void:
+ 	_clear_preview()
+ 	_update_actions()
+ 	var lbl := Label.new()
+ 	lbl.text = "  " + text + "  "
+ 	lbl.add_theme_font_size_override("font_size", 13)
+ 	lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.7))
+ 	tabs_container.add_child(lbl)
+ 
+ func _on_tab_pressed(peer_id: int) -> void:
+ 	selected_peer = peer_id
++	_msg_row.visible = false
++	_confirm_row.visible = false
++	_confirm_kind = ""
+ 	for child in tabs_container.get_children():
+ 		if not child.has_meta("peer_id"):
+ 			continue
+ 		var this_id: int = child.get_meta("peer_id")
+ 		var normal := StyleBoxFlat.new()
+ 		normal.bg_color = Color(0.1, 0.1, 0.15, 0.8)
+ 		normal.corner_radius_top_left = 4
+ 		normal.corner_radius_top_right = 4
+ 		normal.corner_radius_bottom_left = 0
+ 		normal.corner_radius_bottom_right = 0
+@@ -409,21 +412,21 @@ func _set_status(text: String) -> void:
+ 	if _status_label != null:
+ 		_status_label.text = text
+ 
+ func _on_file_pick_pressed() -> void:
+ 	if selected_peer == 0 or _picker_running:
+ 		return
+ 	var buf := _pick_buf_path("")
+ 	var done := _pick_buf_path(".done")
+ 	DirAccess.remove_absolute(buf)
+ 	DirAccess.remove_absolute(done)
+-	var cmd := "sh -c 'zenity --file-selection > \"$XDG_RUNTIME_DIR/cyberrealm-filepick\" && touch \"$XDG_RUNTIME_DIR/cyberrealm-filepick.done\"'"
++	var cmd := "sh -c 'zenity --file-selection > \"$XDG_RUNTIME_DIR/cyberrealm-filepick\" ; touch \"$XDG_RUNTIME_DIR/cyberrealm-filepick.done\"'"
+ 	_compositor.launch_app(cmd)
+ 	_picker_running = true
+ 	_picker_peer = selected_peer
+ 	_picker_deadline = Time.get_ticks_msec() + 60000
+ 	_set_status("Selecting file… (cancel with Esc in the dialog, 60 s timeout)")
+ 	_update_actions()
+ 
+ # ── Preview avatar ─────────────────────────────────────────────────────
+ 
+ func _update_preview() -> void:

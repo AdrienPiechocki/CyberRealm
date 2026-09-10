@@ -1,0 +1,154 @@
+# Review package: 0c39c19..9c70f22
+
+## Commits
+9c70f22 feat(fileshare): programmatic send_file_to_peer + shared size helper
+
+## Files changed
+ Game/source/scripts/network/file_share_manager.gd | 44 ++++++++++++++++++++---
+ Game/source/tests/test_file_share.gd              | 24 +++++++++++++
+ 2 files changed, 64 insertions(+), 4 deletions(-)
+
+## Diff
+diff --git a/Game/source/scripts/network/file_share_manager.gd b/Game/source/scripts/network/file_share_manager.gd
+index 97cf667..786de9a 100644
+--- a/Game/source/scripts/network/file_share_manager.gd
++++ b/Game/source/scripts/network/file_share_manager.gd
+@@ -18,20 +18,31 @@ extends Node3D
+ 
+ ## Dossier de réception : celui des paramètres du bureau (XDG/KDE — p.ex.
+ ## ~/Téléchargements sur un système en français), sinon ~/Downloads. Le chemin
+ ## absolu est renvoyé dans la réponse d'acceptation car il est localisé chez
+ ## le destinataire : l'expéditeur ne peut pas le deviner.
+ func downloads_dir() -> String:
+ 	var d := OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+ 	if d.is_empty():
+ 		d = OS.get_environment("HOME").path_join("Downloads")
+ 	return d
++
++## Taille d'un fichier localement lisible, 0 sinon. Helper unique partagé
++## entre les drops (drag & drop) et l'envoi programmatique (players_menu).
++static func readable_file_size(path: String) -> int:
++	var f := FileAccess.open(path, FileAccess.READ)
++	if f == null:
++		return 0
++	var size := f.get_length()
++	f.close()
++	return size
++
+ const CHANNEL := 7 # canal fiable dédié au partage de fichiers
+ const OFFER_TIMEOUT_MSEC := 30000
+ const PROGRESS_INTERVAL_MSEC := 250 # throttle des RPC de progression
+ const DONE_VISIBLE_MSEC := 8000
+ const MAX_LIST_LINES := 12
+ const DROP_REACH := 8.0
+ const DROP_CONE_RAD := deg_to_rad(12.0) # tolérance de visée du drop
+ const AK_TAG_PREFIX := "cr_" # préfixe des tags de lignes authorized_keys
+ const KEY_STALE_MSEC := 15 * 60 * 1000 # balayage des clés oubliées
+ 
+@@ -381,26 +392,26 @@ func _peer_name(pid: int) -> String:
+ ## 3D. S'il y a un avatar sous le curseur → offre de transfert.
+ func on_files_dropped(paths: PackedStringArray) -> void:
+ 	push_warning("FileShare: drop received (%d paths, hover=%d, session=%s)" % [
+ 		paths.size(), _hover_peer,
+ 		str(lan != null and lan.is_session_active())])
+ 	var files := PackedStringArray()
+ 	var total := 0
+ 	for p in paths:
+ 		if _debug:
+ 			print("[FileShare] raw path : [", p, "]")
+-		var f := FileAccess.open(p, FileAccess.READ)
+-		if f != null:
++		var size := readable_file_size(p)
++		if size > 0:
+ 			files.append(p)
+-			total += int(f.get_length())
++			total += size
+ 		elif _debug:
+-			print("[FileShare] open() failed : ", error_string(FileAccess.get_open_error()))
++			print("[FileShare] unreadable: ", p)
+ 	if files.is_empty():
+ 		_flash_status("Drop ignored: no readable file")
+ 		return
+ 	if lan == null or not lan.is_session_active() or _hover_peer == 0 \
+ 			or not ensure_local_keypair():
+ 		_flash_status("Drop ignored: no player targeted or session inactive")
+ 		return
+ 	if not _can_start_transfer():
+ 		_flash_status("Transfer impossible: already busy")
+ 		return
+@@ -410,20 +421,45 @@ func on_files_dropped(paths: PackedStringArray) -> void:
+ 	for p in files:
+ 		names.append(p.get_file())
+ 	_pending_offers[oid] = {
+ 		"peer": _hover_peer, "files": files, "names": names,
+ 		"total": total, "msec": Time.get_ticks_msec(),
+ 	}
+ 	_show_progress("Offer to %s — waiting…" % _peer_name(_hover_peer), -1, "")
+ 	_offer_files.rpc_id(_hover_peer, oid, names, total)
+ 
+ 
++## Envoi programmatique d'un fichier vers un peer (players_menu). Réutilise
++## le flux d'offre du drag & drop : prompt d'acceptation côté pair, puis
++## transfert rsync-over-ssh. Retourne false si invalide/injoignable/busy.
++func send_file_to_peer(peer_id: int, path: String) -> bool:
++	if peer_id <= 0 or peer_id == multiplayer.get_unique_id():
++		return false
++	if lan == null or not lan.is_session_active() or not ensure_local_keypair():
++		return false
++	var total := readable_file_size(path)
++	if total <= 0:
++		return false
++	if not _can_start_transfer():
++		return false
++	var oid := _next_offer_id
++	_next_offer_id += 1
++	var names := PackedStringArray([path.get_file()])
++	_pending_offers[oid] = {
++		"peer": peer_id, "files": [path], "names": names,
++		"total": total, "msec": Time.get_ticks_msec(),
++	}
++	_show_progress("Offer to %s — waiting…" % _peer_name(peer_id), -1, "")
++	_offer_files.rpc_id(peer_id, oid, names, total)
++	return true
++
++
+ # ── Contacts (mesh clé publique + IP) ────────────────────────────────────────
+ 
+ func _on_roster_changed(roster: Array) -> void:
+ 	if roster.is_empty():
+ 		_contacts.clear()
+ 		_announced_to.clear()
+ 		_replied_to.clear()
+ 		_sweep_stale_keys()
+ 		return
+ 	var me := multiplayer.get_unique_id()
+diff --git a/Game/source/tests/test_file_share.gd b/Game/source/tests/test_file_share.gd
+new file mode 100644
+index 0000000..cafc2ba
+--- /dev/null
++++ b/Game/source/tests/test_file_share.gd
+@@ -0,0 +1,24 @@
++extends Node
++## Tests pour la validation de fichiers du partage LAN.
++
++const Runner = preload("res://tests/runner.gd")
++const FileShare = preload("res://scripts/network/file_share_manager.gd")
++
++func _sample_path(filename: String) -> String:
++	return OS.get_cache_dir().path_join(filename)
++
++func test_readable_file_size():
++	var path := _sample_path("cyberrealm_fs_sample.bin")
++	var f := FileAccess.open(path, FileAccess.WRITE)
++	f.store_string("0123456789")
++	f.close()
++	var r = Runner.assert_eq(FileShare.readable_file_size(path), 10, "Fichier lisible -> taille exacte")
++	DirAccess.remove_absolute(path)
++	return r
++
++func test_readable_file_size_missing():
++	var path := _sample_path("cyberrealm_fs_missing.bin")
++	DirAccess.remove_absolute(path) # s'assurer qu'il n'existe pas
++	var r = Runner.assert_eq(FileShare.readable_file_size(path), 0, "Fichier absent -> 0")
++	if r != true: return r
++	return true
