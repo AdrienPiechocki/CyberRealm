@@ -28,7 +28,8 @@ func setup(lan_ref: Node, compositor_ref: Node, file_share_ref: Node) -> void:
 	_compositor = compositor_ref
 	_file_share = file_share_ref
 	if _lan != null and _lan.has_signal("players_changed"):
-		_lan.players_changed.connect(_refresh_tabs)
+		if not _lan.players_changed.is_connected(_refresh_tabs):
+			_lan.players_changed.connect(_refresh_tabs)
 
 func _apply_styling() -> void:
 	var bg := StyleBoxFlat.new()
