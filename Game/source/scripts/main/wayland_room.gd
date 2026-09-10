@@ -471,6 +471,7 @@ func _ready() -> void:
 	file_share.set_script(preload("res://scripts/network/file_share_manager.gd"))
 	add_child(file_share)
 	file_share.setup(player, lan, compositor)
+	pause_menu.set_lan_ref(lan)
 	compositor.file_drop_received.connect(file_share.on_files_dropped)
 
 	players_menu.setup(lan, compositor, file_share)
