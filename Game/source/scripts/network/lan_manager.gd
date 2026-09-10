@@ -549,19 +549,21 @@ func get_remote_players() -> Dictionary:
 # ── DTLS (chiffrement de session) & anti brute-force PIN ─────────────
 
 func _load_dtls_options() -> TLSOptions:
-	var key := load("res://certs/lan_key.pem") as CryptoKey
-	var cert := load("res://certs/lan_cert.crt") as X509Certificate
-	if key == null or cert == null:
+	var key := CryptoKey.new()
+	var cert := X509Certificate.new()
+	if key.load("res://certs/lan_key.pem") != OK or cert.load("res://certs/lan_cert.crt") != OK:
 		_lan_log("DTLS: key/cert not found, encryption disabled")
 		return null
 	return TLSOptions.server(key, cert)
 
 func _dtls_client_options() -> TLSOptions:
-	var cert := load("res://certs/lan_cert.crt") as X509Certificate
-	if cert == null:
+	var cert := X509Certificate.new()
+	if cert.load("res://certs/lan_cert.crt") != OK:
 		_lan_log("DTLS: cert not found, encryption disabled")
 		return null
-	return TLSOptions.client(cert)
+	# Chiffrement seul (pas de validation d'identite : cert auto-signe, IP LAN
+	# variable, et l'authentification mutuelle est deja assuree par le PIN).
+	return TLSOptions.client_unsafe(cert)
 
 ## true si l'adresse est actuellement blacklistée (verrou intact et non expiré).
 func _pin_blocked(ip: String) -> bool:
@@ -861,7 +863,8 @@ func _on_connection_failed() -> void:
 		_begin_reconnect()
 	else:
 		_disconnect_session()
-		_set_status("Connection failed — IP unreachable. Check: same network, host firewall (UDP %d/%d open), router AP isolation." % [PORT, DISCOVERY_PORT])
+		var tls_hint := " TLS était activé sur le Join — si l'hôte ne chiffre pas, retentez sans TLS." if _last_join_encrypted else ""
+		_set_status("Connection failed — IP unreachable. Check: same network, host firewall (UDP %d/%d open), router AP isolation.%s" % [PORT, DISCOVERY_PORT, tls_hint])
 
 func _on_server_disconnected() -> void:
 	if _should_attempt_reconnect():
