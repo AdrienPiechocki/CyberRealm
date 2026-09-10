@@ -320,6 +320,9 @@ func _empty_state(text: String) -> void:
 
 func _on_tab_pressed(peer_id: int) -> void:
 	selected_peer = peer_id
+	_msg_row.visible = false
+	_confirm_row.visible = false
+	_confirm_kind = ""
 	for child in tabs_container.get_children():
 		if not child.has_meta("peer_id"):
 			continue
@@ -416,7 +419,7 @@ func _on_file_pick_pressed() -> void:
 	var done := _pick_buf_path(".done")
 	DirAccess.remove_absolute(buf)
 	DirAccess.remove_absolute(done)
-	var cmd := "sh -c 'zenity --file-selection > \"$XDG_RUNTIME_DIR/cyberrealm-filepick\" && touch \"$XDG_RUNTIME_DIR/cyberrealm-filepick.done\"'"
+	var cmd := "sh -c 'zenity --file-selection > \"$XDG_RUNTIME_DIR/cyberrealm-filepick\" ; touch \"$XDG_RUNTIME_DIR/cyberrealm-filepick.done\"'"
 	_compositor.launch_app(cmd)
 	_picker_running = true
 	_picker_peer = selected_peer
