@@ -139,6 +139,7 @@ var _selected_avatar_path := ""
 
 var session_active := false
 var is_host := false
+var session_encrypted := false
 var player_name := ""
 var player_color := Color(0.2, 0.6, 1.0)
 var level_bake_provider: Callable = Callable() # host : renvoie le blob baked du niveau {bytes, spawn}
@@ -655,12 +656,14 @@ func host_game() -> bool:
 	if err != OK:
 		_set_status("Host error: " + error_string(err))
 		return false
+	session_encrypted = false
 	if encryption_enabled:
 		var dtls := _load_dtls_options()
 		if dtls != null:
 			if peer.host.dtls_server_setup(dtls) != OK:
 				_lan_log("DTLS: server setup failed, session not encrypted")
 			else:
+				session_encrypted = true
 				_lan_log("DTLS: session encrypted (server)")
 	multiplayer.multiplayer_peer = peer
 	session_active = true
@@ -687,7 +690,7 @@ func host_game() -> bool:
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
 	_lan_log("host_game — waiting for clients", true)
-	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect" % [_local_ip(), PORT, PORT, DISCOVERY_PORT])
+	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect%s" % [_local_ip(), PORT, PORT, DISCOVERY_PORT, " (TLS ON)" if session_encrypted else ""])
 	_emit_players()
 	return true
 
@@ -717,6 +720,7 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 			if peer.host.dtls_client_setup(ip, dtls) != OK:
 				_lan_log("DTLS: client setup failed, session not encrypted")
 			else:
+				session_encrypted = true
 				_lan_log("DTLS: session encrypted (client → %s)" % ip)
 	multiplayer.multiplayer_peer = peer
 	multiplayer.connected_to_server.connect(_on_connected_to_server)
@@ -773,7 +777,7 @@ func _on_connected_to_server() -> void:
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
 	_lan_log("connected to host — auth in progress (pending_join)", true)
-	_set_status("Connected to server — authenticating…")
+	_set_status("Connected to server — authenticating…" + (" (TLS)" if session_encrypted else ""))
 	_emit_players()
 	# S'annoncer DÈS la connexion : envoyer le PIN pour vérification.
 	# L'hôte répondra par auth_result ; _announce_self() partira uniquement
@@ -3610,6 +3614,7 @@ func _disconnect_session(keep_context := false) -> void:
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
 	session_active = false
 	is_host = false
+	session_encrypted = false
 	_announced = false
 	_avatar_sent_to.clear()
 	_avatar_send_cache = PackedByteArray()

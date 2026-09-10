@@ -94,6 +94,9 @@ var _lan_status_text := ""
 var _lan_roster: Array = []
 var _lan_connected := false
 var _lan_pin_label: Label = null
+var _lan_ip_edit: LineEdit = null
+var _lan_pin_edit: LineEdit = null
+var _lan_encryption_btn: CheckButton = null
 
 func _can_stick_input() -> bool:
 	if _keyboard != null and _keyboard.visible:
@@ -1280,28 +1283,28 @@ func _show_lan() -> void:
 
 	var join_row := HBoxContainer.new()
 	join_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var ip_edit := _make_line_edit()
-	ip_edit.placeholder_text = "Host IP (ex: 192.168.1.5)"
-	join_row.add_child(ip_edit)
-	var pin_edit := _make_line_edit()
-	pin_edit.placeholder_text = "PIN"
-	pin_edit.custom_minimum_size = Vector2(80, 36)
-	pin_edit.max_length = 4
-	join_row.add_child(pin_edit)
-	var encryption_btn := CheckButton.new()
-	encryption_btn.text = "TLS"
-	encryption_btn.tooltip_text = "Encrypt the session (DTLS) with the embedded certificates"
-	encryption_btn.button_pressed = true
-	join_row.add_child(encryption_btn)
+	_lan_ip_edit = _make_line_edit()
+	_lan_ip_edit.placeholder_text = "Host IP (ex: 192.168.1.5)"
+	join_row.add_child(_lan_ip_edit)
+	_lan_pin_edit = _make_line_edit()
+	_lan_pin_edit.placeholder_text = "PIN"
+	_lan_pin_edit.custom_minimum_size = Vector2(80, 36)
+	_lan_pin_edit.max_length = 4
+	join_row.add_child(_lan_pin_edit)
+	_lan_encryption_btn = CheckButton.new()
+	_lan_encryption_btn.text = "TLS"
+	_lan_encryption_btn.tooltip_text = "Encrypt the session (DTLS) with the embedded certificates"
+	_lan_encryption_btn.button_pressed = true
+	join_row.add_child(_lan_encryption_btn)
 	var join_btn := _make_btn("Join")
 	join_btn.custom_minimum_size = Vector2(100, 36)
 	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	join_btn.pressed.connect(func():
 		_save_lan_name(name_edit)
-		var ip := ip_edit.text.strip_edges()
-		var pin := pin_edit.text.strip_edges()
+		var ip := _lan_ip_edit.text.strip_edges()
+		var pin := _lan_pin_edit.text.strip_edges()
 		if ip != "":
-			lan_join_requested.emit(ip, pin, encryption_btn.button_pressed)
+			lan_join_requested.emit(ip, pin, _lan_encryption_btn.button_pressed)
 	)
 	join_row.add_child(join_btn)
 	container.add_child(join_row)
@@ -1505,8 +1508,12 @@ func set_lan_discovery_results(results: Array) -> void:
 		_lan_results_box.add_child(btn)
 
 func _join_discovered(ip: String) -> void:
-	if ip != "":
-		lan_join_requested.emit(ip, "", true)
+	if _lan_ip_edit == null:
+		return
+	_lan_ip_edit.text = ip
+	_lan_pin_edit.text = ""
+	_lan_pin_edit.grab_focus()
+	set_lan_status("Game selected — enter the host's PIN (shown on the host), then press Join.")
 
 # ── Startup apps ─────────────────────────────────────────────────────
 
