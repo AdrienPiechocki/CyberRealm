@@ -26,8 +26,7 @@ func downloads_dir() -> String:
 		d = OS.get_environment("HOME").path_join("Downloads")
 	return d
 
-## Taille d'un fichier localement lisible, 0 sinon. Helper unique partagé
-## entre les drops (drag & drop) et l'envoi programmatique (players_menu).
+## Taille d'un fichier localement lisible, 0 sinon.
 static func readable_file_size(path: String) -> int:
 	var f := FileAccess.open(path, FileAccess.READ)
 	if f == null:
@@ -426,31 +425,6 @@ func on_files_dropped(paths: PackedStringArray) -> void:
 	}
 	_show_progress("Offer to %s — waiting…" % _peer_name(_hover_peer), -1, "")
 	_offer_files.rpc_id(_hover_peer, oid, names, total)
-
-
-## Envoi programmatique d'un fichier vers un peer (players_menu). Réutilise
-## le flux d'offre du drag & drop : prompt d'acceptation côté pair, puis
-## transfert rsync-over-ssh. Retourne false si invalide/injoignable/busy.
-func send_file_to_peer(peer_id: int, path: String) -> bool:
-	if peer_id <= 0 or peer_id == multiplayer.get_unique_id():
-		return false
-	if lan == null or not lan.is_session_active() or not ensure_local_keypair():
-		return false
-	var total := readable_file_size(path)
-	if total <= 0:
-		return false
-	if not _can_start_transfer():
-		return false
-	var oid := _next_offer_id
-	_next_offer_id += 1
-	var names := PackedStringArray([path.get_file()])
-	_pending_offers[oid] = {
-		"peer": peer_id, "files": [path], "names": names,
-		"total": total, "msec": Time.get_ticks_msec(),
-	}
-	_show_progress("Offer to %s — waiting…" % _peer_name(peer_id), -1, "")
-	_offer_files.rpc_id(peer_id, oid, names, total)
-	return true
 
 
 # ── Contacts (mesh clé publique + IP) ────────────────────────────────────────
