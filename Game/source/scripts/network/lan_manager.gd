@@ -105,6 +105,25 @@ static func should_reconnect(last_hb: int, now: int, closed: bool, window: int, 
 		return true
 	return (now - last_hb) <= window
 
+## Un heartbeat est « frais » tant que le dernier reçu remonte à moins de
+## `timeout` ms. Tout le reste du watchdog se déduit de cette primitive.
+static func heartbeat_is_stale(last_hb: int, now: int, timeout: int) -> bool:
+	return now - last_hb > timeout
+
+## Watchdog heartbeat : armé UNIQUEMENT après le join terminé (`session_joined`
+## = pas en _pending_join). Pendant le transfert niveau + avatar le thread
+## principal reste occupé (décode/load) et les heartbeats ne sont pas traités
+## — les déclarer perdus là serait un faux positif qui arrache la session.
+static func heartbeat_reconnect_should_arm(session_joined: bool, last_hb: int, now: int, timeout: int) -> bool:
+	return session_joined and heartbeat_is_stale(last_hb, now, timeout)
+
+## Annulation d'un reconnect déjà programmé (backoff en cours) : si le heartbeat
+## est revenu une fois la session établie, le réseau est vivant → on garde la
+## session au lieu de l'arracher. Pendant un join interrompu physiquement, on
+## ne cancelle jamais (le reconnect doit partir).
+static func heartbeat_cancel_reconnect(session_joined: bool, last_hb: int, now: int, timeout: int) -> bool:
+	return session_joined and not heartbeat_is_stale(last_hb, now, timeout)
+
 ## Enregistre une tentative de PIN. Retourne true si l'adresse doit être
 ## rejetée (≥ PIN_FAIL_LIMIT échecs consécutifs). Un succès (ok=true) réarme.
 ## `state` est une Dictionary externe (testable) : addr -> nb échecs consécutifs.
@@ -122,6 +141,15 @@ var _auth_request_sent_msec := 0
 # secondes) est payé dès l'arrivée du blob — idéalement pendant l'écran de
 # chargement — et non au spawn, où il faisait surgir l'avatar en retard.
 var _avatar_scene_cache: Dictionary = {}
+# Chargements threadés en cours côté client. Le sync `load()` du niveau et
+# des avatars bloquait le thread principal pendant 12-45 ms (repris → plusieurs
+# secondes sur les machines lentes) : les ACK/heartbeats ENet n'étaient plus
+# servis et l'hôte, au timeout ENet par défaut (~5 s, inmodifiable sur ce
+# build — aucune API peer_set_timeout exposée), coupait la session en pleine
+# réception → boucle de rejoin. On route donc tout décodage par
+# ResourceLoader threadé, lesté dans _poll_pending_scene_loads().
+var _pending_level_load: Dictionary = {} # {path, pos, rot, scale, kb}
+var _pending_avatar_loads: Dictionary = {} # peer_id -> path
 # Niveau client reçu mais pas encore appliqué : retenu tant que les blobs
 # d'avatars attendus ne sont pas arrivés, pour que tous les avatars
 # apparaissent EN MÊME TEMPS que le niveau (et pas après). Timeout inclus :
@@ -928,8 +956,12 @@ func _should_attempt_reconnect() -> bool:
 	return should_reconnect(_last_heartbeat_msec, Time.get_ticks_msec(),
 		_session_closed_received, RECONNECT_WINDOW_MSEC, _reconnect_attempts)
 
-## Heartbeat expiré côté client → on considère l'hôte injoignable.
+## Heartbeat expiré côté client → on considère l'hôte injoignable. Garde-fous :
+## pendant le join (transfert lourd, heartbeats non traités par le thread occupé)
+## et pendant un reconnect déjà en cours, pas de nouveau déclenchement.
 func _on_host_heartbeat_timeout() -> void:
+	if _pending_join or _reconnecting:
+		return
 	_lan_log("heartbeat expired (%d ms without host heartbeat)" % HOST_HEARTBEAT_TIMEOUT_MSEC)
 	_begin_reconnect()
 
@@ -948,6 +980,13 @@ func _begin_reconnect() -> void:
 	_set_status("Reconnecting… (%d/%d)" % [_reconnect_attempts, RECONNECT_MAX_ATTEMPTS])
 	await get_tree().create_timer(delay).timeout
 	if not session_active and not _reconnecting:
+		_reconnecting = false
+		return
+	# Heartbeat revenu pendant l'attente du backoff (la session s'est établie
+	# entretemps, le réseau est vivant) → annuler le reconnect, on garde la
+	# session au lieu de l'arracher (boucle de rejoin constatée en réel).
+	if heartbeat_cancel_reconnect(not _pending_join, _last_heartbeat_msec, Time.get_ticks_msec(), HOST_HEARTBEAT_TIMEOUT_MSEC):
+		_lan_log("reconnect cancelled — heartbeat resumed")
 		_reconnecting = false
 		return
 	_disconnect_session(true)
@@ -1045,7 +1084,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	# du blob → spawn instantané ; sinon décodage à la volée).
 	if _avatar_scene_cache.has(peer_id):
 		scene = _avatar_scene_cache[peer_id]
-	elif _avatar_blobs.has(peer_id):
+	elif _avatar_blobs.has(peer_id) and not _pending_avatar_loads.has(peer_id):
 		var tmp := "user://avatar_peer_%d.scn" % peer_id
 		var f := FileAccess.open(tmp, FileAccess.WRITE)
 		if f != null:
@@ -1353,53 +1392,125 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 		return
 	f.store_buffer(bytes)
 	f.close()
-	var scene: PackedScene = load(tmp)
-	if scene == null:
-		push_warning("LAN: cannot load received level scene (%s)" % tmp)
-		_set_status("Host level unreadable — kept local level")
-		_finalize_join()
-		return
-	push_warning("LAN: level scene loaded OK")
-	# Mémoriser le transform de spawn de la scène de l'hôte : les avatars
-	# distants sont spawnés selon LUI (pas le Player local de la scène
-	# d'origine), que le niveau soit déjà appliqué ou pas.
-	_host_spawn_transform = {"pos": recv_spawn, "rot": recv_rotation, "scale": recv_scale}
-	# Le statut AVANT l'emit : apply_host_level → mark_level_stable →
-	# _finalize_join() pose "Joined session", qui doit rester le message final.
-	_set_status("Host level loaded (%d KB)" % [bytes.size() / 1024])
-	# L'application peut être différée : on attend les avatars des pairs
-	# (voir _defer_or_emit_level_apply) pour qu'ils apparaissent avec le
-	# niveau, pas quelques secondes après.
-	_defer_or_emit_level_apply(scene, recv_spawn, recv_rotation, recv_scale)
+	# Décodage threadé : on ne bloque PAS le thread principal ici (c'était la
+	# cause de la coupure ~5 s de l'hôte pendant réception niveau+avatars).
+	push_warning("LAN: level received — %d KB decompressed, queued threaded load" % [bytes.size() / 1024])
+	_queue_level_scene_load(tmp, recv_spawn, recv_rotation, recv_scale, bytes.size() / 1024)
 
 
-func _cache_avatar_scene(peer_id: int) -> void:
-	if not _avatar_blobs.has(peer_id) or _avatar_scene_cache.has(peer_id):
+# Décodage des blobs scènes par ResourceLoader threadé (voir les commentaires
+# sur _pending_level_load) : le handler RPC ne fait que mettre en file, le
+# thread principal reste libre pour les ACK/heartbeats ENet.
+func _queue_level_scene_load(path: String, pos: Vector3, rot: Vector3, scl: Vector3, kb: int) -> bool:
+	if not _pending_level_load.is_empty():
+		return false
+	if not FileAccess.file_exists(path):
+		push_warning("LAN: level scene file missing (%s)" % path)
+		return false
+	_pending_level_load = {"path": path, "pos": pos, "rot": rot, "scale": scl, "kb": kb}
+	ResourceLoader.load_threaded_request(path, "", false, ResourceLoader.CACHE_MODE_REPLACE)
+	return true
+
+func _queue_avatar_scene_load(path: String, peer_id: int) -> bool:
+	if _pending_avatar_loads.has(peer_id) or not FileAccess.file_exists(path):
+		return false
+	_pending_avatar_loads[peer_id] = path
+	ResourceLoader.load_threaded_request(path, "", false, ResourceLoader.CACHE_MODE_REPLACE)
+	return true
+
+func _poll_pending_scene_loads() -> void:
+	if not _pending_level_load.is_empty():
+		var spec: Dictionary = _pending_level_load
+		var status := ResourceLoader.load_threaded_get_status(String(spec["path"]))
+		if status == ResourceLoader.THREAD_LOAD_LOADED:
+			var scene := ResourceLoader.load_threaded_get(String(spec["path"])) as PackedScene
+			_pending_level_load = {}
+			if scene == null:
+				push_warning("LAN: cannot load received level scene (%s)" % String(spec["path"]))
+				_set_status("Host level unreadable — kept local level")
+				_finalize_join()
+				return
+			push_warning("LAN: level scene loaded OK")
+			# Mémoriser le transform de spawn de la scène de l'hôte : les avatars
+			# distants sont spawnés selon LUI (pas le Player local de la scène
+			# d'origine), que le niveau soit déjà appliqué ou pas.
+			_host_spawn_transform = {"pos": spec["pos"], "rot": spec["rot"], "scale": spec["scale"]}
+			# Le statut AVANT l'emit : apply_host_level → mark_level_stable →
+			# _finalize_join() pose "Joined session", qui doit rester le message final.
+			_set_status("Host level loaded (%d KB)" % int(spec["kb"]))
+			# L'application peut être différée : on attend les avatars des pairs
+			# (voir _defer_or_emit_level_apply) pour qu'ils apparaissent avec le
+			# niveau, pas quelques secondes après.
+			_defer_or_emit_level_apply(scene, spec["pos"], spec["rot"], spec["scale"])
+		elif status == ResourceLoader.THREAD_LOAD_FAILED or status == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+			push_warning("LAN: threaded load failed (%s, status %d)" % [String(spec["path"]), status])
+			_pending_level_load = {}
+			_set_status("Host level unreadable — kept local level")
+			_finalize_join()
+	if _pending_avatar_loads.is_empty():
 		return
-	var tmp := "user://avatar_peer_%d.scn" % peer_id
-	var f := FileAccess.open(tmp, FileAccess.WRITE)
-	if f == null:
-		return
-	f.store_buffer(_avatar_blobs[peer_id])
-	f.close()
-	var t0 := Time.get_ticks_msec()
-	# CACHE_MODE_REPLACE pour forcer le rechargement depuis le disque quand
-	# l'avatar change : load() garde en cache l'ancienne scène PackedScene du
-	# même chemin, même après écriture d'un nouveau blob.
-	var loaded: PackedScene = ResourceLoader.load(tmp, "", ResourceLoader.CACHE_MODE_REPLACE) as PackedScene
-	push_warning("LAN: avatar peer %d decoded in %d ms" % [peer_id, Time.get_ticks_msec() - t0])
-	if loaded != null:
+	for peer_id in _pending_avatar_loads.keys():
+		var path := String(_pending_avatar_loads[peer_id])
+		var status := ResourceLoader.load_threaded_get_status(path)
+		if status != ResourceLoader.THREAD_LOAD_LOADED:
+			if status == ResourceLoader.THREAD_LOAD_FAILED or status == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
+				_lan_log("avatar[%d]: decode failed (status %d)" % [peer_id, status])
+				_pending_avatar_loads.erase(peer_id)
+			continue
+		_pending_avatar_loads.erase(peer_id)
+		var loaded := ResourceLoader.load_threaded_get(path) as PackedScene
+		if loaded == null:
+			_lan_log("avatar[%d]: decode failed (null scene)" % peer_id)
+			continue
+		_lan_log("avatar[%d]: decoded (%d KB)" % [peer_id, _avatar_blobs.get(peer_id, PackedByteArray()).size() / 1024])
 		_avatar_scene_cache[peer_id] = loaded
+		_finish_avatar_decode(peer_id)
+
+# Décodage threadé terminé pour un peer : le spawn est décalé du handler RPC
+# vers ici (le handler ne doit plus jamais bloquer le thread principal).
+func _finish_avatar_decode(peer_id: int) -> void:
+	if _players_container == null:
+		return
+	# Un spawn diffusé par l'hôte a pu créer l'avatar en version par défaut
+	# pendant le décodage : remplacer par la scène décodée (même logique que
+	# l'ancien chemin synchrone, qui recréait l'avatar à chaque blob).
+	if _remote_players.has(peer_id):
+		var old: Node = _remote_players[peer_id]
+		if old is Node3D:
+			_respawn_positions[peer_id] = {
+				"pos": (old as Node3D).global_position,
+				"rot": (old as Node3D).rotation,
+			}
+		old.queue_free()
+		_remote_players.erase(peer_id)
+	var entry: Dictionary = _players.get(peer_id, {})
+	_spawn_player(peer_id, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
+	_maybe_flush_deferred_level()
+
+# Pair du roster qui manque encore au niveau différé : pas de blob, OU blob
+# présent mais décodage threadé toujours en cours — un décode en cours ne doit
+# pas faire appliquer le niveau avant l'apparition de l'avatar concerné.
+# Pur et statique pour être testable sans session (multiplayer absent).
+static func _waiting_avatar_ids(players: Dictionary, blobs: Dictionary, pending_decodes: Dictionary, local_id: int) -> Array:
+	var waiting: Array = []
+	for id in players:
+		id = int(id)
+		if id == local_id:
+			continue
+		if not blobs.has(id) or pending_decodes.has(id):
+			waiting.append(id)
+	waiting.sort()
+	return waiting
+
+# L'id local n'existe que via multiplayer, absent hors arbre (tests/setup).
+func _local_peer_id() -> int:
+	var m = multiplayer
+	return m.get_unique_id() if m != null else 0
 
 # Retient l'application du niveau tant que des blobs d'avatars attendus
 # (roster courant, hors joueur local) manquent ; sinon applique immédiatement.
 func _defer_or_emit_level_apply(scene: PackedScene, pos: Vector3, rot: Vector3, scl: Vector3) -> void:
-	var waiting: Array = []
-	for id in _players:
-		if int(id) == multiplayer.get_unique_id():
-			continue
-		if not _avatar_blobs.has(int(id)):
-			waiting.append(int(id))
+	var waiting: Array = _waiting_avatar_ids(_players, _avatar_blobs, _pending_avatar_loads, _local_peer_id())
 	_lan_log("level ready — roster=%s blobs=%s → %s" % [
 		str(_players.keys()), str(_avatar_blobs.keys()),
 		"applied immediately" if waiting.is_empty() else "deferred (waiting for %s)" % str(waiting)])
@@ -1421,9 +1532,10 @@ func _maybe_flush_deferred_level() -> void:
 	if _deferred_level.is_empty():
 		return
 	var waiting: Array = []
+	var m = multiplayer
 	for id in _deferred_level["waiting"]:
-		if multiplayer.multiplayer_peer != null and multiplayer.get_peers().has(int(id)):
-			if not _avatar_blobs.has(int(id)):
+		if m != null and m.multiplayer_peer != null and m.get_peers().has(int(id)):
+			if not _avatar_blobs.has(int(id)) or _pending_avatar_loads.has(int(id)):
 				waiting.append(int(id))
 	_deferred_level["waiting"] = waiting
 	var expired: bool = Time.get_ticks_msec() >= int(_deferred_level["deadline"])
@@ -1747,11 +1859,11 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 		return
 	push_warning("LAN: avatar received from peer %d — %d KB" % [recv_from, bytes.size() / 1024])
 	_avatar_blobs[recv_from] = bytes
-	# Décodage immédiat : le coût du load() est payé ici (pendant l'attente
-	# du niveau) plutôt qu'au spawn. Invalider le cache précédent pour que la
+	# Décodage threadé : le handler ne fait que mettre en file (le coût du
+	# décodage est payé dans _poll_pending_scene_loads sans bloquer le thread
+	# principal ni les ACK ENet). Invalider le cache précédent pour que la
 	# nouvelle scène soit décodée (un avatar changé doit remplacer l'ancien).
 	_avatar_scene_cache.erase(recv_from)
-	_cache_avatar_scene(recv_from)
 	if _remote_players.has(recv_from):
 		var av: Node = _remote_players[recv_from]
 		# Préserver la position pour le respawn : l'avatar va être détruit et
@@ -1763,9 +1875,12 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 			}
 		av.queue_free()
 		_remote_players.erase(recv_from)
-	var entry: Dictionary = _players.get(recv_from, {})
-	_spawn_player(recv_from, String(entry.get("name", "")), Color(entry.get("color", Color.WHITE)))
-	_maybe_flush_deferred_level()
+	var tmp := "user://avatar_peer_%d.scn" % recv_from
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f != null:
+		f.store_buffer(bytes)
+		f.close()
+		_queue_avatar_scene_load(tmp, recv_from)
 
 @rpc("any_peer", "reliable")
 func _avatar_send_blob(from_id: int, blob: PackedByteArray) -> void:
@@ -1897,6 +2012,10 @@ func _physics_process(delta: float) -> void:
 	_update_cpu_capture_request()
 	_drain_level_send()
 	_drain_avatar_send()
+	# Applique les décodages threadés (niveau + avatars) dès qu'ils sont prêts.
+	# Placé AVANT l'early return session : l'avance du join ne doit jamais
+	# attendre un poll conditionné à un état qui dépend lui-même du décodage.
+	_poll_pending_scene_loads()
 	if not session_active or _level_root == null:
 		return
 	# Filet de sécurité join : si le niveau de l'hôte n'arrive jamais (bake
@@ -3421,7 +3540,7 @@ func _process(_delta: float) -> void:
 			if now - _last_heartbeat_sent_msec >= HEARTBEAT_INTERVAL_MSEC:
 				_last_heartbeat_sent_msec = now
 				_host_heartbeat.rpc()
-		elif now - _last_heartbeat_msec > HOST_HEARTBEAT_TIMEOUT_MSEC:
+		elif not is_host and heartbeat_reconnect_should_arm(not _pending_join, _last_heartbeat_msec, now, HOST_HEARTBEAT_TIMEOUT_MSEC):
 			_on_host_heartbeat_timeout()
 
 # Diffuse le curseur du propriétaire pour chaque fenêtre partagée visible :

@@ -236,7 +236,7 @@ func _input(event: InputEvent) -> void:
 
 # ── Onglets ────────────────────────────────────────────────────────────
 
-func _refresh_tabs() -> void:
+func _refresh_tabs(_roster: Array = []) -> void:
 	for child in tabs_container.get_children():
 		child.queue_free()
 	tab_buttons.clear()
