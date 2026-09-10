@@ -28,6 +28,17 @@ const DISCOVERY_TIMEOUT := 1.6
 const DISCOVERY_RETRY_INTERVAL := 0.4
 const DISCOVERY_QUERY := "CYBERREALM_DISCOVER"
 
+# ── DTLS : paire auto-signée EMBARQUÉE (pas de fichiers dans res://) ────
+# Godot exclut les clés privées (CryptoKey) du pck exporté, même en
+# all_resources → les fichiers res://certs/ ne sont jamais fiables à
+# l'export. On embarque donc la paire dans le script (script_export_mode=0
+# → le texte suit dans le pck), on l'écrit dans user:// au premier hébergement,
+# et client_unsafe (pas de validation de la chaine) rend la chose indifférente
+# au fait que la clé est lisible : l'AuthN mutuelle est assurée par le PIN.
+const DTLS_KEY_PEM := "-----BEGIN PRIVATE KEY-----\nMIIEvwIBADANBgkqhkiG9w0BAQEFAASCBKkwggSlAgEAAoIBAQCttTJS4jpY1ODM\n1CYtu95H2MCtNMxYUCU4dKMrwUhq+sVx6IFILhFJwnSDYHUpszwkWqpqSFOXt7x0\nbOqn+eqvI0gvastxEXpU0uJrN31CFjKWBofN3+D5MrWnFxDRlmkfxdYIWBMLg+lE\nPFDCVvku5NfjswoVzFod0lyVKNoPXmemEfUDgbrwaPPGLGMM4HKnmcN7Vmqb+yuT\nmC0DJJ4MjdGbGCfr1GpIZbhYq83TkSfF++HPPoZApCFg0m4GGWm78xqzvLIdObi/\nmDhvP8HyW45PdhT1r27+nG1pEH8fZQv5B5+uwaI5XEqUy+VjW1mB1vpirMf2Ruaf\nV36T3KGrAgMBAAECggEAQcymUGEjiuywbsZZ4+8LJxoC+llKopVRVA5SlMt1XBi7\n3AcfmbDhmZgQPIe4OeCMApVZgkL9bzYJK+zqAlEXxdnOiS+h+qWNOj5byBNP3k28\nQbodjS2l8Z900eNZ2ppoHcH57lU2eaExJkjWqpb5cvr6kGUMh+9Nn4hEy7eaykDv\nrR7660Bsgy7E3vrmj2vwGGQIiBaQzjoSbA1nhUnv93fhLtjh2o/WkmoA5+zUNTsI\nYelUpdu03wtcsHjVO3iCi2lsNn6zewK5Cn+Hla2oNP0ZkQI6VEH9yrbqn/6kNaVP\nbpm1Xud7WOViiaXexeHb9czJgmVoC90sWOCwVo83MQKBgQDTzCZftNOQFSlpZV8C\nXmo7IxsKW//uvdxbrTudTPcyLZg0+f5gnmsRPlHSsgJAKO6v6JSVhOfs6oSyY9my\n03m/BF5zSga0Oy4hCObDeqOmsRcZ4x+RNSAQVgwHzGM6lUs9Gg55l+1o6ZgQ18JT\nQc38O9WiyTuBUVn2OSPnkDEY2QKBgQDR9gD9rLFoafdIUiQD27I6e+ycTxUN3AHz\nsTGYS2Z8grfwMRbNJ7admjxzm/tL9OksLIrMDnEC4lsU/DFbxqXAOqjBm1LfCs6o\nSxmrwzuItk669RmrVe3BtcRDgrKbeoDgqRHrQHibmnsmH9LsFjkQWRsj3HudULwO\nn6vEENKcIwKBgQCQgNclsVAvG+EXQcyi5xv/oSIP3Vku4Gb6PaVQ23REzgrtCive\na/eM2kIlSMJ0V/kSF9NYeEdsw00qESo08kg8ZZSzgCw2x7HfZB1d/cyuLGEgjm+5\nOM/ZlXu7zl1dWQLue1qo51lZnRbdVvgEqf8KOyC1YiqxPnnsnmu60AxPcQKBgQDM\nEO67n6o6Uqu+Rd+tRE3A3AuHjLFo7AmVogYTAE3W/HHsaLnBojSyj2Lr9pHTLHGo\nto4ccHjUlc5y4f7TNYqKADlfGyj7kZR0K7ICqFlnsdFpkqllRro0CQd9mj0gMnuq\nX4kD/oB6tDW3Qz0MqzjBM+nV/AjFSN/O0s/uW29nwwKBgQCQ/MoryfXD9U6aFSRR\nIzCYlpCQz7ZDhN9WWHLq+cW7w52UkSjTC9Bj4lIu6EawHHBNQKFpO3IRTpj6NzIv\nW8lY0oR4MkvYLWQdxRsVw9qkr9cj4OmmCf9DYioHpgGssjPZAT00wCknAFNfUwE5\nQnqVkTbUsHmmgTcoMMwDoT8O9g==\n-----END PRIVATE KEY-----\n"
+const DTLS_CERT_PEM := "-----BEGIN CERTIFICATE-----\nMIIDJDCCAgygAwIBAgIUTyTDifJeXIwuvrgeQJYh1MGFPAQwDQYJKoZIhvcNAQEL\nBQAwGTEXMBUGA1UEAwwOQ3liZXJSZWFsbSBMQU4wHhcNMjYwODI4MjA1MjI2WhcN\nMzYwODI1MjA1MjI2WjAZMRcwFQYDVQQDDA5DeWJlclJlYWxtIExBTjCCASIwDQYJ\nKoZIhvcNAQEBBQADggEPADCCAQoCggEBAK21MlLiOljU4MzUJi273kfYwK00zFhQ\nJTh0oyvBSGr6xXHogUguEUnCdINgdSmzPCRaqmpIU5e3vHRs6qf56q8jSC9qy3ER\nelTS4ms3fUIWMpYGh83f4PkytacXENGWaR/F1ghYEwuD6UQ8UMJW+S7k1+OzChXM\nWh3SXJUo2g9eZ6YR9QOBuvBo88YsYwzgcqeZw3tWapv7K5OYLQMkngyN0ZsYJ+vU\nakhluFirzdORJ8X74c8+hkCkIWDSbgYZabvzGrO8sh05uL+YOG8/wfJbjk92FPWv\nbv6cbWkQfx9lC/kHn67BojlcSpTL5WNbWYHW+mKsx/ZG5p9XfpPcoasCAwEAAaNk\nMGIwHQYDVR0OBBYEFN7nNrlafmMFIIqf0EgEBnkhL0k9MB8GA1UdIwQYMBaAFN7n\nNrlafmMFIIqf0EgEBnkhL0k9MA8GA1UdEwEB/wQFMAMBAf8wDwYDVR0RBAgwBocE\nAAAAADANBgkqhkiG9w0BAQsFAAOCAQEANgH0HhBtOyD7hPNJQzKYUh1bMwxIw3A2\n3y0LwT3GsIel5vqrLBT2N+c5oaYez2eBKYMsALGaUhVn85A0PqtFMbchiN/mgXmP\nwdKtv7+NbUW+lz7GC1OHYoLwDFntVs3CYiQliFtwS/LIA1jX2GIjYX1Ix68U71/3\nxH/ZrlmPjyrFzGC6Py0BEb5uLe9ynyHqz+RVE/hRqWATmIckkEF1EThzeL5SKOpt\nk3CiPpmQMy8Xm3IJ0aSqp69sm73rGB2SLBN2yCzUoLP8P/njfURch5dRe2Vu6nOo\nh08dAqjapUbtp1Pr59hff7AyPIzpPVm03gHpSQ0atbN4XLjeOU//gA==\n-----END CERTIFICATE-----\n"
+const DTLS_CREDS_NAME := "cyberrealm-lan"
+
 # ── Transfert du niveau de l'hôte (maps custom jouables en LAN) ──────
 # L'hôte bake son niveau (LevelBaker) en un blob binaire auto-suffisant
 # (assets embarqués → pas besoin de builds identiques), le compresse en ZSTD
@@ -549,22 +560,54 @@ func get_remote_players() -> Dictionary:
 
 # ── DTLS (chiffrement de session) & anti brute-force PIN ─────────────
 
-func _load_dtls_options() -> TLSOptions:
+var _dtls_key: CryptoKey
+var _dtls_cert: X509Certificate
+
+## Matérialise la paire embarquée dans user:// puis la charge en ressource.
+## Indépendant du packaging (fonctionne aussi bien en source qu'en export).
+func _ensure_dtls_creds() -> bool:
+	if _dtls_key != null and _dtls_cert != null:
+		return true
+	var dir := DirAccess.open("user://")
+	if dir != null and not dir.dir_exists("certs"):
+		dir.make_dir("certs")
+	var key_path := "user://certs/%s.pem" % DTLS_CREDS_NAME
+	var cert_path := "user://certs/%s.crt" % DTLS_CREDS_NAME
+	var fa := FileAccess.open(key_path, FileAccess.WRITE)
+	if fa == null:
+		_lan_log("DTLS: cannot write key to user://, encryption disabled")
+		return false
+	fa.store_string(DTLS_KEY_PEM)
+	fa.close()
+	fa = FileAccess.open(cert_path, FileAccess.WRITE)
+	if fa == null:
+		_lan_log("DTLS: cannot write cert to user://, encryption disabled")
+		return false
+	fa.store_string(DTLS_CERT_PEM)
+	fa.close()
 	var key := CryptoKey.new()
+	if key.load(key_path) != OK:
+		_lan_log("DTLS: cannot load key from user://, encryption disabled")
+		return false
 	var cert := X509Certificate.new()
-	if key.load("res://certs/lan_key.pem") != OK or cert.load("res://certs/lan_cert.crt") != OK:
-		_lan_log("DTLS: key/cert not found, encryption disabled")
+	if cert.load(cert_path) != OK:
+		_lan_log("DTLS: cannot load cert from user://, encryption disabled")
+		return false
+	_dtls_key = key
+	_dtls_cert = cert
+	return true
+
+func _load_dtls_options() -> TLSOptions:
+	if not _ensure_dtls_creds():
 		return null
-	return TLSOptions.server(key, cert)
+	return TLSOptions.server(_dtls_key, _dtls_cert)
 
 func _dtls_client_options() -> TLSOptions:
-	var cert := X509Certificate.new()
-	if cert.load("res://certs/lan_cert.crt") != OK:
-		_lan_log("DTLS: cert not found, encryption disabled")
+	if not _ensure_dtls_creds():
 		return null
 	# Chiffrement seul (pas de validation d'identite : cert auto-signe, IP LAN
 	# variable, et l'authentification mutuelle est deja assuree par le PIN).
-	return TLSOptions.client_unsafe(cert)
+	return TLSOptions.client_unsafe(_dtls_cert)
 
 ## true si l'adresse est actuellement blacklistée (verrou intact et non expiré).
 func _pin_blocked(ip: String) -> bool:
