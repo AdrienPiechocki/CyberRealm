@@ -71,9 +71,6 @@ const AUTH_TIMEOUT_MSEC := 10000
 # ── Reconnexion & anti brute-force PIN (B2) ──────────────────────────
 const RECONNECT_WINDOW_MSEC := 30000
 const RECONNECT_MAX_ATTEMPTS := 12
-# Fichier de la liste de bannis (IP) persistée. Lue/écrite à chaque
-# opération (pas de cache : le pause_menu la relit en direct).
-const BAN_LIST_FILE := "user://lan_ban_list.json"
 const HEARTBEAT_INTERVAL_MSEC := 1000
 const HOST_HEARTBEAT_TIMEOUT_MSEC := 4000
 const PIN_FAIL_LIMIT := 3
@@ -696,16 +693,6 @@ static func save_ban_list_to(path: String, banned: Array) -> void:
 	f.store_string(JSON.stringify(banned))
 	f.close()
 
-func _load_ban_list() -> Array:
-	return load_ban_list_from(BAN_LIST_FILE)
-
-func _save_ban_list(banned: Array) -> void:
-	save_ban_list_to(BAN_LIST_FILE, banned)
-
-## Liste actuelle des IP bannies (pour la page admin du pause_menu).
-func get_banned_ips() -> Array:
-	return _load_ban_list()
-
 # ── Host ─────────────────────────────────────────────────────────────
 
 func host_game() -> bool:
@@ -1173,23 +1160,8 @@ func _remove_player(peer_id: int) -> void:
 	_clear_remote_windows(peer_id)
 	_emit_players()
 
-func unban_ip(ip: String) -> void:
-	if ip.is_empty():
-		return
-	var list := _load_ban_list()
-	if list.has(ip):
-		list.erase(ip)
-		_save_ban_list(list)
-		_set_status("Unbanned %s" % ip)
-
 func _on_peer_connected(id: int) -> void:
 	if is_host:
-		# Refus immédiat des adresses bannies : aucun timeout/PIN, coupure
-		# nette AVANT de la marquer en attente d'auth.
-		if is_ip_banned(_remote_ip(id), _load_ban_list()):
-			multiplayer.multiplayer_peer.disconnect_peer(id)
-			_set_status("Banned IP rejected: %s" % _remote_ip(id))
-			return
 		_set_status("Player %d connected — waiting for PIN…" % id)
 		# Timeouts ENet généreux : pendant un stream partagé (vidéo/audio), le
 		# thread principal fait de l'encodage/décodage JPEG par frame ; un à-coup

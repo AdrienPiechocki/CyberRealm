@@ -1335,6 +1335,27 @@ func _show_lan() -> void:
 	)
 	container.add_child(find_btn)
 
+	_lan_results_box = VBoxContainer.new()
+	_lan_results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_lan_results_box.add_theme_constant_override("separation", 4)
+	container.add_child(_lan_results_box)
+	
+	_lan_status_label = Label.new()
+	_lan_status_label.text = _lan_status_text
+	_lan_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_status_label.add_theme_font_size_override("font_size", 13)
+	_lan_status_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(_lan_status_label)
+
+	_lan_players_label = Label.new()
+	_lan_players_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_players_label.add_theme_font_size_override("font_size", 13)
+	_lan_players_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(_lan_players_label)
+	_update_lan_players_label()
+	
+	container.add_child(_make_spacer())
+	
 	var video_title := Label.new()
 	video_title.text = "Video share"
 	video_title.add_theme_font_size_override("font_size", 16)
@@ -1400,82 +1421,20 @@ func _show_lan() -> void:
 	)
 	container.add_child(apply_video_btn)
 
-	_lan_results_box = VBoxContainer.new()
-	_lan_results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	_lan_results_box.add_theme_constant_override("separation", 4)
-	container.add_child(_lan_results_box)
-
-	_lan_status_label = Label.new()
-	_lan_status_label.text = _lan_status_text
-	_lan_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_lan_status_label.add_theme_font_size_override("font_size", 13)
-	_lan_status_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
-	container.add_child(_lan_status_label)
-
-	_lan_players_label = Label.new()
-	_lan_players_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_lan_players_label.add_theme_font_size_override("font_size", 13)
-	_lan_players_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
-	container.add_child(_lan_players_label)
-	_update_lan_players_label()
-
-	var banned_btn := _make_btn("Banned IPs", Color(0.2, 0.18, 0.28, 0.9))
-	banned_btn.pressed.connect(_show_banned)
-	container.add_child(banned_btn)
-
+	container.add_child(_make_spacer())
+	
 	var disconnect_btn := _make_btn("Disconnect", Color(0.3, 0.2, 0.1, 0.9))
 	disconnect_btn.pressed.connect(func():
 		lan_disconnect_requested.emit()
 	)
 	container.add_child(disconnect_btn)
 
-	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
-func _show_banned() -> void:
-	_clear()
-	_waiting_action = ""
-	_current_view = "banned"
-
-	container.add_child(_make_title("BANNED IPS"))
-
-	var hint := Label.new()
-	hint.text = "Banned IPs cannot rejoin this machine's LAN sessions.\nThis list is local to this computer."
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size", 12)
-	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
-	container.add_child(hint)
-
-	var list: Array = _lan.get_banned_ips() if _lan != null else []
-	if list.is_empty():
-		var empty := Label.new()
-		empty.text = "No banned IPs"
-		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		empty.add_theme_font_size_override("font_size", 14)
-		empty.add_theme_color_override("font_color", Color(0.5, 0.55, 0.6))
-		container.add_child(empty)
-	else:
-		for ip: String in list:
-			var row := HBoxContainer.new()
-			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			var ip_label := Label.new()
-			ip_label.text = ip
-			ip_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			ip_label.add_theme_font_size_override("font_size", 14)
-			row.add_child(ip_label)
-			var unban_btn := _make_btn("Unban", Color(0.2, 0.2, 0.3, 0.9))
-			unban_btn.custom_minimum_size = Vector2(110, 36)
-			unban_btn.pressed.connect(_on_unban.bind(ip))
-			row.add_child(unban_btn)
-			container.add_child(row)
-
-	container.add_child(_make_spacer())
-	container.add_child(_make_back_btn())
 
 func _on_unban(ip: String) -> void:
 	if _lan:
 		_lan.unban_ip(ip)
-	_show_banned()
 
 func set_lan_status(text: String) -> void:
 	_lan_status_text = text
