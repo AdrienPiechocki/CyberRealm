@@ -177,10 +177,8 @@ func hide_menu() -> void:
 	_clear_preview()
 	menu_closed.emit()
 
-func _process(delta: float) -> void:
-	super(delta)
-	if _preview_avatar != null and is_instance_valid(_preview_avatar):
-		_preview_avatar.rotation.y += delta * 0.5
+func _process(_delta: float) -> void:
+	super(_delta)
 	if _picker_running:
 		_poll_file_picker()
 
@@ -429,6 +427,31 @@ func _on_file_pick_pressed() -> void:
 
 # ── Preview avatar ─────────────────────────────────────────────────────
 
+static func apply_flat_preview_materials(avatar: Node) -> void:
+	var meshes: Array[MeshInstance3D] = []
+	_collect_preview_meshes(avatar, meshes)
+	for mi in meshes:
+		if mi.mesh == null:
+			continue
+		var source: BaseMaterial3D = null
+		if mi.material_override is BaseMaterial3D:
+			source = mi.material_override as BaseMaterial3D
+		elif mi.get_surface_override_material(0) is BaseMaterial3D:
+			source = mi.get_surface_override_material(0) as BaseMaterial3D
+		elif mi.mesh.get_surface_count() > 0:
+			source = mi.mesh.surface_get_material(0)
+		var mat: BaseMaterial3D = source.duplicate() if source != null else StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mi.material_override = mat
+
+
+static func _collect_preview_meshes(node: Node, out: Array[MeshInstance3D]) -> void:
+	if node is MeshInstance3D:
+		out.append(node)
+	for child in node.get_children():
+		_collect_preview_meshes(child, out)
+
+
 func _update_preview() -> void:
 	_clear_preview()
 	if selected_peer == 0 or _lan == null:
@@ -447,6 +470,7 @@ func _update_preview() -> void:
 	_preview_avatar = scene.instantiate()
 	if _preview_avatar.has_method("setup"):
 		_preview_avatar.setup(selected_peer, name, color)
+	apply_flat_preview_materials(_preview_avatar)
 	_preview_avatar.position = Vector3.ZERO
 	_preview_avatar.rotation = Vector3.ZERO
 	preview_viewport.add_child(_preview_avatar)

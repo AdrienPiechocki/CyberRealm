@@ -7,8 +7,8 @@
 [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/ui/capture_selector.gd" id="6_capture_selector"]
 [ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/ui/radial_menu.gd" id="7_radial_menu"]
 [ext_resource type="Script" uid="uid://c0rashg3vxm4k" path="res://scripts/ui/virtual_keyboard.gd" id="8_virtual_keyboard"]
-[ext_resource type="Script" path="res://scripts/ui/tutorial.gd" id="9_tutorial"]
-[ext_resource type="Script" path="res://scripts/ui/players_menu.gd" id="10_players_menu"]
+[ext_resource type="Script" uid="uid://cdln4xq2sgxx7" path="res://scripts/ui/tutorial.gd" id="9_tutorial"]
+[ext_resource type="Script" uid="uid://hr1rkfp4b0pb" path="res://scripts/ui/players_menu.gd" id="10_players_menu"]
 
 [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
 
@@ -114,9 +114,9 @@ custom_minimum_size = Vector2(160, 0)
 layout_mode = 2
 theme_override_constants/separation = 6
 
-[node name="PlayersMenuLayer" type="CanvasLayer" parent="." unique_id=4200000001]
+[node name="PlayersMenuLayer" type="CanvasLayer" parent="." unique_id=-94967295]
 
-[node name="PlayersMenu" type="PanelContainer" parent="PlayersMenuLayer" unique_id=4200000002]
+[node name="PlayersMenu" type="PanelContainer" parent="PlayersMenuLayer" unique_id=-94967294]
 anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5
@@ -130,46 +130,41 @@ grow_horizontal = 2
 grow_vertical = 2
 script = ExtResource("10_players_menu")
 
-[node name="VBox" type="VBoxContainer" parent="PlayersMenuLayer/PlayersMenu" unique_id=4200000003]
+[node name="VBox" type="VBoxContainer" parent="PlayersMenuLayer/PlayersMenu" unique_id=-94967293]
 layout_mode = 2
 theme_override_constants/separation = 0
 
-[node name="TopBar" type="ScrollContainer" parent="PlayersMenuLayer/PlayersMenu/VBox" unique_id=4200000004]
+[node name="TopBar" type="ScrollContainer" parent="PlayersMenuLayer/PlayersMenu/VBox" unique_id=-94967292]
 custom_minimum_size = Vector2(0, 40)
 layout_mode = 2
 vertical_scroll_mode = 0
 
-[node name="Tabs" type="HBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/TopBar" unique_id=4200000005]
+[node name="Tabs" type="HBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/TopBar" unique_id=-94967291]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 2
 
-[node name="Content" type="HBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox" unique_id=4200000006]
+[node name="Content" type="HBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox" unique_id=-94967290]
 layout_mode = 2
 size_flags_vertical = 3
 theme_override_constants/separation = 0
 
-[node name="Preview" type="SubViewportContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=4200000007]
+[node name="Preview" type="SubViewportContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=-94967289]
 layout_mode = 2
 size_flags_horizontal = 3
 size_flags_vertical = 3
 stretch = true
 
-[node name="AvatarViewport" type="SubViewport" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview" unique_id=4200000008]
+[node name="AvatarViewport" type="SubViewport" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview" unique_id=-94967288]
+transparent_bg = true
 handle_input_locally = false
+size = Vector2i(696, 560)
 render_target_update_mode = 4
-size = Vector2i(600, 500)
 
-[node name="Camera3D" type="Camera3D" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview/AvatarViewport"]
-transform = Transform3D(1, 0, 0, 0, 0.992, -0.124, 0, 0.124, 0.992, 0, 1.6, 3.2)
-current = true
+[node name="VSeparator" type="VSeparator" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=-94967287]
+layout_mode = 2
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview/AvatarViewport"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 4.5, 3)
-
-[node name="VSeparator" type="VSeparator" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=4200000009]
-
-[node name="Actions" type="VBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=4200000010]
+[node name="Actions" type="VBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=-94967286]
 custom_minimum_size = Vector2(200, 0)
 layout_mode = 2
 theme_override_constants/separation = 6
@@ -233,6 +228,7 @@ script = ExtResource("5_pause_menu")
 
 [node name="Tutorial" type="Control" parent="TutorialLayer" unique_id=390218742]
 visible = false
+layout_mode = 3
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
