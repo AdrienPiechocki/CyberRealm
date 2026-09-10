@@ -1,0 +1,1456 @@
+# Review package: main..HEAD
+
+## Commits
+3b56a80 feat(ui): pause menu Banned IPs admin page
+a73610f feat(ui): wire players menu hotkey, gating, notify-send and kick overlay
+427a814 feat(ui): players menu actions (message, file picker, kick/ban confirm)
+72b209f fix(ui): guard players_menu players_changed connection against duplicate setup
+196afa9 feat(ui): PlayersMenu scene + tabs + avatar preview + input action
+9c70f22 feat(fileshare): programmatic send_file_to_peer + shared size helper
+0c39c19 feat(lan): message/kick/ban RPCs + persisted ban enforcement on join
+2b4ba0a feat(lan): persisted IP ban list core with tests
+
+## Files changed
+ Game/source/project.godot                         |   5 +
+ Game/source/scenes/player.tscn                    |  61 +++
+ Game/source/scripts/main/wayland_room.gd          |  52 ++-
+ Game/source/scripts/network/file_share_manager.gd |  44 +-
+ Game/source/scripts/network/lan_manager.gd        | 126 ++++++
+ Game/source/scripts/player/player.gd              |   5 +
+ Game/source/scripts/ui/pause_menu.gd              |  58 ++-
+ Game/source/scripts/ui/players_menu.gd            | 469 ++++++++++++++++++++++
+ Game/source/tests/test_file_share.gd              |  24 ++
+ Game/source/tests/test_lan_ban_list.gd            |  43 ++
+ 10 files changed, 879 insertions(+), 8 deletions(-)
+
+## Diff
+diff --git a/Game/source/project.godot b/Game/source/project.godot
+index 2094723..97a3f2a 100644
+--- a/Game/source/project.godot
++++ b/Game/source/project.godot
+@@ -184,20 +184,25 @@ pause_menu={
+ "deadzone": 0.2,
+ "events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":false,"ctrl_pressed":false,"meta_pressed":false,"pressed":false,"keycode":0,"physical_keycode":4194305,"key_label":0,"unicode":0,"location":0,"echo":false,"script":null)
+ , Object(InputEventJoypadButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"button_index":6,"pressure":0.0,"pressed":true,"script":null)
+ ]
+ }
+ radial_menu={
+ "deadzone": 0.2,
+ "events": [Object(InputEventJoypadButton,"resource_local_to_scene":false,"resource_name":"","device":-1,"button_index":1,"pressure":0.0,"pressed":true,"script":null)
+ ]
+ }
++players_menu={
++"deadzone": 0.2,
++"events": [Object(InputEventKey,"resource_local_to_scene":false,"resource_name":"","device":-1,"window_id":0,"alt_pressed":false,"shift_pressed":true,"ctrl_pressed":false,"meta_pressed":true,"pressed":false,"keycode":0,"physical_keycode":77,"key_label":0,"unicode":80,"location":0,"echo":false,"script":null)
++]
++}
+ 
+ [physics]
+ 
+ 3d/physics_engine="Jolt Physics"
+ 
+ [rendering]
+ 
+ textures/canvas_textures/default_texture_filter=0
+ rendering_device/driver.windows="d3d12"
+ occlusion_culling/use_occlusion_culling=true
+diff --git a/Game/source/scenes/player.tscn b/Game/source/scenes/player.tscn
+index ff2f746..eee52ce 100644
+--- a/Game/source/scenes/player.tscn
++++ b/Game/source/scenes/player.tscn
+@@ -1,20 +1,21 @@
+ [gd_scene format=3 uid="uid://dl5med4hn5t14"]
+ 
+ [ext_resource type="Script" uid="uid://8wtm7d3y8fsf" path="res://scripts/player/player.gd" id="1_3vyb7"]
+ [ext_resource type="Script" uid="uid://ce843jf4p7swo" path="res://scripts/ui/fps.gd" id="2_qlg0r"]
+ [ext_resource type="Script" uid="uid://de3x2wis2kjfc" path="res://scripts/ui/window_menu.gd" id="4_window_menu"]
+ [ext_resource type="Script" uid="uid://iuanh2bli0ew" path="res://scripts/ui/pause_menu.gd" id="5_pause_menu"]
+ [ext_resource type="Script" uid="uid://bqxgh1rtwncf7" path="res://scripts/ui/capture_selector.gd" id="6_capture_selector"]
+ [ext_resource type="Script" uid="uid://cyxbtrdmgwclb" path="res://scripts/ui/radial_menu.gd" id="7_radial_menu"]
+ [ext_resource type="Script" uid="uid://c0rashg3vxm4k" path="res://scripts/ui/virtual_keyboard.gd" id="8_virtual_keyboard"]
+ [ext_resource type="Script" path="res://scripts/ui/tutorial.gd" id="9_tutorial"]
++[ext_resource type="Script" path="res://scripts/ui/players_menu.gd" id="10_players_menu"]
+ 
+ [sub_resource type="CapsuleShape3D" id="CapsuleShape3D_jm82k"]
+ 
+ [sub_resource type="LabelSettings" id="LabelSettings_3vyb7"]
+ font_size = 24
+ 
+ [sub_resource type="LabelSettings" id="LabelSettings_jm82k"]
+ font_size = 32
+ 
+ [sub_resource type="StyleBoxEmpty" id="StyleBoxEmpty_fjrip"]
+@@ -106,20 +107,80 @@ expand_mode = 3
+ stretch_mode = 5
+ 
+ [node name="VSeparator" type="VSeparator" parent="WindowMenuLayer/WindowMenu/VBox/Content" unique_id=2068084526]
+ layout_mode = 2
+ 
+ [node name="Actions" type="VBoxContainer" parent="WindowMenuLayer/WindowMenu/VBox/Content" unique_id=1047274707]
+ custom_minimum_size = Vector2(160, 0)
+ layout_mode = 2
+ theme_override_constants/separation = 6
+ 
++[node name="PlayersMenuLayer" type="CanvasLayer" parent="." unique_id=4200000001]
++
++[node name="PlayersMenu" type="PanelContainer" parent="PlayersMenuLayer" unique_id=4200000002]
++anchors_preset = 8
++anchor_left = 0.5
++anchor_top = 0.5
++anchor_right = 0.5
++anchor_bottom = 0.5
++offset_left = -450.0
++offset_top = -300.0
++offset_right = 450.0
++offset_bottom = 300.0
++grow_horizontal = 2
++grow_vertical = 2
++script = ExtResource("10_players_menu")
++
++[node name="VBox" type="VBoxContainer" parent="PlayersMenuLayer/PlayersMenu" unique_id=4200000003]
++layout_mode = 2
++theme_override_constants/separation = 0
++
++[node name="TopBar" type="ScrollContainer" parent="PlayersMenuLayer/PlayersMenu/VBox" unique_id=4200000004]
++custom_minimum_size = Vector2(0, 40)
++layout_mode = 2
++vertical_scroll_mode = 0
++
++[node name="Tabs" type="HBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/TopBar" unique_id=4200000005]
++layout_mode = 2
++size_flags_vertical = 3
++theme_override_constants/separation = 2
++
++[node name="Content" type="HBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox" unique_id=4200000006]
++layout_mode = 2
++size_flags_vertical = 3
++theme_override_constants/separation = 0
++
++[node name="Preview" type="SubViewportContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=4200000007]
++layout_mode = 2
++size_flags_horizontal = 3
++size_flags_vertical = 3
++stretch = true
++
++[node name="AvatarViewport" type="SubViewport" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview" unique_id=4200000008]
++handle_input_locally = false
++render_target_update_mode = 4
++size = Vector2i(600, 500)
++
++[node name="Camera3D" type="Camera3D" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview/AvatarViewport"]
++transform = Transform3D(1, 0, 0, 0, 0.992, -0.124, 0, 0.124, 0.992, 0, 1.6, 3.2)
++current = true
++
++[node name="DirectionalLight3D" type="DirectionalLight3D" parent="PlayersMenuLayer/PlayersMenu/VBox/Content/Preview/AvatarViewport"]
++transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 4.5, 3)
++
++[node name="VSeparator" type="VSeparator" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=4200000009]
++
++[node name="Actions" type="VBoxContainer" parent="PlayersMenuLayer/PlayersMenu/VBox/Content" unique_id=4200000010]
++custom_minimum_size = Vector2(200, 0)
++layout_mode = 2
++theme_override_constants/separation = 6
++
+ [node name="CaptureSelectorLayer" type="CanvasLayer" parent="." unique_id=1962819427]
+ 
+ [node name="CaptureSelector" type="PanelContainer" parent="CaptureSelectorLayer" unique_id=1962819428]
+ anchors_preset = 8
+ anchor_left = 0.5
+ anchor_top = 0.5
+ anchor_right = 0.5
+ anchor_bottom = 0.5
+ offset_left = -280.0
+ offset_top = -210.0
+diff --git a/Game/source/scripts/main/wayland_room.gd b/Game/source/scripts/main/wayland_room.gd
+index 2fae9b9..0dafc77 100644
+--- a/Game/source/scripts/main/wayland_room.gd
++++ b/Game/source/scripts/main/wayland_room.gd
+@@ -12,20 +12,21 @@ extends Node3D
+ 
+ @onready var compositor: WlrCompositor = $WlrCompositor
+ @onready var player = $Level/Player
+ @onready var ui: CanvasLayer = $Level/Player/UI
+ @onready var window_menu = $Level/Player/WindowMenuLayer/WindowMenu
+ @onready var capture_selector = $Level/Player/CaptureSelectorLayer/CaptureSelector
+ @onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
+ @onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
+ @onready var keyboard: VirtualKeyboard = $Level/Player/KeyboardLayer/VirtualKeyboard
+ @onready var tutorial = $Level/Player/TutorialLayer/Tutorial
++@onready var players_menu = $Level/Player/PlayersMenuLayer/PlayersMenu
+ 
+ var win3d: Node3D
+ var focus: Node3D
+ var layers: Node3D
+ var pins: Node3D
+ var fx: Node3D
+ var presenter: Node3D # présente le viewport à l'output headless pour OBS
+ var lan: Node # multijoueur LAN (hôte/join, avatars)
+ var cmd: Node # drone de commandes IPC (cyberrealm-exec)
+ var interactor: Node3D # clic gauche sur les objets du niveau (scripts user)
+@@ -58,20 +59,21 @@ var _host_session_bus := ""
+ var _host_wayland_display := ""
+ var _host_agent_stopped := false
+ 
+ # Niveaux : on charge d'abord le level custom de l'utilisateur s'il existe
+ # (res://user/level.tscn), sinon on retombe sur le level par défaut.
+ const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
+ const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
+ 
+ var _level_path := ""
+ var _menu_just_closed := false
++var _hud_notice: Label = null
+ # Vrai si le tuto a été lancé automatiquement au premier lancement : à sa
+ # fermeture on mémorise tutorial_seen dans les settings persistants.
+ var _tutorial_first_run := false
+ # Vrai tant que le niveau affiché est celui de l'hôte LAN (apply_host_level) :
+ # à la déconnexion, le joueur doit retrouver SON niveau personnel.
+ var _level_swapped := false
+ # Transform d'origine du Player dans le niveau personnel (capturé au boot,
+ # avant toute session LAN) : sert de spawn au retour après déconnexion.
+ var _local_spawn_transform := {}
+ 
+@@ -462,22 +464,29 @@ func _ready() -> void:
+ 	add_child(interactor)
+ 	interactor.setup(player, lan)
+ 
+ 	# Partage de fichiers : drag & drop Wayland lâché sur un avatar → offre
+ 	# rsync (prompt mot de passe SSH chez le destinataire, cf. README).
+ 	file_share = Node3D.new()
+ 	file_share.name = "FileShare"
+ 	file_share.set_script(preload("res://scripts/network/file_share_manager.gd"))
+ 	add_child(file_share)
+ 	file_share.setup(player, lan, compositor)
++	pause_menu.set_lan_ref(lan)
+ 	compositor.file_drop_received.connect(file_share.on_files_dropped)
+ 
++	players_menu.setup(lan, compositor, file_share)
++	players_menu.visibility_changed.connect(_on_menu_visibility_changed)
++	lan.message_received.connect(_on_lan_message_received)
++	lan.kicked.connect(func(): _lan_flash("Kicked by host"))
++	lan.banned.connect(func(): _lan_flash("You banned a player"))
++
+ 	# TextureRect pour l'icône de drag-and-drop
+ 	drag_icon_rect = TextureRect.new()
+ 	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
+ 	drag_icon_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	drag_icon_rect.visible = false
+ 	drag_icon_rect.z_index = 100
+ 	ui.add_child(drag_icon_rect)
+ 
+ 	# Tutoriel au premier lancement (mémorisé via settings). Le await laisse
+ 	# le viewport se rendre une première fois avant la capture des menus.
+@@ -714,43 +723,50 @@ func _process(delta: float) -> void:
+ 	if player.input_locked:
+ 		return
+ 
+ 
+ 	# Menu radial (B sur manette) : toggle ouverture/fermeture
+ 	if Input.is_action_just_pressed("radial_menu", true):
+ 		if radial_menu.visible:
+ 			radial_menu.hide_menu()
+ 		elif not _menu_just_closed \
+ 				and not focus.in_game() \
+-				and not window_menu.visible and not pause_menu.visible:
++				and not window_menu.visible and not pause_menu.visible and not players_menu.visible:
+ 			var ctx := _determine_radial_context()
+ 			radial_menu.show_menu(ctx)
+ 
+ 	_menu_just_closed = false
+ 	# Menu radial ouvert : geler le monde
+ 	if radial_menu.visible:
+ 		return
+ 
+ 	if Input.is_action_just_pressed("window_menu", true) and not focus.is_active() and not layers.keyboard_busy():
+ 		if window_menu.visible:
+ 			layers.deactivate_layer_interact()
+ 			window_menu.hide_menu()
+ 		else:
+ 			_open_window_menu()
+ 
++	if Input.is_action_just_pressed("players_menu", true) and not focus.is_active() and not layers.keyboard_busy():
++		if players_menu.visible:
++			layers.deactivate_layer_interact()
++			players_menu.hide_menu()
++		else:
++			_open_players_menu()
++
+ 	# Tab : bascule le mode "interaction layer" — libère la souris pour
+ 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
+ 	# (sinon elle est capturée et fait tourner la caméra FPS).
+ 	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
+ 		layers.toggle_layer_interact()
+ 
+-	if window_menu.visible or capture_selector.visible:
++	if window_menu.visible or capture_selector.visible or players_menu.visible:
+ 		return
+ 
+ 	# Mode focus: le raccourci focus (ex. Super+F) pour sortir, kill_window
+ 	# pour fermer la fenêtre, sinon router les inputs souris/clavier.
+ 	# is_action_just_pressed(exact=true) : seul le bind exact (modifieurs
+ 	# compris) déclenche la sortie — F seul, Ctrl+F... vont à la fenêtre.
+ 	if focus.is_active():
+ 		if Input.is_action_just_pressed("focus_window", true):
+ 			focus.exit_focus()
+ 			return
+@@ -982,20 +998,28 @@ func _get_window_shared(wid: int) -> bool:
+ # layer_interact, KEYBOARD MODE = interact) : le menu est un overlay 2D,
+ # aucune interaction ne doit fuir vers les apps pendant qu'il est affiché.
+ func _open_window_menu() -> void:
+ 	layers.deactivate_layer_interact()
+ 	if interact_mode_active:
+ 		compositor.release_all_keys()
+ 		interact_mode_active = false
+ 		player.interact_mode_active = false
+ 	window_menu.show_menu()
+ 
++func _open_players_menu() -> void:
++	layers.deactivate_layer_interact()
++	if interact_mode_active:
++		compositor.release_all_keys()
++		interact_mode_active = false
++		player.interact_mode_active = false
++	players_menu.show_menu()
++
+ func _on_window_menu_grab(wid: int) -> void:
+ 	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
+ 	# caméra ; grab OFF → relâcher la prise, le menu reste ouvert.
+ 	win3d.toggle_grab_window(wid)
+ 	window_menu.hide_menu()
+ 
+ func _on_window_menu_focus(wid: int) -> void:
+ 	focus.enter_focus(wid)
+ 	window_menu.hide_menu()
+ 
+@@ -1288,21 +1312,43 @@ func _on_pause_menu_visibility_changed() -> void:
+ 		# une touche coincée côté xkbcommon. Inconditionnel : des touches
+ 		# peuvent être enfoncées en mode focus ou via une layer surface aussi.
+ 		compositor.release_all_keys()
+ 		if interact_mode_active:
+ 			interact_mode_active = false
+ 			player.interact_mode_active = false
+ 		if focus.is_active():
+ 			focus.exit_focus()
+ 
+ func _on_menu_visibility_changed() -> void:
+-	if not window_menu.visible and not pause_menu.visible:
++	if not window_menu.visible and not pause_menu.visible and not players_menu.visible:
+ 		_menu_just_closed = true
+ 
+ # Fermeture du tutoriel (bouton Close ou Esc). Au premier lancement
+ # (déclenché automatiquement), on mémorise tutorial_seen pour ne plus
+ # le rejouer au démarrage.
+ func _on_tutorial_closed() -> void:
+ 	if _tutorial_first_run:
+ 		_tutorial_first_run = false
+ 		pause_menu.set_tutorial_seen(true)
+ 	_menu_just_closed = true
++
++func _on_lan_message_received(sender_name: String, text: String) -> void:
++	var output := []
++	var err := OS.execute("notify-send", ["CyberRealm", "%s: %s" % [sender_name, text]], output, false)
++	if err != 0:
++		print("[LAN] notify-send failed: exit ", err)
++
++func _lan_flash(text: String) -> void:
++	if _hud_notice == null:
++		_hud_notice = Label.new()
++		_hud_notice.add_theme_font_size_override("font_size", 24)
++		_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.5, 0.4))
++		_hud_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		_hud_notice.set_anchors_preset(Control.PRESET_CENTER_TOP)
++		_hud_notice.offset_top = 80
++		_hud_notice.offset_bottom = 120
++		$Level/Player/UI.add_child(_hud_notice)
++	_hud_notice.text = text
++	_hud_notice.visible = true
++	await get_tree().create_timer(4.0).timeout
++	if is_instance_valid(_hud_notice) and _hud_notice.text == text:
++		_hud_notice.visible = false
+diff --git a/Game/source/scripts/network/file_share_manager.gd b/Game/source/scripts/network/file_share_manager.gd
+index 97cf667..786de9a 100644
+--- a/Game/source/scripts/network/file_share_manager.gd
++++ b/Game/source/scripts/network/file_share_manager.gd
+@@ -18,20 +18,31 @@ extends Node3D
+ 
+ ## Dossier de réception : celui des paramètres du bureau (XDG/KDE — p.ex.
+ ## ~/Téléchargements sur un système en français), sinon ~/Downloads. Le chemin
+ ## absolu est renvoyé dans la réponse d'acceptation car il est localisé chez
+ ## le destinataire : l'expéditeur ne peut pas le deviner.
+ func downloads_dir() -> String:
+ 	var d := OS.get_system_dir(OS.SYSTEM_DIR_DOWNLOADS)
+ 	if d.is_empty():
+ 		d = OS.get_environment("HOME").path_join("Downloads")
+ 	return d
++
++## Taille d'un fichier localement lisible, 0 sinon. Helper unique partagé
++## entre les drops (drag & drop) et l'envoi programmatique (players_menu).
++static func readable_file_size(path: String) -> int:
++	var f := FileAccess.open(path, FileAccess.READ)
++	if f == null:
++		return 0
++	var size := f.get_length()
++	f.close()
++	return size
++
+ const CHANNEL := 7 # canal fiable dédié au partage de fichiers
+ const OFFER_TIMEOUT_MSEC := 30000
+ const PROGRESS_INTERVAL_MSEC := 250 # throttle des RPC de progression
+ const DONE_VISIBLE_MSEC := 8000
+ const MAX_LIST_LINES := 12
+ const DROP_REACH := 8.0
+ const DROP_CONE_RAD := deg_to_rad(12.0) # tolérance de visée du drop
+ const AK_TAG_PREFIX := "cr_" # préfixe des tags de lignes authorized_keys
+ const KEY_STALE_MSEC := 15 * 60 * 1000 # balayage des clés oubliées
+ 
+@@ -381,26 +392,26 @@ func _peer_name(pid: int) -> String:
+ ## 3D. S'il y a un avatar sous le curseur → offre de transfert.
+ func on_files_dropped(paths: PackedStringArray) -> void:
+ 	push_warning("FileShare: drop received (%d paths, hover=%d, session=%s)" % [
+ 		paths.size(), _hover_peer,
+ 		str(lan != null and lan.is_session_active())])
+ 	var files := PackedStringArray()
+ 	var total := 0
+ 	for p in paths:
+ 		if _debug:
+ 			print("[FileShare] raw path : [", p, "]")
+-		var f := FileAccess.open(p, FileAccess.READ)
+-		if f != null:
++		var size := readable_file_size(p)
++		if size > 0:
+ 			files.append(p)
+-			total += int(f.get_length())
++			total += size
+ 		elif _debug:
+-			print("[FileShare] open() failed : ", error_string(FileAccess.get_open_error()))
++			print("[FileShare] unreadable: ", p)
+ 	if files.is_empty():
+ 		_flash_status("Drop ignored: no readable file")
+ 		return
+ 	if lan == null or not lan.is_session_active() or _hover_peer == 0 \
+ 			or not ensure_local_keypair():
+ 		_flash_status("Drop ignored: no player targeted or session inactive")
+ 		return
+ 	if not _can_start_transfer():
+ 		_flash_status("Transfer impossible: already busy")
+ 		return
+@@ -410,20 +421,45 @@ func on_files_dropped(paths: PackedStringArray) -> void:
+ 	for p in files:
+ 		names.append(p.get_file())
+ 	_pending_offers[oid] = {
+ 		"peer": _hover_peer, "files": files, "names": names,
+ 		"total": total, "msec": Time.get_ticks_msec(),
+ 	}
+ 	_show_progress("Offer to %s — waiting…" % _peer_name(_hover_peer), -1, "")
+ 	_offer_files.rpc_id(_hover_peer, oid, names, total)
+ 
+ 
++## Envoi programmatique d'un fichier vers un peer (players_menu). Réutilise
++## le flux d'offre du drag & drop : prompt d'acceptation côté pair, puis
++## transfert rsync-over-ssh. Retourne false si invalide/injoignable/busy.
++func send_file_to_peer(peer_id: int, path: String) -> bool:
++	if peer_id <= 0 or peer_id == multiplayer.get_unique_id():
++		return false
++	if lan == null or not lan.is_session_active() or not ensure_local_keypair():
++		return false
++	var total := readable_file_size(path)
++	if total <= 0:
++		return false
++	if not _can_start_transfer():
++		return false
++	var oid := _next_offer_id
++	_next_offer_id += 1
++	var names := PackedStringArray([path.get_file()])
++	_pending_offers[oid] = {
++		"peer": peer_id, "files": [path], "names": names,
++		"total": total, "msec": Time.get_ticks_msec(),
++	}
++	_show_progress("Offer to %s — waiting…" % _peer_name(peer_id), -1, "")
++	_offer_files.rpc_id(peer_id, oid, names, total)
++	return true
++
++
+ # ── Contacts (mesh clé publique + IP) ────────────────────────────────────────
+ 
+ func _on_roster_changed(roster: Array) -> void:
+ 	if roster.is_empty():
+ 		_contacts.clear()
+ 		_announced_to.clear()
+ 		_replied_to.clear()
+ 		_sweep_stale_keys()
+ 		return
+ 	var me := multiplayer.get_unique_id()
+diff --git a/Game/source/scripts/network/lan_manager.gd b/Game/source/scripts/network/lan_manager.gd
+index b7e464d..c5847f2 100644
+--- a/Game/source/scripts/network/lan_manager.gd
++++ b/Game/source/scripts/network/lan_manager.gd
+@@ -6,20 +6,27 @@ extends Node
+ 
+ signal status_changed(text: String)
+ signal players_changed(roster: Array)
+ signal discovery_results(results: Array)
+ signal level_apply_requested(scene: PackedScene, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3)
+ # Déconnexion d'une session : le client doit retrouver SON niveau personnel
+ # (wayland_room filtre : no-op si aucun niveau hôte n'avait été appliqué).
+ signal local_level_restore_requested
+ # Émis quand le PIN de session est généré (hôte) ou reçu (client).
+ signal pin_changed(pin: String)
++# Message reçu d'un pair (send_message_to). wayland_room affiche la
++# notification (notify-send) sur la machine cible.
++signal message_received(sender_name: String, text: String)
++# Émis sur la machine d'un joueur expulsé (kick) ou déconnecté sans préavis.
++signal kicked()
++# Émis sur l'HÔTE après un ban réussi (pour rafraîchir l'UI locale).
++signal banned()
+ 
+ const PORT := 7777
+ const DISCOVERY_PORT := 9999
+ const MAX_PLAYERS := 4
+ const DISCOVERY_TIMEOUT := 1.6
+ const DISCOVERY_RETRY_INTERVAL := 0.4
+ const DISCOVERY_QUERY := "CYBERREALM_DISCOVER"
+ 
+ # ── Transfert du niveau de l'hôte (maps custom jouables en LAN) ──────
+ # L'hôte bake son niveau (LevelBaker) en un blob binaire auto-suffisant
+@@ -42,31 +49,37 @@ var _pending_auth: Dictionary = {}
+ var encryption_enabled := true
+ # anti brute-force PIN : adresse IP -> timestamp (ms) du dernier échec (purge).
+ var _pin_blacklist: Dictionary = {}
+ # Compteur d'échecs PIN consécutifs par adresse (alimenté par pin_attempt).
+ var _pin_fail_counts: Dictionary = {}
+ # Chiffrement demandé pour le dernier join (réutilisé à la reconnexion).
+ var _last_join_encrypted := false
+ # ── Heartbeat / reconnexion (C1/C2) ──────────────────────────────────
+ var _last_heartbeat_msec := 0
+ var _session_closed_received := false
++# Vrai si on a déjà été notifié d'un kick cette session (évite un double
++# affichage quand _rpc_you_were_kicked arrive puis le serveur coupe).
++var _kick_notified := false
+ var _last_heartbeat_sent_msec := 0
+ var _reconnecting := false
+ var _reconnect_attempts := 0
+ var _reconnect_ip := ""
+ var _reconnect_pin := ""
+ # Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
+ const AUTH_TIMEOUT_MSEC := 10000
+ 
+ # ── Reconnexion & anti brute-force PIN (B2) ──────────────────────────
+ const RECONNECT_WINDOW_MSEC := 30000
+ const RECONNECT_MAX_ATTEMPTS := 12
++# Fichier de la liste de bannis (IP) persistée. Lue/écrite à chaque
++# opération (pas de cache : le pause_menu la relit en direct).
++const BAN_LIST_FILE := "user://lan_ban_list.json"
+ const HEARTBEAT_INTERVAL_MSEC := 1000
+ const HOST_HEARTBEAT_TIMEOUT_MSEC := 4000
+ const PIN_FAIL_LIMIT := 3
+ const PIN_BLACKLIST_MSEC := 30000
+ 
+ ## Délai d'attente (secondes) avant la tentative de reconnexion n°attempt.
+ static func backoff_delay(attempt: int) -> float:
+ 	var base := 0.5 * pow(2.0, float(attempt))
+ 	var jitter := randf_range(-0.3, 0.3) * base
+ 	return clampf(base + jitter, 0.0, 2.5)
+@@ -583,20 +596,59 @@ func _on_pin_success(ip: String) -> void:
+ ## Adresse IP d'un peer distant (côté hôte). "" si indisponible.
+ func _remote_ip(peer_id: int) -> String:
+ 	var mp := multiplayer.multiplayer_peer
+ 	if mp == null or not mp is ENetMultiplayerPeer:
+ 		return ""
+ 	var p = mp.get_peer(peer_id)
+ 	if p == null or not p is ENetPacketPeer:
+ 		return ""
+ 	return String(p.get_remote_address())
+ 
++# ── Ban list (kick/ban persistés) ─────────────────────────────────────
++
++## Vrai si `ip` figure dans la liste de bannis. Pure et statique
++## (testable headless) : la liste est passée en argument.
++static func is_ip_banned(ip: String, banned: Array) -> bool:
++	if ip.is_empty():
++		return false
++	return banned.has(ip)
++
++## Lit la ban list depuis un fichier JSON (Array de String). Fichier
++## absent ou corrompu -> liste vide.
++static func load_ban_list_from(path: String) -> Array:
++	var f := FileAccess.open(path, FileAccess.READ)
++	if f == null:
++		return []
++	var parsed = JSON.parse_string(f.get_as_text())
++	f.close()
++	if parsed is Array:
++		return parsed
++	return []
++
++static func save_ban_list_to(path: String, banned: Array) -> void:
++	var f := FileAccess.open(path, FileAccess.WRITE)
++	if f == null:
++		push_warning("LAN: cannot write ban list: " + path)
++		return
++	f.store_string(JSON.stringify(banned))
++	f.close()
++
++func _load_ban_list() -> Array:
++	return load_ban_list_from(BAN_LIST_FILE)
++
++func _save_ban_list(banned: Array) -> void:
++	save_ban_list_to(BAN_LIST_FILE, banned)
++
++## Liste actuelle des IP bannies (pour la page admin du pause_menu).
++func get_banned_ips() -> Array:
++	return _load_ban_list()
++
+ # ── Host ─────────────────────────────────────────────────────────────
+ 
+ func host_game() -> bool:
+ 	if session_active:
+ 		_set_status("Already in a LAN session")
+ 		return false
+ 	var peer := ENetMultiplayerPeer.new()
+ 	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
+ 	if err != OK:
+ 		_set_status("Host error: " + error_string(err))
+@@ -1035,22 +1087,91 @@ func _remove_player(peer_id: int) -> void:
+ 	if _remote_players.has(peer_id):
+ 		_remote_players[peer_id].queue_free()
+ 		_remote_players.erase(peer_id)
+ 	_arrived_peers.erase(peer_id)
+ 	_players.erase(peer_id)
+ 	_avatar_blobs.erase(peer_id)
+ 	_avatar_scene_cache.erase(peer_id)
+ 	_clear_remote_windows(peer_id)
+ 	_emit_players()
+ 
++# ── Messages / kick / ban ─────────────────────────────────────────────
++
++## Envoie un court message à un peer précis. Le destinataire reçoit
++## `message_received` et l'affiche via notify-send (wayland_room).
++func send_message_to(peer_id: int, text: String) -> void:
++	var clean := text.strip_edges()
++	if clean.is_empty() or peer_id <= 0 or peer_id == multiplayer.get_unique_id():
++		return
++	var sender := player_name if not player_name.is_empty() else "Player"
++	_rpc_recv_message.rpc_id(peer_id, sender, clean)
++
++@rpc("any_peer", "reliable")
++func _rpc_recv_message(sender_name: String, text: String) -> void:
++	if sender_name.is_empty() or text.is_empty():
++		return
++	message_received.emit(sender_name, text)
++
++## Expulse un joueur (hôte uniquement). Best-effort : un flag RPC part
++## AVANT la coupure pour que le client affiche « Kicked by host ».
++func kick_player(peer_id: int) -> void:
++	if not is_host:
++		_set_status("Only the host can kick players")
++		return
++	var mp := multiplayer.multiplayer_peer
++	if mp == null:
++		return
++	_rpc_you_were_kicked.rpc_id(peer_id)
++	_remove_player(peer_id) # purge locale + broadcast immédiats
++	mp.disconnect_peer(peer_id)
++	_set_status("Kicked player %d" % peer_id)
++
++## Bannir = expulser + persister l'IP (tout rejoin sera refusé en tête de
++## _on_peer_connected). Hôte uniquement.
++func ban_player(peer_id: int) -> void:
++	if not is_host:
++		_set_status("Only the host can ban players")
++		return
++	var ip := _remote_ip(peer_id)
++	if ip.is_empty():
++		_set_status("Cannot ban player %d: IP unknown" % peer_id)
++		return
++	var list := _load_ban_list()
++	if not list.has(ip):
++		list.append(ip)
++		_save_ban_list(list)
++	kick_player(peer_id)
++	_set_status("Banned %s" % ip)
++	banned.emit()
++
++func unban_ip(ip: String) -> void:
++	if ip.is_empty():
++		return
++	var list := _load_ban_list()
++	if list.has(ip):
++		list.erase(ip)
++		_save_ban_list(list)
++		_set_status("Unbanned %s" % ip)
++
++@rpc("any_peer", "reliable")
++func _rpc_you_were_kicked() -> void:
++	_kick_notified = true
++	kicked.emit()
++
+ func _on_peer_connected(id: int) -> void:
+ 	if is_host:
++		# Refus immédiat des adresses bannies : aucun timeout/PIN, coupure
++		# nette AVANT de la marquer en attente d'auth.
++		if is_ip_banned(_remote_ip(id), _load_ban_list()):
++			multiplayer.multiplayer_peer.disconnect_peer(id)
++			_set_status("Banned IP rejected: %s" % _remote_ip(id))
++			return
+ 		_set_status("Player %d connected — waiting for PIN…" % id)
+ 		# Timeouts ENet généreux : pendant un stream partagé (vidéo/audio), le
+ 		# thread principal fait de l'encodage/décodage JPEG par frame ; un à-coup
+ 		# de quelques secondes ne doit pas faire tomber la session (défaut ENet :
+ 		# déconnexion après ~5 s sans ACK).
+ 		_set_peer_timeout(id)
+ 		_pending_auth[id] = true
+ 		# PAS d'envoi de niveau/avatar ici : attendre la registration du pair
+ 		# (voir _register_player). Les paquets de contrôle (snapshot roster,
+ 		# broadcasts) doivent partir sur un tube VIDE — s'ils se disputent le
+@@ -1611,20 +1732,25 @@ const ENET_TIMEOUT_MAX := 90000
+ func _set_peer_timeout(id: int) -> void:
+ 	var mp = multiplayer.multiplayer_peer
+ 	if mp == null or not (mp is ENetMultiplayerPeer):
+ 		return
+ 	var peer = (mp as ENetMultiplayerPeer).get_peer(id)
+ 	if peer == null:
+ 		return
+ 	peer.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN, ENET_TIMEOUT_MAX)
+ 
+ func _on_peer_disconnected(id: int) -> void:
++	# Kick silencieux (coupure du serveur sans _rpc_you_were_kicked reçu) :
++	# notifier l'UI. L'ID 1 est l'hôte ; un shutdown propre passe par
++	# session_closed (flag posé) et ne doit PAS déclencher l'affiche.
++	if not is_host and id == 1 and not _session_closed_received and not _kick_notified:
++		kicked.emit()
+ 	_avatar_blobs.erase(id)
+ 	_avatar_send_queue.erase(id)
+ 	_pending_auth.erase(id)
+ 	# Diagnostique : la déconnexion survient pendant un partage vidéo. ENet
+ 	# déconnecte quand une commande reliable (ping/ACK) reste non-acknowledgée
+ 	# ≥15 s (timeout min) — soit un lien saturé, soit un thread principal
+ 	# bloqué. Ce log permet de corréler avec les symptômes (lag → déconnexion).
+ 	print("[lan] peer %d disconnected — state: video_stream=%s audio=%s nframes=%d" % [
+ 		id,
+ 		_has_streaming_window(),
+diff --git a/Game/source/scripts/player/player.gd b/Game/source/scripts/player/player.gd
+index 6a11409..63db4be 100644
+--- a/Game/source/scripts/player/player.gd
++++ b/Game/source/scripts/player/player.gd
+@@ -47,20 +47,21 @@ var spawn_rotation: Vector3 = Vector3.ZERO
+ var spawn_scale: Vector3 = Vector3.ONE
+ 
+ func _ready():
+ 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+ 	spawn_pos = position
+ 	spawn_rotation = rotation
+ 	spawn_scale = scale
+ 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
+ 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
+ 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
++	$PlayersMenuLayer/PlayersMenu.visibility_changed.connect(_on_menu_visibility_changed)
+ 
+ func _get_compositor() -> WlrCompositor:
+ 	if _compositor == null or not is_instance_valid(_compositor):
+ 		var scene := get_tree().current_scene
+ 		if scene != null:
+ 			_compositor = scene.get_node_or_null("WlrCompositor") as WlrCompositor
+ 	return _compositor
+ 
+ func _keyboard_busy() -> bool:
+ 	var comp := _get_compositor()
+@@ -148,29 +149,33 @@ func _input(event):
+ 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+ 		return
+ 	if $PauseMenuLayer/PauseMenu.visible:
+ 		# Afficher la souris uniquement quand l'utilisateur la bouge (pas au d-pad).
+ 		if event is InputEventMouseMotion or (event is InputEventMouseButton and event.pressed):
+ 			if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+ 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+ 		return
+ 	if $CaptureSelectorLayer/CaptureSelector.visible:
+ 		return
++	if $PlayersMenuLayer/PlayersMenu.visible:
++		return
+ 	# Chargement de la map LAN : tout l'input jeu est gelé (déplacement,
+ 	# caméra, clics) sauf Escape pour ouvrir le menu pause (annuler).
+ 	if input_locked and not event.is_action_pressed("pause_menu"):
+ 		return
+ 	if event.is_action_pressed("pause_menu") and not interact_mode_active:
+ 		if session_locked:
+ 			return
+ 		if $WindowMenuLayer/WindowMenu.visible:
+ 			return
++		if $PlayersMenuLayer/PlayersMenu.visible:
++			return
+ 		# Un overlay keyboard-interactive (rofi, menu waybar...) détient le
+ 		# clavier : laisser l'Escape lui être routé au lieu d'ouvrir le menu
+ 		# pause.
+ 		if _get_compositor() and _get_compositor().get_keyboard_focus_layer_id() >= 0:
+ 			return
+ 		$PauseMenuLayer/PauseMenu.show_menu()
+ 	if $PauseMenuLayer/PauseMenu.visible or $CaptureSelectorLayer/CaptureSelector.visible or $WindowMenuLayer/WindowMenu.visible:
+ 		return
+ 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+ 		if layer_pointer_active or session_locked:
+diff --git a/Game/source/scripts/ui/pause_menu.gd b/Game/source/scripts/ui/pause_menu.gd
+index e2de8c4..8fa6b2a 100644
+--- a/Game/source/scripts/ui/pause_menu.gd
++++ b/Game/source/scripts/ui/pause_menu.gd
+@@ -58,21 +58,28 @@ var container: VBoxContainer
+ # Actions remappables depuis le menu (ordre d'affichage).
+ const REMAPPABLE_ACTIONS := [
+ 	"forward", "back", "left", "right", "jump",
+ 	"look_up", "look_down", "look_left", "look_right",
+ 	"interact_mode", "layer_interact", "window_menu",
+ 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
+ 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
+ ]
+ 
+ var _settings: Dictionary = {}
+-var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "lan"
++var _lan: Node = null
++
++## Réf. directe vers le lan_manager (retour de get_banned_ips/unban_ip dans
++## la page admin). Injectée par wayland_room au setup LAN.
++func set_lan_ref(lan: Node) -> void:
++	_lan = lan
++
++var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "lan" | "banned"
+ var _waiting_action := "" # action en cours de rebind, "" = aucun
+ var _keybinds_buttons: Dictionary = {} # action -> Button
+ # Capture d'une touche pour un custom bind
+ var _custom_key_waiting := false
+ var _custom_keycode := 0
+ var _custom_is_mouse := false
+ var _custom_mods: Dictionary = {} # {"ctrl": bool, "shift": bool, "alt": bool, "super": bool}
+ var _custom_key_btn: Button = null
+ var _custom_cmd_edit: LineEdit = null
+ var _editing_index := -1 # index du custom bind en cours d'édition, -1 = aucun
+@@ -1383,29 +1390,78 @@ func _show_lan() -> void:
+ 	_lan_status_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+ 	container.add_child(_lan_status_label)
+ 
+ 	_lan_players_label = Label.new()
+ 	_lan_players_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+ 	_lan_players_label.add_theme_font_size_override("font_size", 13)
+ 	_lan_players_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+ 	container.add_child(_lan_players_label)
+ 	_update_lan_players_label()
+ 
++	var banned_btn := _make_btn("Banned IPs", Color(0.2, 0.18, 0.28, 0.9))
++	banned_btn.pressed.connect(_show_banned)
++	container.add_child(banned_btn)
++
+ 	var disconnect_btn := _make_btn("Disconnect", Color(0.3, 0.2, 0.1, 0.9))
+ 	disconnect_btn.pressed.connect(func():
+ 		lan_disconnect_requested.emit()
+ 	)
+ 	container.add_child(disconnect_btn)
+ 
+ 	container.add_child(_make_spacer())
+ 	container.add_child(_make_back_btn())
+ 
++func _show_banned() -> void:
++	_clear()
++	_waiting_action = ""
++	_current_view = "banned"
++
++	container.add_child(_make_title("BANNED IPS"))
++
++	var hint := Label.new()
++	hint.text = "Banned IPs cannot rejoin this machine's LAN sessions.\nThis list is local to this computer."
++	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	hint.add_theme_font_size_override("font_size", 12)
++	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
++	container.add_child(hint)
++
++	var list: Array = _lan.get_banned_ips() if _lan != null else []
++	if list.is_empty():
++		var empty := Label.new()
++		empty.text = "No banned IPs"
++		empty.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		empty.add_theme_font_size_override("font_size", 14)
++		empty.add_theme_color_override("font_color", Color(0.5, 0.55, 0.6))
++		container.add_child(empty)
++	else:
++		for ip: String in list:
++			var row := HBoxContainer.new()
++			row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++			var ip_label := Label.new()
++			ip_label.text = ip
++			ip_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++			ip_label.add_theme_font_size_override("font_size", 14)
++			row.add_child(ip_label)
++			var unban_btn := _make_btn("Unban", Color(0.2, 0.2, 0.3, 0.9))
++			unban_btn.custom_minimum_size = Vector2(110, 36)
++			unban_btn.pressed.connect(_on_unban.bind(ip))
++			row.add_child(unban_btn)
++			container.add_child(row)
++
++	container.add_child(_make_spacer())
++	container.add_child(_make_back_btn())
++
++func _on_unban(ip: String) -> void:
++	if _lan:
++		_lan.unban_ip(ip)
++	_show_banned()
++
+ func set_lan_status(text: String) -> void:
+ 	_lan_status_text = text
+ 	if _lan_status_label:
+ 		_lan_status_label.text = text
+ 
+ func set_lan_players(roster: Array) -> void:
+ 	_lan_roster = roster
+ 	_update_lan_players_label()
+ 
+ func set_lan_connected(connected: bool) -> void:
+diff --git a/Game/source/scripts/ui/players_menu.gd b/Game/source/scripts/ui/players_menu.gd
+new file mode 100644
+index 0000000..878e97e
+--- /dev/null
++++ b/Game/source/scripts/ui/players_menu.gd
+@@ -0,0 +1,469 @@
++extends GameMenu
++## Menu d'actions sur les joueurs distants (LAN) : un onglet par joueur,
++## preview 3D de son avatar, et actions (message / fichier / kick / ban).
++## S'ouvre/ferme avec SUPER+SHIFT+P (OU manière), Échap, Start ou B.
++
++signal menu_closed()
++
++const DEFAULT_AVATAR := "res://scenes/avatar.tscn"
++
++@onready var tabs_container: HBoxContainer = $VBox/TopBar/Tabs
++@onready var preview_viewport: SubViewport = $VBox/Content/Preview/AvatarViewport
++@onready var actions_container: VBoxContainer = $VBox/Content/Actions
++
++var _lan: Node
++var _compositor: Node
++var _file_share: Node
++var selected_peer := 0
++var tab_buttons: Dictionary = {} # peer_id -> Button
++var _preview_avatar: Node3D = null
++var _status_label: Label = null
++var _send_msg_btn: Button = null
++var _send_file_btn: Button = null
++var _kick_btn: Button = null
++var _ban_btn: Button = null
++var _msg_row: HBoxContainer = null
++var _msg_edit: LineEdit = null
++var _confirm_row: HBoxContainer = null
++var _confirm_label: Label = null
++var _confirm_confirm_btn: Button = null
++var _confirm_cancel_btn: Button = null
++var _confirm_kind := "" # "kick" | "ban"
++# ── Sélecteur de fichier (zenity) ──────────────────────────────────────
++var _picker_running := false
++var _picker_peer := 0
++var _picker_deadline := 0
++
++# Fichiers tampons du sélecteur (filtre XDG runtime dir, hérité de l'environnement).
++func _pick_buf_path(suffix: String) -> String:
++	var runtime := OS.get_environment("XDG_RUNTIME_DIR")
++	if runtime.is_empty():
++		runtime = OS.get_temp_dir()
++	return runtime.path_join("cyberrealm-filepick" + suffix)
++
++func _ready() -> void:
++	visible = false
++	_apply_styling()
++	_build_action_buttons()
++
++func setup(lan_ref: Node, compositor_ref: Node, file_share_ref: Node) -> void:
++	_lan = lan_ref
++	_compositor = compositor_ref
++	_file_share = file_share_ref
++	if _lan != null and _lan.has_signal("players_changed"):
++		if not _lan.players_changed.is_connected(_refresh_tabs):
++			_lan.players_changed.connect(_refresh_tabs)
++
++func _apply_styling() -> void:
++	var bg := StyleBoxFlat.new()
++	bg.bg_color = Color(0.06, 0.06, 0.08, 0.95)
++	bg.border_color = Color(0.3, 0.4, 0.6, 0.8)
++	bg.border_width_top = 1
++	bg.border_width_bottom = 1
++	bg.border_width_left = 1
++	bg.border_width_right = 1
++	bg.corner_radius_top_left = 10
++	bg.corner_radius_top_right = 10
++	bg.corner_radius_bottom_left = 10
++	bg.corner_radius_bottom_right = 10
++	bg.content_margin_left = 0
++	bg.content_margin_right = 0
++	bg.content_margin_top = 0
++	bg.content_margin_bottom = 0
++	add_theme_stylebox_override("panel", bg)
++
++	custom_minimum_size = Vector2(900, 600)
++	size = Vector2(900, 600)
++	anchors_preset = Control.PRESET_CENTER
++	offset_left = -450
++	offset_right = 450
++	offset_top = -300
++	offset_bottom = 300
++
++func _build_action_buttons() -> void:
++	_send_msg_btn = _build_std_button("SEND MESSAGE", "_on_send_message_pressed")
++	_send_file_btn = _build_std_button("SEND FILE", "_on_file_pick_pressed")
++	_kick_btn = _build_std_button("KICK", "_on_kick_pressed")
++	_ban_btn = _build_std_button("BAN", "_on_ban_pressed")
++
++	_status_label = Label.new()
++	_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++	_status_label.add_theme_font_size_override("font_size", 12)
++	_status_label.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
++	_status_label.custom_minimum_size.y = 34
++	actions_container.add_child(_status_label)
++
++	_msg_row = HBoxContainer.new()
++	_msg_row.visible = false
++	_msg_edit = LineEdit.new()
++	_msg_edit.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_msg_edit.placeholder_text = "Message…"
++	var msg_send := Button.new()
++	msg_send.text = "Send"
++	msg_send.pressed.connect(_on_send_message)
++	_msg_row.add_child(_msg_edit)
++	_msg_row.add_child(msg_send)
++	actions_container.add_child(_msg_row)
++
++	_confirm_row = HBoxContainer.new()
++	_confirm_row.visible = false
++	_confirm_label = Label.new()
++	_confirm_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
++	_confirm_label.add_theme_font_size_override("font_size", 12)
++	_confirm_cancel_btn = Button.new()
++	_confirm_cancel_btn.text = "Cancel"
++	_confirm_cancel_btn.pressed.connect(func():
++		_confirm_row.visible = false
++		_confirm_kind = ""
++	)
++	_confirm_confirm_btn = Button.new()
++	_confirm_confirm_btn.text = "Confirm"
++	_confirm_confirm_btn.pressed.connect(_on_confirm)
++	_confirm_row.add_child(_confirm_label)
++	_confirm_row.add_child(_confirm_cancel_btn)
++	_confirm_row.add_child(_confirm_confirm_btn)
++	actions_container.add_child(_confirm_row)
++
++func _build_std_button(label: String, handler: String) -> Button:
++	var btn := Button.new()
++	btn.text = label
++	btn.custom_minimum_size = Vector2(140, 40)
++	btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
++	btn.alignment = HORIZONTAL_ALIGNMENT_CENTER
++
++	var normal := StyleBoxFlat.new()
++	normal.bg_color = Color(0.12, 0.14, 0.2, 0.9)
++	normal.border_color = Color(0.3, 0.4, 0.6, 0.5)
++	normal.border_width_top = 1
++	normal.border_width_bottom = 1
++	normal.border_width_left = 1
++	normal.border_width_right = 1
++	normal.corner_radius_top_left = 4
++	normal.corner_radius_top_right = 4
++	normal.corner_radius_bottom_left = 4
++	normal.corner_radius_bottom_right = 4
++	normal.content_margin_left = 10
++	normal.content_margin_right = 10
++	normal.content_margin_top = 6
++	normal.content_margin_bottom = 6
++	btn.add_theme_stylebox_override("normal", normal)
++
++	var hover := normal.duplicate()
++	hover.bg_color = Color(0.18, 0.22, 0.35, 0.95)
++	hover.border_color = Color(0.4, 0.6, 1.0, 0.7)
++	btn.add_theme_stylebox_override("hover", hover)
++
++	var pressed := normal.duplicate()
++	pressed.bg_color = Color(0.2, 0.3, 0.5, 0.95)
++	btn.add_theme_stylebox_override("pressed", pressed)
++
++	btn.add_theme_font_size_override("font_size", 14)
++	btn.pressed.connect(Callable(self, handler))
++	actions_container.add_child(btn)
++	return btn
++
++func toggle_menu() -> void:
++	if visible:
++		hide_menu()
++	else:
++		show_menu()
++
++func show_menu() -> void:
++	_refresh_tabs()
++	visible = true
++
++func hide_menu() -> void:
++	visible = false
++	_clear_preview()
++	menu_closed.emit()
++
++func _process(delta: float) -> void:
++	super(delta)
++	if _preview_avatar != null and is_instance_valid(_preview_avatar):
++		_preview_avatar.rotation.y += delta * 0.5
++	if _picker_running:
++		_poll_file_picker()
++
++func _poll_file_picker() -> void:
++	var buf := _pick_buf_path("")
++	var done := _pick_buf_path(".done")
++	if FileAccess.file_exists(done):
++		var f := FileAccess.open(buf, FileAccess.READ)
++		var path := ""
++		if f != null:
++			path = f.get_as_text().strip_edges()
++			f.close()
++		_picker_running = false
++		DirAccess.remove_absolute(buf)
++		DirAccess.remove_absolute(done)
++		_update_actions()
++		if path.is_empty():
++			_set_status("File selection cancelled")
++			return
++		var ok: bool = _file_share.send_file_to_peer(_picker_peer, path) if _file_share != null else false
++		_picker_peer = 0
++		if ok:
++			_set_status("File offer sent")
++		else:
++			_set_status("Cannot send this file")
++		return
++	if Time.get_ticks_msec() > _picker_deadline:
++		_picker_running = false
++		_picker_peer = 0
++		DirAccess.remove_absolute(buf)
++		DirAccess.remove_absolute(done)
++		_update_actions()
++		_set_status("File selection timed out")
++	# Drop le peer ciblé pendant la sélection
++	if _picker_peer != 0 and (_lan == null or not _peer_present(_lan.get_players_roster(), _picker_peer)):
++		_picker_running = false
++		_picker_peer = 0
++		DirAccess.remove_absolute(buf)
++		DirAccess.remove_absolute(done)
++		_update_actions()
++		_set_status("Target player left")
++
++func _input(event: InputEvent) -> void:
++	super(event) # GameMenu : consomme les JoypadMotion
++	if not visible:
++		return
++	if event is InputEventKey and event.pressed and not event.echo:
++		if event.keycode == KEY_ESCAPE:
++			hide_menu()
++			get_viewport().set_input_as_handled()
++	if event is InputEventJoypadButton and event.pressed \
++			and event.button_index in [JOY_BUTTON_START, JOY_BUTTON_B]:
++		hide_menu()
++		get_viewport().set_input_as_handled()
++
++# ── Onglets ────────────────────────────────────────────────────────────
++
++func _refresh_tabs() -> void:
++	for child in tabs_container.get_children():
++		child.queue_free()
++	tab_buttons.clear()
++
++	if _lan == null or not _lan.is_session_active():
++		_empty_state("No LAN session")
++		return
++
++	var me := multiplayer.get_unique_id()
++	var remote: Array = []
++	for e in _lan.get_players_roster():
++		if int(e.get("id", 0)) != me:
++			remote.append(e)
++
++	if remote.is_empty():
++		_empty_state("No players joined")
++		return
++
++	if not _peer_present(remote, selected_peer):
++		selected_peer = int(remote[0].get("id", 0))
++
++	for e in remote:
++		var peer_id := int(e["id"])
++		var btn := Button.new()
++		btn.text = "  " + String(e.get("name", "Player")) + "  "
++		btn.custom_minimum_size.y = 32
++		btn.add_theme_font_size_override("font_size", 13)
++
++		var normal := StyleBoxFlat.new()
++		normal.bg_color = Color(0.1, 0.1, 0.15, 0.8)
++		normal.corner_radius_top_left = 4
++		normal.corner_radius_top_right = 4
++		normal.corner_radius_bottom_left = 0
++		normal.corner_radius_bottom_right = 0
++		normal.content_margin_left = 10
++		normal.content_margin_right = 10
++		normal.content_margin_top = 4
++		normal.content_margin_bottom = 4
++		btn.add_theme_stylebox_override("normal", normal)
++
++		if peer_id == selected_peer:
++			var selected := normal.duplicate()
++			selected.bg_color = Color(0.15, 0.22, 0.4, 0.95)
++			selected.border_color = Color(0.4, 0.6, 1.0, 0.8)
++			selected.border_width_bottom = 2
++			btn.add_theme_stylebox_override("normal", selected)
++
++		var hover := normal.duplicate()
++		hover.bg_color = Color(0.15, 0.2, 0.35, 0.95)
++		hover.border_color = Color(0.4, 0.6, 1.0, 0.6)
++		hover.border_width_bottom = 2
++		btn.add_theme_stylebox_override("hover", hover)
++
++		btn.set_meta("peer_id", peer_id)
++		btn.pressed.connect(func(): _on_tab_pressed(peer_id))
++		tabs_container.add_child(btn)
++		tab_buttons[peer_id] = btn
++
++	if tab_buttons.has(selected_peer):
++		tab_buttons[selected_peer].grab_focus()
++	_update_preview()
++	_update_actions()
++
++func _peer_present(remote: Array, peer_id: int) -> bool:
++	for e in remote:
++		if int(e.get("id", 0)) == peer_id:
++			return true
++	return false
++
++func _empty_state(text: String) -> void:
++	selected_peer = 0
++	_clear_preview()
++	_update_actions()
++	var lbl := Label.new()
++	lbl.text = "  " + text + "  "
++	lbl.add_theme_font_size_override("font_size", 13)
++	lbl.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.7))
++	tabs_container.add_child(lbl)
++
++func _on_tab_pressed(peer_id: int) -> void:
++	selected_peer = peer_id
++	for child in tabs_container.get_children():
++		if not child.has_meta("peer_id"):
++			continue
++		var this_id: int = child.get_meta("peer_id")
++		var normal := StyleBoxFlat.new()
++		normal.bg_color = Color(0.1, 0.1, 0.15, 0.8)
++		normal.corner_radius_top_left = 4
++		normal.corner_radius_top_right = 4
++		normal.corner_radius_bottom_left = 0
++		normal.corner_radius_bottom_right = 0
++		normal.content_margin_left = 10
++		normal.content_margin_right = 10
++		normal.content_margin_top = 4
++		normal.content_margin_bottom = 4
++		if this_id == peer_id:
++			normal.bg_color = Color(0.15, 0.22, 0.4, 0.95)
++			normal.border_color = Color(0.4, 0.6, 1.0, 0.8)
++			normal.border_width_bottom = 2
++		child.add_theme_stylebox_override("normal", normal)
++	_update_preview()
++	_update_actions()
++
++func _update_actions() -> void:
++	if _send_msg_btn == null:
++		return
++	var has_peer := selected_peer != 0
++	_send_msg_btn.disabled = not has_peer
++	_send_file_btn.disabled = not has_peer or _picker_running
++	_kick_btn.visible = _lan != null and _lan.is_host and has_peer
++	_ban_btn.visible = _lan != null and _lan.is_host and has_peer
++	if not has_peer:
++		_msg_row.visible = false
++		_confirm_row.visible = false
++		_confirm_kind = ""
++	_msg_edit.editable = has_peer
++
++func _on_send_message_pressed() -> void:
++	_msg_row.visible = not _msg_row.visible
++	if _msg_row.visible:
++		_msg_edit.grab_focus()
++	_confirm_row.visible = false
++	_confirm_kind = ""
++
++func _on_send_message() -> void:
++	if selected_peer == 0 or _lan == null:
++		return
++	var text := _msg_edit.text.strip_edges()
++	if text.is_empty():
++		return
++	_lan.send_message_to(selected_peer, text)
++	_set_status("Message sent to %s" % _player_display_name())
++	_msg_edit.text = ""
++	_msg_row.visible = false
++
++func _on_kick_pressed() -> void:
++	_show_confirm("kick")
++
++func _on_ban_pressed() -> void:
++	_show_confirm("ban")
++
++func _show_confirm(kind: String) -> void:
++	if selected_peer == 0 or _lan == null or not _lan.is_host:
++		return
++	_confirm_kind = kind
++	_confirm_label.text = "Confirm %s %s?" % [kind.to_upper(), _player_display_name()]
++	_confirm_row.visible = true
++	_msg_row.visible = false
++
++func _on_confirm() -> void:
++	if _confirm_kind.is_empty() or selected_peer == 0 or _lan == null:
++		return
++	if _confirm_kind == "kick":
++		_lan.kick_player(selected_peer)
++	else:
++		_lan.ban_player(selected_peer)
++	hide_menu()
++
++func _player_display_name() -> String:
++	if _lan == null or selected_peer == 0:
++		return ""
++	for e in _lan.get_players_roster():
++		if int(e.get("id", 0)) == selected_peer:
++			return String(e.get("name", "Player"))
++	return "Player"
++
++func _set_status(text: String) -> void:
++	if _status_label != null:
++		_status_label.text = text
++
++func _on_file_pick_pressed() -> void:
++	if selected_peer == 0 or _picker_running:
++		return
++	var buf := _pick_buf_path("")
++	var done := _pick_buf_path(".done")
++	DirAccess.remove_absolute(buf)
++	DirAccess.remove_absolute(done)
++	var cmd := "sh -c 'zenity --file-selection > \"$XDG_RUNTIME_DIR/cyberrealm-filepick\" && touch \"$XDG_RUNTIME_DIR/cyberrealm-filepick.done\"'"
++	_compositor.launch_app(cmd)
++	_picker_running = true
++	_picker_peer = selected_peer
++	_picker_deadline = Time.get_ticks_msec() + 60000
++	_set_status("Selecting file… (cancel with Esc in the dialog, 60 s timeout)")
++	_update_actions()
++
++# ── Preview avatar ─────────────────────────────────────────────────────
++
++func _update_preview() -> void:
++	_clear_preview()
++	if selected_peer == 0 or _lan == null:
++		return
++	var av: Node = _lan.get_remote_players().get(selected_peer)
++	if av == null or not is_instance_valid(av):
++		return
++	var name := ""
++	var color := Color.WHITE
++	for e in _lan.get_players_roster():
++		if int(e.get("id", 0)) == selected_peer:
++			name = String(e.get("name", ""))
++			color = Color(e.get("color", Color.WHITE))
++			break
++	var scene := _avatar_scene(selected_peer)
++	_preview_avatar = scene.instantiate()
++	if _preview_avatar.has_method("setup"):
++		_preview_avatar.setup(selected_peer, name, color)
++	_preview_avatar.position = Vector3.ZERO
++	_preview_avatar.rotation = Vector3.ZERO
++	preview_viewport.add_child(_preview_avatar)
++	# Prewarm + arrivé : visible une fois les shaders compilés (pas de TDR).
++	if _preview_avatar.has_method("start_prewarm"):
++		_preview_avatar.start_prewarm()
++	if _preview_avatar.has_method("set_arrived"):
++		_preview_avatar.set_arrived(true)
++
++func _avatar_scene(peer_id: int) -> PackedScene:
++	var av: Node = _lan.get_remote_players().get(peer_id)
++	if av is Node and is_instance_valid(av):
++		var p := av.get_scene_file_path()
++		if p != "":
++			var loaded := load(p) as PackedScene
++			if loaded != null:
++				return loaded
++	return load(DEFAULT_AVATAR) as PackedScene
++
++func _clear_preview() -> void:
++	if _preview_avatar != null and is_instance_valid(_preview_avatar):
++		_preview_avatar.queue_free()
++	_preview_avatar = null
+diff --git a/Game/source/tests/test_file_share.gd b/Game/source/tests/test_file_share.gd
+new file mode 100644
+index 0000000..cafc2ba
+--- /dev/null
++++ b/Game/source/tests/test_file_share.gd
+@@ -0,0 +1,24 @@
++extends Node
++## Tests pour la validation de fichiers du partage LAN.
++
++const Runner = preload("res://tests/runner.gd")
++const FileShare = preload("res://scripts/network/file_share_manager.gd")
++
++func _sample_path(filename: String) -> String:
++	return OS.get_cache_dir().path_join(filename)
++
++func test_readable_file_size():
++	var path := _sample_path("cyberrealm_fs_sample.bin")
++	var f := FileAccess.open(path, FileAccess.WRITE)
++	f.store_string("0123456789")
++	f.close()
++	var r = Runner.assert_eq(FileShare.readable_file_size(path), 10, "Fichier lisible -> taille exacte")
++	DirAccess.remove_absolute(path)
++	return r
++
++func test_readable_file_size_missing():
++	var path := _sample_path("cyberrealm_fs_missing.bin")
++	DirAccess.remove_absolute(path) # s'assurer qu'il n'existe pas
++	var r = Runner.assert_eq(FileShare.readable_file_size(path), 0, "Fichier absent -> 0")
++	if r != true: return r
++	return true
+diff --git a/Game/source/tests/test_lan_ban_list.gd b/Game/source/tests/test_lan_ban_list.gd
+new file mode 100644
+index 0000000..9d7865c
+--- /dev/null
++++ b/Game/source/tests/test_lan_ban_list.gd
+@@ -0,0 +1,43 @@
++extends Node
++## Tests pour la liste de ban IP persistée du lan_manager.
++
++const Runner = preload("res://tests/runner.gd")
++const LANManager = preload("res://scripts/network/lan_manager.gd")
++
++func _ban_path() -> String:
++	return OS.get_cache_dir().path_join("cyberrealm_ban_test.json")
++
++func test_is_ip_banned():
++	var list := ["192.168.1.23", "10.0.0.7"]
++	var r = Runner.assert_eq(LANManager.is_ip_banned("192.168.1.23", list), true, "IP presente -> bannie")
++	if r != true: return r
++	r = Runner.assert_eq(LANManager.is_ip_banned("192.168.1.99", list), false, "IP absente -> libre")
++	if r != true: return r
++	r = Runner.assert_eq(LANManager.is_ip_banned("", list), false, "IP vide -> jamais bannie")
++	if r != true: return r
++	return true
++
++func test_ban_list_roundtrip():
++	var path := _ban_path()
++	var r = Runner.assert_eq(LANManager.load_ban_list_from(path), [], "Fichier absent -> liste vide")
++	if r != true: return r
++	var list := ["192.168.1.23", "10.0.0.7"]
++	LANManager.save_ban_list_to(path, list)
++	var loaded := LANManager.load_ban_list_from(path)
++	r = Runner.assert_eq(loaded.size(), 2, "Round-trip : 2 entrees conservees")
++	if r != true: return r
++	r = Runner.assert_eq(String(loaded[0]), "192.168.1.23", "IP 0 conservee")
++	if r != true: return r
++	DirAccess.remove_absolute(path)
++	return true
++
++func test_ban_list_corrupt():
++	var path := _ban_path()
++	var f := FileAccess.open(path, FileAccess.WRITE)
++	f.store_string("{not json")
++	f.close()
++	var loaded := LANManager.load_ban_list_from(path)
++	var r = Runner.assert_eq(loaded, [], "Fichier corrompu -> liste vide")
++	if r != true: return r
++	DirAccess.remove_absolute(path)
++	return true

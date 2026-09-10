@@ -1,0 +1,273 @@
+# Review package: 427a814..a73610f
+
+## Commits
+a73610f feat(ui): wire players menu hotkey, gating, notify-send and kick overlay
+
+## Files changed
+ Game/source/scripts/main/wayland_room.gd | 51 ++++++++++++++++++++++++++++++--
+ Game/source/scripts/player/player.gd     |  5 ++++
+ 2 files changed, 53 insertions(+), 3 deletions(-)
+
+## Diff
+diff --git a/Game/source/scripts/main/wayland_room.gd b/Game/source/scripts/main/wayland_room.gd
+index 2fae9b9..c1ec0e0 100644
+--- a/Game/source/scripts/main/wayland_room.gd
++++ b/Game/source/scripts/main/wayland_room.gd
+@@ -12,20 +12,21 @@ extends Node3D
+ 
+ @onready var compositor: WlrCompositor = $WlrCompositor
+ @onready var player = $Level/Player
+ @onready var ui: CanvasLayer = $Level/Player/UI
+ @onready var window_menu = $Level/Player/WindowMenuLayer/WindowMenu
+ @onready var capture_selector = $Level/Player/CaptureSelectorLayer/CaptureSelector
+ @onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
+ @onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
+ @onready var keyboard: VirtualKeyboard = $Level/Player/KeyboardLayer/VirtualKeyboard
+ @onready var tutorial = $Level/Player/TutorialLayer/Tutorial
++@onready var players_menu = $Level/Player/PlayersMenuLayer/PlayersMenu
+ 
+ var win3d: Node3D
+ var focus: Node3D
+ var layers: Node3D
+ var pins: Node3D
+ var fx: Node3D
+ var presenter: Node3D # présente le viewport à l'output headless pour OBS
+ var lan: Node # multijoueur LAN (hôte/join, avatars)
+ var cmd: Node # drone de commandes IPC (cyberrealm-exec)
+ var interactor: Node3D # clic gauche sur les objets du niveau (scripts user)
+@@ -58,20 +59,21 @@ var _host_session_bus := ""
+ var _host_wayland_display := ""
+ var _host_agent_stopped := false
+ 
+ # Niveaux : on charge d'abord le level custom de l'utilisateur s'il existe
+ # (res://user/level.tscn), sinon on retombe sur le level par défaut.
+ const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
+ const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
+ 
+ var _level_path := ""
+ var _menu_just_closed := false
++var _hud_notice: Label = null
+ # Vrai si le tuto a été lancé automatiquement au premier lancement : à sa
+ # fermeture on mémorise tutorial_seen dans les settings persistants.
+ var _tutorial_first_run := false
+ # Vrai tant que le niveau affiché est celui de l'hôte LAN (apply_host_level) :
+ # à la déconnexion, le joueur doit retrouver SON niveau personnel.
+ var _level_swapped := false
+ # Transform d'origine du Player dans le niveau personnel (capturé au boot,
+ # avant toute session LAN) : sert de spawn au retour après déconnexion.
+ var _local_spawn_transform := {}
+ 
+@@ -464,20 +466,26 @@ func _ready() -> void:
+ 
+ 	# Partage de fichiers : drag & drop Wayland lâché sur un avatar → offre
+ 	# rsync (prompt mot de passe SSH chez le destinataire, cf. README).
+ 	file_share = Node3D.new()
+ 	file_share.name = "FileShare"
+ 	file_share.set_script(preload("res://scripts/network/file_share_manager.gd"))
+ 	add_child(file_share)
+ 	file_share.setup(player, lan, compositor)
+ 	compositor.file_drop_received.connect(file_share.on_files_dropped)
+ 
++	players_menu.setup(lan, compositor, file_share)
++	players_menu.visibility_changed.connect(_on_menu_visibility_changed)
++	lan.message_received.connect(_on_lan_message_received)
++	lan.kicked.connect(func(): _lan_flash("Kicked by host"))
++	lan.banned.connect(func(): _lan_flash("You banned a player"))
++
+ 	# TextureRect pour l'icône de drag-and-drop
+ 	drag_icon_rect = TextureRect.new()
+ 	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
+ 	drag_icon_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+ 	drag_icon_rect.visible = false
+ 	drag_icon_rect.z_index = 100
+ 	ui.add_child(drag_icon_rect)
+ 
+ 	# Tutoriel au premier lancement (mémorisé via settings). Le await laisse
+ 	# le viewport se rendre une première fois avant la capture des menus.
+@@ -714,43 +722,50 @@ func _process(delta: float) -> void:
+ 	if player.input_locked:
+ 		return
+ 
+ 
+ 	# Menu radial (B sur manette) : toggle ouverture/fermeture
+ 	if Input.is_action_just_pressed("radial_menu", true):
+ 		if radial_menu.visible:
+ 			radial_menu.hide_menu()
+ 		elif not _menu_just_closed \
+ 				and not focus.in_game() \
+-				and not window_menu.visible and not pause_menu.visible:
++				and not window_menu.visible and not pause_menu.visible and not players_menu.visible:
+ 			var ctx := _determine_radial_context()
+ 			radial_menu.show_menu(ctx)
+ 
+ 	_menu_just_closed = false
+ 	# Menu radial ouvert : geler le monde
+ 	if radial_menu.visible:
+ 		return
+ 
+ 	if Input.is_action_just_pressed("window_menu", true) and not focus.is_active() and not layers.keyboard_busy():
+ 		if window_menu.visible:
+ 			layers.deactivate_layer_interact()
+ 			window_menu.hide_menu()
+ 		else:
+ 			_open_window_menu()
+ 
++	if Input.is_action_just_pressed("players_menu", true) and not focus.is_active() and not layers.keyboard_busy():
++		if players_menu.visible:
++			layers.deactivate_layer_interact()
++			players_menu.hide_menu()
++		else:
++			_open_players_menu()
++
+ 	# Tab : bascule le mode "interaction layer" — libère la souris pour
+ 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
+ 	# (sinon elle est capturée et fait tourner la caméra FPS).
+ 	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
+ 		layers.toggle_layer_interact()
+ 
+-	if window_menu.visible or capture_selector.visible:
++	if window_menu.visible or capture_selector.visible or players_menu.visible:
+ 		return
+ 
+ 	# Mode focus: le raccourci focus (ex. Super+F) pour sortir, kill_window
+ 	# pour fermer la fenêtre, sinon router les inputs souris/clavier.
+ 	# is_action_just_pressed(exact=true) : seul le bind exact (modifieurs
+ 	# compris) déclenche la sortie — F seul, Ctrl+F... vont à la fenêtre.
+ 	if focus.is_active():
+ 		if Input.is_action_just_pressed("focus_window", true):
+ 			focus.exit_focus()
+ 			return
+@@ -982,20 +997,28 @@ func _get_window_shared(wid: int) -> bool:
+ # layer_interact, KEYBOARD MODE = interact) : le menu est un overlay 2D,
+ # aucune interaction ne doit fuir vers les apps pendant qu'il est affiché.
+ func _open_window_menu() -> void:
+ 	layers.deactivate_layer_interact()
+ 	if interact_mode_active:
+ 		compositor.release_all_keys()
+ 		interact_mode_active = false
+ 		player.interact_mode_active = false
+ 	window_menu.show_menu()
+ 
++func _open_players_menu() -> void:
++	layers.deactivate_layer_interact()
++	if interact_mode_active:
++		compositor.release_all_keys()
++		interact_mode_active = false
++		player.interact_mode_active = false
++	players_menu.show_menu()
++
+ func _on_window_menu_grab(wid: int) -> void:
+ 	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
+ 	# caméra ; grab OFF → relâcher la prise, le menu reste ouvert.
+ 	win3d.toggle_grab_window(wid)
+ 	window_menu.hide_menu()
+ 
+ func _on_window_menu_focus(wid: int) -> void:
+ 	focus.enter_focus(wid)
+ 	window_menu.hide_menu()
+ 
+@@ -1288,21 +1311,43 @@ func _on_pause_menu_visibility_changed() -> void:
+ 		# une touche coincée côté xkbcommon. Inconditionnel : des touches
+ 		# peuvent être enfoncées en mode focus ou via une layer surface aussi.
+ 		compositor.release_all_keys()
+ 		if interact_mode_active:
+ 			interact_mode_active = false
+ 			player.interact_mode_active = false
+ 		if focus.is_active():
+ 			focus.exit_focus()
+ 
+ func _on_menu_visibility_changed() -> void:
+-	if not window_menu.visible and not pause_menu.visible:
++	if not window_menu.visible and not pause_menu.visible and not players_menu.visible:
+ 		_menu_just_closed = true
+ 
+ # Fermeture du tutoriel (bouton Close ou Esc). Au premier lancement
+ # (déclenché automatiquement), on mémorise tutorial_seen pour ne plus
+ # le rejouer au démarrage.
+ func _on_tutorial_closed() -> void:
+ 	if _tutorial_first_run:
+ 		_tutorial_first_run = false
+ 		pause_menu.set_tutorial_seen(true)
+ 	_menu_just_closed = true
++
++func _on_lan_message_received(sender_name: String, text: String) -> void:
++	var output := []
++	var err := OS.execute("notify-send", ["CyberRealm", "%s: %s" % [sender_name, text]], output, false)
++	if err != 0:
++		print("[LAN] notify-send failed: exit ", err)
++
++func _lan_flash(text: String) -> void:
++	if _hud_notice == null:
++		_hud_notice = Label.new()
++		_hud_notice.add_theme_font_size_override("font_size", 24)
++		_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.5, 0.4))
++		_hud_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
++		_hud_notice.set_anchors_preset(Control.PRESET_CENTER_TOP)
++		_hud_notice.offset_top = 80
++		_hud_notice.offset_bottom = 120
++		$Level/Player/UI.add_child(_hud_notice)
++	_hud_notice.text = text
++	_hud_notice.visible = true
++	await get_tree().create_timer(4.0).timeout
++	if is_instance_valid(_hud_notice) and _hud_notice.text == text:
++		_hud_notice.visible = false
+diff --git a/Game/source/scripts/player/player.gd b/Game/source/scripts/player/player.gd
+index 6a11409..63db4be 100644
+--- a/Game/source/scripts/player/player.gd
++++ b/Game/source/scripts/player/player.gd
+@@ -47,20 +47,21 @@ var spawn_rotation: Vector3 = Vector3.ZERO
+ var spawn_scale: Vector3 = Vector3.ONE
+ 
+ func _ready():
+ 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+ 	spawn_pos = position
+ 	spawn_rotation = rotation
+ 	spawn_scale = scale
+ 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
+ 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
+ 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
++	$PlayersMenuLayer/PlayersMenu.visibility_changed.connect(_on_menu_visibility_changed)
+ 
+ func _get_compositor() -> WlrCompositor:
+ 	if _compositor == null or not is_instance_valid(_compositor):
+ 		var scene := get_tree().current_scene
+ 		if scene != null:
+ 			_compositor = scene.get_node_or_null("WlrCompositor") as WlrCompositor
+ 	return _compositor
+ 
+ func _keyboard_busy() -> bool:
+ 	var comp := _get_compositor()
+@@ -148,29 +149,33 @@ func _input(event):
+ 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+ 		return
+ 	if $PauseMenuLayer/PauseMenu.visible:
+ 		# Afficher la souris uniquement quand l'utilisateur la bouge (pas au d-pad).
+ 		if event is InputEventMouseMotion or (event is InputEventMouseButton and event.pressed):
+ 			if Input.mouse_mode != Input.MOUSE_MODE_VISIBLE:
+ 				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+ 		return
+ 	if $CaptureSelectorLayer/CaptureSelector.visible:
+ 		return
++	if $PlayersMenuLayer/PlayersMenu.visible:
++		return
+ 	# Chargement de la map LAN : tout l'input jeu est gelé (déplacement,
+ 	# caméra, clics) sauf Escape pour ouvrir le menu pause (annuler).
+ 	if input_locked and not event.is_action_pressed("pause_menu"):
+ 		return
+ 	if event.is_action_pressed("pause_menu") and not interact_mode_active:
+ 		if session_locked:
+ 			return
+ 		if $WindowMenuLayer/WindowMenu.visible:
+ 			return
++		if $PlayersMenuLayer/PlayersMenu.visible:
++			return
+ 		# Un overlay keyboard-interactive (rofi, menu waybar...) détient le
+ 		# clavier : laisser l'Escape lui être routé au lieu d'ouvrir le menu
+ 		# pause.
+ 		if _get_compositor() and _get_compositor().get_keyboard_focus_layer_id() >= 0:
+ 			return
+ 		$PauseMenuLayer/PauseMenu.show_menu()
+ 	if $PauseMenuLayer/PauseMenu.visible or $CaptureSelectorLayer/CaptureSelector.visible or $WindowMenuLayer/WindowMenu.visible:
+ 		return
+ 	if event is InputEventMouseButton and Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
+ 		if layer_pointer_active or session_locked:
