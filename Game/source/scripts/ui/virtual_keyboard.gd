@@ -484,6 +484,12 @@ func _input(event: InputEvent) -> void:
 	# Let ui_accept (A button) pass through so the focused Button receives it
 	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_A:
 		return
+	# Start and B close the keyboard (same behaviour as outside the keyboard)
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [JOY_BUTTON_START, JOY_BUTTON_B]:
+		hide_menu()
+		get_viewport().set_input_as_handled()
+		return
 	# Consume other gamepad buttons to prevent passthrough
 	if event is InputEventJoypadButton:
 		get_viewport().set_input_as_handled()
