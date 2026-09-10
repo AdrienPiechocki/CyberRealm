@@ -1825,6 +1825,8 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventJoypadButton and event.pressed \
 			and event.button_index in [JOY_BUTTON_START, JOY_BUTTON_B] \
 			and not _custom_key_waiting and _waiting_action == "":
+		if _keyboard != null and _keyboard.visible:
+			_keyboard.hide_menu()
 		if _current_view == "main":
 			hide_menu()
 		else:

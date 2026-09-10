@@ -212,4 +212,5 @@ func _pad_menu_activate(event: InputEventJoypadButton) -> bool:
 	if fe.disabled:
 		return false
 	fe.pressed.emit()
+	get_viewport().set_input_as_handled()
 	return true
