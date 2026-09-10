@@ -54,6 +54,7 @@ func _ready():
 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
+	$PlayersMenuLayer/PlayersMenu.visibility_changed.connect(_on_menu_visibility_changed)
 
 func _get_compositor() -> WlrCompositor:
 	if _compositor == null or not is_instance_valid(_compositor):
@@ -155,6 +156,8 @@ func _input(event):
 		return
 	if $CaptureSelectorLayer/CaptureSelector.visible:
 		return
+	if $PlayersMenuLayer/PlayersMenu.visible:
+		return
 	# Chargement de la map LAN : tout l'input jeu est gelé (déplacement,
 	# caméra, clics) sauf Escape pour ouvrir le menu pause (annuler).
 	if input_locked and not event.is_action_pressed("pause_menu"):
@@ -163,6 +166,8 @@ func _input(event):
 		if session_locked:
 			return
 		if $WindowMenuLayer/WindowMenu.visible:
+			return
+		if $PlayersMenuLayer/PlayersMenu.visible:
 			return
 		# Un overlay keyboard-interactive (rofi, menu waybar...) détient le
 		# clavier : laisser l'Escape lui être routé au lieu d'ouvrir le menu

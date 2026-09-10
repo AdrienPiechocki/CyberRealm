@@ -19,6 +19,7 @@ extends Node3D
 @onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
 @onready var keyboard: VirtualKeyboard = $Level/Player/KeyboardLayer/VirtualKeyboard
 @onready var tutorial = $Level/Player/TutorialLayer/Tutorial
+@onready var players_menu = $Level/Player/PlayersMenuLayer/PlayersMenu
 
 var win3d: Node3D
 var focus: Node3D
@@ -65,6 +66,7 @@ const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
 
 var _level_path := ""
 var _menu_just_closed := false
+var _hud_notice: Label = null
 # Vrai si le tuto a été lancé automatiquement au premier lancement : à sa
 # fermeture on mémorise tutorial_seen dans les settings persistants.
 var _tutorial_first_run := false
@@ -471,6 +473,12 @@ func _ready() -> void:
 	file_share.setup(player, lan, compositor)
 	compositor.file_drop_received.connect(file_share.on_files_dropped)
 
+	players_menu.setup(lan, compositor, file_share)
+	players_menu.visibility_changed.connect(_on_menu_visibility_changed)
+	lan.message_received.connect(_on_lan_message_received)
+	lan.kicked.connect(func(): _lan_flash("Kicked by host"))
+	lan.banned.connect(func(): _lan_flash("You banned a player"))
+
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
 	drag_icon_rect.stretch_mode = TextureRect.STRETCH_KEEP
@@ -721,7 +729,7 @@ func _process(delta: float) -> void:
 			radial_menu.hide_menu()
 		elif not _menu_just_closed \
 				and not focus.in_game() \
-				and not window_menu.visible and not pause_menu.visible:
+				and not window_menu.visible and not pause_menu.visible and not players_menu.visible:
 			var ctx := _determine_radial_context()
 			radial_menu.show_menu(ctx)
 
@@ -737,13 +745,20 @@ func _process(delta: float) -> void:
 		else:
 			_open_window_menu()
 
+	if Input.is_action_just_pressed("players_menu", true) and not focus.is_active() and not layers.keyboard_busy():
+		if players_menu.visible:
+			layers.deactivate_layer_interact()
+			players_menu.hide_menu()
+		else:
+			_open_players_menu()
+
 	# Tab : bascule le mode "interaction layer" — libère la souris pour
 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
 	# (sinon elle est capturée et fait tourner la caméra FPS).
 	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
 		layers.toggle_layer_interact()
 
-	if window_menu.visible or capture_selector.visible:
+	if window_menu.visible or capture_selector.visible or players_menu.visible:
 		return
 
 	# Mode focus: le raccourci focus (ex. Super+F) pour sortir, kill_window
@@ -988,6 +1003,14 @@ func _open_window_menu() -> void:
 		interact_mode_active = false
 		player.interact_mode_active = false
 	window_menu.show_menu()
+
+func _open_players_menu() -> void:
+	layers.deactivate_layer_interact()
+	if interact_mode_active:
+		compositor.release_all_keys()
+		interact_mode_active = false
+		player.interact_mode_active = false
+	players_menu.show_menu()
 
 func _on_window_menu_grab(wid: int) -> void:
 	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
@@ -1295,7 +1318,7 @@ func _on_pause_menu_visibility_changed() -> void:
 			focus.exit_focus()
 
 func _on_menu_visibility_changed() -> void:
-	if not window_menu.visible and not pause_menu.visible:
+	if not window_menu.visible and not pause_menu.visible and not players_menu.visible:
 		_menu_just_closed = true
 
 # Fermeture du tutoriel (bouton Close ou Esc). Au premier lancement
@@ -1306,3 +1329,25 @@ func _on_tutorial_closed() -> void:
 		_tutorial_first_run = false
 		pause_menu.set_tutorial_seen(true)
 	_menu_just_closed = true
+
+func _on_lan_message_received(sender_name: String, text: String) -> void:
+	var output := []
+	var err := OS.execute("notify-send", ["CyberRealm", "%s: %s" % [sender_name, text]], output, false)
+	if err != 0:
+		print("[LAN] notify-send failed: exit ", err)
+
+func _lan_flash(text: String) -> void:
+	if _hud_notice == null:
+		_hud_notice = Label.new()
+		_hud_notice.add_theme_font_size_override("font_size", 24)
+		_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.5, 0.4))
+		_hud_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		_hud_notice.set_anchors_preset(Control.PRESET_CENTER_TOP)
+		_hud_notice.offset_top = 80
+		_hud_notice.offset_bottom = 120
+		$Level/Player/UI.add_child(_hud_notice)
+	_hud_notice.text = text
+	_hud_notice.visible = true
+	await get_tree().create_timer(4.0).timeout
+	if is_instance_valid(_hud_notice) and _hud_notice.text == text:
+		_hud_notice.visible = false
