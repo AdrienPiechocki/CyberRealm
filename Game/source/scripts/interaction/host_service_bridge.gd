@@ -297,7 +297,7 @@ func _parse_monitor_line(line: String) -> Dictionary:
 	out["member"] = String(parsed.get("member", "")).strip_edges()
 	out["sender"] = String(parsed.get("sender", "")).strip_edges()
 	out["args"] = parsed.get("args", [])
-	out["ts_msec"] = Time.get_ticks_msec()
+	out["ts_msec"] = int(Time.get_unix_time_from_system() * 1000.0)
 	return out
 
 func _rotate_log(id: int, log_path: String) -> void:
