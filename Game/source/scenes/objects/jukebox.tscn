@@ -1,0 +1,18 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/interaction/objects/jukebox.gd" id="1_jb"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_jb"]
+size = Vector3(0.9, 1.5, 0.8)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_jb"]
+size = Vector3(0.9, 1.5, 0.8)
+
+[node name="Jukebox" type="StaticBody3D"]
+script = ExtResource("1_jb")
+
+[node name="Mesh" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_jb")
+
+[node name="Collider" type="CollisionShape3D" parent="."]
+shape = SubResource("BoxShape3D_jb")
