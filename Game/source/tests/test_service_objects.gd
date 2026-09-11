@@ -2,6 +2,7 @@ extends Node
 
 const Runner = preload("res://tests/runner.gd")
 const JukeboxScript = preload("res://scripts/interaction/objects/jukebox.gd")
+const MailboxScript = preload("res://scripts/interaction/objects/mailbox.gd")
 
 class BridgeStub:
 	extends RefCounted
@@ -33,7 +34,7 @@ class BridgeStub:
 		return {"ok": true, "data": null}
 	func art_uri_to_texture(uri: String):
 		return null
-	func subscribe(dest, iface := "", member := "") -> int: return 0
+	func subscribe(dest, iface := "", member := "") -> int: return 1
 	func read_events(id: int) -> Array: return events
 	func unsubscribe(id: int) -> void: pass
 
@@ -74,3 +75,36 @@ func test_jukebox_controls_drive_bridge_calls():
 	for c in b.calls:
 		if c[0] == "call_method" and c[2] == "Next": return Runner.assert_true(true, "Next issued")
 	return Runner.assert_true(false, "Next issued")
+
+func test_mailbox_subscribes_and_builds_list():
+	var b := BridgeStub.new()
+	var m := MailboxScript.new()
+	m.set_bridge(b)
+	m.refresh()
+	var entries := m.get_entries()
+	var r = Runner.assert_eq(entries.size(), 1, "one event captured")
+	if r != true: return r
+	r = Runner.assert_eq(String((entries[0] as Dictionary).get("app", "")), "sway", "app parsed")
+	if r != true: return r
+	r = Runner.assert_eq(String((entries[0] as Dictionary).get("summary", "")), "Build done", "summary parsed")
+	m.free()
+	return r
+
+func test_mailbox_fifo_caps():
+	var b := BridgeStub.new()
+	var evs: Array = []
+	for i in 45:
+		evs.append({"interface":"org.freedesktop.Notifications","member":"Notify","args":[str(i),0,"","s"+str(i),"b"+str(i),[],1]})
+	b.events = evs
+	var m := MailboxScript.new()
+	m.set_bridge(b)
+	m.refresh()
+	var entries := m.get_entries()
+	var r = Runner.assert_true(entries.size() <= 30, "FIFO capped at ~30")
+	m.free()
+	return r
+
+func test_mailbox_time_format():
+	var m := MailboxScript.new()
+	var s := m._format_time(0)
+	return Runner.assert_true(s is String and s.length() >= 5, "time formatted HH:MM")
