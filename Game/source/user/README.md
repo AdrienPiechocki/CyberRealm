@@ -263,61 +263,6 @@ Limitations:
   advertised IP may be the wrong one → the transfer fails cleanly
   ("ssh server unreachable").
 
-## Service objects (MPRIS, notifications, anything D-Bus)
-
-Level objects can read **and control** any D-Bus service on **this PC** via
-`busctl` (systemd ≥ 256) — no helper process needed. Each copy of the game
-talks to its own PC's services; nothing is broadcast over the LAN.
-
-Two examples are already placed in the levels:
-
-- `scenes/objects/jukebox.tscn` — the MPRIS player of this PC. Aim, click:
-  cover / title / artist, plus Play/Pause and Next.
-- `scenes/objects/mailbox.tscn` — desktop notifications captured since boot.
-  Click to open the list.
-
-Make your own service object in 3 steps:
-
-1. Make a `StaticBody3D` prefab with a script exposing `interact()`
-   (required), `get_interact_prompt()` (optional), `interact_focus()`
-   (optional) — see `scripts/interaction/world_interactor.gd` for the
-   convention.
-2. In `_ready()`, grab the bridge:
-
-   `_bridge = get_tree().get_first_node_in_group("host_services")`
-
-   It exposes `call_method(dest, path, iface, method, signature := "", args := [])`,
-   `get_property(...)`, `list_names()`, `subscribe(dest, iface, member)` /
-   `read_events(id)`, `art_uri_to_texture(uri)`.
-3. Render whatever you want anywhere (a HUD panel via `get_ui_layer()`, a 3D
-   quad…). Example skeleton:
-
-```gdscript
-extends StaticBody3D
-
-var _bridge: Node = null
-
-func _ready() -> void:
-	_bridge = get_tree().get_first_node_in_group("host_services")
-
-func interact() -> void:
-	if _bridge == null:
-		return
-	var r := _bridge.call_method("org.example.Service", "/", "org.example.Service", "DoThing")
-	if r.get("ok"):
-		print("OK: ", r.get("data"))
-```
-
-Debug: `CYBERREALM_HOSTSVCS_DEBUG=1` logs the raw busctl traffic.
-
-### Native methods and `call`
-
-Godot's `Object.call(...)` is a reserved native method, so the bridge names
-its D-Bus invocation `call_method`. Its full signature is
-`call_method(dest, path, iface, method, signature := "", args := [])` and it
-returns a `Dictionary` shaped like `{"ok": bool, "data": Variant, "error":
-String, "exit": int}` — `data` is the decoded return value when `ok` is true.
-
 ## LAN multiplayer
 
 Your custom level is **playable over LAN even with different builds**: the

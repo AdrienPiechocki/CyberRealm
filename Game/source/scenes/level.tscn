@@ -13,8 +13,6 @@
 [ext_resource type="PackedScene" uid="uid://dbt10mmmsxoem" path="res://assets/Space Station/table.fbx" id="11_40jy2"]
 [ext_resource type="PackedScene" uid="uid://brdv1bfld6o2" path="res://assets/Space Station/computer-wide.fbx" id="15_82cfe"]
 [ext_resource type="PackedScene" uid="uid://dxdeo8biidht4" path="res://assets/Space Station/pipe-bend.fbx" id="16_gunhw"]
-[ext_resource type="PackedScene" path="res://scenes/objects/jukebox.tscn" id="17_jb"]
-[ext_resource type="PackedScene" path="res://scenes/objects/mailbox.tscn" id="18_mb"]
 
 [sub_resource type="PanoramaSkyMaterial" id="PanoramaSkyMaterial_64w2a"]
 panorama = ExtResource("2_fpun6")
@@ -41,12 +39,6 @@ albedo_color = Color(0, 1, 1, 0.39215687)
 
 [node name="Player" parent="." unique_id=1446411886 instance=ExtResource("1_64w2a")]
 transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -8.538, 0, 1.2)
-
-[node name="Jukebox" parent="." instance=ExtResource("17_jb")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6.038, 0, 3.2)
-
-[node name="Mailbox" parent="." instance=ExtResource("18_mb")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -4.038, 0, 3.2)
 
 [node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1429142931]
 environment = SubResource("Environment_fpun6")
