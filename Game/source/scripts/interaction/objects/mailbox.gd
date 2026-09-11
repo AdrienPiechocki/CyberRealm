@@ -66,8 +66,6 @@ func _set_panel_visible(v: bool) -> void:
 	if v:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		refresh()
-	elif Input.mouse_mode == Input.MOUSE_MODE_VISIBLE:
-		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _render() -> void:
 	if _list == null:
