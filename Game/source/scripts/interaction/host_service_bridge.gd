@@ -200,13 +200,14 @@ var _monitor_pids := {}       # journal_id -> pid
 var _monitor_offsets := {}    # journal_id -> byte offset
 var _journal_iface := {}      # journal_id -> String
 var _journal_member := {}     # journal_id -> String
+var _journal_dest := {}       # journal_id -> dest String
 
 func subscribe(dest: String, iface := "", member := "") -> int:
 	if bus_address.is_empty() or dest.is_empty():
 		return 0
 	var already := -1
 	for k in _monitor_pids:
-		if str(k).contains(dest):
+		if str(_journal_dest.get(k, "")) == dest:
 			already = int(k)
 			break
 	if already != -1:
@@ -229,6 +230,7 @@ func subscribe(dest: String, iface := "", member := "") -> int:
 	_monitor_pids[id] = 0 # PID lookup unavailable via sh -c; tracked by parent process below
 	_journal_iface[id] = iface
 	_journal_member[id] = member
+	_journal_dest[id] = dest
 	_monitor_offsets[id] = offset
 	# Record the actual child pid so unsubscribe can kill it precisely.
 	var pid := _find_monitor_pid(log_path, dest)
@@ -331,6 +333,7 @@ func unsubscribe(id: int) -> void:
 	_monitor_offsets.erase(id)
 	_journal_iface.erase(id)
 	_journal_member.erase(id)
+	_journal_dest.erase(id)
 
 func _exit_tree() -> void:
 	for id in _monitor_pids.keys():
