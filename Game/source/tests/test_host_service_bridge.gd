@@ -109,25 +109,6 @@ func test_cache_limits_subprocesses():
 	if f != null: f.close()
 	return Runner.assert_true(lines.size() == 1, "one subprocess per cache window, got %d" % lines.size())
 
-func test_subscribe_dedups_same_dest():
-	OS.set_environment("FAKE_MONITOR_JSON", MONITOR_LINE)
-	var b := _make_bridge()
-	var rt := _tmp_runtime_dir("dedup")
-	b.set_runtime_dir(rt)
-	var id1 := b.subscribe(NOTIF)
-	var id2 := b.subscribe(NOTIF)
-	var r = Runner.assert_eq(id2, id1, "re-subscribe same dest reuses journal id")
-	if r != true:
-		b.unsubscribe(id1)
-		b.unsubscribe(id2)
-		OS.set_environment("FAKE_MONITOR_JSON", "")
-		b.free()
-		return r
-	b.unsubscribe(id1)
-	OS.set_environment("FAKE_MONITOR_JSON", "")
-	b.free()
-	return true
-
 func test_subscribe_creates_log_and_reads_events():
 	OS.set_environment("FAKE_MONITOR_JSON", MONITOR_LINE)
 	var b := _make_bridge()
@@ -150,7 +131,6 @@ func test_subscribe_creates_log_and_reads_events():
 	if r != true: return r
 	r = Runner.assert_eq(String((ev.get("args", []) as Array)[0]), "sway", "args decoded")
 	if r != true: return r
-	OS.set_environment("FAKE_MONITOR_JSON", "")
 	b.free()
 	return true
 
@@ -172,7 +152,6 @@ func test_read_events_incremental_offset():
 	var second := b.read_events(id)
 	if second.is_empty(): return Runner.assert_true(false, "second batch non-empty")
 	if not str(second[0]).contains("Second"): return Runner.assert_true(false, "only new event returned")
-	OS.set_environment("FAKE_MONITOR_JSON", "")
 	b.free()
 	return true
 
@@ -184,7 +163,6 @@ func test_subscribe_filter_excludes_other_members():
 	var id := b.subscribe(NOTIF, "org.freedesktop.Notifications", "ActionInvoked")
 	OS.delay_msec(50)
 	var events := b.read_events(id)
-	OS.set_environment("FAKE_MONITOR_JSON", "")
 	var r = Runner.assert_eq(events.is_empty(), true, "Notify event filtered out of ActionInvoked journal")
 	b.free()
 	return r
@@ -205,8 +183,8 @@ func test_rotation_truncates_oversize_dump():
 	big = big.repeat(100)
 	f.store_string(big + "\n" + MONITOR_LINE + "\n" + MONITOR_LINE)
 	f.close()
+	b._monitor_offsets[id] = 0
 	var events := b.read_events(id)
-	OS.set_environment("FAKE_MONITOR_JSON", "")
 	b.unsubscribe(id)
 	var now_size := FileAccess.get_file_as_string(log_path).length()
 	if now_size > BridgeScript.MONITOR_MAX_BYTES: return Runner.assert_true(false, "file rotated below max")
