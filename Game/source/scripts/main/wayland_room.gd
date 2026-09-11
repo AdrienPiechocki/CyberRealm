@@ -34,8 +34,6 @@ var file_share: Node3D # drag & drop de fichiers sur un avatar → rsync LAN
 const LEVEL_BAKER := preload("res://scripts/baking/level_baker.gd")
 const OCCLUSION_BAKER := preload("res://scripts/baking/occlusion_baker.gd")
 const COMMAND_NODE := preload("res://scripts/ipc/command_node.gd")
-const HOST_BRIDGE_SCRIPT := preload("res://scripts/interaction/host_service_bridge.gd")
-var host_bridge: Node = null
 
 # Diagnostic rendu (CYBERREALM_RENDER_DEBUG=1) : FPS + draw calls + primitives
 # + VRAM toutes les RENDER_DEBUG_PERIOD_SEC, pour comparer deux machines.
@@ -316,7 +314,6 @@ func _ready() -> void:
 	# réutilisé et s'accumule sinon indéfiniment. Au démarrage, aucune session
 	# LAN n'est active : ces fichiers sont forcément obsolètes.
 	_cleanup_stale_bake_files()
-	HOST_BRIDGE_SCRIPT.purge_stale_logs(HOST_BRIDGE_SCRIPT.default_runtime_dir())
 	# Portails de capture pour OBS : xdg-desktop-portal (backend wlr) +
 	# xdg-desktop-portal-wlr, dans la session du jeu (socket cyberrealm-0).
 	# IMPORTANT : sans set_portal_backend, XDG_CURRENT_DESKTOP hérite de
@@ -475,13 +472,6 @@ func _ready() -> void:
 	file_share.setup(player, lan, compositor)
 	pause_menu.set_lan_ref(lan)
 	compositor.file_drop_received.connect(file_share.on_files_dropped)
-
-	host_bridge = HOST_BRIDGE_SCRIPT.new()
-	host_bridge.name = "HostServiceBridge"
-	add_child(host_bridge)
-	host_bridge.set_bus_address(_host_session_bus)
-	if player != null and player.has_node("UI"):
-		host_bridge.set_ui_layer(player.get_node("UI"))
 
 	# TextureRect pour l'icône de drag-and-drop
 	drag_icon_rect = TextureRect.new()
