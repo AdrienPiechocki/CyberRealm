@@ -18,7 +18,12 @@ func _ready() -> void:
 func set_bridge(b) -> void:
 	_bridge = b
 
+func _resolve_bridge() -> void:
+	if _bridge == null:
+		_bridge = get_tree().get_first_node_in_group("host_services")
+
 func _subscribe() -> void:
+	_resolve_bridge()
 	if _bridge == null or _journal_id != 0:
 		return
 	_journal_id = int(_bridge.subscribe("org.freedesktop.Notifications", "org.freedesktop.Notifications", "Notify"))
@@ -27,6 +32,7 @@ func get_interact_prompt() -> String:
 	return "Mailbox"
 
 func interact() -> void:
+	_resolve_bridge()
 	_subscribe()
 	refresh()
 	if _panel != null:
@@ -35,6 +41,7 @@ func interact() -> void:
 		_set_panel_visible(true)
 
 func refresh() -> void:
+	_resolve_bridge()
 	_subscribe()
 	if _bridge == null or _journal_id == 0:
 		return
@@ -81,6 +88,7 @@ func _render() -> void:
 		_list.add_child(lb)
 
 func _build_panel() -> PanelContainer:
+	_resolve_bridge()
 	var layer: CanvasLayer = _bridge.get_ui_layer() if _bridge != null else null
 	if layer == null:
 		return null
