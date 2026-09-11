@@ -39,7 +39,15 @@ case "$CMD" in
         ;;
     call)
         # args (after CMD): DEST PATH IFACE METHOD [sig args...]
-        method="${3:-}"
+        # Options (--*) may precede the command — strip them before indexing.
+        pos=()
+        for a in "$@"; do
+            case "$a" in
+                --*) continue ;;
+                *) pos+=("$a") ;;
+            esac
+        done
+        method="${pos[4]:-}"
         case "$method" in
             PlayPause|Next|Previous|Play) printf '%s' '' ; exit 0 ;;
             *)
