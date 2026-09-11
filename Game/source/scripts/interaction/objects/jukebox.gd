@@ -20,10 +20,6 @@ func _ready() -> void:
 func set_bridge(b) -> void:
 	_bridge = b
 
-func _resolve_bridge() -> void:
-	if _bridge == null:
-		_bridge = get_tree().get_first_node_in_group("host_services")
-
 func get_interact_prompt() -> String:
 	return "Jukebox"
 
@@ -47,7 +43,6 @@ func get_now_playing_name() -> String:
 	return "%s — %s" % [_title_text(), _artist_text()]
 
 func _process(delta: float) -> void:
-	_resolve_bridge()
 	if _bridge == null or not visible:
 		return
 	if Time.get_ticks_msec() - _poll_last_msec >= REFRESH_MSEC:
@@ -55,7 +50,6 @@ func _process(delta: float) -> void:
 		update_display()
 
 func update_display() -> void:
-	_resolve_bridge()
 	if _bridge == null:
 		_state = "Service unavailable"
 		return
@@ -86,12 +80,10 @@ func _artist_text() -> String:
 	return "?"
 
 func play_toggle() -> void:
-	_resolve_bridge()
 	if _bridge == null or _player.is_empty(): return
 	_bridge.call_method(_player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "PlayPause")
 
 func next() -> void:
-	_resolve_bridge()
 	if _bridge == null or _player.is_empty(): return
 	_bridge.call_method(_player, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player", "Next")
 
