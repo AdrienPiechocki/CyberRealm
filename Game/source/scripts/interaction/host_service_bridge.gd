@@ -348,36 +348,3 @@ static func purge_stale_logs(runtime_dir: String) -> void:
 	for name: String in d.get_files():
 		if name.begins_with("cyberrealm-svc-") and name.ends_with(".log"):
 			d.remove(name)
-
-# ── cover art ─────────────────────────────────────────────────────────
-
-func art_uri_to_texture(uri_or_path: String) -> Texture2D:
-	var p := uri_or_path.strip_edges()
-	if p.is_empty():
-		return null
-	if _art_cache.has(p):
-		return _art_cache[p]
-	var tex := _load_art(p)
-	if tex != null:
-		_art_cache[p] = tex
-	return tex
-
-func clear_caches() -> void:
-	_art_cache.clear()
-
-func _load_art(p: String) -> Texture2D:
-	if p.begins_with("https://") or p.begins_with("http://") or p.begins_with("data:"):
-		return null
-	var path := p
-	if p.begins_with("file://"):
-		path = p.substr(7)
-	elif p.begins_with("file:"):
-		path = p.substr(5)
-	if not FileAccess.file_exists(path):
-		return null
-	if FileAccess.get_file_as_bytes(path).size() > (8 << 20):
-		return null
-	var img := Image.load_from_file(path)
-	if img == null:
-		return null
-	return ImageTexture.create_from_image(img)
