@@ -11,9 +11,9 @@ var _panel: PanelContainer = null
 var _list: VBoxContainer = null
 
 func _ready() -> void:
-	_resolve_bridge()
+	if _bridge == null:
+		_bridge = get_tree().get_first_node_in_group("host_services")
 	_subscribe()
-	call_deferred(&"_subscribe")
 
 func set_bridge(b) -> void:
 	_bridge = b
