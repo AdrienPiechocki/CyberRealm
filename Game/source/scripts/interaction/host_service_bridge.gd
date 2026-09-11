@@ -193,3 +193,155 @@ static func _decode_value(type: String, value) -> Variant:
 			out3 = value.duplicate()
 		return out3
 	return value
+
+# ── journal de signaux ────────────────────────────────────────────────
+
+var _monitor_pids := {}       # journal_id -> pid
+var _monitor_offsets := {}    # journal_id -> byte offset
+var _journal_iface := {}      # journal_id -> String
+var _journal_member := {}     # journal_id -> String
+
+func subscribe(dest: String, iface := "", member := "") -> int:
+	if bus_address.is_empty() or dest.is_empty():
+		return 0
+	var already := -1
+	for k in _monitor_pids:
+		if str(k).contains(dest):
+			already = int(k)
+			break
+	if already != -1:
+		return already
+	var id := _next_journal_id()
+	var rt := _resolved_runtime_dir()
+	var log_path := rt.path_join("cyberrealm-svc-%d.log" % id)
+	var cmd := "%s --user --address='%s' monitor --json=short %s > '%s' 2>&1 &" % [
+		_busctl_path, bus_address, dest, log_path]
+	var sh_ok := OS.execute("sh", ["-c", cmd], [], true)
+	if sh_ok != 0:
+		return 0
+	# rewind past anything pre-existing
+	var offset := 0
+	var f := FileAccess.open(log_path, FileAccess.READ)
+	if f != null:
+		f.seek_end()
+		offset = f.get_position()
+		f.close()
+	_monitor_pids[id] = 0 # PID lookup unavailable via sh -c; tracked by parent process below
+	_journal_iface[id] = iface
+	_journal_member[id] = member
+	_monitor_offsets[id] = offset
+	# Record the actual child pid so unsubscribe can kill it precisely.
+	var pid := _find_monitor_pid(log_path, dest)
+	if pid > 0:
+		_monitor_pids[id] = pid
+	return id
+
+var _journal_seq := 1000
+func _next_journal_id() -> int:
+	_journal_seq += 1
+	return _journal_seq
+
+func _find_monitor_pid(log_path: String, dest: String) -> int:
+	var out := []
+	var ec := OS.execute("pgrep", ["-f", "monitor --json=short " + dest], out, true)
+	if ec == 0 and out.size() > 0:
+		return int(String(out[0]).strip_edges())
+	return 0
+
+func read_events(id: int) -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	if not _monitor_offsets.has(id):
+		return out
+	var rt := _resolved_runtime_dir()
+	var log_path := rt.path_join("cyberrealm-svc-%d.log" % id)
+	var f := FileAccess.open(log_path, FileAccess.READ)
+	if f == null:
+		return out
+	var offset := int(_monitor_offsets[id])
+	var size := f.get_length()
+	if size > offset:
+		f.seek(offset)
+		var remaining := size - offset
+		var buf := f.get_buffer(remaining)
+		f.close()
+		var data := buf.get_string_from_utf8()
+		_monitor_offsets[id] = size
+		var iface := String(_journal_iface.get(id, ""))
+		var member := String(_journal_member.get(id, ""))
+		for line: String in data.split("\n"):
+			var ev := _parse_monitor_line(line)
+			if ev.is_empty():
+				continue
+			if not iface.is_empty() and String(ev.get("interface", "")) != iface:
+				continue
+			if not member.is_empty() and String(ev.get("member", "")) != member:
+				continue
+			out.append(ev)
+		_rotate_log(id, log_path)
+	else:
+		f.close()
+	return out
+
+func _parse_monitor_line(line: String) -> Dictionary:
+	if line.strip_edges().is_empty():
+		return {}
+	if line.length() > 1 << 20:
+		return {}
+	var parsed = JSON.parse_string(line)
+	if not (parsed is Dictionary):
+		return {}
+	var out := {}
+	out["interface"] = String(parsed.get("interface", "")).strip_edges()
+	out["member"] = String(parsed.get("member", "")).strip_edges()
+	out["sender"] = String(parsed.get("sender", "")).strip_edges()
+	out["args"] = parsed.get("args", [])
+	out["ts_msec"] = Time.get_ticks_msec()
+	return out
+
+func _rotate_log(id: int, log_path: String) -> void:
+	var fi := FileAccess.open(log_path, FileAccess.READ)
+	if fi == null:
+		return
+	var size := fi.get_length()
+	fi.close()
+	if size <= MONITOR_MAX_BYTES:
+		return
+	var text := FileAccess.get_file_as_string(log_path)
+	var lines := text.split("\n")
+	if lines.size() > MONITOR_KEEP_LINES:
+		text = "\n".join(lines.slice(lines.size() - MONITOR_KEEP_LINES))
+	# a single over-long line can still exceed the cap: keep only the tail bytes
+	if text.length() > MONITOR_MAX_BYTES:
+		text = text.substr(text.length() - MONITOR_MAX_BYTES)
+	var f := FileAccess.open(log_path, FileAccess.WRITE)
+	if f:
+		f.store_string(text)
+		f.close()
+	_monitor_offsets[id] = 0
+
+func unsubscribe(id: int) -> void:
+	if not _monitor_pids.has(id):
+		return
+	var pid := int(_monitor_pids[id])
+	if pid > 0:
+		var ec := OS.execute("kill", ["-0", str(pid)], [], true)
+		if ec == 0:
+			OS.execute("kill", [str(pid)], [], true)
+	_monitor_pids.erase(id)
+	_monitor_offsets.erase(id)
+	_journal_iface.erase(id)
+	_journal_member.erase(id)
+
+func _exit_tree() -> void:
+	for id in _monitor_pids.keys():
+		unsubscribe(id)
+
+static func purge_stale_logs(runtime_dir: String) -> void:
+	if runtime_dir.is_empty():
+		return
+	var d := DirAccess.open(runtime_dir)
+	if d == null:
+		return
+	for name: String in d.get_files():
+		if name.begins_with("cyberrealm-svc-") and name.ends_with(".log"):
+			d.remove(name)
