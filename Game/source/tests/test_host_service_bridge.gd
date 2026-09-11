@@ -225,3 +225,28 @@ func test_purge_stale_logs():
 	if r != true: return r
 	r = Runner.assert_eq(FileAccess.file_exists(rt.path_join("keep.txt")), true, "other files untouched")
 	return r
+
+func test_art_uri_to_texture_file_uri():
+	var b := _make_bridge()
+	var tex := b.art_uri_to_texture("file://" + ProjectSettings.globalize_path("res://tests/fixtures/cover.png"))
+	if not (tex is Texture2D): return Runner.assert_true(false, "file:// loads Texture2D")
+	if tex.get_image().get_size() != Vector2i(2, 2): return Runner.assert_true(false, "image size 2x2")
+	b.free()
+	return true
+
+func test_art_uri_rejects_remote():
+	var b := _make_bridge()
+	var r = Runner.assert_eq(b.art_uri_to_texture("https://example.com/a.png"), null, "remote URI refused")
+	if r != true: return r
+	b.free()
+	return true
+
+func test_art_uri_cache_deduplicates():
+	var b := _make_bridge()
+	var p := ProjectSettings.globalize_path("res://tests/fixtures/cover.png")
+	var t1 := b.art_uri_to_texture(p)
+	var t2 := b.art_uri_to_texture(p)
+	if not (t1 is Texture2D): return Runner.assert_true(false, "first load ok")
+	var r = Runner.assert_eq(t1, t2, "cached same instance (is_equal_operator on objects compare ref)")
+	b.free()
+	return r
