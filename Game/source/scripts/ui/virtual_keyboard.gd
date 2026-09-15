@@ -17,6 +17,16 @@ var _alt_locked := false
 var _key_buttons: Array[Button] = []
 var _target_line_edit: LineEdit = null
 
+# ── Key repeat (maintien d'une touche clavier/d'un bouton pad) ───────────
+const REPEAT_DELAY := 0.4
+const REPEAT_INTERVAL := 0.033
+var _held_btn: Button = null
+var _held_pad: int = -1
+var _held_pad_device: int = -1
+var _held_kc: int = -1
+var _held_elapsed := 0.0
+var _did_first_repeat := false
+
 # ── Layout data : physical keycode → {normal, shift} label ──────────────
 # Les keycodes sont les positions physiques (US QWERTY = référence).
 # Le label est le caractère produit par XKB avec le layout actif.
@@ -349,8 +359,9 @@ func _make_key_button(keycode: int, layout_data: Dictionary) -> Button:
 	# Store keycode as metadata
 	btn.set_meta("keycode", keycode)
 
-	# Connect press
+	# Connect press / hold
 	btn.pressed.connect(_on_key_pressed.bind(keycode, btn))
+	btn.button_down.connect(_on_key_down.bind(keycode, btn))
 
 	return btn
 
@@ -374,8 +385,26 @@ func _on_key_pressed(keycode: int, btn: Button) -> void:
 			_update_mod_button_style(btn, _alt_locked)
 			return
 
+	# Démarrer le maintien si aucun n'est actif — couvre le cas du gamepad A
+	# via _pad_menu_activate qui émet pressed sans passer par button_down.
+	if _held_btn == null and _held_pad == -1:
+		_held_btn = btn
+		_held_kc = keycode
+		_held_elapsed = 0.0
+		_did_first_repeat = false
+
+	# Maintien déjà répété : le relâchement ne doit pas renvoyer un caractère
+	# supplémentaire (sinon chaque maintien produirait 2x le dernier caractère).
+	if _held_btn == btn and _held_kc == keycode and _did_first_repeat:
+		_clear_hold()
+		return
+
+	_send_character(keycode)
+
+
+func _send_character(keycode: int) -> void:
 	# If a LineEdit in the pause menu has focus, write directly to it
-	if _try_forward_to_line_edit(keycode, layout_data):
+	if _try_forward_to_line_edit(keycode, _get_current_layout()):
 		return
 
 	if _compositor == null:
@@ -400,6 +429,60 @@ func _on_key_pressed(keycode: int, btn: Button) -> void:
 		_compositor.forward_keyboard_key(KEY_CTRL, 0, false)
 	if _shift_locked:
 		_compositor.forward_keyboard_key(KEY_SHIFT, 0, false)
+
+
+func _on_key_down(keycode: int, btn: Button) -> void:
+	# Les modifieurs sont des toggles : pas de répétition sur maintien
+	if keycode in MODIFIER_KEYS:
+		return
+	_clear_hold()
+	_held_btn = btn
+	_held_kc = keycode
+	_held_elapsed = 0.0
+	_did_first_repeat = false
+
+
+func _start_pad_hold(keycode: int, pad_button: int, device: int) -> void:
+	_clear_hold()
+	_held_pad = pad_button
+	_held_pad_device = device
+	_held_kc = keycode
+	_held_elapsed = 0.0
+	_did_first_repeat = false
+
+
+func _clear_hold() -> void:
+	_held_btn = null
+	_held_pad = -1
+	_held_pad_device = -1
+	_held_kc = -1
+	_held_elapsed = 0.0
+	_did_first_repeat = false
+
+
+func _is_hold_alive() -> bool:
+	# Maintien OS : clic souris maintenu OU action d'activation (Enter/Espace/A)
+	# encore pressée sur la touche focusée.
+	return Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_action_pressed("ui_accept")
+
+
+func _update_hold(delta: float) -> void:
+	if _held_btn == null and _held_pad == -1:
+		return
+	if _held_btn != null:
+		if not _is_hold_alive():
+			_clear_hold()
+			return
+	elif not Input.is_joy_button_pressed(_held_pad_device, _held_pad):
+		_clear_hold()
+		return
+	_held_elapsed += delta
+	var delay := REPEAT_DELAY if not _did_first_repeat else REPEAT_INTERVAL
+	if _held_elapsed < delay:
+		return
+	_send_character(_held_kc)
+	_did_first_repeat = true
+	_held_elapsed = 0.0
 
 
 func _try_forward_to_line_edit(keycode: int, layout_data: Dictionary) -> bool:
@@ -471,6 +554,8 @@ func _can_stick_input() -> bool:
 
 
 func _process(delta: float) -> void:
+	if visible:
+		_update_hold(delta)
 	if _radial_menu != null and _radial_menu.visible:
 		var current := get_viewport().gui_get_focus_owner()
 		if current != null and current in _key_buttons:
@@ -489,6 +574,19 @@ func _input(event: InputEvent) -> void:
 		return
 	# Consume other gamepad buttons to prevent passthrough
 	if event is InputEventJoypadButton:
+		match event.button_index:
+			JOY_BUTTON_X:
+				if event.pressed:
+					_start_pad_hold(KEY_BACKSPACE, JOY_BUTTON_X, event.device)
+					_send_character(KEY_BACKSPACE)
+				elif _held_pad == JOY_BUTTON_X:
+					_clear_hold()
+			JOY_BUTTON_Y:
+				if event.pressed:
+					_start_pad_hold(KEY_SPACE, JOY_BUTTON_Y, event.device)
+					_send_character(KEY_SPACE)
+				elif _held_pad == JOY_BUTTON_Y:
+					_clear_hold()
 		get_viewport().set_input_as_handled()
 
 
@@ -525,6 +623,7 @@ func show_menu(target_line_edit: LineEdit = null, focus_first_key: bool = true) 
 
 
 func hide_menu() -> void:
+	_clear_hold()
 	visible = false
 	if _target_line_edit != null and is_instance_valid(_target_line_edit):
 		_target_line_edit.grab_focus()

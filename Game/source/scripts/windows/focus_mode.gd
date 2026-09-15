@@ -1420,6 +1420,11 @@ func handle_focus_input(delta: float) -> void:
 	var active_id := _active_id()
 	if active_id == -1 or not focus_rects.has(active_id):
 		return
+	# Le clavier virtuel est une surbrillance modale : aucun input focus-mode
+	# (clics, pointer motion, window moves) ne doit être transféré au jeu tant
+	# qu'il est actif. La position souris est toujours trackée via _input().
+	if virtual_keyboard.visible:
+		return
 	var st := _state(active_id)
 	var surf_x: float
 	var surf_y: float

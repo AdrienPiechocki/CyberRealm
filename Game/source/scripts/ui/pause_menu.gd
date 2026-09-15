@@ -636,7 +636,7 @@ func _show_custom_binds() -> void:
 	container.add_child(_make_title("CUSTOM BINDS"))
 
 	var hint := Label.new()
-	hint.text = "A key launches a command.\nHold Ctrl/Shift/Alt/Super for keyboard modifiers. Gamepad binds require LT held."
+	hint.text = "A key launches a command.\nHold Ctrl/Shift/Alt/Super for keyboard modifiers."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
@@ -1119,8 +1119,8 @@ func _show_graphics_controls() -> void:
 	container.add_child(gyro_label)
 
 	var gyro_slider := HSlider.new()
-	gyro_slider.min_value = 0.5
-	gyro_slider.max_value = 3.0
+	gyro_slider.min_value = 0.1
+	gyro_slider.max_value = 2.0
 	gyro_slider.step = 0.1
 	gyro_slider.value = get_gyro_sens_mult()
 	gyro_slider.custom_minimum_size = Vector2(0, 30)

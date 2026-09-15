@@ -18,11 +18,14 @@ var mouse_sensitivity = 0.002
 # suivent le même chemin.
 var pad_look_speed := 2.5
 
-# Visée au gyroscope (Input.get_gyroscope, rad/s). Convention d'axes à
-# valider selon la manette : yaw = g.z, pitch = g.y (voir _apply_gyro_aim).
+# Visée au gyroscope de manette (Input.get_joy_gyroscope, rad/s).
+# SDL (Switch/PlayStation convention) : gyro.x = roll, gyro.y = yaw, gyro.z = pitch.
+# _gyro_device = premier joypad connecté avec capteurs.
 var gyro_aim_enabled := false
 var gyro_speed := 1.0
 const GYRO_DEADZONE := 0.05
+const GYRO_BASE_SCALE := 0.1
+var _gyro_device := -1
 
 var interact_mode_active := false
 var focus_mode_active := false
@@ -47,6 +50,7 @@ var _compositor: WlrCompositor = null
 # cartographie standard (sticks/gâchettes sur des axes inattendus).
 var _pad_diag := OS.get_environment("CYBERREALM_PAD_DEBUG") == "1"
 var _pad_diag_axes := {} # "device|axis" -> dernière valeur tracée
+var _pad_diag_gyro_ticks := 0
 
 var spawn_pos: Vector3 = Vector3.ZERO
 var spawn_rotation: Vector3 = Vector3.ZERO
@@ -60,6 +64,13 @@ func _ready():
 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
+	# Vérification gyro : print de présence des capteurs manette, activé par
+	# CYBERREALM_PAD_DEBUG=1 (ex. à valider avec une 8BitDo après passage à
+	# Godot 4.8, dont le SDL 3.4.16 inclut le driver HIDAPI 8BitDo).
+	if _pad_diag:
+		for dev in Input.get_connected_joypads():
+			print("PAD dev=%d guid=%s has_sensors=%s" % [
+				dev, Input.get_joy_guid(dev), Input.has_joy_motion_sensors(dev)])
 
 func _get_compositor() -> WlrCompositor:
 	if _compositor == null or not is_instance_valid(_compositor):
@@ -106,7 +117,18 @@ func _physics_process(delta):
 			$Camera3D.rotate_x(-look_amt.y * pad_look_speed * delta)
 			$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
 		if gyro_aim_enabled:
-			_apply_gyro_aim(Input.get_gyroscope(), gyro_speed, delta)
+			if _gyro_device >= 0 and not Input.get_connected_joypads().has(_gyro_device):
+				_gyro_device = -1
+			if _gyro_device < 0:
+				_resolve_gyro_device()
+			if _gyro_device >= 0:
+				var raw_gyro := Input.get_joy_gyroscope(_gyro_device)
+				if _pad_diag:
+					_pad_diag_gyro_ticks += 1
+					if _pad_diag_gyro_ticks >= 20 and (absf(raw_gyro.x) > 0.02 or absf(raw_gyro.y) > 0.02 or absf(raw_gyro.z) > 0.02):
+						_pad_diag_gyro_ticks = 0
+						print("GYRO dev=%d x=%+.3f y=%+.3f z=%+.3f" % [_gyro_device, raw_gyro.x, raw_gyro.y, raw_gyro.z])
+				_apply_gyro_aim(raw_gyro, gyro_speed, delta)
 
 	if not interact_mode_active:
 		move_and_slide()
@@ -123,11 +145,29 @@ func _physics_process(delta):
 		$UI/Cursor.label_settings.font_color = Color.BLACK
 	_menu_just_closed = false
 
+func set_gyro_aim_enabled(enabled: bool) -> void:
+	gyro_aim_enabled = enabled
+	if not enabled:
+		if _gyro_device >= 0:
+			Input.set_joy_motion_sensors_enabled(_gyro_device, false)
+		_gyro_device = -1
+	else:
+		_resolve_gyro_device()
+
+func _resolve_gyro_device() -> void:
+	_gyro_device = -1
+	for dev in Input.get_connected_joypads():
+		if Input.has_joy_motion_sensors(dev):
+			_gyro_device = dev
+			Input.set_joy_motion_sensors_enabled(dev, true)
+			return
+
 func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
-	if absf(gyro.z) <= GYRO_DEADZONE and absf(gyro.y) <= GYRO_DEADZONE:
+	var scaled := sens * GYRO_BASE_SCALE
+	if absf(gyro.x) <= GYRO_DEADZONE and absf(gyro.y) <= GYRO_DEADZONE:
 		return
-	rotate_y(-gyro.z * sens * delta)
-	$Camera3D.rotate_x(-gyro.y * sens * delta)
+	rotate_y(gyro.y * scaled * delta)
+	$Camera3D.rotate_x(gyro.x * scaled * delta)
 	$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
 
 func climb(delta):
@@ -225,6 +265,11 @@ func _pad_menu_activate(event: InputEventJoypadButton) -> bool:
 	if fe == null or not fe is BaseButton:
 		return false
 	if fe.disabled:
+		return false
+	# Bouton toggle (CheckButton…) : émettre `pressed` ne bascule pas l'état
+	# (flip interne du GUI). On laisse l'événement atteindre le GUI, seul
+	# capable de toggler correctement.
+	if fe.toggle_mode:
 		return false
 	fe.pressed.emit()
 	get_viewport().set_input_as_handled()

@@ -141,6 +141,7 @@ theme_override_styles/panel = SubResource("StyleBoxEmpty_fjrip")
 script = ExtResource("7_radial_menu")
 
 [node name="KeyboardLayer" type="CanvasLayer" parent="." unique_id=1978103214]
+layer = 2
 
 [node name="VirtualKeyboard" type="PanelContainer" parent="KeyboardLayer" unique_id=1774359270]
 anchors_preset = 8
