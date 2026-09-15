@@ -587,6 +587,13 @@ func _input(event: InputEvent) -> void:
 					_send_character(KEY_SPACE)
 				elif _held_pad == JOY_BUTTON_Y:
 					_clear_hold()
+			JOY_BUTTON_B, JOY_BUTTON_START:
+				# B/START ferment le clavier (même sémantique que pause_menu).
+				# Le signal keyboard_closed réarme _menu_just_closed côté
+				# wayland_room pour que ce même appui n'ouvre pas un autre
+				# menu (ex. radial) dans la même frame.
+				if event.pressed:
+					hide_menu()
 		get_viewport().set_input_as_handled()
 
 

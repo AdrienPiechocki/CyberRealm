@@ -844,18 +844,21 @@ func _process(delta: float) -> void:
 	# On inverse l'état du mode interaction à chaque fois que la touche est pressée
 	# (le clic molette sert au client en mode focus, pas au toggle du mode interaction).
 	if Input.is_action_just_pressed("interact_mode", true) and not focus.is_active():
-		if interact_mode_active:
-			compositor.release_all_keys()
-		# Le clavier virtuel suit le mode interaction :
-		# - activation depuis la manette → affiché à l'activation ;
-		# - désactivation (quelle que soit la source) → refermé.
-		if interact_mode_active:
+		var new_interact := not interact_mode_active
+		if new_interact:
+			# Activation depuis la manette → afficher le clavier.
+			if _interact_pad_pressed and not keyboard.visible:
+				keyboard.show_menu(null, false)
+		else:
+			# Désactivation (quelle que soit la source) → refermer le clavier.
+			# Le signal keyboard_closed (_on_keyboard_closed) coupe alors
+			# interact_mode : on repose la valeur calculée ici APRÈS, pour ne
+			# pas que le "not" réactive le mode.
 			if keyboard.visible:
 				keyboard.hide_menu()
-		elif _interact_pad_pressed and not keyboard.visible:
-			keyboard.show_menu(null, false)
-		interact_mode_active = not interact_mode_active
-		player.interact_mode_active = not player.interact_mode_active
+			compositor.release_all_keys()
+		interact_mode_active = new_interact
+		player.interact_mode_active = new_interact
 
 	var cam: Camera3D = player.get_node("Camera3D") as Camera3D
 	var mouse_pos := _aim_pos()
@@ -1061,6 +1064,15 @@ func _on_window_menu_closed() -> void:
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 func _on_keyboard_closed() -> void:
+	# Le B qui a refermé le clavier virtuel ne doit pas rouvrir le menu
+	# radial dans la même frame (le toggle radial est pollé en _process).
+	_menu_just_closed = true
+	# Le clavier virtuel suit le mode interaction : le refermer (B/START sur
+	# le clavier, toggle manette, action radial) coupe aussi ce mode.
+	if interact_mode_active:
+		compositor.release_all_keys()
+		interact_mode_active = false
+		player.interact_mode_active = false
 	if not layers.layer_interact_active:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
@@ -1096,14 +1108,19 @@ func _on_radial_action(action: String) -> void:
 		"interact":
 			# Le clavier virtuel suit le mode interaction (même règle que le
 			# bind manette) : affiché à l'activation, refermé à la désactivation.
-			if interact_mode_active:
+			# L'état cible est calculé AVANT le hide_menu : le signal
+			# keyboard_closed coupe interact_mode dans la foulée (l'utilisateur
+			# ne doit pas rester en mode interaction si le clavier se ferme).
+			var new_interact := not interact_mode_active
+			if new_interact:
+				if not keyboard.visible:
+					keyboard.show_menu(null, false)
+			else:
 				if keyboard.visible:
 					keyboard.hide_menu()
 				compositor.release_all_keys()
-			elif not keyboard.visible:
-				keyboard.show_menu(null, false)
-			interact_mode_active = not interact_mode_active
-			player.interact_mode_active = not player.interact_mode_active
+			interact_mode_active = new_interact
+			player.interact_mode_active = new_interact
 		"grab":
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):
