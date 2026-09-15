@@ -21,6 +21,8 @@ signal graphics_settings_changed(aa_mode: String, fps_limit: int)
 signal mouse_sens_changed(mult: float)
 signal pad_look_sens_changed(mult: float)
 signal focus_stick_sens_changed(mult: float)
+signal gyro_aim_changed(enabled: bool)
+signal gyro_sens_changed(mult: float)
 
 const LanManagerScript := preload("res://scripts/network/lan_manager.gd")
 
@@ -852,6 +854,12 @@ func get_pad_look_sens_mult() -> float:
 func get_focus_stick_sens_mult() -> float:
 	return _settings.get("focus_stick_sens_mult", 1.0)
 
+func is_gyro_aim_enabled() -> bool:
+	return bool(_settings.get("gyro_aim_enabled", false))
+
+func get_gyro_sens_mult() -> float:
+	return _settings.get("gyro_sens_mult", 1.0)
+
 func get_fps_limit() -> int:
 	return _settings.get("fps_limit", 60)
 
@@ -1093,6 +1101,43 @@ func _show_graphics_controls() -> void:
 		pad_val.text = "%.1fx" % v
 	)
 
+	# ── Gyroscope aim ──
+	container.add_child(_make_spacer())
+
+	var gyro_check := CheckButton.new()
+	gyro_check.text = "Gyroscope Aim"
+	gyro_check.button_pressed = is_gyro_aim_enabled()
+	gyro_check.custom_minimum_size = Vector2(0, 36)
+	gyro_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gyro_check.add_theme_font_size_override("font_size", 14)
+	container.add_child(gyro_check)
+
+	var gyro_label := Label.new()
+	gyro_label.text = "Gyro Sensitivity"
+	gyro_label.add_theme_font_size_override("font_size", 14)
+	gyro_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(gyro_label)
+
+	var gyro_slider := HSlider.new()
+	gyro_slider.min_value = 0.5
+	gyro_slider.max_value = 3.0
+	gyro_slider.step = 0.1
+	gyro_slider.value = get_gyro_sens_mult()
+	gyro_slider.custom_minimum_size = Vector2(0, 30)
+	gyro_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(gyro_slider)
+
+	var gyro_val := Label.new()
+	gyro_val.text = "%.1fx" % gyro_slider.value
+	gyro_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	gyro_val.add_theme_font_size_override("font_size", 13)
+	gyro_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(gyro_val)
+
+	gyro_slider.value_changed.connect(func(v: float):
+		gyro_val.text = "%.1fx" % v
+	)
+
 	# ── Focus mode stick sensitivity ──
 	var focus_label := Label.new()
 	focus_label.text = "Focus Mode Stick Sensitivity"
@@ -1151,7 +1196,7 @@ func _show_graphics_controls() -> void:
 	container.add_child(_make_spacer())
 
 	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_graphics_controls.bind(aa_opt, mouse_slider, pad_slider, focus_slider, fps_slider))
+	apply_btn.pressed.connect(_apply_graphics_controls.bind(aa_opt, mouse_slider, pad_slider, focus_slider, fps_slider, gyro_check, gyro_slider))
 	container.add_child(apply_btn)
 
 	container.add_child(_make_back_btn())
@@ -1177,7 +1222,7 @@ func _apply_aa(mode: String) -> void:
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 			vp.msaa_3d = Viewport.MSAA_DISABLED
 
-func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, fps_s: HSlider) -> void:
+func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, fps_s: HSlider, gyro_btn: CheckButton, gyro_s: HSlider) -> void:
 	var aa_idx := aa_opt.selected
 	if aa_idx < 0 or aa_idx >= AA_MODES.size():
 		aa_idx = 0
@@ -1186,12 +1231,16 @@ func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSl
 	var pad_mult: float = pad_s.value
 	var focus_mult: float = focus_s.value
 	var fps_limit: int = int(fps_s.value)
+	var gyro_enabled: bool = gyro_btn.button_pressed
+	var gyro_mult: float = gyro_s.value
 
 	_settings["aa_mode"] = aa_mode
 	_settings["mouse_sens_mult"] = mouse_mult
 	_settings["pad_look_sens_mult"] = pad_mult
 	_settings["focus_stick_sens_mult"] = focus_mult
 	_settings["fps_limit"] = fps_limit
+	_settings["gyro_aim_enabled"] = gyro_enabled
+	_settings["gyro_sens_mult"] = gyro_mult
 	_save_settings()
 
 	_apply_aa(aa_mode)
@@ -1200,6 +1249,8 @@ func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSl
 	mouse_sens_changed.emit(mouse_mult)
 	pad_look_sens_changed.emit(pad_mult)
 	focus_stick_sens_changed.emit(focus_mult)
+	gyro_aim_changed.emit(gyro_enabled)
+	gyro_sens_changed.emit(gyro_mult)
 	_show_main()
 
 func _show_lan() -> void:

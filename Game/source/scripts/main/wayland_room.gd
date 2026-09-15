@@ -390,6 +390,14 @@ func _ready() -> void:
 	pause_menu.pad_look_sens_changed.connect(func(mult: float):
 		player.pad_look_speed = 2.5 * mult
 	)
+	player.gyro_aim_enabled = pause_menu.is_gyro_aim_enabled()
+	player.gyro_speed = pause_menu.get_gyro_sens_mult()
+	pause_menu.gyro_aim_changed.connect(func(enabled: bool):
+		player.gyro_aim_enabled = enabled
+	)
+	pause_menu.gyro_sens_changed.connect(func(mult: float):
+		player.gyro_speed = mult
+	)
 	pause_menu.focus_stick_sens_changed.connect(func(mult: float):
 		focus.SPEED = 700.0 * mult
 		layers.SPEED = 700.0 * mult

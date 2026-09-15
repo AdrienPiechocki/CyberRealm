@@ -18,6 +18,12 @@ var mouse_sensitivity = 0.002
 # suivent le même chemin.
 var pad_look_speed := 2.5
 
+# Visée au gyroscope (Input.get_gyroscope, rad/s). Convention d'axes à
+# valider selon la manette : yaw = g.z, pitch = g.y (voir _apply_gyro_aim).
+var gyro_aim_enabled := false
+var gyro_speed := 1.0
+const GYRO_DEADZONE := 0.05
+
 var interact_mode_active := false
 var focus_mode_active := false
 var _menu_just_closed := false
@@ -99,6 +105,8 @@ func _physics_process(delta):
 			rotate_y(-look_amt.x * pad_look_speed * delta)
 			$Camera3D.rotate_x(-look_amt.y * pad_look_speed * delta)
 			$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
+		if gyro_aim_enabled:
+			_apply_gyro_aim(Input.get_gyroscope(), gyro_speed, delta)
 
 	if not interact_mode_active:
 		move_and_slide()
@@ -114,6 +122,13 @@ func _physics_process(delta):
 	else:
 		$UI/Cursor.label_settings.font_color = Color.BLACK
 	_menu_just_closed = false
+
+func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
+	if absf(gyro.z) <= GYRO_DEADZONE and absf(gyro.y) <= GYRO_DEADZONE:
+		return
+	rotate_y(-gyro.z * sens * delta)
+	$Camera3D.rotate_x(-gyro.y * sens * delta)
+	$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
 
 func climb(delta):
 	if climbed_distance < MaxClimbDistance:
