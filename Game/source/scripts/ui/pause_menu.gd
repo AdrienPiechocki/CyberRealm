@@ -59,7 +59,7 @@ var container: VBoxContainer
 const REMAPPABLE_ACTIONS := [
 	"forward", "back", "left", "right", "jump",
 	"look_up", "look_down", "look_left", "look_right",
-	"interact_mode", "layer_interact", "window_menu",
+	"interact_mode", "layer_interact", "window_menu", "radial_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
@@ -74,7 +74,10 @@ func set_lan_ref(lan: Node) -> void:
 
 var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "lan" | "banned"
 var _waiting_action := "" # action en cours de rebind, "" = aucun
+var _waiting_gamepad := false # true = on attend un event manette pour le rebind
 var _keybinds_buttons: Dictionary = {} # action -> Button
+var _gamepad_keybinds_buttons: Dictionary = {} # action -> Button (colonne manette)
+var _cleared_keybinds: Dictionary = {} # action -> {"kb": bool, "pad": bool} (bind passé à None)>
 # Capture d'une touche pour un custom bind
 var _custom_key_waiting := false
 var _custom_keycode := 0
@@ -251,6 +254,8 @@ func _apply_styling() -> void:
 
 func _clear() -> void:
 	_quit_btn = null
+	_waiting_action = ""
+	_waiting_gamepad = false
 	for c in container.get_children():
 		c.queue_free()
 	# Focus pad : différé, donc exécuté APRÈS la fin de construction de la
@@ -365,6 +370,7 @@ func show_menu() -> void:
 
 func hide_menu() -> void:
 	_waiting_action = ""
+	_waiting_gamepad = false
 	visible = false
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if not _ui_events_backup.is_empty():
@@ -447,7 +453,7 @@ func _show_keybinds() -> void:
 	container.add_child(_make_title("REMAP KEYBINDS"))
 
 	var hint := Label.new()
-	hint.text = "Click an action, then press a key or mouse button (hold Ctrl/Shift/Alt/Super for modifiers, Escape = cancel)."
+	hint.text = "Click an action, then press a key/mouse button or gamepad input (Escape/Start = clear this binding)."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	hint.add_theme_font_size_override("font_size", 12)
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
@@ -462,7 +468,34 @@ func _show_keybinds() -> void:
 	scroll.add_child(list)
 	container.add_child(scroll)
 
+	# Header row
+	var header := HBoxContainer.new()
+	header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var _hdr_action := Label.new()
+	_hdr_action.text = "Action"
+	_hdr_action.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hdr_action.custom_minimum_size = Vector2(190, 0)
+	_hdr_action.add_theme_font_size_override("font_size", 12)
+	_hdr_action.add_theme_color_override("font_color", Color(0.5, 0.55, 0.65))
+	header.add_child(_hdr_action)
+	var _hdr_kb := Label.new()
+	_hdr_kb.text = "Keyboard / Mouse"
+	_hdr_kb.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hdr_kb.custom_minimum_size = Vector2(170, 0)
+	_hdr_kb.add_theme_font_size_override("font_size", 12)
+	_hdr_kb.add_theme_color_override("font_color", Color(0.5, 0.55, 0.65))
+	header.add_child(_hdr_kb)
+	var _hdr_pad := Label.new()
+	_hdr_pad.text = "Gamepad"
+	_hdr_pad.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_hdr_pad.custom_minimum_size = Vector2(170, 0)
+	_hdr_pad.add_theme_font_size_override("font_size", 12)
+	_hdr_pad.add_theme_color_override("font_color", Color(0.5, 0.55, 0.65))
+	header.add_child(_hdr_pad)
+	list.add_child(header)
+
 	_keybinds_buttons.clear()
+	_gamepad_keybinds_buttons.clear()
 	for action in REMAPPABLE_ACTIONS:
 		if not InputMap.has_action(action):
 			continue
@@ -480,9 +513,16 @@ func _show_keybinds() -> void:
 		var btn := _make_btn(_binding_text(action))
 		btn.custom_minimum_size = Vector2(170, 36)
 		btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-		btn.pressed.connect(_start_rebind.bind(action))
+		btn.pressed.connect(_start_rebind.bind(action, false))
 		row.add_child(btn)
 		_keybinds_buttons[action] = btn
+
+		var gp_btn := _make_btn(_gamepad_binding_text(action))
+		gp_btn.custom_minimum_size = Vector2(170, 36)
+		gp_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		gp_btn.pressed.connect(_start_rebind.bind(action, true))
+		row.add_child(gp_btn)
+		_gamepad_keybinds_buttons[action] = gp_btn
 
 		list.add_child(row)
 
@@ -1682,6 +1722,45 @@ func _kb_event_text(ev: InputEvent) -> String:
 		return mods + "+" + text if mods != "" else text
 	return ""
 
+## Premier binding manette de l'action ("A", "LB", "Left Stick X+", "None"...).
+func _gamepad_binding_text(action: String) -> String:
+	for ev in InputMap.action_get_events(action):
+		if ev is InputEventJoypadButton:
+			return _joypad_button_name(ev.button_index)
+		if ev is InputEventJoypadMotion:
+			var mev := ev as InputEventJoypadMotion
+			return _joypad_axis_name(mev.axis) + ("+" if mev.axis_value >= 0 else "-")
+	return "None"
+
+func _joypad_button_name(btn: int) -> String:
+	match btn:
+		JOY_BUTTON_A: return "A"
+		JOY_BUTTON_B: return "B"
+		JOY_BUTTON_X: return "X"
+		JOY_BUTTON_Y: return "Y"
+		JOY_BUTTON_BACK: return "Select"
+		JOY_BUTTON_START: return "Start"
+		JOY_BUTTON_DPAD_UP: return "D-Pad Up"
+		JOY_BUTTON_DPAD_DOWN: return "D-Pad Down"
+		JOY_BUTTON_DPAD_LEFT: return "D-Pad Left"
+		JOY_BUTTON_DPAD_RIGHT: return "D-Pad Right"
+		JOY_BUTTON_LEFT_STICK: return "L3"
+		JOY_BUTTON_RIGHT_STICK: return "R3"
+		JOY_BUTTON_LEFT_SHOULDER: return "LB"
+		JOY_BUTTON_RIGHT_SHOULDER: return "RB"
+		JOY_BUTTON_GUIDE: return "Guide"
+	return "Pad %d" % btn
+
+func _joypad_axis_name(axis: int) -> String:
+	match axis:
+		JOY_AXIS_LEFT_X: return "Left Stick X"
+		JOY_AXIS_LEFT_Y: return "Left Stick Y"
+		JOY_AXIS_RIGHT_X: return "Right Stick X"
+		JOY_AXIS_RIGHT_Y: return "Right Stick Y"
+		JOY_AXIS_TRIGGER_LEFT: return "LT"
+		JOY_AXIS_TRIGGER_RIGHT: return "RT"
+	return "Axis %d" % axis
+
 ## Remplace uniquement les événements de la MÊME classe d'entrée : rebinde
 ## clavier ne détruit plus la liaison pad d'une action, et vice-versa.
 func _event_class(ev: InputEvent) -> String:
@@ -1689,6 +1768,8 @@ func _event_class(ev: InputEvent) -> String:
 		return "key"
 	if ev is InputEventMouseButton:
 		return "mouse"
+	if ev is InputEventJoypadButton or ev is InputEventJoypadMotion:
+		return "pad"
 	return "other"
 
 func _set_action_event(action: String, new_ev: InputEvent) -> void:
@@ -1713,18 +1794,42 @@ func _mouse_button_name(button: int) -> String:
 		MOUSE_BUTTON_WHEEL_RIGHT: return "Wheel Right"
 	return "Mouse %d" % button
 
-func _start_rebind(action: String) -> void:
+func _start_rebind(action: String, gamepad: bool = false) -> void:
 	_waiting_action = action
+	_waiting_gamepad = gamepad
 	for a in _keybinds_buttons:
 		_keybinds_buttons[a].text = _binding_text(a)
-	if _keybinds_buttons.has(action):
-		_keybinds_buttons[action].text = "Press key / click..."
+	for a in _gamepad_keybinds_buttons:
+		_gamepad_keybinds_buttons[a].text = _gamepad_binding_text(a)
+	var buttons := _gamepad_keybinds_buttons if gamepad else _keybinds_buttons
+	if buttons.has(action):
+		buttons[action].text = "Press gamepad..." if gamepad else "Press key / click..."
 
-func _cancel_rebind() -> void:
-	var pending := _waiting_action
+## Échap/Start pendant un rebind : passe le bind de la colonne remappée à None
+## (clavier/souris retirés pour la colonne KB, pad retiré pour la colonne
+## Gamepad) et sauvegarde. L'autre colonne reste intacte.
+func _clear_bind() -> void:
+	var action := _waiting_action
+	var gamepad := _waiting_gamepad
 	_waiting_action = ""
-	if pending != "" and _keybinds_buttons.has(pending):
-		_keybinds_buttons[pending].text = _binding_text(pending)
+	_waiting_gamepad = false
+	if action == "":
+		return
+	var cls := "pad" if gamepad else "kb"
+	_remove_events_of_class(action, cls)
+	_set_cleared(action, cls, true)
+	var buttons := _gamepad_keybinds_buttons if gamepad else _keybinds_buttons
+	if buttons.has(action):
+		buttons[action].text = "None"
+	_save_keybinds()
+
+func _set_cleared(action: String, cls: String, cleared: bool) -> void:
+	var e: Dictionary = _cleared_keybinds.get(action, {})
+	e[cls] = cleared
+	_cleared_keybinds[action] = e
+
+func _is_cleared(action: String, cls: String) -> bool:
+	return (_cleared_keybinds.get(action, {}) as Dictionary).get(cls, false)
 
 func _apply_saved_keybinds() -> void:
 	var binds: Dictionary = _settings.get("keybinds", {})
@@ -1734,7 +1839,7 @@ func _apply_saved_keybinds() -> void:
 		if not binds[action] is Dictionary:
 			continue
 		var bind: Dictionary = binds[action]
-		if bind.has("kb"):
+		if bind.has("kb") or bind.has("pad"):
 			_apply_bind(action, bind)
 			continue
 		# Ancien format mono-entrée (avant le support pad).
@@ -1742,6 +1847,7 @@ func _apply_saved_keybinds() -> void:
 		if prev_ev != null:
 			_apply_mods(prev_ev, bind.get("mods", {}))
 			_set_action_event(action, prev_ev)
+			_set_cleared(action, "kb", false)
 
 func _apply_mods(event: InputEvent, mods: Dictionary) -> void:
 	if event is InputEventWithModifiers:
@@ -1757,11 +1863,22 @@ func _save_keybinds() -> void:
 		if not InputMap.has_action(action):
 			continue
 		var kb = null
+		var pad = null
 		for ev in InputMap.action_get_events(action):
-			if kb == null and (ev is InputEventKey or ev is InputEventMouseButton):
-				kb = _serialize_event(ev)
-		if kb != null:
-			binds[action] = {"kb": kb}
+			if ev is InputEventKey or ev is InputEventMouseButton:
+				if kb == null:
+					kb = _serialize_event(ev)
+			elif ev is InputEventJoypadButton or ev is InputEventJoypadMotion:
+				if pad == null:
+					pad = _serialize_event(ev)
+		var kb_cleared := _is_cleared(action, "kb")
+		var pad_cleared := _is_cleared(action, "pad")
+		if kb != null or pad != null or kb_cleared or pad_cleared:
+			binds[action] = {}
+			if kb != null or kb_cleared:
+				binds[action]["kb"] = kb if kb != null else {}
+			if pad != null or pad_cleared:
+				binds[action]["pad"] = pad if pad != null else {}
 	_settings["keybinds"] = binds
 	_save_settings()
 
@@ -1775,6 +1892,11 @@ func _serialize_event(ev: InputEvent) -> Dictionary:
 		return {"type": "key", "code": code, "mods": _mods_from_event(kev)}
 	if ev is InputEventMouseButton:
 		return {"type": "mouse", "button": ev.button_index, "mods": _mods_from_event(ev)}
+	if ev is InputEventJoypadButton:
+		return {"type": "padbutton", "button": ev.button_index}
+	if ev is InputEventJoypadMotion:
+		var mev := ev as InputEventJoypadMotion
+		return {"type": "padaxis", "axis": mev.axis, "axis_value": 1.0 if mev.axis_value >= 0.0 else -1.0}
 	return {}
 
 ## Reconstruit un InputEvent depuis un descripteur JSON (null si inconnu).
@@ -1788,23 +1910,52 @@ static func _deserialize_event(d: Dictionary) -> InputEvent:
 			var mev := InputEventMouseButton.new()
 			mev.button_index = int(d.get("button", MOUSE_BUTTON_LEFT))
 			return mev
+		"padbutton":
+			var jbev := InputEventJoypadButton.new()
+			jbev.device = -1
+			jbev.button_index = int(d.get("button", 0))
+			jbev.pressed = true
+			return jbev
+		"padaxis":
+			var jmev := InputEventJoypadMotion.new()
+			jmev.device = -1
+			jmev.axis = int(d.get("axis", 0))
+			jmev.axis_value = 1.0 if float(d.get("axis_value", 1.0)) >= 0.0 else -1.0
+			return jmev
 	return null
 
 ## Applique une liaison sauvegardée : remplace la classe correspondante sans
 ## toucher à l'autre (rebinde clavier ne tue plus le pad, et inversement).
 func _apply_bind(action: String, bind: Dictionary) -> void:
-	for slot in ["kb"]:
+	for slot in ["kb", "pad"]:
 		var d = bind.get(slot)
-		if d is Dictionary and not d.is_empty():
+		if d is Dictionary:
+			if d.is_empty():
+				# Liaison explicitement passée à None : on retire la classe
+				# concernée (clavier+souris pour "kb", pad pour "pad").
+				if InputMap.has_action(action):
+					_remove_events_of_class(action, slot)
+				_set_cleared(action, slot, true)
+				continue
 			var ev := _deserialize_event(d)
 			if ev != null:
 				_apply_mods(ev, d.get("mods", {}))
 				if InputMap.has_action(action):
 					_set_action_event(action, ev)
-			elif slot == "kb" and InputMap.has_action(action):
-				# Liaison clavier explicitement vide : on retire l'ancienne
-				# (l'utilisateur a voulu la vider), le pad reste intact.
-				pass
+				_set_cleared(action, slot, false)
+
+## Retire tous les événements d'une classe donnée pour une action. "kb"
+## retire à la fois les événements clavier ET souris (colonne Keyboard/Mouse).
+func _remove_events_of_class(action: String, cls: String) -> void:
+	var kept: Array[InputEvent] = []
+	for ev in InputMap.action_get_events(action):
+		var ec := _event_class(ev)
+		var matches := (cls == "kb" and ec in ["key", "mouse"]) or ec == cls
+		if not matches:
+			kept.append(ev)
+	InputMap.action_erase_events(action)
+	for ev in kept:
+		InputMap.action_add_event(action, ev)
 
 # ── Persistance ──────────────────────────────────────────────────────
 
@@ -1846,15 +1997,25 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
-	# B button closes the keyboard
-	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B:
-		_keyboard.hide_menu()
+	# B : pendant un rebind manette, laissé capturable (fall-through à la
+	# capture ci-dessous). Pendant un rebind clavier, consommé sans modifier
+	# (ni clear ni retour). Sinon : ferme le clavier / retour / annule un
+	# custom bind.
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_B \
+			and not (_waiting_action != "" and _waiting_gamepad):
+		if _waiting_action != "":
+			get_viewport().set_input_as_handled()
+			return
+		# Clavier virtuel ouvert : B le referme seulement, sans retour dans le
+		# menu (la navigation arrière reste assurée par START).
+		if _keyboard != null and _keyboard.visible:
+			_keyboard.hide_menu()
+			get_viewport().set_input_as_handled()
+			return
 		if _custom_key_waiting:
 			_custom_key_waiting = false
 			if _custom_key_btn:
 				_custom_key_btn.text = _custom_key_label()
-		elif _waiting_action != "":
-			_cancel_rebind()
 		elif _current_view == "main":
 			hide_menu()
 		else:
@@ -1869,7 +2030,7 @@ func _input(event: InputEvent) -> void:
 				if _custom_key_btn:
 					_custom_key_btn.text = _custom_key_label()
 			elif _waiting_action != "":
-				_cancel_rebind()
+				_clear_bind()
 			elif _current_view == "main":
 				hide_menu()
 			else:
@@ -1877,19 +2038,21 @@ func _input(event: InputEvent) -> void:
 			get_viewport().set_input_as_handled()
 			return
 
-	# Manette : Start/B = Échap (ferme la page principale, remonte d'une
-	# sous-page). Inactif pendant une capture de touche (rebind/custom) :
-	# on ne rebind pas Start/B avec eux-mêmes ; Échap reste l'annulateur.
-
+	# Manette : START = Échap (ferme la page principale, remonte d'une
+	# sous-page). Pendant un rebind, START clear le bind (comme Échap) :
+	# START n'est donc pas réassignable via la capture.
 	if event is InputEventJoypadButton and event.pressed \
-			and event.button_index in [JOY_BUTTON_START, JOY_BUTTON_B] \
-			and not _custom_key_waiting and _waiting_action == "":
-		if _keyboard != null and _keyboard.visible:
-			_keyboard.hide_menu()
-		if _current_view == "main":
-			hide_menu()
+			and event.button_index == JOY_BUTTON_START \
+			and not _custom_key_waiting:
+		if _waiting_action != "":
+			_clear_bind()
 		else:
-			_show_main()
+			if _keyboard != null and _keyboard.visible:
+				_keyboard.hide_menu()
+			if _current_view == "main":
+				hide_menu()
+			else:
+				_show_main()
 		get_viewport().set_input_as_handled()
 		return
 
@@ -1939,14 +2102,33 @@ func _input(event: InputEvent) -> void:
 		ev.alt_pressed = mbtn.alt_pressed
 		ev.meta_pressed = mbtn.meta_pressed
 		new_event = ev
+	elif _waiting_gamepad and event is InputEventJoypadButton and event.pressed:
+		var jbtn := event as InputEventJoypadButton
+		var ev := InputEventJoypadButton.new()
+		ev.device = -1
+		ev.button_index = jbtn.button_index
+		ev.pressed = true
+		new_event = ev
+	elif _waiting_gamepad and event is InputEventJoypadMotion \
+			and absf(event.axis_value) >= 0.5:
+		var jmot := event as InputEventJoypadMotion
+		var ev := InputEventJoypadMotion.new()
+		ev.device = -1
+		ev.axis = jmot.axis
+		ev.axis_value = 1.0 if jmot.axis_value >= 0.0 else -1.0
+		new_event = ev
 
 	if new_event == null:
 		return
 
 	var action := _waiting_action
+	var was_gamepad := _waiting_gamepad
 	_set_action_event(action, new_event)
+	_set_cleared(action, "pad" if was_gamepad else "kb", false)
 	_save_keybinds()
 	_waiting_action = ""
-	if _keybinds_buttons.has(action):
-		_keybinds_buttons[action].text = _binding_text(action)
+	_waiting_gamepad = false
+	var buttons := _gamepad_keybinds_buttons if was_gamepad else _keybinds_buttons
+	if buttons.has(action):
+		buttons[action].text = _gamepad_binding_text(action) if was_gamepad else _binding_text(action)
 	get_viewport().set_input_as_handled()

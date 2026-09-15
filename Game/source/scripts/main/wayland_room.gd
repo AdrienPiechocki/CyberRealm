@@ -45,6 +45,9 @@ var _rdi_frames := 0
 
 var _selector_waiting := false # choix envoyé à portal-wlr, en attente de consommation
 var interact_mode_active := false
+# True quand l'événement qui a déclenché interact_mode venait de la manette
+# (pour afficher le clavier virtuel à l'activation, en dehors des menus).
+var _interact_pad_pressed := false
 
 # Agent d'authentification polkit : polkitd n'accepte qu'un seul agent par
 # session logind, donc le nôtre ne peut s'enregistrer que si l'agent KDE hôte
@@ -400,6 +403,11 @@ func _ready() -> void:
 	keyboard.setup(compositor, pause_menu, radial_menu)
 	keyboard.keyboard_closed.connect(_on_keyboard_closed)
 	pause_menu.setup_keyboard(keyboard)
+	# Tout menu du jeu qui s'ouvre masque le clavier virtuel et quitte le mode
+	# interaction (le clavier n'a de raison d'être qu'en jeu, jamais derrière
+	# un menu). Le clavier lui-même (un GameMenu aussi) n'est PAS branché ici.
+	for menu: Control in [pause_menu, window_menu, radial_menu, capture_selector, tutorial]:
+		menu.visibility_changed.connect(_on_game_menu_visibility_changed.bind(menu))
 
 	# Tutoriel de premier lancement : capture les menus réels et montre les
 	# commandes. Se relance via pause_menu → Tutorial.
@@ -830,6 +838,14 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("interact_mode", true) and not focus.is_active():
 		if interact_mode_active:
 			compositor.release_all_keys()
+		# Le clavier virtuel suit le mode interaction :
+		# - activation depuis la manette → affiché à l'activation ;
+		# - désactivation (quelle que soit la source) → refermé.
+		if interact_mode_active:
+			if keyboard.visible:
+				keyboard.hide_menu()
+		elif _interact_pad_pressed and not keyboard.visible:
+			keyboard.show_menu(null, false)
 		interact_mode_active = not interact_mode_active
 		player.interact_mode_active = not player.interact_mode_active
 
@@ -846,6 +862,10 @@ func _process(delta: float) -> void:
 	# Cible de drop pendant un drag Wayland (même rayon caméra).
 	if file_share != null:
 		file_share.update_drag(ray_origin, ray_dir)
+	# Résidu d'une activation manette non consommée par le toggle
+	# interact_mode (ex. focus actif) : ne pas le reporter à une activation
+	# suivante au clavier/souris.
+	_interact_pad_pressed = false
 	
 
 func _input(event: InputEvent) -> void:
@@ -885,6 +905,13 @@ func _input(event: InputEvent) -> void:
 		elif event is InputEventJoypadButton:
 			layers.forward_gamepad_event(event)
 			return
+	# interact_mode déclenché à la manette (bouton ou axe) : signaler au
+	# _process pour afficher le clavier virtuel en même temps que l'activation.
+	if (event is InputEventJoypadButton and event.pressed \
+			and event.is_action_pressed("interact_mode")) \
+			or (event is InputEventJoypadMotion \
+			and event.is_action_pressed("interact_mode")):
+		_interact_pad_pressed = true
 	# Gestes touchpad (pinch → zoom). Godot forwarde InputEventMagnifyGesture
 	# (factor incrémental) ; le compositeur maintient l'état du geste et route
 	# via le focus pointeur du seat (fenêtre survolée en 3D, fenêtre active en
@@ -1029,6 +1056,19 @@ func _on_keyboard_closed() -> void:
 	if not layers.layer_interact_active:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
+# Un menu du jeu (pause, fenêtres, radial, capture, tuto) s'ouvre : on
+# masque le clavier virtuel et on coupe le mode interaction, comme le fait
+# déjà l'ouverture du menu pause.
+func _on_game_menu_visibility_changed(menu: Control) -> void:
+	if not menu.visible:
+		return
+	if keyboard.visible:
+		keyboard.hide_menu()
+	if interact_mode_active:
+		compositor.release_all_keys()
+		interact_mode_active = false
+		player.interact_mode_active = false
+
 # ── Menu radial contextuel ────────────────────────────────────────
 
 func _determine_radial_context() -> String:
@@ -1046,9 +1086,14 @@ func _on_radial_action(action: String) -> void:
 		"layer_interact":
 			layers.toggle_layer_interact()
 		"interact":
-			_on_radial_action("keyboard")
+			# Le clavier virtuel suit le mode interaction (même règle que le
+			# bind manette) : affiché à l'activation, refermé à la désactivation.
 			if interact_mode_active:
+				if keyboard.visible:
+					keyboard.hide_menu()
 				compositor.release_all_keys()
+			elif not keyboard.visible:
+				keyboard.show_menu(null, false)
 			interact_mode_active = not interact_mode_active
 			player.interact_mode_active = not player.interact_mode_active
 		"grab":

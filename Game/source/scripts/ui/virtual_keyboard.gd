@@ -414,6 +414,9 @@ func _try_forward_to_line_edit(keycode: int, layout_data: Dictionary) -> bool:
 		KEY_ENTER:
 			le.text_submitted.emit(le.text)
 			le.release_focus()
+		KEY_SPACE:
+			le.text += " "
+			le.caret_column = le.text.length()
 		_:
 			var entry: Dictionary = layout_data.get(keycode, {})
 			if not entry.is_empty():
@@ -496,7 +499,7 @@ func toggle_menu() -> void:
 		show_menu()
 
 
-func show_menu(target_line_edit: LineEdit = null) -> void:
+func show_menu(target_line_edit: LineEdit = null, focus_first_key: bool = true) -> void:
 	_shift_locked = false
 	_ctrl_locked = false
 	_alt_locked = false
@@ -508,7 +511,11 @@ func show_menu(target_line_edit: LineEdit = null) -> void:
 		if is_instance_valid(btn) and btn.get_meta("keycode", -1) in MODIFIER_KEYS:
 			_update_mod_button_style(btn, false)
 	visible = true
-	# Focus first letter key
+	# Focus first letter key (sauf clavier montré en jeu depuis interact_mode :
+	# A doit rester le toggle du mode interaction, pas activer la touche. La
+	# nav au d-pad restaure le focus, la souris clique les touches.)
+	if not focus_first_key:
+		return
 	for btn in _key_buttons:
 		if is_instance_valid(btn):
 			var kc: int = btn.get_meta("keycode", -1)
