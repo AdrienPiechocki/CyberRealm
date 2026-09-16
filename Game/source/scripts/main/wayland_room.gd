@@ -772,6 +772,11 @@ func _process(delta: float) -> void:
 		if Input.is_action_just_pressed("focus_window", true):
 			focus.exit_focus()
 			return
+		# force_game (remapable) : bascule is_game de la fenêtre focus pour la
+		# traiter (ou non) comme un jeu vidéo.
+		if Input.is_action_just_pressed("force_game", true) and not keyboard.visible:
+			focus.toggle_force_game()
+			return
 		# Kill : seulement pour une fenêtre LOCALE en focus. Le focus d'une
 		# fenêtre distante est vue seule : pas de fermeture possible.
 		if not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):

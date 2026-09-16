@@ -278,7 +278,7 @@ func _process(delta: float) -> void:
 		_update_world_occluder()
 		_update_occluder_for_alpha(delta)
 		var st = _state(_active_id())
-		if st["mouse_captured"]:
+		if st["mouse_captured"] and not st.get("is_game_overridden", false):
 			st["is_game"] = true
 
 # Analyse par SALVE l'alpha du contenu de la fenêtre focus LOCALE : une seule
@@ -441,6 +441,7 @@ func _state(id: int) -> Dictionary:
 		"original_size": Vector2.ONE,
 		"mouse_captured": false,
 		"is_game": false,
+		"is_game_overridden": false,
 		"mouse_uv": Vector2(0.5, 0.5),
 		"surface_size": Vector2(1, 1),
 		"content_offset": Vector2.ZERO,
@@ -1881,7 +1882,7 @@ func handle_input_event(event: InputEvent) -> bool:
 func _is_compositor_shortcut(event: InputEventKey) -> bool:
 	if not event.pressed:
 		return false
-	for action in ["focus_window", "kill_window"]:
+	for action in ["focus_window", "kill_window", "force_game"]:
 		if InputMap.event_is_action(event, action, true):
 			return true
 	return false
@@ -1891,6 +1892,19 @@ func in_game() -> bool:
 	if st["is_game"]:
 		return true
 	return false
+
+## Toggle force_game (action remapable) : inverse is_game sur la fenêtre focus
+## et bloque l'auto-set pointer-lock (is_game_overridden) pour que le reset
+## tienne tant que la session de focus reste active. Retourne le nouvel état
+## de is_game (true si la fenêtre est traitée comme un jeu).
+func toggle_force_game() -> bool:
+	var id := _active_id()
+	if id == -1:
+		return false
+	var st := _state(id)
+	st["is_game_overridden"] = true
+	st["is_game"] = not st["is_game"]
+	return st["is_game"]
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:

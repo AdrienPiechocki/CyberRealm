@@ -55,8 +55,9 @@ Vulkan DMA-BUF import**.
 - **Navigation menu** (`SUPER+SHIFT+B`) — a window switcher with live previews (grab, focus,
   hide, find, pin, close) and a **SHARE** action to stream a window to the other
   players.
-- **Pause menu** (`Esc`) — remappable keybinds (keyboard & mouse only, gamepad
-  bindings are fixed), startup apps, custom keybinds that launch arbitrary
+- **Pause menu** (`Esc`) — remappable keybinds (independent keyboard/mouse
+  and gamepad bindings per action), startup apps, custom keybinds that launch
+  arbitrary
   commands inside the compositor, and a **LAN Game** page (host/join, player
   name & color, avatar picker, LAN discovery with a single **Apply** button).
 - **KWin integration** — an optional KWin script fullscreens the game when
@@ -349,12 +350,18 @@ details: `Game/source/user/README.md`.
 | `SUPER+H`            | Hide a window                                     |
 | `SUPER+S`            | Share a window for LAN multiplayer                |
 | `SUPER+K`            | Close the focused window                          |
+| `SUPER+J`            | Toggle the focused window as a game (`force_game`) |
 | `SUPER+SHIFT+B`      | Window navigation menu                            |
 | `SUPER+TAB`          | Hand the pointer to a layer overlay (waybar/rofi) |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
 
-All keybinds can be remapped from the pause menu (keyboard & mouse only;
-gamepad bindings are fixed).
+All keybinds can be remapped from the pause menu — each action has an
+independent keyboard/mouse and gamepad binding, both editable.
+
+`force_game` (`SUPER+J`, remappable): while in focus mode, marks the focused
+window as a **game**. In a game, pointer-lock and gamepad input are handed
+straight to the window and the radial menu stays closed. Pressing it again
+removes the mark, even for windows that request pointer lock.
 
 ### Gamepad
 
