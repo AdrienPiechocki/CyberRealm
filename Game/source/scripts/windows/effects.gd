@@ -41,6 +41,10 @@ func toggle_find(id: int) -> void:
 	var active: bool = xray_windows.get(id, false)
 	if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
 		var quad: MeshInstance3D = windows.quads[id]
+		# L'occlusion culling retirerait la fenêtre du rendu quand elle est
+		# derrière un mur/une fenêtre — incompatible avec l'effet X-RAY
+		# (no_depth_test censé montrer le contenu à travers les obstacles).
+		_set_occlusion_ignored(quad, active)
 		if not active:
 			_end_flash(id)
 			quad.material_overlay = null
@@ -74,6 +78,15 @@ func _set_quad_interactive(quad: MeshInstance3D, enabled: bool) -> void:
 					shape_node.disabled = not enabled
 		elif child is MeshInstance3D:
 			_set_quad_interactive(child, enabled)
+
+# Exempte (ou rétablit) les quads de la fenêtre de l'occlusion culling :
+# appliqué de façon récursive aux MeshInstance3D enfants (le mesh racine
+# est géré par l'appelant via windows.quads, ou bien transitivement ici).
+func _set_occlusion_ignored(quad: MeshInstance3D, ignored: bool) -> void:
+	quad.ignore_occlusion_culling = ignored
+	for child in quad.get_children():
+		if child is MeshInstance3D:
+			_set_occlusion_ignored(child, ignored)
 
 func process(delta: float) -> void:
 	_update_xray(delta)
