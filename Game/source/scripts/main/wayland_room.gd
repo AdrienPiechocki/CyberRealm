@@ -68,7 +68,10 @@ const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
 
 var _level_path := ""
 var _menu_just_closed := false
-var _hud_notice: Label = null
+# Flash blanc plein écran à la prise de capture d'écran (aucun texte).
+var _flash_layer: CanvasLayer = null
+var _flash_rect: ColorRect = null
+var _flash_tween: Tween = null
 # Vrai si le tuto a été lancé automatiquement au premier lancement : à sa
 # fermeture on mémorise tutorial_seen dans les settings persistants.
 var _tutorial_first_run := false
@@ -355,6 +358,7 @@ func _ready() -> void:
 	window_menu.action_find.connect(_on_window_menu_find)
 	window_menu.action_pin.connect(_on_window_menu_pin)
 	window_menu.action_share.connect(_on_window_menu_share)
+	window_menu.action_screenshot.connect(_on_window_menu_screenshot)
 	window_menu.action_quit.connect(_on_window_menu_quit)
 	window_menu.menu_closed.connect(_on_window_menu_closed)
 	# Sélecteur de cible de capture OBS : ouvert quand portal-wlr signale une
@@ -797,6 +801,12 @@ func _process(delta: float) -> void:
 	if layers.keyboard_busy():
 		return
 
+	# Impr. écran : capture native du viewport (ce que le joueur voit) dans le
+	# dossier de captures du menu pause.
+	if Input.is_action_just_pressed("screenshot", true) and not interact_mode_active:
+		_take_screenshot()
+		return
+
 	# F en visant une fenêtre → entrer en mode focus. Le rayon part de la
 	# position réelle du viseur (_aim_pos), pas de get_mouse_position() :
 	# en mode capturé celle-ci reste figée à l'endroit de la capture.
@@ -1061,6 +1071,52 @@ func _on_window_menu_share(wid: int) -> void:
 	# chez les autres joueurs — aucune interaction distante possible.
 	win3d.set_window_shared(wid, not win3d.is_window_shared(wid))
 	window_menu.hide_menu()
+
+func _on_window_menu_screenshot(wid: int) -> void:
+	# On ferme le menu avant de capturer (comme GRAB/FOCUS) pour un cliché
+	# propre de la fenêtre. La capture part de la texture CPU de la fenêtre
+	# (celle de la preview du menu / du partage OBS) : grim ne peut pas isoler
+	# un quad 3D, on sauvegarde l'image directement.
+	window_menu.hide_menu()
+	_take_window_screenshot(wid)
+
+# ── Captures d'écran ─────────────────────────────────────────────────
+
+# Capture plein écran : readback natif Godot du viewport (world + overlays
+# 2D, menus compris), enregistré dans le dossier de captures du menu pause.
+func _take_screenshot() -> void:
+	var img: Image = get_viewport().get_texture().get_image()
+	if img == null or img.is_empty():
+		return
+	_save_screenshot_img(img, "cyberrealm")
+
+# Capture d'une fenêtre : image CPU de la fenêtre sélectionnée (même source
+# que la preview du menu fenêtres et que la capture OBS d'une fenêtre).
+func _take_window_screenshot(wid: int) -> void:
+	var img: Image = win3d.get_window_image(wid)
+	if img == null or img.is_empty():
+		return
+	_save_screenshot_img(img, "cyberrealm-window-%d" % wid)
+
+func _save_screenshot_img(img: Image, prefix: String) -> void:
+	# Readbacks GPU (viewport) peuvent arriver dans un format non PNG-friendly :
+	# on normalise en RGBA8 comme le fait present_manager avant l'upload.
+	img.convert(Image.FORMAT_RGBA8)
+	var folder: String = pause_menu.get_screenshot_folder()
+	if folder.is_empty():
+		return
+	var err := DirAccess.make_dir_recursive_absolute(folder)
+	if err != OK and not DirAccess.dir_exists_absolute(folder):
+		return
+	var t := Time.get_datetime_dict_from_system()
+	var path := "%s/%s-%04d%02d%02d-%02d%02d%02d.png" % [
+		folder, prefix,
+		t.get("year", 0), t.get("month", 0), t.get("day", 0),
+		t.get("hour", 0), t.get("minute", 0), t.get("second", 0),
+	]
+	if img.save_png(path) != OK:
+		return
+	_flash_screenshot()
 
 func _on_window_menu_quit(wid: int) -> void:
 	compositor.close_window(wid)
@@ -1384,18 +1440,18 @@ func _on_tutorial_closed() -> void:
 		pause_menu.set_tutorial_seen(true)
 	_menu_just_closed = true
 
-func _lan_flash(text: String) -> void:
-	if _hud_notice == null:
-		_hud_notice = Label.new()
-		_hud_notice.add_theme_font_size_override("font_size", 24)
-		_hud_notice.add_theme_color_override("font_color", Color(1.0, 0.5, 0.4))
-		_hud_notice.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		_hud_notice.set_anchors_preset(Control.PRESET_CENTER_TOP)
-		_hud_notice.offset_top = 80
-		_hud_notice.offset_bottom = 120
-		$Level/Player/UI.add_child(_hud_notice)
-	_hud_notice.text = text
-	_hud_notice.visible = true
-	await get_tree().create_timer(4.0).timeout
-	if is_instance_valid(_hud_notice) and _hud_notice.text == text:
-		_hud_notice.visible = false
+# Flash blanc bref (feedback croustillant d'une capture, sans texte).
+func _flash_screenshot() -> void:
+	if _flash_layer == null:
+		_flash_layer = CanvasLayer.new()
+		_flash_layer.layer = 100 # au-dessus de toute l'UI (layers <= 2)
+		add_child(_flash_layer)
+		_flash_rect = ColorRect.new()
+		_flash_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_flash_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_flash_layer.add_child(_flash_rect)
+	if _flash_tween != null and _flash_tween.is_valid():
+		_flash_tween.kill()
+	_flash_rect.color = Color(1, 1, 1, 0.45)
+	_flash_tween = create_tween()
+	_flash_tween.tween_property(_flash_rect, "color:a", 0.0, 0.12)

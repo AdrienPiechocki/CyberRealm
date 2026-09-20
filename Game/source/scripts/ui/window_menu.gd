@@ -9,6 +9,7 @@ signal action_toggle_hide(window_id: int)
 signal action_find(window_id: int)
 signal action_pin(window_id: int)
 signal action_share(window_id: int)
+signal action_screenshot(window_id: int)
 signal action_quit(window_id: int)
 signal menu_closed()
 
@@ -72,6 +73,7 @@ func _build_action_buttons() -> void:
 		{"label": "HIDE/SHOW", "signal": "action_toggle_hide"},
 		{"label": "PIN", "signal": "action_pin"},
 		{"label": "SHARE", "signal": "action_share"},
+		{"label": "SCREENSHOT", "signal": "action_screenshot"},
 		{"label": "FIND", "signal": "action_find"},
 		{"label": "QUIT", "signal": "action_quit"},
 	]
@@ -120,6 +122,10 @@ func _build_action_buttons() -> void:
 		action_buttons.append(btn)
 
 func _on_action(sig_name: String) -> void:
+	# La capture ne dépend d'aucune fenêtre : fonctionne même sans sélection.
+	if sig_name == "action_screenshot":
+		action_screenshot.emit(selected_window_id)
+		return
 	if selected_window_id == -1:
 		return
 	match sig_name:

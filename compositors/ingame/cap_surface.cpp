@@ -241,6 +241,59 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd, int timeout_ms) {
     sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
     ioctl(dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
 }
+
+// Copie CPU synchrone du dmabuf de capture (mmapé dans cache.data, format
+// swizzlé RGBA8) vers cache.bytes. Lisible de façon fiable : entre deux
+// passes de capture les écritures GPU sur le buffer offscreen sont terminées
+// (wait_for_dmabuf_gpu_writes en fin de capture), donc le contenu est stable.
+// Utilisée par le partage LAN (localisée dans capture_surface_vulkan) ET à la
+// demande par get_window_cpu_image quand aucun consommateur n'a activé la
+// copie (ex. capture d'écran d'une fenêtre) — coût ~30-50 ms en 1080p.
+static void synchronous_cpu_readback(CaptureCache &cache, int w, int h) {
+    if (cache.data == nullptr || cache.stride <= 0 || w <= 0 || h <= 0) return;
+    if (cache.bytes.size() != (int64_t)w * h * 4) {
+        cache.bytes.resize((int64_t)w * h * 4);
+    }
+    uint8_t *dst = cache.bytes.ptrw();
+    struct dma_buf_sync sync = {};
+    sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+    ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+    bool has_alpha = (cache.format == DRM_FORMAT_ABGR8888 ||
+                      cache.format == DRM_FORMAT_ARGB8888);
+    if (cache.format == DRM_FORMAT_XBGR8888) {
+        // RGBX : padding X indéfini → alpha forcé opaque (cf. capture
+        // dmabuf).
+        for (int y = 0; y < h; y++) {
+            const uint8_t *row = cache.data + (size_t)y * cache.stride;
+            for (int x = 0; x < w; x++) {
+                dst[(y * w + x) * 4 + 0] = row[x * 4 + 0]; // R
+                dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+                dst[(y * w + x) * 4 + 2] = row[x * 4 + 2]; // B
+                dst[(y * w + x) * 4 + 3] = 255;            // A
+            }
+        }
+    } else if (cache.format == DRM_FORMAT_ABGR8888) {
+        // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
+        for (int y = 0; y < h; y++) {
+            memcpy(dst + (size_t)y * w * 4,
+                cache.data + (size_t)y * cache.stride,
+                (size_t)w * 4);
+        }
+    } else {
+        // BGRA en mémoire → swizzle B↔R par pixel (contenu opaque)
+        for (int y = 0; y < h; y++) {
+            const uint8_t *row = cache.data + (size_t)y * cache.stride;
+            for (int x = 0; x < w; x++) {
+                dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
+                dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
+                dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
+                dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 255;
+            }
+        }
+    }
+    sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+    ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+}
 // Retourne false si la surface n'est pas une xdg_surface ou si la géométrie
 // est vide (pas encore de contenu).
 static bool capture_crop_box(wlr_surface *surface, wlr_box &out) {
@@ -871,48 +924,7 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
     // swizzle) coûte 30-50 ms sur le thread principal pour une fenêtre
     // 1920×1080 : sans demande LAN, on la saute entièrement.
     if (cpu_capture_requested && cache.data && cache.stride > 0) {
-        if (cache.bytes.size() != (int64_t)w * h * 4) {
-            cache.bytes.resize((int64_t)w * h * 4);
-        }
-        uint8_t *dst = cache.bytes.ptrw();
-        struct dma_buf_sync sync = {};
-        sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
-        bool has_alpha = (cache.format == DRM_FORMAT_ABGR8888 ||
-                          cache.format == DRM_FORMAT_ARGB8888);
-        if (cache.format == DRM_FORMAT_XBGR8888) {
-            // RGBX : padding X indéfini → alpha forcé opaque (cf. capture
-            // dmabuf).
-            for (int y = 0; y < h; y++) {
-                const uint8_t *row = cache.data + (size_t)y * cache.stride;
-                for (int x = 0; x < w; x++) {
-                    dst[(y * w + x) * 4 + 0] = row[x * 4 + 0]; // R
-                    dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
-                    dst[(y * w + x) * 4 + 2] = row[x * 4 + 2]; // B
-                    dst[(y * w + x) * 4 + 3] = 255;            // A
-                }
-            }
-        } else if (cache.format == DRM_FORMAT_ABGR8888) {
-            // RGBA en mémoire → copie directe par ligne (stride peut > w*4)
-            for (int y = 0; y < h; y++) {
-                memcpy(dst + (size_t)y * w * 4,
-                    cache.data + (size_t)y * cache.stride,
-                    (size_t)w * 4);
-            }
-        } else {
-            // BGRA en mémoire → swizzle B↔R par pixel (contenu opaque)
-            for (int y = 0; y < h; y++) {
-                const uint8_t *row = cache.data + (size_t)y * cache.stride;
-                for (int x = 0; x < w; x++) {
-                    dst[(y * w + x) * 4 + 0] = row[x * 4 + 2]; // R <- B
-                    dst[(y * w + x) * 4 + 1] = row[x * 4 + 1]; // G
-                    dst[(y * w + x) * 4 + 2] = row[x * 4 + 0]; // B <- R
-                    dst[(y * w + x) * 4 + 3] = has_alpha ? row[x * 4 + 3] : 255;
-                }
-            }
-        }
-        sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-        ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
+        synchronous_cpu_readback(cache, w, h);
     }
     clock_gettime(CLOCK_MONOTONIC, &t_c1);
 
@@ -1156,6 +1168,18 @@ Ref<Image> WlrCompositor::get_window_cpu_image(int window_id) {
     WindowState *ws = find_window(window_id);
     if (!ws) return Ref<Image>();
     CaptureCache &cache = ws->capture_cache;
+    // Chemin Vulkan zero-copy : cache.bytes n'est rempli que si un
+    // consommateur (LAN, salve du mode focus) a demandé la copie. Pour une
+    // capture d'écran ponctuelle on la produit ICI à la demande : le dmabuf
+    // de capture reste mmapé (cache.data) entre les passes, le contenu du
+    // buffer offscreen est stable (écritures GPU terminées en fin de capture)
+    // donc la lecture n'est ni « tardive » ni réutilisée. Coût ~30-50 ms en
+    // 1080p, une seule fois — sans impacter le régime de base (aucun
+    // memcpy tant que personne ne lit l'image).
+    if (cache.bytes.is_empty() && cache.data != nullptr && cache.stride > 0 &&
+            cache.width > 0 && cache.height > 0) {
+        synchronous_cpu_readback(cache, cache.width, cache.height);
+    }
     if (cache.bytes.is_empty() || cache.width <= 0 || cache.height <= 0) {
         return Ref<Image>();
     }

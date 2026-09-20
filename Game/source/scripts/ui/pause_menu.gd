@@ -63,7 +63,7 @@ const REMAPPABLE_ACTIONS := [
 	"look_up", "look_down", "look_left", "look_right",
 	"interact_mode", "layer_interact", "window_menu", "radial_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
-	"force_game",
+	"screenshot", "force_game",
 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
 
@@ -75,7 +75,7 @@ var _lan: Node = null
 func set_lan_ref(lan: Node) -> void:
 	_lan = lan
 
-var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "lan" | "banned"
+var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "screenshots" | "lan" | "banned"
 var _waiting_action := "" # action en cours de rebind, "" = aucun
 var _waiting_gamepad := false # true = on attend un event manette pour le rebind
 var _keybinds_buttons: Dictionary = {} # action -> Button
@@ -420,6 +420,10 @@ func _show_main() -> void:
 	var pins_btn := _make_btn("Pinned Windows")
 	pins_btn.pressed.connect(_show_pins)
 	container.add_child(pins_btn)
+
+	var screenshots_btn := _make_btn("Screenshot Folder")
+	screenshots_btn.pressed.connect(_show_screenshots)
+	container.add_child(screenshots_btn)
 	
 	var lan_btn := _make_btn("LAN Game")
 	lan_btn.pressed.connect(_show_lan)
@@ -817,6 +821,58 @@ func _apply_polkit_agent(line_edit: LineEdit) -> void:
 	_settings["polkit_agent"] = cmd
 	_save_settings()
 	polkit_agent_changed.emit(cmd)
+	_show_main()
+
+# ── Screenshot folder ───────────────────────────────────────────────
+
+# Dossier où sont enregistrées les captures (bind impr. écran + menu fenêtre).
+# Réglage utilisateur s'il existe, sinon le dossier Pictures de la session
+# ($(xdg-user-dir PICTURES)), sinon ~/Pictures en dernier recours.
+func get_screenshot_folder() -> String:
+	var saved := String(_settings.get("screenshot_folder", "")).strip_edges()
+	if saved != "":
+		return saved
+	return _default_screenshot_folder()
+
+func _default_screenshot_folder() -> String:
+	var out: Array = []
+	if OS.execute("xdg-user-dir", ["PICTURES"], out) == 0 \
+			and not String(out[0]).strip_edges().is_empty():
+		return String(out[0]).strip_edges()
+	return OS.get_environment("HOME") + "/Pictures"
+
+func _show_screenshots() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "screenshots"
+
+	container.add_child(_make_title("SCREENSHOT FOLDER"))
+
+	var hint := Label.new()
+	hint.text = "Folder where screenshots are saved\n(screen keybind + window menu button)."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	var line_edit := _make_line_edit()
+	line_edit.text = get_screenshot_folder()
+	line_edit.placeholder_text = "$(xdg-user-dir PICTURES)"
+	line_edit.text_submitted.connect(func(_t: String):
+		_apply_screenshot_folder(line_edit)
+	)
+	container.add_child(line_edit)
+
+	var apply_btn := _make_btn("Apply")
+	apply_btn.pressed.connect(_apply_screenshot_folder.bind(line_edit))
+	container.add_child(apply_btn)
+
+	container.add_child(_make_spacer())
+	container.add_child(_make_back_btn())
+
+func _apply_screenshot_folder(line_edit: LineEdit) -> void:
+	_settings["screenshot_folder"] = line_edit.text.strip_edges()
+	_save_settings()
 	_show_main()
 
 # ── Pinned windows layer ─────────────────────────────────────────────

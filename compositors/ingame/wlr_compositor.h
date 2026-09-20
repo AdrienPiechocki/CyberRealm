@@ -1020,7 +1020,10 @@ public:
     // Image CPU RGBA8 de la dernière capture d'une fenêtre (chemin Vulkan :
     // copie synchrone du dmabuf faite juste après le rendu — lisible de
     // façon fiable pour le partage LAN, contrairement au readback RD différé
-    // qui peut lire un buffer réutilisé). Renvoie null si aucune capture.
+    // qui peut lire un buffer réutilisé). Si aucun consommateur n'a demandé
+    // la copie (pas de partage actif), elle est produite ici à la demande
+    // (capture d'écran de fenêtre). Renvoie null si la fenêtre n'a pas
+    // encore de contenu capturable (pas de dmabuf mmapé).
     Ref<Image> get_window_cpu_image(int window_id);
 
     // Active/désactive la copie CPU synchrone des fenêtres (voir
