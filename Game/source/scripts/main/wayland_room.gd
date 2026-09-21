@@ -230,7 +230,45 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	# OccluderInstance3D baké dans l'éditeur.
 	if OCCLUSION_BAKER.bake(new_level) > 0:
 		print("[occ] occlusion culling generated for the applied level")
+	# Ré-appliquer les réglages environnement persistés : le niveau appliqué
+	# possède son propre WorldEnvironment (valeurs de SA scène), on remet les
+	# toggles/ajustements validés dans le menu pause.
+	_apply_environment_settings(pause_menu.get_environment_settings())
 	return true
+
+# Applique les réglages environnement persistés (dictionnaire de la page
+# GRAPHICS → General) au WorldEnvironment du niveau courant. No-op sans noise
+# si aucun dictionnaire enregistré, si le niveau n'a pas de WorldEnvironment.
+func _apply_environment_settings(settings: Dictionary) -> void:
+	if settings.is_empty():
+		return
+	var we := _level_world_environment()
+	if we == null or we.environment == null:
+		return
+	var env := we.environment
+	for key in [
+		"ssr_enabled", "ssao_enabled", "ssil_enabled", "sdfgi_enabled",
+		"glow_enabled", "fog_enabled", "volumetric_fog_enabled",
+		"adjustment_enabled", "adjustment_brightness", "adjustment_contrast",
+		"adjustment_saturation",
+	]:
+		if settings.has(key):
+			env.set(key, settings[key])
+
+func _level_world_environment() -> WorldEnvironment:
+	var level := get_node_or_null("Level")
+	if level == null:
+		return null
+	return _search_world_environment(level)
+
+func _search_world_environment(node: Node) -> WorldEnvironment:
+	if node is WorldEnvironment:
+		return node as WorldEnvironment
+	for child in node.get_children():
+		var found := _search_world_environment(child)
+		if found != null:
+			return found
+	return null
 
 func _add_manager(script: Script, node_name: String) -> Node3D:
 	var node := Node3D.new()
@@ -419,6 +457,12 @@ func _ready() -> void:
 	pause_menu.graphics_settings_changed.connect(func(_aa: String, fps: int):
 		Engine.max_fps = fps
 	)
+	pause_menu.environment_settings_changed.connect(func(settings: Dictionary):
+		_apply_environment_settings(settings)
+	)
+	# Réglages environnement persistés : appliqués au WorldEnvironment du niveau
+	# de boot (SSR/SSAO/SDFGI/ajustements…) et re-appliqués après chaque swap.
+	_apply_environment_settings(pause_menu.get_environment_settings())
 	# Menu radial contextuel (B sur manette)
 	radial_menu.radial_action.connect(_on_radial_action)
 	# Clavier virtuel

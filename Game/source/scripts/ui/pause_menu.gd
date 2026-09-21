@@ -23,6 +23,7 @@ signal pad_look_sens_changed(mult: float)
 signal focus_stick_sens_changed(mult: float)
 signal gyro_aim_changed(enabled: bool)
 signal gyro_sens_changed(mult: float)
+signal environment_settings_changed(settings: Dictionary)
 
 const LanManagerScript := preload("res://scripts/network/lan_manager.gd")
 
@@ -75,7 +76,27 @@ var _lan: Node = null
 func set_lan_ref(lan: Node) -> void:
 	_lan = lan
 
-var _current_view := "main" # "main" | "keybinds" | "startup" | "custom" | "keyboard_layout" | "polkit" | "screenshots" | "lan" | "banned"
+# Pages du menu (catégories + sous-pages). La catégorie "main" est le hub.
+var _current_view := "main"
+
+# Page parente de chaque sous-page : Back / Échap / B y reviennent au lieu de
+# tout renvoyer au hub. "graphics"/"controls" sont ici les pages catégories
+# (rubriques), distinctes des sous-pages "graphics_general"/"controls_general".
+const _PARENT_VIEW := {
+	"general": "main",
+	"graphics": "main",
+	"controls": "main",
+	"lan": "main",
+	"startup": "general",
+	"polkit": "general",
+	"screenshots": "general",
+	"graphics_general": "graphics",
+	"pins": "graphics",
+	"controls_general": "controls",
+	"keybinds": "controls",
+	"custom": "controls",
+	"keyboard_layout": "controls",
+}
 var _waiting_action := "" # action en cours de rebind, "" = aucun
 var _waiting_gamepad := false # true = on attend un event manette pour le rebind
 var _keybinds_buttons: Dictionary = {} # action -> Button
@@ -310,8 +331,17 @@ func _make_title(text: String) -> Label:
 
 func _make_back_btn() -> Button:
 	var back := _make_btn("Back", Color(0.18, 0.18, 0.25, 0.9))
-	back.pressed.connect(_show_main)
+	back.pressed.connect(_go_back)
 	return back
+
+# Retour à la page parente (catégorie), ou fermeture du menu depuis le hub.
+func _go_back() -> void:
+	match _PARENT_VIEW.get(_current_view, "main"):
+		"general": _show_general()
+		"graphics": _show_graphics()
+		"controls": _show_controls()
+		"lan": _show_lan()
+		_: _show_main()
 
 func _make_line_edit() -> LineEdit:
 	var le := LineEdit.new()
@@ -397,41 +427,21 @@ func _show_main() -> void:
 
 	container.add_child(_make_title("MAIN MENU"))
 
-	var keybinds_btn := _make_btn("Remap keybinds")
-	keybinds_btn.pressed.connect(_show_keybinds)
-	container.add_child(keybinds_btn)
+	var general_btn := _make_btn("General")
+	general_btn.pressed.connect(_show_general)
+	container.add_child(general_btn)
 
-	var startup_btn := _make_btn("Startup Apps")
-	startup_btn.pressed.connect(_show_startup_apps)
-	container.add_child(startup_btn)
+	var graphics_btn := _make_btn("Graphics")
+	graphics_btn.pressed.connect(_show_graphics)
+	container.add_child(graphics_btn)
 
-	var custom_btn := _make_btn("Custom Binds")
-	custom_btn.pressed.connect(_show_custom_binds)
-	container.add_child(custom_btn)
+	var controls_btn := _make_btn("Controls")
+	controls_btn.pressed.connect(_show_controls)
+	container.add_child(controls_btn)
 
-	var kb_btn := _make_btn("Keyboard Layout")
-	kb_btn.pressed.connect(_show_keyboard_layout)
-	container.add_child(kb_btn)
-
-	var polkit_btn := _make_btn("Polkit Agent")
-	polkit_btn.pressed.connect(_show_polkit)
-	container.add_child(polkit_btn)
-
-	var pins_btn := _make_btn("Pinned Windows")
-	pins_btn.pressed.connect(_show_pins)
-	container.add_child(pins_btn)
-
-	var screenshots_btn := _make_btn("Screenshot Folder")
-	screenshots_btn.pressed.connect(_show_screenshots)
-	container.add_child(screenshots_btn)
-	
-	var lan_btn := _make_btn("LAN Game")
+	var lan_btn := _make_btn("Local Multiplayer")
 	lan_btn.pressed.connect(_show_lan)
 	container.add_child(lan_btn)
-
-	var gc_btn := _make_btn("Graphics & Controls")
-	gc_btn.pressed.connect(_show_graphics_controls)
-	container.add_child(gc_btn)
 
 	var tutorial_btn := _make_btn("Tutorial")
 	tutorial_btn.pressed.connect(func():
@@ -451,6 +461,113 @@ func _show_main() -> void:
 	quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
 	container.add_child(quit_btn)
 	_quit_btn = quit_btn
+
+# ── Pages catégories du hub ───────────────────────────────────────────
+
+func _show_general() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "general"
+	_editing_index = -1
+
+	container.add_child(_make_title("GENERAL"))
+
+	var startup_btn := _make_btn("Startup Apps")
+	startup_btn.pressed.connect(_show_startup_apps)
+	container.add_child(startup_btn)
+
+	var polkit_btn := _make_btn("Polkit Agent")
+	polkit_btn.pressed.connect(_show_polkit)
+	container.add_child(polkit_btn)
+
+	var screenshots_btn := _make_btn("Screenshot Folder")
+	screenshots_btn.pressed.connect(_show_screenshots)
+	container.add_child(screenshots_btn)
+
+	container.add_child(_make_spacer())
+
+	# ── Max FPS (appliqué immédiatement) ──
+	var fps_label := Label.new()
+	fps_label.text = "Max FPS"
+	fps_label.add_theme_font_size_override("font_size", 14)
+	fps_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(fps_label)
+
+	var fps_slider := HSlider.new()
+	fps_slider.min_value = 30
+	fps_slider.max_value = 240
+	fps_slider.step = 10
+	fps_slider.value = get_fps_limit()
+	fps_slider.custom_minimum_size = Vector2(0, 30)
+	fps_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(fps_slider)
+
+	var fps_val := Label.new()
+	fps_val.text = "%d" % int(fps_slider.value)
+	fps_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	fps_val.add_theme_font_size_override("font_size", 13)
+	fps_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(fps_val)
+
+	fps_slider.value_changed.connect(func(v: float):
+		fps_val.text = "%d" % int(v)
+		_settings["fps_limit"] = int(v)
+		_save_settings()
+		Engine.max_fps = int(v)
+		graphics_settings_changed.emit(get_aa_mode(), int(v))
+	)
+
+	container.add_child(_make_spacer())
+
+	container.add_child(_make_back_btn())
+
+func _show_graphics() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "graphics"
+	_editing_index = -1
+
+	container.add_child(_make_title("GRAPHICS"))
+
+	var general_btn := _make_btn("General")
+	general_btn.pressed.connect(_show_graphics_general)
+	container.add_child(general_btn)
+
+	var pins_btn := _make_btn("Pinned Windows")
+	pins_btn.pressed.connect(_show_pins)
+	container.add_child(pins_btn)
+
+	container.add_child(_make_spacer())
+
+	container.add_child(_make_back_btn())
+
+func _show_controls() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "controls"
+	_editing_index = -1
+
+	container.add_child(_make_title("CONTROLS"))
+
+	var general_btn := _make_btn("General")
+	general_btn.pressed.connect(_show_controls_general)
+	container.add_child(general_btn)
+
+	var keybinds_btn := _make_btn("Remap Keybinds")
+	keybinds_btn.pressed.connect(_show_keybinds)
+	container.add_child(keybinds_btn)
+
+	var custom_btn := _make_btn("Custom Binds")
+	custom_btn.pressed.connect(_show_custom_binds)
+	container.add_child(custom_btn)
+
+	var kb_btn := _make_btn("Keyboard Layout")
+	kb_btn.pressed.connect(_show_keyboard_layout)
+	container.add_child(kb_btn)
+
+	container.add_child(_make_spacer())
+
+	container.add_child(_make_back_btn())
 
 func _show_keybinds() -> void:
 	_clear()
@@ -821,7 +938,7 @@ func _apply_polkit_agent(line_edit: LineEdit) -> void:
 	_settings["polkit_agent"] = cmd
 	_save_settings()
 	polkit_agent_changed.emit(cmd)
-	_show_main()
+	_go_back()
 
 # ── Screenshot folder ───────────────────────────────────────────────
 
@@ -873,7 +990,7 @@ func _show_screenshots() -> void:
 func _apply_screenshot_folder(line_edit: LineEdit) -> void:
 	_settings["screenshot_folder"] = line_edit.text.strip_edges()
 	_save_settings()
-	_show_main()
+	_go_back()
 
 # ── Pinned windows layer ─────────────────────────────────────────────
 
@@ -1016,7 +1133,7 @@ func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSli
 	pins_layer_changed.emit(above)
 	pins_opacity_changed.emit(percent)
 	pins_position_changed.emit(pos)
-	_show_main()
+	_go_back()
 
 # ── LAN multiplayer ──────────────────────────────────────────────────
 
@@ -1071,11 +1188,12 @@ func _save_lan_name(edit: LineEdit) -> void:
 	_save_settings()
 	lan_name_changed.emit(nm)
 
-func _show_graphics_controls() -> void:
+func _show_graphics_general() -> void:
 	_clear()
-	_current_view = "graphics_controls"
+	_waiting_action = ""
+	_current_view = "graphics_general"
 
-	container.add_child(_make_title("GRAPHICS & CONTROLS"))
+	container.add_child(_make_title("GRAPHICS — GENERAL"))
 
 	# ── Antialiasing ──
 	var aa_label := Label.new()
@@ -1103,6 +1221,52 @@ func _show_graphics_controls() -> void:
 	container.add_child(aa_opt)
 
 	container.add_child(_make_spacer())
+
+	# ── Environment (WorldEnvironment du niveau courant) ──
+	var env_title := Label.new()
+	env_title.text = "Effects"
+	env_title.add_theme_font_size_override("font_size", 16)
+	env_title.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
+	container.add_child(env_title)
+
+	var env_btns := {}
+	for pair in ENVIRONMENT_TOGGLES:
+		var env_btn := CheckButton.new()
+		env_btn.text = String(pair[1])
+		env_btn.button_pressed = bool(_env_default(String(pair[0]), false))
+		env_btn.custom_minimum_size = Vector2(0, 36)
+		env_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		env_btn.add_theme_font_size_override("font_size", 14)
+		container.add_child(env_btn)
+		env_btns[String(pair[0])] = env_btn
+
+	container.add_child(_make_spacer())
+
+	var adj_title := Label.new()
+	adj_title.text = "Color Adjustments"
+	adj_title.add_theme_font_size_override("font_size", 16)
+	adj_title.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
+	container.add_child(adj_title)
+
+	var brightness_s := _make_env_slider("Brightness", "adjustment_brightness")
+	var contrast_s := _make_env_slider("Contrast", "adjustment_contrast")
+	var saturation_s := _make_env_slider("Saturation", "adjustment_saturation")
+
+	# ── Apply ──
+	container.add_child(_make_spacer())
+
+	var apply_btn := _make_btn("Apply")
+	apply_btn.pressed.connect(_apply_graphics.bind(aa_opt, env_btns, brightness_s, contrast_s, saturation_s))
+	container.add_child(apply_btn)
+
+	container.add_child(_make_back_btn())
+
+func _show_controls_general() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "controls_general"
+
+	container.add_child(_make_title("CONTROLS — GENERAL"))
 
 	# ── Mouse sensitivity ──
 	var mouse_label := Label.new()
@@ -1222,38 +1386,11 @@ func _show_graphics_controls() -> void:
 		focus_val.text = "%.1fx" % v
 	)
 
-	# ── FPS limit ──
-	var fps_label := Label.new()
-	fps_label.text = "FPS Limit"
-	fps_label.add_theme_font_size_override("font_size", 14)
-	fps_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
-	container.add_child(fps_label)
-
-	var fps_slider := HSlider.new()
-	fps_slider.min_value = 30
-	fps_slider.max_value = 240
-	fps_slider.step = 10
-	fps_slider.value = get_fps_limit()
-	fps_slider.custom_minimum_size = Vector2(0, 30)
-	fps_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	container.add_child(fps_slider)
-
-	var fps_val := Label.new()
-	fps_val.text = "%d" % int(fps_slider.value)
-	fps_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	fps_val.add_theme_font_size_override("font_size", 13)
-	fps_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
-	container.add_child(fps_val)
-
-	fps_slider.value_changed.connect(func(v: float):
-		fps_val.text = "%d" % int(v)
-	)
-
 	# ── Apply ──
 	container.add_child(_make_spacer())
 
 	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_graphics_controls.bind(aa_opt, mouse_slider, pad_slider, focus_slider, fps_slider, gyro_check, gyro_slider))
+	apply_btn.pressed.connect(_apply_controls.bind(mouse_slider, pad_slider, focus_slider, gyro_check, gyro_slider))
 	container.add_child(apply_btn)
 
 	container.add_child(_make_back_btn())
@@ -1279,43 +1416,132 @@ func _apply_aa(mode: String) -> void:
 			vp.screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
 			vp.msaa_3d = Viewport.MSAA_DISABLED
 
-func _apply_graphics_controls(aa_opt: OptionButton, mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, fps_s: HSlider, gyro_btn: CheckButton, gyro_s: HSlider) -> void:
+func _apply_graphics(aa_opt: OptionButton, env_btns: Dictionary, brightness_s: HSlider, contrast_s: HSlider, saturation_s: HSlider) -> void:
 	var aa_idx := aa_opt.selected
 	if aa_idx < 0 or aa_idx >= AA_MODES.size():
 		aa_idx = 0
 	var aa_mode = AA_MODES[aa_idx]
+
+	_settings["aa_mode"] = aa_mode
+	_save_settings()
+
+	_apply_aa(aa_mode)
+
+	var env := {}
+	for key in env_btns:
+		env[key] = (env_btns[key] as CheckButton).button_pressed
+	# Les ajustements couleurs restent actifs (pilotés par les curseurs — le
+	# toggle dédié a été retiré) ; 1.0 sur les trois reste neutre.
+	env["adjustment_enabled"] = true
+	env["adjustment_brightness"] = brightness_s.value
+	env["adjustment_contrast"] = contrast_s.value
+	env["adjustment_saturation"] = saturation_s.value
+	_settings["environment"] = env
+	_save_settings()
+	environment_settings_changed.emit(env)
+	_go_back()
+
+func _apply_controls(mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, gyro_btn: CheckButton, gyro_s: HSlider) -> void:
 	var mouse_mult: float = mouse_s.value
 	var pad_mult: float = pad_s.value
 	var focus_mult: float = focus_s.value
-	var fps_limit: int = int(fps_s.value)
 	var gyro_enabled: bool = gyro_btn.button_pressed
 	var gyro_mult: float = gyro_s.value
 
-	_settings["aa_mode"] = aa_mode
 	_settings["mouse_sens_mult"] = mouse_mult
 	_settings["pad_look_sens_mult"] = pad_mult
 	_settings["focus_stick_sens_mult"] = focus_mult
-	_settings["fps_limit"] = fps_limit
 	_settings["gyro_aim_enabled"] = gyro_enabled
 	_settings["gyro_sens_mult"] = gyro_mult
 	_save_settings()
 
-	_apply_aa(aa_mode)
-	Engine.max_fps = fps_limit
-	graphics_settings_changed.emit(aa_mode, fps_limit)
 	mouse_sens_changed.emit(mouse_mult)
 	pad_look_sens_changed.emit(pad_mult)
 	focus_stick_sens_changed.emit(focus_mult)
 	gyro_aim_changed.emit(gyro_enabled)
 	gyro_sens_changed.emit(gyro_mult)
-	_show_main()
+	_go_back()
+
+# ── Environment (réglages WorldEnvironment) ───────────────────────────
+
+# Toggles d'effet exposés dans GRAPHICS → General (clé Environment → libellé).
+# Appliqués au WorldEnvironment du niveau courant.
+const ENVIRONMENT_TOGGLES := [
+	["ssr_enabled", "SSR"],
+	["ssao_enabled", "SSAO"],
+	["ssil_enabled", "SSIL"],
+	["sdfgi_enabled", "SDFGI"],
+	["glow_enabled", "Glow"],
+	["fog_enabled", "Fog"],
+	["volumetric_fog_enabled", "Volumetric Fog"],
+]
+
+# Réglages environnement persistés (dictionnaire appliqué aux niveaux).
+func get_environment_settings() -> Dictionary:
+	return (_settings.get("environment", {}) as Dictionary).duplicate()
+
+# Valeur d'un réglage d'environnement : la valeur persistée si présente,
+# sinon l'état actuel du WorldEnvironment du niveau (le menu reflète ce qui
+# s'affiche réellement), sinon le fallback passé.
+func _env_default(key: String, fallback: Variant) -> Variant:
+	var env: Dictionary = _settings.get("environment", {})
+	if env.has(key):
+		return env[key]
+	var we := _find_world_environment()
+	if we != null and we.environment != null:
+		var v: Variant = we.environment.get(key)
+		if v != null:
+			return v
+	return fallback
+
+# Slider 0.0–2.0 (pas 0.05) pour un réglage "adjustment_*" : étiquette,
+# curseur et valeur affichée (mise à jour en direct).
+func _make_env_slider(label_text: String, key: String) -> HSlider:
+	var lbl := Label.new()
+	lbl.text = label_text
+	lbl.add_theme_font_size_override("font_size", 14)
+	lbl.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(lbl)
+	var slider := HSlider.new()
+	slider.min_value = 0.0
+	slider.max_value = 2.0
+	slider.step = 0.05
+	slider.value = float(_env_default(key, 1.0))
+	slider.custom_minimum_size = Vector2(0, 30)
+	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(slider)
+	var val := Label.new()
+	val.text = "%.2f" % slider.value
+	val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	val.add_theme_font_size_override("font_size", 13)
+	val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(val)
+	slider.value_changed.connect(func(v: float):
+		val.text = "%.2f" % v
+	)
+	return slider
+
+func _find_world_environment() -> WorldEnvironment:
+	var scene := get_tree().current_scene
+	if scene == null:
+		return null
+	return _search_world_environment(scene)
+
+func _search_world_environment(node: Node) -> WorldEnvironment:
+	if node is WorldEnvironment:
+		return node as WorldEnvironment
+	for child in node.get_children():
+		var found := _search_world_environment(child)
+		if found != null:
+			return found
+	return null
 
 func _show_lan() -> void:
 	_clear()
 	_waiting_action = ""
 	_current_view = "lan"
 
-	container.add_child(_make_title("LAN GAME"))
+	container.add_child(_make_title("LOCAL MULTIPLAYER"))
 
 	var hint := Label.new()
 	if _lan_connected:
@@ -2127,7 +2353,7 @@ func _input(event: InputEvent) -> void:
 		elif _current_view == "main":
 			hide_menu()
 		else:
-			_show_main()
+			_go_back()
 		get_viewport().set_input_as_handled()
 		return
 	
@@ -2142,7 +2368,7 @@ func _input(event: InputEvent) -> void:
 			elif _current_view == "main":
 				hide_menu()
 			else:
-				_show_main()
+				_go_back()
 			get_viewport().set_input_as_handled()
 			return
 
@@ -2160,7 +2386,7 @@ func _input(event: InputEvent) -> void:
 			if _current_view == "main":
 				hide_menu()
 			else:
-				_show_main()
+				_go_back()
 		get_viewport().set_input_as_handled()
 		return
 
