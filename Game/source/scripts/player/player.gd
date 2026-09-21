@@ -29,6 +29,11 @@ var _gyro_device := -1
 
 var interact_mode_active := false
 var focus_mode_active := false
+# Positionné par wayland_room.gd : vrai quand la caméra libre est active.
+# Le corps du joueur est figé (pas de gravité, pas de déplacement) et toute
+# l'entrée jeu est routée vers le nœud FreeCam (scripts/player/free_cam.gd)
+# via le retour anticipé de _input.
+var freecam_active := false
 var _menu_just_closed := false
 # Positionné par wayland_room.gd : vrai quand la souris survole une layer
 # surface (waybar/rofi) en mode visible. Empêche le click de recapturer la
@@ -84,6 +89,8 @@ func _keyboard_busy() -> bool:
 	return comp != null and comp.get_keyboard_focus_layer_id() >= 0
 
 func _physics_process(delta):
+	if freecam_active:
+		return
 	if position.y <= -MaxDepth:
 		position = spawn_pos
 	if velocity.y > jump_speed:
@@ -187,6 +194,14 @@ func _on_menu_visibility_changed() -> void:
 func _input(event):
 	if _pad_diag:
 		_pad_diag_event(event)
+	# Caméra libre : le joueur n'est plus pilotable — seuls la gestion du
+	# menu pause (Escape) reste ici, tout le reste de l'input est géré par
+	# le nœud FreeCam.
+	if freecam_active:
+		if event.is_action_pressed("pause_menu") and not session_locked \
+				and not _get_compositor().get_keyboard_focus_layer_id() >= 0:
+			$PauseMenuLayer/PauseMenu.show_menu()
+		return
 	# Manette dans les menus : activer le bouton focalisé directement.
 	if event is InputEventJoypadButton and event.pressed:
 		if _pad_menu_activate(event):

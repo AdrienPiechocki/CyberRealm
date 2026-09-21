@@ -1069,6 +1069,41 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 	_emit_players()
 
 
+# ── Avatar personnel pour la vue libre ──────────────────────────────
+
+## Instancie l'avatar LOCAL (celui diffusé en LAN : le modèle choisi dans le
+## menu LAN quand il l'est, sinon user/avatar.tscn, sinon l'avatar par défaut ;
+## nom et couleur du joueur) à la position/rotation du corps du joueur, pour
+## qu'il soit visible depuis la caméra détachée — y compris en solo, où le
+## joueur local ne voit jamais son propre corps d'habitude. Réalise le prewarm
+## GPU (celui-ci anticipe le TDR) puis force _arrived pour rendre l'avatar
+## visible. Retourne le nœud ou null (scène indisponible).
+func spawn_freecam_avatar(world_root: Node, player: Node3D) -> Node:
+	# La sélection du menu LAN n'alimente PAS _avatar_scene (qui reste le
+	# défaut/custom) : c'est _selected_avatar_path que _bake_avatar consomme.
+	var scene := _avatar_scene
+	if _selected_avatar_path != "" and ResourceLoader.exists(_selected_avatar_path):
+		var sel := load(_selected_avatar_path) as PackedScene
+		if sel != null:
+			scene = sel
+	if scene == null:
+		return null
+	var av := scene.instantiate()
+	av.name = "FreeCamAvatar"
+	# La transform du corps est posée AVANT setup() : setup() initialise les
+	# cibles d'interpolation (_target_pos/_target_yaw) avec position/rotation,
+	# sans quoi l'avatar dériverait vers le monde d'origine. Position/rotation
+	# du joueur = sa dernière position/rotation avant le gel de la vue libre.
+	av.position = player.position
+	av.rotation = player.rotation
+	av.scale = _spawn_scale()
+	av.setup(0, player_name, player_color)
+	world_root.add_child(av)
+	av.start_prewarm()
+	av.set_arrived(true)
+	return av
+
+
 ## Les avatars distants sont purement visuels (Node3D, « pas de collision »
 ## cf. avatar.gd) : sans collider, aucun raycast ne peut les toucher — le
 ## ciblage du drag & drop de fichiers (et toute visée monde) les traverse.

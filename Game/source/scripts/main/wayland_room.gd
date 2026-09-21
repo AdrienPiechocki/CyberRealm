@@ -34,6 +34,7 @@ var file_share: Node3D # drag & drop de fichiers sur un avatar → rsync LAN
 const LEVEL_BAKER := preload("res://scripts/baking/level_baker.gd")
 const OCCLUSION_BAKER := preload("res://scripts/baking/occlusion_baker.gd")
 const COMMAND_NODE := preload("res://scripts/ipc/command_node.gd")
+const FREE_CAM_SCRIPT := preload("res://scripts/player/free_cam.gd")
 
 # Diagnostic rendu (CYBERREALM_RENDER_DEBUG=1) : FPS + draw calls + primitives
 # + VRAM toutes les RENDER_DEBUG_PERIOD_SEC, pour comparer deux machines.
@@ -48,6 +49,11 @@ var interact_mode_active := false
 # True quand l'événement qui a déclenché interact_mode venait de la manette
 # (pour afficher le clavier virtuel à l'activation, en dehors des menus).
 var _interact_pad_pressed := false
+
+# Vue libre (Super+Shift+F) : le nœud FreeCam détaché de la caméra du joueur
+# et l'avatar personnel planté à la position du joueur (visible en solo).
+var _freecam: Node3D = null
+var _freecam_avatar: Node = null
 
 # Agent d'authentification polkit : polkitd n'accepte qu'un seul agent par
 # session logind, donc le nôtre ne peut s'enregistrer que si l'agent KDE hôte
@@ -164,6 +170,10 @@ func restore_local_level() -> bool:
 func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3, use_scene_player_spawn: bool) -> bool:
 	if scene == null:
 		return false
+	# Le changement de niveau (join/host LAN) termine la vue libre : le joueur
+	# est repositionné au spawn, l'ancre avatar serait périmée.
+	if _freecam != null and is_instance_valid(_freecam):
+		_close_freecam()
 	var old_level := get_node_or_null("Level") as Node3D
 	if old_level == null:
 		return false
@@ -737,8 +747,10 @@ func _process(delta: float) -> void:
 		return
 
 
-	# Menu radial (B sur manette) : toggle ouverture/fermeture
-	if Input.is_action_just_pressed("radial_menu", true):
+	# Menu radial (B sur manette) : toggle ouverture/fermeture.
+	# Bloqué en vue libre : le menu radial porte des actions de ciblage fenêtre
+	# (focus, pin, kill, share…) qui reposent sur la caméra du joueur.
+	if Input.is_action_just_pressed("radial_menu", true) and not player.freecam_active:
 		if radial_menu.visible:
 			radial_menu.hide_menu()
 		elif not _menu_just_closed \
@@ -752,7 +764,9 @@ func _process(delta: float) -> void:
 	if radial_menu.visible:
 		return
 
-	if Input.is_action_just_pressed("window_menu", true) and not focus.is_active() and not layers.keyboard_busy():
+	# Pas d'interaction avec les fenêtres en vue libre : le menu fenêtres est
+	# lui aussi désactivé (il ne reste que la capture d'écran).
+	if Input.is_action_just_pressed("window_menu", true) and not focus.is_active() and not layers.keyboard_busy() and not player.freecam_active:
 		if window_menu.visible:
 			layers.deactivate_layer_interact()
 			window_menu.hide_menu()
@@ -761,11 +775,26 @@ func _process(delta: float) -> void:
 
 	# Tab : bascule le mode "interaction layer" — libère la souris pour
 	# survoler/cliquer waybar, quickshell ou les overlays non interactifs
-	# (sinon elle est capturée et fait tourner la caméra FPS).
-	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy():
+	# (sinon elle est capturée et fait tourner la caméra FPS). Bloqué en vue
+	# libre (la souris reste capturée pour le regard de la caméra).
+	if Input.is_action_just_pressed("layer_interact", true) and not interact_mode_active and not focus.is_active() and not layers.keyboard_busy() and not player.freecam_active:
 		layers.toggle_layer_interact()
 
 	if window_menu.visible or capture_selector.visible:
+		return
+
+	# Vue libre (Super+Shift+F) : caméra détachée du joueur pour cadrer vos
+	# captures. Interdite pendant le focus d'une fenêtre ou le mode
+	# interaction (l'aim de ciblage repose sur la caméra du joueur).
+	if Input.is_action_just_pressed("freecam", true) \
+			and not focus.is_active() and not interact_mode_active \
+			and not layers.keyboard_busy():
+		_toggle_freecam()
+		return
+
+	# Masque/affiche le HUD (réticule, FPS) pour des captures propres.
+	if Input.is_action_just_pressed("toggle_ui", true) and not layers.keyboard_busy():
+		ui.visible = not ui.visible
 		return
 
 	# Mode focus: le raccourci focus (ex. Super+F) pour sortir, kill_window
@@ -802,9 +831,17 @@ func _process(delta: float) -> void:
 		return
 
 	# Impr. écran : capture native du viewport (ce que le joueur voit) dans le
-	# dossier de captures du menu pause.
+	# dossier de captures du menu pause. Identique en vue libre : on capture
+	# alors ce que la caméra détachée voit.
 	if Input.is_action_just_pressed("screenshot", true) and not interact_mode_active:
 		_take_screenshot()
+		return
+
+	# Vue libre : AUCUNE interaction avec les fenêtres. Les binds ci-dessous
+	# (focus, pin, kill, hide, share, interact...) font un raycast depuis la
+	# caméra du joueur, figée pendant la caméra détachée — inopérants et
+	# trompeurs ici. La capture d'écran ci-dessus reste le seul accès.
+	if player.freecam_active:
 		return
 
 	# F en visant une fenêtre → entrer en mode focus. Le rayon part de la
@@ -941,8 +978,9 @@ func _input(event: InputEvent) -> void:
 	# Gestes touchpad (pinch → zoom). Godot forwarde InputEventMagnifyGesture
 	# (factor incrémental) ; le compositeur maintient l'état du geste et route
 	# via le focus pointeur du seat (fenêtre survolée en 3D, fenêtre active en
-	# mode focus). Sans focus, wlroots ignore le geste.
-	if event is InputEventMagnifyGesture and not window_menu.visible and not capture_selector.visible:
+	# mode focus). Sans focus, wlroots ignore le geste. Interdit en vue libre :
+	# aucun zoom de fenêtre depuis la caméra détachée.
+	if event is InputEventMagnifyGesture and not window_menu.visible and not capture_selector.visible and not player.freecam_active:
 		var mg := event as InputEventMagnifyGesture
 		var now := Time.get_ticks_msec()
 		# Ignorer le second événement de la paire (doublon du driver Wayland).
@@ -1084,6 +1122,47 @@ func _on_window_menu_screenshot(wid: int) -> void:
 
 # Capture plein écran : readback natif Godot du viewport (world + overlays
 # 2D, menus compris), enregistré dans le dossier de captures du menu pause.
+func _toggle_freecam() -> void:
+	if _freecam != null and is_instance_valid(_freecam):
+		_close_freecam()
+	else:
+		_open_freecam()
+		return
+
+
+func _open_freecam() -> void:
+	if _freecam != null and is_instance_valid(_freecam):
+		return
+	layers.deactivate_layer_interact()
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	var fc: Node3D = Node3D.new()
+	fc.name = "FreeCam"
+	fc.set_script(FREE_CAM_SCRIPT)
+	fc.player = player
+	fc.sensitivity = player.mouse_sensitivity
+	fc.pad_look_speed = player.pad_look_speed
+	player.add_child(fc)
+	_freecam = fc
+	player.freecam_active = true
+	# Avatar personnel planté à la position du joueur (visible même en solo).
+	if lan != null and is_instance_valid(lan):
+		_freecam_avatar = lan.spawn_freecam_avatar($Level, player)
+
+
+func _close_freecam() -> void:
+	if _freecam != null and is_instance_valid(_freecam):
+		_freecam.queue_free()
+	_freecam = null
+	if _freecam_avatar != null and is_instance_valid(_freecam_avatar):
+		_freecam_avatar.queue_free()
+	_freecam_avatar = null
+	player.freecam_active = false
+	# La caméra détachée a pris current=true : la rendre au joueur.
+	var cam := player.get_node_or_null("Camera3D") as Camera3D
+	if cam != null:
+		cam.make_current()
+
+
 func _take_screenshot() -> void:
 	var img: Image = get_viewport().get_texture().get_image()
 	if img == null or img.is_empty():
