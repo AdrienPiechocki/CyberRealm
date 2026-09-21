@@ -1,0 +1,78 @@
+/* Defaut CyberRealm theme */
+panel { background-color: rgba(15,15,20,.95); border-color: rgba(77,102,153,.8);
+        border-width: 1px; corner-radius: 10px; }
+panel.menu-panel    { background-color: rgba(15,15,20,.95); border-color: rgba(77,102,153,.8);
+                      border-width: 1px; corner-radius: 10px; }
+panel.tutorial-panel{ background-color: rgba(18,18,23,.98); border-color: rgba(102,128,179,.9);
+                      border-width: 2px; corner-radius: 14px; }
+
+button { background-color: rgba(31,36,51,.9); border-color: rgba(77,102,153,.5);
+         border-width: 1px; corner-radius: 5px; padding: 8px 14px; font-size: 15px; }
+button:hover   { background-color: rgba(46,56,89,.95); border-color: rgba(102,153,255,.7); }
+button:pressed { background-color: rgba(51,77,128,.95); }
+button:focus   { border-color: rgba(102,153,255,.9); }
+
+button.back-button      { background-color: rgba(46,46,64,.9); }
+button.action-button    { corner-radius: 4px; padding: 6px 12px; font-size: 14px; }
+button.tab-button       { background-color: rgba(26,26,38,.8);
+                          border-color: rgba(0,0,0,0); border-width: 0 0 2px 0;
+                          corner-top-left-radius: 4px; corner-top-right-radius: 4px;
+                          corner-bottom-left-radius: 0px; corner-bottom-right-radius: 0px;
+                          padding: 4px 10px; font-size: 13px; }
+button.tab-button:hover { background-color: rgba(38,51,89,.95);
+                          border-color: rgba(102,153,255,.6); border-width: 0 0 2px 0; }
+button.tab-button:pressed { background-color: rgba(38,56,102,.95);
+                          border-color: rgba(102,153,255,.8); border-width: 0 0 2px 0; }
+button.tab-button-selected { background-color: rgba(38,56,102,.95);
+                          border-color: rgba(102,153,255,.8); border-width: 0 0 2px 0;
+                          corner-top-left-radius: 4px; corner-top-right-radius: 4px;
+                          corner-bottom-left-radius: 0px; corner-bottom-right-radius: 0px;
+                          padding: 4px 10px; font-size: 13px; }
+button.tab-button-selected:hover { background-color: rgba(38,51,89,.95);
+                          border-color: rgba(102,153,255,.6); border-width: 0 0 2px 0; }
+button.tab-button-selected:pressed { background-color: rgba(38,56,102,.95);
+                          border-color: rgba(102,153,255,.8); border-width: 0 0 2px 0; }
+button.key-button       { border-color: rgba(77,102,153,.4); corner-radius: 4px;
+                          padding: 4px; font-size: 13px; }
+button.key-mod-button   { background-color: rgba(38,46,71,.9); border-color: rgba(77,102,153,.4);
+                          corner-radius: 4px; padding: 4px; font-size: 13px; }
+button.key-mod-button:pressed { background-color: rgba(38,46,71,.9); border-color: rgba(77,102,153,.4);
+                          corner-radius: 4px; padding: 4px; font-size: 13px; }
+button.key-mod-active   { background-color: rgba(64,102,166,.95); border-color: rgba(128,179,255,.8);
+                          corner-radius: 4px; padding: 4px; font-size: 13px; }
+button.key-mod-active:pressed { background-color: rgba(64,102,166,.95); border-color: rgba(128,179,255,.8);
+                          corner-radius: 4px; padding: 4px; font-size: 13px; }
+
+button.quit-button      { background-color: rgba(77,20,20,.9); }
+button.remove-button    { background-color: rgba(64,26,26,.9); }
+button.success-button   { background-color: rgba(26,64,38,.9); }
+button.warning-button   { background-color: rgba(77,51,26,.9); }
+
+label { font-size: 13px; color: rgba(230,230,234,.95); }
+label.title          { font-size: 22px; color: rgba(230,235,242,.95); }
+label.title-keyboard { font-size: 16px; color: rgba(179,191,217,.95); }
+label.title-tutorial { font-size: 30px; }
+label.hint           { font-size: 13px; color: rgba(153,153,179,.9); }
+
+line-edit { background-color: rgba(26,26,38,.95); border-color: rgba(77,102,153,.5);
+            border-width: 1px; corner-radius: 5px; padding: 0 12px; font-size: 14px; }
+check-button { font-size: 14px; }
+option-button { font-size: 14px; }
+slider { font-size: 14px; }
+
+hud      { cursor-color: #ffffff; cursor-size: 24px; fps-color: #ffffff; fps-size: 32px;
+           cursor-active-color: #000000; }
+radial   { ring-radius: 180px; ring-width: 50px; center-radius: 100px; gap-size: 4px;
+           selector-width: 5px; decorator-width: 4px;
+           ring-color: rgba(32,32,32,.9); ring-selected-color: rgba(56,148,227,.9);
+           ring-stroke-color: rgba(41,82,122,1); selector-color: #87c7ff;
+           decorator-color: #0073ba; center-color: rgba(25,25,25,.83);
+           center-stroke-color: #308fc7; title-color: #8c8c8c;
+           title-font-size: 14px; emoji-size: 20px; }
+tutorial { dim-color: rgba(5,5,8,.9); }
+
+
+panel.pause-menu    { margin: 25% 35%; }
+panel.window-menu   { margin: 18% 25%; }
+panel.capture-menu  { margin: 30% 33%; }
+panel.keyboard-menu { margin: 78% 35% 0% 35%; }

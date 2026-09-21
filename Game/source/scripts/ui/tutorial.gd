@@ -27,6 +27,9 @@ var _window_menu
 var _pages: Array = []
 var _index := 0
 var _root: Control = null
+# Panel + voile de fond — recapturés pour le rechargement CSS à chaud.
+var _panel: PanelContainer = null
+var _dim_rect: ColorRect = null
 var _title_label: Label = null
 var _body_label: RichTextLabel = null
 var _keys_label: RichTextLabel = null
@@ -59,6 +62,7 @@ func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	_build_pages()
 	_build_ui()
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 	hide_tutorial()
 
 # ── API publique ───────────────────────────────────────────────────────
@@ -278,8 +282,9 @@ func _build_ui() -> void:
 	_root.mouse_filter = Control.MOUSE_FILTER_STOP
 	add_child(_root)
 
-	var dim := Color(0.02, 0.02, 0.03, 0.9)
+	var dim := UITheme.get_color("tutorial", "dim-color", Color(0.02, 0.02, 0.03, 0.9))
 	var dim_rect := ColorRect.new()
+	_dim_rect = dim_rect
 	dim_rect.color = dim
 	dim_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 	dim_rect.mouse_filter = Control.MOUSE_FILTER_STOP
@@ -291,15 +296,13 @@ func _build_ui() -> void:
 	_root.add_child(center)
 
 	var panel := PanelContainer.new()
+	_panel = panel
 	var vp_size := get_viewport_rect().size
 	panel.custom_minimum_size = Vector2(vp_size.x * 0.86, vp_size.y * 0.82)
 	panel.mouse_filter = Control.MOUSE_FILTER_STOP
-	var pan_style := StyleBoxFlat.new()
-	pan_style.bg_color = Color(0.07, 0.07, 0.09, 0.98)
-	pan_style.border_color = Color(0.4, 0.5, 0.7, 0.9)
-	pan_style.set_border_width_all(2)
-	pan_style.set_corner_radius_all(14)
-	panel.add_theme_stylebox_override("panel", pan_style)
+	panel.theme = UITheme.theme
+	panel.set_meta("ui_class", "tutorial-panel")
+	UITheme.apply_class(panel, "tutorial-panel")
 	center.add_child(panel)
 
 	var margin := MarginContainer.new()
@@ -314,7 +317,8 @@ func _build_ui() -> void:
 	margin.add_child(vbox)
 
 	_title_label = Label.new()
-	_title_label.add_theme_font_size_override("font_size", 30)
+	_title_label.set_meta("ui_class", "title-tutorial")
+	UITheme.apply_class(_title_label, "title-tutorial")
 	vbox.add_child(_title_label)
 
 	var scroll := ScrollContainer.new()
@@ -379,8 +383,20 @@ func _make_btn(text: String) -> Button:
 	btn.text = text
 	btn.focus_mode = Control.FOCUS_NONE
 	btn.custom_minimum_size = Vector2(130, 40)
-	btn.add_theme_font_size_override("font_size", 15)
 	return btn
+
+# ── Rechargement CSS à chaud ────────────────────────────────────────────
+
+func _on_stylesheet_reloaded() -> void:
+	if _panel == null:
+		return
+	_panel.theme = UITheme.theme
+	UITheme.apply_class(_panel, "tutorial-panel")
+	if _title_label != null:
+		UITheme.apply_class(_title_label, "title-tutorial")
+	if _dim_rect != null:
+		_dim_rect.color = UITheme.get_color("tutorial", "dim-color", Color(0.02, 0.02, 0.03, 0.9))
+	UITheme.apply_css(self)
 
 func _render_page() -> void:
 	if _pages.is_empty():

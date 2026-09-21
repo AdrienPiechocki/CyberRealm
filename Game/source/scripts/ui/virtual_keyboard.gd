@@ -215,6 +215,7 @@ const MODIFIER_KEYS := [KEY_SHIFT, KEY_CTRL, KEY_ALT]
 func _ready() -> void:
 	visible = false
 	_build_ui()
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 
 
 func setup(compositor_node: Node, pause_menu_node: Node, radial_menu_node: PanelContainer) -> void:
@@ -224,22 +225,10 @@ func setup(compositor_node: Node, pause_menu_node: Node, radial_menu_node: Panel
 
 
 func _build_ui() -> void:
-	# Panel styling
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.06, 0.06, 0.08, 0.95)
-	bg.border_color = Color(0.3, 0.4, 0.6, 0.8)
-	bg.border_width_top = 1
-	bg.border_width_bottom = 1
-	bg.border_width_left = 1
-	bg.border_width_right = 1
-	bg.corner_radius_top_left = 10
-	bg.corner_radius_top_right = 10
-	bg.corner_radius_bottom_left = 10
-	bg.corner_radius_bottom_right = 10
-	add_theme_stylebox_override("panel", bg)
-
-	custom_minimum_size = Vector2(720, 0)
-	anchors_preset = Control.PRESET_CENTER_BOTTOM
+	# Panel stylé via CSS (menu-panel)
+	theme = UITheme.theme
+	set_meta("ui_class", "menu-panel keyboard-menu")
+	UITheme.apply_class(self, "menu-panel keyboard-menu")
 
 	_container = VBoxContainer.new()
 	_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -250,12 +239,17 @@ func _build_ui() -> void:
 	# Title
 	_title_label = Label.new()
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_title_label.add_theme_font_size_override("font_size", 16)
-	_title_label.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
+	_title_label.set_meta("ui_class", "title-keyboard")
+	UITheme.apply_class(_title_label, "title-keyboard")
 	_title_label.custom_minimum_size = Vector2(0, 30)
 	_container.add_child(_title_label)
 
 	_rebuild_keys()
+
+
+func _on_stylesheet_reloaded() -> void:
+	theme = UITheme.theme
+	UITheme.apply_css(self)
 
 
 func _rebuild_keys() -> void:
@@ -325,36 +319,11 @@ func _make_key_button(keycode: int, layout_data: Dictionary) -> Button:
 		_:
 			btn.custom_minimum_size = Vector2(44, 36)
 	btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	btn.add_theme_font_size_override("font_size", 13)
 
-	# Style
-	var normal_color := Color(0.12, 0.14, 0.2, 0.9)
-	if is_mod:
-		normal_color = Color(0.15, 0.18, 0.28, 0.9)
-
-	var n := StyleBoxFlat.new()
-	n.bg_color = normal_color
-	n.border_color = Color(0.3, 0.4, 0.6, 0.4)
-	n.border_width_top = 1; n.border_width_bottom = 1
-	n.border_width_left = 1; n.border_width_right = 1
-	n.corner_radius_top_left = 4; n.corner_radius_top_right = 4
-	n.corner_radius_bottom_left = 4; n.corner_radius_bottom_right = 4
-	n.content_margin_left = 4; n.content_margin_right = 4
-	n.content_margin_top = 4; n.content_margin_bottom = 4
-	btn.add_theme_stylebox_override("normal", n)
-
-	var h := n.duplicate()
-	h.bg_color = Color(0.18, 0.22, 0.35, 0.95)
-	h.border_color = Color(0.4, 0.6, 1.0, 0.7)
-	btn.add_theme_stylebox_override("hover", h)
-
-	var p := n.duplicate()
-	p.bg_color = Color(0.2, 0.3, 0.5, 0.95)
-	btn.add_theme_stylebox_override("pressed", p)
-
-	var fb := n.duplicate()
-	fb.border_color = Color(0.5, 0.7, 1.0, 0.8)
-	btn.add_theme_stylebox_override("focus", fb)
+	# Style via CSS (classe selon le type de touche)
+	var kclass := "key-mod-button" if is_mod else "key-button"
+	btn.set_meta("ui_class", kclass)
+	UITheme.apply_class(btn, kclass)
 
 	# Store keycode as metadata
 	btn.set_meta("keycode", keycode)
@@ -511,28 +480,9 @@ func _try_forward_to_line_edit(keycode: int, layout_data: Dictionary) -> bool:
 
 
 func _update_mod_button_style(btn: Button, active: bool) -> void:
-	var p: StyleBoxFlat = btn.get_theme_stylebox("pressed") as StyleBoxFlat
-	if p == null:
-		return
-	if active:
-		var active_style := p.duplicate()
-		active_style.bg_color = Color(0.25, 0.4, 0.65, 0.95)
-		active_style.border_color = Color(0.5, 0.7, 1.0, 0.8)
-		btn.add_theme_stylebox_override("normal", active_style)
-		btn.add_theme_stylebox_override("pressed", active_style)
-	else:
-		var normal_color := Color(0.15, 0.18, 0.28, 0.9)
-		var n := StyleBoxFlat.new()
-		n.bg_color = normal_color
-		n.border_color = Color(0.3, 0.4, 0.6, 0.4)
-		n.border_width_top = 1; n.border_width_bottom = 1
-		n.border_width_left = 1; n.border_width_right = 1
-		n.corner_radius_top_left = 4; n.corner_radius_top_right = 4
-		n.corner_radius_bottom_left = 4; n.corner_radius_bottom_right = 4
-		n.content_margin_left = 4; n.content_margin_right = 4
-		n.content_margin_top = 4; n.content_margin_bottom = 4
-		btn.add_theme_stylebox_override("normal", n)
-		btn.add_theme_stylebox_override("pressed", n)
+	var kclass := "key-mod-active" if active else "key-mod-button"
+	btn.set_meta("ui_class", kclass)
+	UITheme.apply_class(btn, kclass)
 
 
 func _update_all_labels(layout_data: Dictionary) -> void:

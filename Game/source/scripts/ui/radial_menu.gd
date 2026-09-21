@@ -5,24 +5,7 @@ class_name RadialMenu
 
 signal radial_action(action: String)
 
-# Géométrie
-const RADIUS := 180.0
-const RING_WIDTH := 50.0
-const CENTER_RADIUS := 100.0
-const GAP_SIZE := 4.0
-const SELECTOR_WIDTH := 5.0
-const DECORATOR_WIDTH := 4.0
 const STICK_DEADZONE := 0.5
-
-# Couleurs (thème dark du projet de référence)
-const BG_COLOR := Color(0.125, 0.125, 0.125, 0.9)
-const SELECTED_BG := Color(0.22, 0.58, 0.89, 0.9)
-const STROKE_COLOR := Color(0.16, 0.32, 0.48, 1.0)
-const SELECTOR_COLOR := Color(0.53, 0.78, 1.0, 1.0)
-const DECORATOR_COLOR := Color(0.0, 0.45, 0.73, 1.0)
-const CENTER_BG := Color(0.098, 0.098, 0.098, 0.83)
-const CENTER_STROKE := Color(0.19, 0.56, 0.78, 1.0)
-const TITLE_COLOR := Color(0.55, 0.55, 0.55, 1.0)
 
 var _items: Array[Dictionary] = []
 var _selected_index: int = 0
@@ -39,6 +22,21 @@ func _ready() -> void:
 	var sf := SystemFont.new()
 	sf.font_names = PackedStringArray(["Noto Color Emoji", "DejaVu Sans", "Noto Sans Symbols 2"])
 	_emoji_font = sf
+	# Recalcule la géométrie quand le thème CSS est rechargé
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
+
+
+func _on_stylesheet_reloaded() -> void:
+	_calc_geometry()
+	queue_redraw()
+
+
+func _num(prop: String, default: float) -> float:
+	return UITheme.get_number("radial", prop, default)
+
+
+func _col(prop: String, default: Color) -> Color:
+	return UITheme.get_color("radial", prop, default)
 
 
 func _can_stick_input() -> bool:
@@ -194,8 +192,8 @@ func _draw() -> void:
 	if ease < 0.05:
 		return
 	var s := maxf(ease, 0.01)
-	var inner := (RADIUS - RING_WIDTH - SELECTOR_WIDTH - DECORATOR_WIDTH) * s
-	var outer := (RADIUS - SELECTOR_WIDTH - DECORATOR_WIDTH) * s
+	var inner := (_num("ring-radius", 180.0) - _num("ring-width", 50.0) - _num("selector-width", 5.0) - _num("decorator-width", 4.0)) * s
+	var outer := (_num("ring-radius", 180.0) - _num("selector-width", 5.0) - _num("decorator-width", 4.0)) * s
 	var half_n := n / 2.0
 	var start_angle := -PI / 2.0 - item_angle * half_n
 
@@ -203,25 +201,25 @@ func _draw() -> void:
 	for i in range(n):
 		var sa := start_angle + i * item_angle
 		var ea := start_angle + (i + 1) * item_angle
-		var dec_inner := inner - DECORATOR_WIDTH * s
+		var dec_inner := inner - _num("decorator-width", 4.0) * s
 		var dec_outer := inner
 		var coords: PackedVector2Array
 		if _has_gaps():
-			coords = _calc_faux_ring_segment(dec_inner, dec_outer, GAP_SIZE * 0.5, sa, ea, _center_offset)
+			coords = _calc_faux_ring_segment(dec_inner, dec_outer, _num("gap-size", 4.0) * 0.5, sa, ea, _center_offset)
 		else:
 			coords = _calc_ring_segment(dec_inner, dec_outer, sa, ea, _center_offset)
 		if coords.size() >= 3:
-			_draw_poly(coords, DECORATOR_COLOR)
+			_draw_poly(coords, _col("decorator-color", Color(0.0, 0.45, 0.73, 1.0)))
 
 	# 2. Item ring segments
 	for i in range(n):
 		var sa := start_angle + i * item_angle
 		var ea := start_angle + (i + 1) * item_angle
-		var bg := SELECTED_BG if i == _selected_index else BG_COLOR
-		var stroke := SELECTOR_COLOR if i == _selected_index else STROKE_COLOR
+		var bg := _col("ring-selected-color", Color(0.22, 0.58, 0.89, 0.9)) if i == _selected_index else _col("ring-color", Color(0.125, 0.125, 0.125, 0.9))
+		var stroke := _col("selector-color", Color(0.53, 0.78, 1.0, 1.0)) if i == _selected_index else _col("ring-stroke-color", Color(0.16, 0.32, 0.48, 1.0))
 		var coords: PackedVector2Array
 		if _has_gaps():
-			coords = _calc_faux_ring_segment(inner, outer, GAP_SIZE, sa, ea, _center_offset)
+			coords = _calc_faux_ring_segment(inner, outer, _num("gap-size", 4.0), sa, ea, _center_offset)
 		else:
 			coords = _calc_ring_segment(inner, outer, sa, ea, _center_offset)
 		if coords.size() >= 3:
@@ -229,7 +227,7 @@ func _draw() -> void:
 			_draw_polyline(coords, stroke, 1.0)
 
 	# 2.5. Emojis on ring segments
-	var emoji_size := 20
+	var emoji_size := int(_num("emoji-size", 20.0))
 	for i in range(n):
 		var emoji_text: String = _items[i].get("emoji", "")
 		if emoji_text.is_empty():
@@ -245,26 +243,26 @@ func _draw() -> void:
 		var sa := start_angle + _selected_index * item_angle
 		var ea := start_angle + (_selected_index + 1) * item_angle
 		var sel_inner := outer
-		var sel_outer := outer + SELECTOR_WIDTH * s
+		var sel_outer := outer + _num("selector-width", 5.0) * s
 		var coords := _calc_ring_segment(sel_inner, sel_outer, sa, ea, _center_offset)
 		if coords.size() >= 3:
-			_draw_poly(coords, SELECTOR_COLOR)
+			_draw_poly(coords, _col("selector-color", Color(0.53, 0.78, 1.0, 1.0)))
 
 	# 4. Center circle
-	var center_r := CENTER_RADIUS * s
-	draw_circle(_center_offset, center_r, CENTER_BG)
-	draw_arc(_center_offset, center_r, 0, TAU, int(center_r), CENTER_STROKE, 2.0, true)
+	var center_r := _num("center-radius", 100.0) * s
+	draw_circle(_center_offset, center_r, _col("center-color", Color(0.098, 0.098, 0.098, 0.83)))
+	draw_arc(_center_offset, center_r, 0, TAU, int(center_r), _col("center-stroke-color", Color(0.19, 0.56, 0.78, 1.0)), 2.0, true)
 
 	# 5. Titre de l'item sélectionné dans le centre
 	if _selected_index >= 0 and _selected_index < _items.size():
 		var label: String = _items[_selected_index].label
 		var font := ThemeDB.fallback_font
-		var font_size := 14
+		var font_size := int(_num("title-font-size", 14.0))
 		var text_size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
 		var max_text_w := center_r * 1.6
 		if text_size.x < max_text_w:
 			var pos := _center_offset - Vector2(text_size.x / 2.0, -font.get_descent())
-			draw_string(font, pos, label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, TITLE_COLOR)
+			draw_string(font, pos, label, HORIZONTAL_ALIGNMENT_CENTER, -1, font_size, _col("title-color", Color(0.55, 0.55, 0.55, 1.0)))
 		else:
 			var words := label.split(" ")
 			var line := ""
@@ -286,13 +284,13 @@ func _draw() -> void:
 			for li in lines.size():
 				var ls := font.get_string_size(lines[li], HORIZONTAL_ALIGNMENT_CENTER, -1, font_size)
 				var pos := Vector2(_center_offset.x - ls.x / 2.0, y_start + li * (font_size + 2))
-				draw_string(font, pos, lines[li], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, TITLE_COLOR)
+				draw_string(font, pos, lines[li], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, _col("title-color", Color(0.55, 0.55, 0.55, 1.0)))
 
 
 # ── Drawing helpers ────────────────────────────────────────────────
 
 func _has_gaps() -> bool:
-	return GAP_SIZE > 0 and _items.size() > 2
+	return _num("gap-size", 4.0) > 0 and _items.size() > 2
 
 
 func _draw_poly(coords: PackedVector2Array, color: Color) -> void:

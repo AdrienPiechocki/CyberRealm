@@ -18,31 +18,19 @@ func _ready() -> void:
 	process_mode = PROCESS_MODE_ALWAYS
 	visible = false
 	_build_ui()
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 
 func setup(compositor_ref: WlrCompositor) -> void:
 	compositor = compositor_ref
 
 func _apply_styling() -> void:
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.06, 0.06, 0.08, 0.95)
-	bg.border_color = Color(0.3, 0.4, 0.6, 0.8)
-	bg.border_width_top = 1
-	bg.border_width_bottom = 1
-	bg.border_width_left = 1
-	bg.border_width_right = 1
-	bg.corner_radius_top_left = 10
-	bg.corner_radius_top_right = 10
-	bg.corner_radius_bottom_left = 10
-	bg.corner_radius_bottom_right = 10
-	add_theme_stylebox_override("panel", bg)
+	theme = UITheme.theme
+	set_meta("ui_class", "menu-panel capture-menu")
+	UITheme.apply_class(self, "menu-panel capture-menu")
 
-	custom_minimum_size = Vector2(560, 420)
-	size = Vector2(560, 420)
-	anchors_preset = Control.PRESET_CENTER
-	offset_left = -280
-	offset_right = 280
-	offset_top = -210
-	offset_bottom = 210
+func _on_stylesheet_reloaded() -> void:
+	theme = UITheme.theme
+	UITheme.apply_css(self)
 
 func _build_ui() -> void:
 	_apply_styling()
@@ -58,15 +46,16 @@ func _build_ui() -> void:
 	_title_label = Label.new()
 	_title_label.text = "CHOSE A WINDOW TO CAPTURE"
 	_title_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_title_label.add_theme_font_size_override("font_size", 20)
+	_title_label.set_meta("ui_class", "title")
+	UITheme.apply_class(_title_label, "title")
 	vbox.add_child(_title_label)
 
 	_hint_label = Label.new()
 	_hint_label.text = "Chose what to capture :"
 	_hint_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_hint_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_hint_label.add_theme_font_size_override("font_size", 13)
-	_hint_label.add_theme_color_override("font_color", Color(0.6, 0.6, 0.7, 0.9))
+	_hint_label.set_meta("ui_class", "hint")
+	UITheme.apply_class(_hint_label, "hint")
 	vbox.add_child(_hint_label)
 
 	var scroll := ScrollContainer.new()
@@ -90,31 +79,9 @@ func _make_button(text: String) -> Button:
 	btn.custom_minimum_size.y = 42
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
-	btn.add_theme_font_size_override("font_size", 14)
 
-	var normal := StyleBoxFlat.new()
-	normal.bg_color = Color(0.12, 0.14, 0.2, 0.9)
-	normal.border_color = Color(0.3, 0.4, 0.6, 0.5)
-	normal.border_width_top = 1
-	normal.border_width_bottom = 1
-	normal.border_width_left = 1
-	normal.border_width_right = 1
-	normal.corner_radius_top_left = 4
-	normal.corner_radius_top_right = 4
-	normal.corner_radius_bottom_left = 4
-	normal.corner_radius_bottom_right = 4
-	normal.content_margin_left = 12
-	normal.content_margin_right = 12
-	btn.add_theme_stylebox_override("normal", normal)
-
-	var hover := normal.duplicate()
-	hover.bg_color = Color(0.18, 0.22, 0.35, 0.95)
-	hover.border_color = Color(0.4, 0.6, 1.0, 0.7)
-	btn.add_theme_stylebox_override("hover", hover)
-
-	var pressed := normal.duplicate()
-	pressed.bg_color = Color(0.2, 0.3, 0.5, 0.95)
-	btn.add_theme_stylebox_override("pressed", pressed)
+	btn.set_meta("ui_class", "action-button")
+	UITheme.apply_class(btn, "action-button")
 	return btn
 
 func open_selector() -> void:
@@ -151,8 +118,8 @@ func _refresh_options() -> void:
 		var empty_label := Label.new()
 		empty_label.text = "  (no window open)  "
 		empty_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-		empty_label.add_theme_font_size_override("font_size", 13)
-		empty_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.7))
+		empty_label.set_meta("ui_class", "hint")
+		UITheme.apply_class(empty_label, "hint")
 		_options_container.add_child(empty_label)
 		return
 

@@ -251,30 +251,18 @@ func _ready() -> void:
 	container.add_theme_constant_override("separation", 6)
 	add_child(container)
 	_apply_styling()
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 	_settings = _load_settings()
 	_apply_saved_keybinds()
 
 func _apply_styling() -> void:
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.06, 0.06, 0.08, 0.95)
-	bg.border_color = Color(0.3, 0.4, 0.6, 0.8)
-	bg.border_width_top = 1
-	bg.border_width_bottom = 1
-	bg.border_width_left = 1
-	bg.border_width_right = 1
-	bg.corner_radius_top_left = 10
-	bg.corner_radius_top_right = 10
-	bg.corner_radius_bottom_left = 10
-	bg.corner_radius_bottom_right = 10
-	add_theme_stylebox_override("panel", bg)
+	theme = UITheme.theme
+	set_meta("ui_class", "menu-panel pause-menu")
+	UITheme.apply_class(self, "menu-panel pause-menu")
 
-	custom_minimum_size = Vector2(520, 460)
-	size = Vector2(520, 460)
-	anchors_preset = Control.PRESET_CENTER
-	offset_left = -260
-	offset_right = 260
-	offset_top = -230
-	offset_bottom = 230
+func _on_stylesheet_reloaded() -> void:
+	theme = UITheme.theme
+	UITheme.apply_css(self)
 
 func _clear() -> void:
 	_quit_btn = null
@@ -291,46 +279,28 @@ func _make_spacer() -> Control:
 	s.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	return s
 
-func _make_btn(text: String, color := Color(0.12, 0.14, 0.2, 0.9)) -> Button:
+func _make_btn(text: String, klass := "") -> Button:
 	var btn := Button.new()
 	btn.text = text
 	btn.custom_minimum_size = Vector2(0, 42)
 	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	btn.add_theme_font_size_override("font_size", 15)
-
-	var n := StyleBoxFlat.new()
-	n.bg_color = color
-	n.border_color = Color(0.3, 0.4, 0.6, 0.5)
-	n.border_width_top = 1; n.border_width_bottom = 1
-	n.border_width_left = 1; n.border_width_right = 1
-	n.corner_radius_top_left = 5; n.corner_radius_top_right = 5
-	n.corner_radius_bottom_left = 5; n.corner_radius_bottom_right = 5
-	n.content_margin_left = 14; n.content_margin_right = 14
-	n.content_margin_top = 8; n.content_margin_bottom = 8
-	btn.add_theme_stylebox_override("normal", n)
-
-	var h := n.duplicate()
-	h.bg_color = Color(0.18, 0.22, 0.35, 0.95)
-	h.border_color = Color(0.4, 0.6, 1.0, 0.7)
-	btn.add_theme_stylebox_override("hover", h)
-
-	var p := n.duplicate()
-	p.bg_color = Color(0.2, 0.3, 0.5, 0.95)
-	btn.add_theme_stylebox_override("pressed", p)
+	if klass != "":
+		btn.set_meta("ui_class", klass)
+		UITheme.apply_class(btn, klass)
 	return btn
 
 func _make_title(text: String) -> Label:
 	var lbl := Label.new()
 	lbl.text = text
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.add_theme_font_size_override("font_size", 22)
-	lbl.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
+	lbl.set_meta("ui_class", "title")
+	UITheme.apply_class(lbl, "title")
 	lbl.custom_minimum_size = Vector2(0, 50)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	return lbl
 
 func _make_back_btn() -> Button:
-	var back := _make_btn("Back", Color(0.18, 0.18, 0.25, 0.9))
+	var back := _make_btn("Back", "back-button")
 	back.pressed.connect(_go_back)
 	return back
 
@@ -347,21 +317,6 @@ func _make_line_edit() -> LineEdit:
 	var le := LineEdit.new()
 	le.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	le.custom_minimum_size = Vector2(0, 36)
-	le.add_theme_font_size_override("font_size", 14)
-
-	var n := StyleBoxFlat.new()
-	n.bg_color = Color(0.1, 0.1, 0.15, 0.95)
-	n.border_color = Color(0.3, 0.4, 0.6, 0.5)
-	n.border_width_top = 1; n.border_width_bottom = 1
-	n.border_width_left = 1; n.border_width_right = 1
-	n.corner_radius_top_left = 5; n.corner_radius_top_right = 5
-	n.corner_radius_bottom_left = 5; n.corner_radius_bottom_right = 5
-	n.content_margin_left = 12; n.content_margin_right = 12
-	le.add_theme_stylebox_override("normal", n)
-
-	var f := n.duplicate()
-	f.border_color = Color(0.4, 0.6, 1.0, 0.7)
-	le.add_theme_stylebox_override("focus", f)
 
 	le.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
 	le.add_theme_color_override("font_placeholder_color", Color(0.5, 0.52, 0.58))
@@ -456,7 +411,7 @@ func _show_main() -> void:
 	back_btn.pressed.connect(hide_menu)
 	container.add_child(back_btn)
 
-	var quit_btn := _make_btn("Quit", Color(0.3, 0.08, 0.08, 0.9))
+	var quit_btn := _make_btn("Quit", "quit-button")
 	quit_btn.pressed.connect(_quit_game)
 	quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
 	container.add_child(quit_btn)
@@ -703,13 +658,13 @@ func _show_startup_apps() -> void:
 			launch_btn.pressed.connect(_launch_app.bind(app))
 			row.add_child(launch_btn)
 
-			var edit_btn := _make_btn("Edit", Color(0.1, 0.25, 0.15, 0.9))
+			var edit_btn := _make_btn("Edit", "success-button")
 			edit_btn.custom_minimum_size = Vector2(90, 36)
 			edit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			edit_btn.pressed.connect(_edit_startup_app.bind(i))
 			row.add_child(edit_btn)
 
-			var remove_btn := _make_btn("Remove", Color(0.25, 0.1, 0.1, 0.9))
+			var remove_btn := _make_btn("Remove", "remove-button")
 			remove_btn.custom_minimum_size = Vector2(100, 36)
 			remove_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			remove_btn.pressed.connect(_remove_startup_app.bind(app))
@@ -800,13 +755,13 @@ func _show_custom_binds() -> void:
 			launch_btn.pressed.connect(_launch_app.bind(String(bind.get("command", ""))))
 			row.add_child(launch_btn)
 
-			var edit_btn := _make_btn("Edit", Color(0.1, 0.25, 0.15, 0.9))
+			var edit_btn := _make_btn("Edit", "success-button")
 			edit_btn.custom_minimum_size = Vector2(90, 36)
 			edit_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			edit_btn.pressed.connect(_edit_custom_bind.bind(i))
 			row.add_child(edit_btn)
 
-			var remove_btn := _make_btn("Remove", Color(0.25, 0.1, 0.1, 0.9))
+			var remove_btn := _make_btn("Remove", "remove-button")
 			remove_btn.custom_minimum_size = Vector2(90, 36)
 			remove_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 			remove_btn.pressed.connect(_remove_custom_bind.bind(i))
@@ -1627,7 +1582,7 @@ func _show_lan() -> void:
 
 	# Bouton Apply unifié : sauvegarde nom/couleur/avatar et émet les signaux
 	if _lan_connected:
-		var apply_btn := _make_btn("Apply", Color(0.1, 0.25, 0.15, 0.9))
+		var apply_btn := _make_btn("Apply", "success-button")
 		apply_btn.custom_minimum_size = Vector2(0, 36)
 		apply_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		apply_btn.pressed.connect(func():
@@ -1797,7 +1752,7 @@ func _show_lan() -> void:
 
 	container.add_child(_make_spacer())
 	
-	var disconnect_btn := _make_btn("Disconnect", Color(0.3, 0.2, 0.1, 0.9))
+	var disconnect_btn := _make_btn("Disconnect", "warning-button")
 	disconnect_btn.pressed.connect(func():
 		lan_disconnect_requested.emit()
 	)

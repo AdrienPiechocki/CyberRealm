@@ -225,3 +225,7 @@ occlusion_culling/use_occlusion_culling=true
 [run]
 
 platforms/linuxbsd/prefer_wayland=true
+
+[autoload]
+
+UITheme="*res://scripts/ui/ui_theme.gd"

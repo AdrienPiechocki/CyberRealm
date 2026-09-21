@@ -217,3 +217,17 @@ func _find_scroll_containers(node: Node) -> Array:
 		elif child.get_child_count() > 0:
 			result.append_array(_find_scroll_containers(child))
 	return result
+
+func _enter_tree() -> void:
+	var v := get_viewport()
+	if v != null:
+		v.size_changed.connect(_on_viewport_resized)
+
+func _on_viewport_resized() -> void:
+	if has_meta("ui_class"):
+		UITheme.apply_class(self, str(get_meta("ui_class")))
+	_on_menu_resized()
+
+## Surchargé par les menus qui recalculent aussi leur contenu au resize.
+func _on_menu_resized() -> void:
+	pass

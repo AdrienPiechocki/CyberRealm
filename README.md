@@ -438,3 +438,55 @@ choice is fed back to the portal and OBS starts streaming the game view.
   scripts (see `Game/source/user/README.md`).
 - No release binary is committed — `build/` is gitignored and produced by
   `install.sh`.
+
+## UI theming
+
+The in-game UI (pause menu, window menu, capture selector, virtual keyboard,
+tutorial, radial menu and HUD) is styled from CSS. The bundled default lives in
+`Game/source/ui/style.css`; drop a `user://style.css`
+(`~/.local/share/godot/app_userdata/CyberRealm/style.css`) beside it to
+override any rule — user rules are parsed after the bundled ones, so they win.
+Both files are watched: saving either reloads the theme live, no restart
+needed.
+
+The supported subset is deliberately small. A selector is an element (`button`,
+`label`, `line-edit`, `check-button`, `option-button`, `slider`, `panel`, `hud`,
+`radial`, `tutorial`), optionally with a class (`.name` or `element.name`) and a
+state pseudo-class (`:hover`, `:pressed`, `:focus`):
+
+```css
+button             { background-color: rgba(31,36,51,.9); corner-radius: 5px; }
+button:hover       { background-color: rgba(46,56,89,.95); }
+button.quit-button { background-color: rgba(77,20,20,.9); }
+```
+
+Supported properties:
+
+- **Colors** — `background-color`, `border-color` and `color` (text), as
+  `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()` or `rgba()`.
+- **Borders** — `border-width` plus `border-top/right/bottom/left-width`.
+- **Corners** — `corner-radius` plus `corner-top-left/…-radius`.
+- **Spacing** — `padding` plus `padding-top/right/bottom/left`, and
+  `separation` (applied to `BoxContainer` classes).
+- **Margins** — `margin` plus `margin-top/right/bottom/left`, accepting `px`
+  or `%` of the screen (used to inset the four full-screen menu panels:
+  `.pause-menu`, `.window-menu`, `.capture-menu`, `.keyboard-menu`).
+- **Text** — `font-size`.
+
+`border-width`, `corner-radius` and `padding` accept 1, 2 or 4 values
+(top, right, bottom, left); numbers take an optional `px`.
+
+Typed classes shipped in the default stylesheet: `.menu-panel`,
+`.tutorial-panel`, `.back-button`, `.action-button`, `.key-button`,
+`.key-mod-button`, `.key-mod-active`, `.tab-button`, `.tab-button-selected`,
+`.pause-menu`, `.window-menu`, `.capture-menu`, `.keyboard-menu`,
+`.quit-button`, `.remove-button`, `.success-button`, `.warning-button`,
+`.title`, `.title-keyboard`, `.title-tutorial` and `.hint`.
+
+The `hud`, `radial` and `tutorial` elements expose element-specific properties
+read directly by their code — for example `hud { cursor-color; cursor-size;
+fps-color; fps-size; cursor-active-color; }`, `radial { ring-radius;
+ring-width; center-radius; gap-size; selector-width; decorator-width;
+ring-color; ring-selected-color; ring-stroke-color; selector-color;
+decorator-color; center-color; center-stroke-color; title-color;
+title-font-size; emoji-size; }` and `tutorial { dim-color; }`.

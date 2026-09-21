@@ -69,6 +69,8 @@ func _ready():
 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
+	_apply_cursor_css()
 	# Vérification gyro : print de présence des capteurs manette, activé par
 	# CYBERREALM_PAD_DEBUG=1 (ex. à valider avec une 8BitDo après passage à
 	# Godot 4.8, dont le SDL 3.4.16 inclut le driver HIDAPI 8BitDo).
@@ -76,6 +78,14 @@ func _ready():
 		for dev in Input.get_connected_joypads():
 			print("PAD dev=%d guid=%s has_sensors=%s" % [
 				dev, Input.get_joy_guid(dev), Input.has_joy_motion_sensors(dev)])
+
+func _apply_cursor_css() -> void:
+	var cursor := get_node_or_null("UI/Cursor")
+	if cursor is Label and (cursor as Label).label_settings != null:
+		(cursor as Label).label_settings.font_size = int(UITheme.get_number("hud", "cursor-size", 24.0))
+
+func _on_stylesheet_reloaded() -> void:
+	_apply_cursor_css()
 
 func _get_compositor() -> WlrCompositor:
 	if _compositor == null or not is_instance_valid(_compositor):
@@ -147,9 +157,9 @@ func _physics_process(delta):
 			climb(delta)
 		if is_on_floor() and Input.is_action_just_pressed("jump", true) and not _menu_just_closed:
 			velocity.y = jump_speed
-		$UI/Cursor.label_settings.font_color = Color.WHITE
+		$UI/Cursor.label_settings.font_color = UITheme.get_color("hud", "cursor-color", Color(1, 1, 1))
 	else:
-		$UI/Cursor.label_settings.font_color = Color.BLACK
+		$UI/Cursor.label_settings.font_color = UITheme.get_color("hud", "cursor-active-color", Color(0, 0, 0))
 	_menu_just_closed = false
 
 func set_gyro_aim_enabled(enabled: bool) -> void:

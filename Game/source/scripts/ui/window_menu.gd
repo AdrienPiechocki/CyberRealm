@@ -29,10 +29,46 @@ var _get_texture_func: Callable # Callable(window_id) -> Texture2D
 var _get_shared_func: Callable # Callable(window_id) -> bool
 var _get_grabbed_id_func: Callable # Callable() -> int (wid du grab en cours, -1 sinon)
 
+var _preview_box: Control = null
+
 func _ready() -> void:
 	visible = false
 	_build_action_buttons()
 	_apply_styling()
+	_build_preview_box()
+	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
+
+# Construit (en code, sans toucher à la scène) un conteneur borné autour de
+# la preview : le TextureRect est reparenté dedans et ne pilote plus la taille
+# du menu (une très grande fenêtre ne rescale plus tout le menu).
+func _build_preview_box() -> void:
+	var content: HBoxContainer = $VBox/Content
+	_preview_box = Control.new()
+	_preview_box.name = "PreviewBox"
+	_preview_box.clip_contents = true
+	_preview_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_preview_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_preview_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	content.remove_child(preview_rect)
+	_preview_box.add_child(preview_rect)
+	content.add_child(_preview_box)
+	content.move_child(_preview_box, 0)
+	preview_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	preview_rect.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	preview_rect.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	preview_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+	_resize_preview_box()
+
+## Le conteneur preview est borné (fraction de la vue) : la preview letterboxe
+## dedans mais ne change jamais la taille du menu quand on change de fenêtre.
+func _resize_preview_box() -> void:
+	if _preview_box == null:
+		return
+	var vp := get_viewport_rect().size
+	_preview_box.custom_maximum_size = Vector2(vp.x * 0.50, vp.y * 0.75)
+
+func _on_menu_resized() -> void:
+	_resize_preview_box()
 
 func setup(compositor_ref: WlrCompositor, get_texture: Callable, get_shared: Callable, get_grabbed_id: Callable) -> void:
 	compositor = compositor_ref
@@ -41,30 +77,14 @@ func setup(compositor_ref: WlrCompositor, get_texture: Callable, get_shared: Cal
 	_get_grabbed_id_func = get_grabbed_id
 
 func _apply_styling() -> void:
-	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.06, 0.06, 0.08, 0.95)
-	bg.border_color = Color(0.3, 0.4, 0.6, 0.8)
-	bg.border_width_top = 1
-	bg.border_width_bottom = 1
-	bg.border_width_left = 1
-	bg.border_width_right = 1
-	bg.corner_radius_top_left = 10
-	bg.corner_radius_top_right = 10
-	bg.corner_radius_bottom_left = 10
-	bg.corner_radius_bottom_right = 10
-	bg.content_margin_left = 0
-	bg.content_margin_right = 0
-	bg.content_margin_top = 0
-	bg.content_margin_bottom = 0
-	add_theme_stylebox_override("panel", bg)
+	theme = UITheme.theme
+	set_meta("ui_class", "menu-panel window-menu")
+	UITheme.apply_class(self, "menu-panel window-menu")
 
-	custom_minimum_size = Vector2(900, 600)
-	size = Vector2(900, 600)
-	anchors_preset = Control.PRESET_CENTER
-	offset_left = -450
-	offset_right = 450
-	offset_top = -300
-	offset_bottom = 300
+func _on_stylesheet_reloaded() -> void:
+	theme = UITheme.theme
+	UITheme.apply_css(self)
+	_resize_preview_box()
 
 func _build_action_buttons() -> void:
 	var action_defs := [
@@ -84,33 +104,8 @@ func _build_action_buttons() -> void:
 		btn.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 		btn.alignment = HORIZONTAL_ALIGNMENT_CENTER
 
-		var normal := StyleBoxFlat.new()
-		normal.bg_color = Color(0.12, 0.14, 0.2, 0.9)
-		normal.border_color = Color(0.3, 0.4, 0.6, 0.5)
-		normal.border_width_top = 1
-		normal.border_width_bottom = 1
-		normal.border_width_left = 1
-		normal.border_width_right = 1
-		normal.corner_radius_top_left = 4
-		normal.corner_radius_top_right = 4
-		normal.corner_radius_bottom_left = 4
-		normal.corner_radius_bottom_right = 4
-		normal.content_margin_left = 10
-		normal.content_margin_right = 10
-		normal.content_margin_top = 6
-		normal.content_margin_bottom = 6
-		btn.add_theme_stylebox_override("normal", normal)
-
-		var hover := normal.duplicate()
-		hover.bg_color = Color(0.18, 0.22, 0.35, 0.95)
-		hover.border_color = Color(0.4, 0.6, 1.0, 0.7)
-		btn.add_theme_stylebox_override("hover", hover)
-
-		var pressed := normal.duplicate()
-		pressed.bg_color = Color(0.2, 0.3, 0.5, 0.95)
-		btn.add_theme_stylebox_override("pressed", pressed)
-
-		btn.add_theme_font_size_override("font_size", 14)
+		btn.set_meta("ui_class", "action-button")
+		UITheme.apply_class(btn, "action-button")
 
 		var sig_name: String = def["signal"]
 		btn.pressed.connect(func(): _on_action(sig_name))
@@ -190,8 +185,8 @@ func _refresh_tabs() -> void:
 	if window_list.is_empty():
 		var empty_label := Label.new()
 		empty_label.text = "  (no window open)  "
-		empty_label.add_theme_font_size_override("font_size", 13)
-		empty_label.add_theme_color_override("font_color", Color(0.5, 0.5, 0.55, 0.7))
+		empty_label.set_meta("ui_class", "hint")
+		UITheme.apply_class(empty_label, "hint")
 		tabs_container.add_child(empty_label)
 		selected_window_id = -1
 		preview_rect.texture = null
@@ -225,34 +220,10 @@ func _refresh_tabs() -> void:
 		var btn := Button.new()
 		btn.text = "  " + display_name + "  "
 		btn.custom_minimum_size.y = 32
-		btn.add_theme_font_size_override("font_size", 13)
 
-		var normal := StyleBoxFlat.new()
-		normal.bg_color = Color(0.1, 0.1, 0.15, 0.8)
-		normal.corner_radius_top_left = 4
-		normal.corner_radius_top_right = 4
-		normal.corner_radius_bottom_left = 0
-		normal.corner_radius_bottom_right = 0
-		normal.content_margin_left = 10
-		normal.content_margin_right = 10
-		normal.content_margin_top = 4
-		normal.content_margin_bottom = 4
-		btn.add_theme_stylebox_override("normal", normal)
-
-		var selected := normal.duplicate()
-		selected.bg_color = Color(0.15, 0.2, 0.35, 0.95)
-		selected.border_color = Color(0.4, 0.6, 1.0, 0.6)
-		selected.border_width_bottom = 2
-		btn.add_theme_stylebox_override("hover", selected)
-
-		var selected_style := normal.duplicate()
-		selected_style.bg_color = Color(0.15, 0.22, 0.4, 0.95)
-		selected_style.border_color = Color(0.4, 0.6, 1.0, 0.8)
-		selected_style.border_width_bottom = 2
-		btn.add_theme_stylebox_override("pressed", selected_style)
-
-		if wid == selected_window_id:
-			btn.add_theme_stylebox_override("normal", selected_style)
+		var kclass := "tab-button-selected" if wid == selected_window_id else "tab-button"
+		btn.set_meta("ui_class", kclass)
+		UITheme.apply_class(btn, kclass)
 
 		btn.set_meta("window_id", wid)
 		btn.pressed.connect(func(): _on_tab_pressed(wid))
@@ -277,26 +248,13 @@ func _last_opened_window_id(window_list: Array) -> int:
 
 func _on_tab_pressed(wid: int) -> void:
 	selected_window_id = wid
-	# Mettre à jour le style des onglets
+	# Mettre à jour la classe des onglets
 	for child in tabs_container.get_children():
 		if child.has_meta("window_id"):
-			var child_wid: int = child.get_meta("window_id")
-			# On ne peut pas récupérer le style original facilement, on reconstruit
-			var normal := StyleBoxFlat.new()
-			normal.bg_color = Color(0.1, 0.1, 0.15, 0.8)
-			normal.corner_radius_top_left = 4
-			normal.corner_radius_top_right = 4
-			normal.corner_radius_bottom_left = 0
-			normal.corner_radius_bottom_right = 0
-			normal.content_margin_left = 10
-			normal.content_margin_right = 10
-			normal.content_margin_top = 4
-			normal.content_margin_bottom = 4
-			if child_wid == wid:
-				normal.bg_color = Color(0.15, 0.22, 0.4, 0.95)
-				normal.border_color = Color(0.4, 0.6, 1.0, 0.8)
-				normal.border_width_bottom = 2
-			child.add_theme_stylebox_override("normal", normal)
+			var cwid: int = child.get_meta("window_id")
+			var kclass := "tab-button-selected" if cwid == wid else "tab-button"
+			child.set_meta("ui_class", kclass)
+			UITheme.apply_class(child, kclass)
 	_update_preview()
 
 func _update_preview() -> void:
