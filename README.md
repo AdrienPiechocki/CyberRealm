@@ -15,6 +15,10 @@ Godot 4.7, with a GDExtension (C++) that instantiates the compositor as a native
 Godot node and streams every surface into the engine through a **zero-copy
 Vulkan DMA-BUF import**.
 
+## Demo
+
+Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
+
 ## Features
 
 - **A real compositor, in-game** — a headless wlroots backend runs inside the
@@ -50,15 +54,29 @@ Vulkan DMA-BUF import**.
 - **OBS capture built-in** — ships a patched `xdg-desktop-portal-wlr` so OBS can
   add *screen* and *window* capture sources straight from the game, choosing the
   target with an in-game selector UI.
+- **In-game screenshots** (`Print Screen`) — capture exactly what you see (the
+  full viewport, world and HUD) straight into the screenshot folder of the
+  pause menu (defaults to your `~/Pictures`). The navigation menu adds a
+  **SCREENSHOT** action to save a single window. A brief white flash confirms the
+  shot; failures stay silent.
+- **Free camera mode** (`SUPER+SHIFT+F`) — detach the view to fly around the room
+  for screenshots or touring. `W`/`A`/`S`/`D` (or the left stick) move toward
+  wherever you are looking — look up and move forward to climb, no jump needed.
+  Your own avatar stands at the player's body (last position and rotation), so
+  you can frame yourself even in solo; window interaction is disabled while the
+  camera is detached, and the key returns you to your body.
+- **HUD hide** (`SUPER+SHIFT+H`) — toggle the crosshair and FPS counter on and
+  off for clean captures.
 - **Effects** — X-RAY finder highlights any window's quad; windows flash when
   they open.
 - **Navigation menu** (`SUPER+SHIFT+B`) — a window switcher with live previews (grab, focus,
-  hide, find, pin, close) and a **SHARE** action to stream a window to the other
+  hide, find, pin, close, screenshot) and a **SHARE** action to stream a window to the other
   players.
 - **Pause menu** (`Esc`) — remappable keybinds (independent keyboard/mouse
   and gamepad bindings per action), startup apps, custom keybinds that launch
   arbitrary
-  commands inside the compositor, and a **LAN Game** page (host/join, player
+  commands inside the compositor, a screenshot folder setting, and a **LAN Game**
+  page (host/join, player
   name & color, avatar picker, LAN discovery with a single **Apply** button).
 - **KWin integration** — an optional KWin script fullscreens the game when
   launched from Plasma and blocks all KDE global shortcuts while it has focus.
@@ -353,6 +371,9 @@ details: `Game/source/user/README.md`.
 | `SUPER+J`            | Toggle the focused window as a game (`force_game`) |
 | `SUPER+SHIFT+B`      | Window navigation menu                            |
 | `SUPER+TAB`          | Hand the pointer to a layer overlay (waybar/rofi) |
+| `SUPER+SHIFT+F`      | Free camera mode (detach the view)                |
+| `SUPER+SHIFT+H`      | Hide / show the HUD (crosshair, FPS counter)      |
+| `Print Screen`       | Take a full-screen screenshot                     |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
 
 All keybinds can be remapped from the pause menu — each action has an
