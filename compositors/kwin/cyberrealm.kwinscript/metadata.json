@@ -3,7 +3,7 @@
         "Id": "cyberrealm",
         "Name": "CyberRealm",
         "Version": "1.0",
-        "Description": "Met CyberRealm en plein écran quand il est lancé depuis Plasma et bloque tous les raccourcis globaux KDE tant que la fenêtre du jeu détient le focus.",
+        "Description": "Puts CyberRealm fullscreen when launched from Plasma and blocks all KDE global shortcuts while the game window is in focus.",
         "Category": "Window Management",
         "License": "GPL-2.0-or-later",
         "Authors": [
