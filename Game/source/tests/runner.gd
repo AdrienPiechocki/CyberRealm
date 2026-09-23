@@ -13,6 +13,10 @@ var _failed := 0
 var _errors: PackedStringArray = []
 
 func _init() -> void:
+	# Les tests doivent pouvoir insérer des noeuds dans l'arbre de scène
+	# (ex. tests UI) : pendant _init, ni le SceneTree ni le main loop ne sont
+	# encore attachés. On attend une frame avant d'exécuter les tests.
+	await process_frame
 	var dir_path := ProjectSettings.globalize_path("res://tests/")
 	var dir := DirAccess.open(dir_path)
 	if dir == null:

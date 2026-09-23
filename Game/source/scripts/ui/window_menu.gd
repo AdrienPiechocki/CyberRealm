@@ -51,6 +51,10 @@ func _build_preview_box() -> void:
 	_preview_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	content.remove_child(preview_rect)
 	_preview_box.add_child(preview_rect)
+	# _preview_box est un Control simple (pas un Container) : il ne trie pas
+	# ses enfants. Sans ancrage plein-rect, le TextureRect garde une taille
+	# (0,0) et la preview n'affiche rien.
+	preview_rect.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	content.add_child(_preview_box)
 	content.move_child(_preview_box, 0)
 	preview_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
