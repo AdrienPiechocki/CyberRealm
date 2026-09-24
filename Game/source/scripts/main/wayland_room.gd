@@ -713,8 +713,11 @@ func _process(delta: float) -> void:
 		_rdi_accum += delta
 		_rdi_frames += 1
 		if _rdi_accum >= RENDER_DEBUG_PERIOD_SEC:
-			print("[render] fps=%d draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
+			print("[render] fps=%d setup_cpu=%.2fms grab=%s focus=%s draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
 				int(_rdi_frames / _rdi_accum),
+				RenderingServer.get_frame_setup_time_cpu(),
+				bool(win3d.get("is_moving")),
+				bool(focus.get("focus_mode")),
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576.0,

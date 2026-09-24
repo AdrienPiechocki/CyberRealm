@@ -335,7 +335,46 @@ func release_window_grab(wid: int) -> void:
 		return
 	is_moving = false
 	active_window_id = -1
+	_set_window_occluder_active(wid, true)
 	windows_state_changed.emit()
+
+# Détache (active=false) ou réattache (active=true) l'occluder d'une fenêtre
+# au buffer d'occlusion. Pendant un grab/drag/resize, le quad réécrit sa
+# transform à CHAQUE frame (grab billboard : _update_move fait un lerp de
+# position + basis = caméra). Dans le moteur (4.7 : modules/raycast/
+# raycast_occlusion_cull.cpp, Scenario::update + scenario_set_instance),
+# tout changement de transform d'un OccluderInstance3D marque le scénario
+# comme dirty → reconstruction COMPLÈTE de la scène Embree à la frame suivante
+# (incluant l'occluder statique AutoOcclusion du niveau, jusqu'à 120k
+# triangles) → gros coût CPU par frame pendant toute l'opération.
+# Simple masquage (visible=false) NE SUFFIT PAS : le changement de transform
+# re-dirt quand même à chaque frame (les occluders masqués restent enregistrés
+# et leurs mises à jour de transform sont propagées). Il faut donc DÉTACHER le
+# base (occ.occluder = null → set_base(RID()) → scenario_remove_instance).
+# La fenêtre en cours de déplacement est de toute façon la plus proche de la
+# caméra : ne pas occlure l'arrière-plan pendant l'opération n'est pas
+# perceptible.
+# Le booléen est appelé `active` pour rester cohérent avec les appelants
+# (active=true au lâcher, active=false au début de l'opération).
+func _set_window_occluder_active(wid: int, active: bool) -> void:
+	if not quads.has(wid):
+		return
+	var occ := quads[wid].get_node_or_null("Occluder") as OccluderInstance3D
+	if occ == null:
+		return
+	if active:
+		var occ_box := occ.get_meta("occluder_box", null) as BoxOccluder3D
+		if occ_box != null:
+			# Resynchronise la taille : pendant un resize détaché le box n'est
+			# plus mis à jour (gardé dans les métadonnées), il peut donc être
+			# périmé par rapport au mesh au moment de réattacher.
+			var mesh := quads[wid].mesh as QuadMesh
+			if mesh != null:
+				occ_box.size = Vector3(mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
+			if occ.occluder == null:
+				occ.occluder = occ_box
+	else:
+		occ.occluder = null
 
 # Toggle grab depuis le menu fenêtres : reprend une fenêtre déjà en cours de
 # déplacement (is_moving) ou lâche la prise et la pose à sa position actuelle.
@@ -349,6 +388,7 @@ func toggle_grab_window(wid: int) -> void:
 	var cam := _camera()
 	active_window_id = wid
 	is_moving = true
+	_set_window_occluder_active(wid, false)
 	move_depth = cam.global_position.distance_to(quad.global_position)
 	windows_state_changed.emit()
 
@@ -401,6 +441,9 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	var occ_box := BoxOccluder3D.new()
 	occ_box.size = Vector3(mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
 	occ.occluder = occ_box
+	# Référence conservée par _set_window_occluder_active() : détacher
+	# l'occluder (occ.occluder = null) lâche la dernière référence autrement.
+	occ.set_meta("occluder_box", occ_box)
 	quad.add_child(occ)
 
 	# Barre de titre du jeu (SSD) : quad coloré + Label3D posés AU-DESSUS du
@@ -821,16 +864,20 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
-		if Input.is_action_pressed("scroll_up", false):
-			move_depth += 0.05
-		elif Input.is_action_just_pressed("scroll_up", false):
+		# just_pressed AVANT is_action_pressed : sur la frame d'appui d'un
+		# clic molette, les deux sont vrais — l'ordre inverse donnait toujours
+		# le petit pas (0.05) au lieu du saut (0.25).
+		if Input.is_action_just_pressed("scroll_up", false):
 			move_depth += 0.25
-		if Input.is_action_pressed("scroll_down", false):
-			move_depth -= 0.05
-		elif Input.is_action_just_pressed("scroll_down", false):
+		elif Input.is_action_pressed("scroll_up", false):
+			move_depth += 0.05
+		if Input.is_action_just_pressed("scroll_down", false):
 			move_depth -= 0.25
+		elif Input.is_action_pressed("scroll_down", false):
+			move_depth -= 0.05
 		_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab", true):
+			_set_window_occluder_active(active_window_id, true)
 			is_moving = false
 			active_window_id = -1
 			windows_state_changed.emit()
@@ -838,6 +885,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if is_resizing:
 		_update_resize(ray_origin, ray_dir)
 		if Input.is_action_just_released("left_click", false):
+			_set_window_occluder_active(active_window_id, true)
 			is_resizing = false
 			resizing_edge = ""
 			active_window_id = -1
@@ -846,6 +894,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if is_moving_2d:
 		_update_move_2d(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("left_click", false):
+			_set_window_occluder_active(active_window_id, true)
 			is_moving_2d = false
 			active_window_id = -1
 			windows_state_changed.emit()
@@ -937,6 +986,12 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if Input.is_action_just_pressed("grab", true) and not interact_active:
 		active_window_id = wid
 		is_moving = true
+		# Même détachement d'occluder que toggle_grab_window/resize/move_2d :
+		# pendant le grab le quad réécrit sa transform à CHAQUE frame
+		# (billboard), ce qui rediriterait la scène Embree entière (incluant
+		# l'AutoOcclusion du niveau) → gros pic CPU par frame. Le réattache
+		# se fait au relâchement dans la branche is_moving de process_raycast.
+		_set_window_occluder_active(wid, false)
 		move_depth = _camera().global_position.distance_to(quad.global_position)
 	if Input.is_action_just_released("grab", true):
 		active_window_id = wid
@@ -969,6 +1024,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			active_window_id = wid
 			resizing_edge = edge
 			is_resizing = true
+			_set_window_occluder_active(wid, false)
 			resize_depth = _camera().global_position.distance_to(quad.global_position)
 			resize_start_world = ray_origin + ray_dir * resize_depth
 			resize_right_dir = quad.global_transform.basis.x.normalized()
@@ -982,6 +1038,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			# Move on a 2D plane (simulation de barre de titre)
 			active_window_id = wid
 			is_moving_2d = true
+			_set_window_occluder_active(wid, false)
 			
 			# On crée un plan infini basé sur l'orientation de la fenêtre (axe Z)
 			var normal = quad.global_transform.basis.z.normalized()
@@ -1150,12 +1207,19 @@ func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3)
 		focused_window_id = wid
 		active_window_id = wid
 		is_moving_2d = true
+		# Idem drag-content (move_2d) : détacher l'occluder tant que le quad
+		# bouge à chaque frame (sinon reconstruction Embree à chaque frame).
+		_set_window_occluder_active(wid, false)
 		var normal = quad.global_transform.basis.z.normalized()
 		move_2d_plane = Plane(normal, quad.global_position)
 		var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
 		if _hit != null:
 			move_2d_offset = quad.global_position - _hit
 	if Input.is_action_just_released("left_click", false):
+		# Press + release sur la MÊME frame (clic rapide) : le relâchement
+		# inter-frame passe par la branche is_moving_2d de process_raycast,
+		# pas ici — réattacher ici garantit l'équilibre détachement/reliure.
+		_set_window_occluder_active(wid, true)
 		active_window_id = -1
 		is_moving_2d = false
 		move_2d_offset = Vector3.ZERO
