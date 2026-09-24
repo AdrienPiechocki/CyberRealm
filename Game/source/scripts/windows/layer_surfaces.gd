@@ -372,6 +372,17 @@ func on_session_lock_unlocked() -> void:
 	if session_lock_rect != null and is_instance_valid(session_lock_rect):
 		session_lock_rect.queue_free()
 		session_lock_rect = null
+	# Le verrouillage avait posé l'état "interaction layer" (voir
+	# on_session_lock_locked) pour libérer la souris au lockscreen. Le retirer
+	# ici : il ne doit pas subsister quand la souris reste gérée par un autre
+	# mode (recapture_if_needed se désiste si le focus est actif), sinon
+	# player.layer_pointer_active reste vrai et le joueur ne peut plus se
+	# déplacer (ZQSD coupé tant que layer_pointer_active) jusqu'à l'ouverture
+	# d'un menu. On conserve l'état si une vraie layer interactive existe.
+	if not _any_interactive_layer():
+		layer_interact_active = false
+		layer_interact_manual = false
+		player.layer_pointer_active = false
 	# Retour à l'état normal (capture FPS) sauf si un overlay interactif
 	# ou un autre mode gère déjà la souris.
 	recapture_if_needed()
