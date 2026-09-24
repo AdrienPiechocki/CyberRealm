@@ -16,6 +16,25 @@ extends Node3D
 ## bureau hôte, la capture Meta+boutons peut avaler les événements bouton).
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
+const ZoneSelectMarqueeScript := preload("res://scripts/ui/zone_select_marquee.gd")
+
+# Sélection de zone (PrtSc) : outil de capture rectangulaire sur l'écran.
+# L'outil armé (zone_select_active) avale tout l'input ; un glisser du bouton
+# gauche dessine la marquise, son relâchement émet zone_capture_selected
+# (croppée depuis le viewport par wayland_room.gd) si la zone fait au moins
+# ZONE_MIN_PX, sinon rien. Escape annule. Fonctionne aussi en focus distant.
+signal zone_capture_selected(screen_rect: Rect2)
+const ZONE_MIN_PX := 5.0
+const ZONE_DIM_ALPHA := 0.3
+
+var zone_select_active := false
+var _zone_drag_start := Vector2.ZERO
+var _zone_dragging := false
+var _zone_rect := Rect2()
+var _zone_dim: ColorRect
+var _zone_marquee
+var _zone_restore_capture := false
+
 const FOCUS_Z_BASE := 2000 # au-dessus des layer surfaces et de leurs popups
 const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
 
@@ -1312,7 +1331,114 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	if in_game():
 		return
 
+# ── Sélection de zone (PrtSc) ──────────────────────────────────────────
+
+# Crée paresseusement l'overlay d'assombrissement + la marquise de sélection,
+# posés au-dessus de tous les overlays du focus (z_index 3001/3002).
+func _ensure_zone_overlays() -> void:
+	if _zone_dim == null or not is_instance_valid(_zone_dim):
+		_zone_dim = ColorRect.new()
+		_zone_dim.color = Color(0.0, 0.0, 0.0, ZONE_DIM_ALPHA)
+		_zone_dim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_zone_dim.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_zone_dim.z_index = 3001
+		ui.add_child(_zone_dim)
+	if _zone_marquee == null or not is_instance_valid(_zone_marquee):
+		_zone_marquee = ZoneSelectMarqueeScript.new()
+		_zone_marquee.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		_zone_marquee.set_anchors_preset(Control.PRESET_FULL_RECT)
+		_zone_marquee.z_index = 3002
+		ui.add_child(_zone_marquee)
+
+# Arme l'outil : assombrit l'écran, libère la souris si la fenêtre active
+# était en pointer-lock (recapturée à la fin), remet à zéro l'état de
+# drag fenêtre (les appuis du glisser seraient sinon retracés comme un
+# déplacement de fenêtre à la sortie de l'outil).
+func _start_zone_selection() -> void:
+	if zone_select_active:
+		return
+	zone_select_active = true
+	_zone_dragging = false
+	_zone_rect = Rect2()
+	_zone_restore_capture = false
+	if focus_mode and not remote_focus and _active_id() != -1:
+		var st := _state(_active_id())
+		if st.get("mouse_captured", false):
+			_zone_restore_capture = true
+	window_move_id = -1
+	window_press_id = -1
+	window_press_buttons = 0
+	_ensure_zone_overlays()
+	_zone_dim.visible = true
+	_zone_marquee.visible = true
+	_zone_marquee.set_select_rect(Rect2())
+	if _zone_restore_capture:
+		_hide_cursor_overlay()
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+# Termine la sélection. capture=true : émet la zone si >= ZONE_MIN_PX ;
+# sinon annule (Escape, zone trop petite). Les overlays sont masqués AVANT
+# l'émission : wayland_room capture le viewport après le render de la frame,
+# la marquise n'apparaît donc pas dans le cliché.
+func _end_zone_selection(capture: bool) -> void:
+	var rect := _zone_rect
+	_restore_capture_after_zone()
+	zone_select_active = false
+	_zone_dragging = false
+	if _zone_dim != null and is_instance_valid(_zone_dim):
+		_zone_dim.visible = false
+	if _zone_marquee != null and is_instance_valid(_zone_marquee):
+		_zone_marquee.visible = false
+	if capture and rect.size.x >= ZONE_MIN_PX and rect.size.y >= ZONE_MIN_PX:
+		zone_capture_selected.emit(rect)
+
+func _cancel_zone_selection() -> void:
+	_end_zone_selection(false)
+
+func _restore_capture_after_zone() -> void:
+	if not _zone_restore_capture:
+		return
+	_zone_restore_capture = false
+	if focus_mode and not remote_focus and _active_id() != -1:
+		if _state(_active_id()).get("mouse_captured", false):
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_hide_cursor_overlay()
+
+# Polling de l'outil, appelé en tête de handle_focus_input tant qu'il est
+# actif : glisser du bouton gauche = marquise, relâchement = capture.
+func _handle_zone_selection() -> void:
+	# La branche zone de handle_focus_input retourne tôt : sans réémission,
+	# l'overlay du curseur custom resterait figé à sa dernière position
+	# (« curseur gelé ») et le choix du point de départ se ferait à l'aveugle.
+	# On repositionne le curseur chaque frame sur mouse_pos, à l'échelle de la
+	# fenêtre focalisée — y compris pour une fenêtre FPS en pointer-lock, dont
+	# le curseur capturé est alors re-découvert et suit la souris libérée.
+	if not remote_focus and _active_id() != -1:
+		var zid := _active_id()
+		var zst := _state(zid)
+		var zdisp := _displayed_rect(zid)
+		var zscale := Vector2.ONE
+		if zdisp.size.x > 0.0 and zst["surface_size"].x > 0.0:
+			zscale = zdisp.size / zst["surface_size"]
+		_update_cursor_overlay(zid, mouse_pos, zscale)
+	_poll_left_button()
+	if _left_press_this_frame():
+		_zone_drag_start = mouse_pos
+		_zone_dragging = true
+	if _zone_dragging:
+		_zone_rect = Rect2(
+			Vector2(minf(_zone_drag_start.x, mouse_pos.x), minf(_zone_drag_start.y, mouse_pos.y)),
+			Vector2(absf(mouse_pos.x - _zone_drag_start.x), absf(mouse_pos.y - _zone_drag_start.y)))
+		if _zone_marquee != null and is_instance_valid(_zone_marquee):
+			_zone_marquee.set_select_rect(_zone_rect)
+	if _left_release_this_frame() and _zone_dragging:
+		_end_zone_selection(true)
+
 func _reset_focus_ui() -> void:
+	# Une sélection de zone en cours est annulée : la sortie du mode focus
+	# doit remettre l'écran (et le pointer-lock) dans son état normal.
+	if zone_select_active:
+		_cancel_zone_selection()
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
 	# l'occludeur plein écran.
 	if _world_occluder != null and is_instance_valid(_world_occluder):
@@ -1416,6 +1542,11 @@ func handle_focus_input(delta: float) -> void:
 			captured_tmp = _state(active_id_tmp)["mouse_captured"]
 		print("handle_focus_input: delta=%.3f active=%d captured=%s scroll_up=%s scroll_down=%s" % [
 			delta, active_id_tmp, captured_tmp, _scroll_up_held, _scroll_down_held])
+	# Sélection de zone (PrtSc) : tant que l'outil est actif il pilote le
+	# pointeur (drag = marquise), avant le chemin focus distant / fenêtre.
+	if zone_select_active:
+		_handle_zone_selection()
+		return
 	if remote_focus:
 		return
 	var active_id := _active_id()
@@ -1761,6 +1892,22 @@ func _try_reconstruct_composed_key(event: InputEventKey) -> bool:
 # Gère un InputEvent en mode focus (clavier + tracking souris capturée).
 # Renvoie true si l'événement a été consommé (toujours le cas en mode focus).
 func handle_input_event(event: InputEvent) -> bool:
+	# Sélection de zone (PrtSc) : priorité absolue. Tant qu'elle est active
+	# tout l'input est avalé (rien ne part aux fenêtres) ; Escape annule.
+	# Fonctionne aussi en focus distant (vue seule).
+	if zone_select_active:
+		if event is InputEventKey:
+			var zkey := event as InputEventKey
+			if not zkey.echo and (zkey.keycode == KEY_ESCAPE or zkey.physical_keycode == KEY_ESCAPE):
+				_cancel_zone_selection()
+		return true
+	# PrtSc en mode focus : armer l'outil de sélection au lieu de forwarder la
+	# touche au client. Fonctionne sur le bind remapable "screenshot".
+	if event is InputEventKey:
+		var skey := event as InputEventKey
+		if not skey.echo and InputMap.event_is_action(skey, "screenshot", true):
+			_start_zone_selection()
+			return true
 	# Focus distant (vue seule) : tout est consommé, rien n'est forwardé
 	# (focus_stack est vide pour le focus distant).
 	if remote_focus:
@@ -1892,6 +2039,20 @@ func in_game() -> bool:
 	if st["is_game"]:
 		return true
 	return false
+
+# Convertit un rectangle écran (sélection de zone en mode focus) en rectangle
+# entier de pixels de l'image capturée, clampé aux bornes de l'image : les
+# coins sont arrondis et toute portion hors image est retranchée (une
+# sélection débordant de l'écran doit capturer la partie visible, jamais un
+# pixel hors du viewport).
+static func zone_rect_to_int(rect: Rect2, img_size: Vector2i) -> Rect2i:
+	var w := maxi(img_size.x, 0)
+	var h := maxi(img_size.y, 0)
+	var x0 := clampi(int(floor(rect.position.x)), 0, w)
+	var y0 := clampi(int(floor(rect.position.y)), 0, h)
+	var x1 := clampi(int(ceil(rect.end.x)), x0, w)
+	var y1 := clampi(int(ceil(rect.end.y)), y0, h)
+	return Rect2i(x0, y0, x1 - x0, y1 - y0)
 
 ## Toggle force_game (action remapable) : inverse is_game sur la fenêtre focus
 ## et bloque l'auto-set pointer-lock (is_game_overridden) pour que le reset

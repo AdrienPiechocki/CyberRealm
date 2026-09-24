@@ -343,6 +343,7 @@ func _ready() -> void:
 	compositor.popup_unmapped.connect(_on_popup_unmapped)
 	compositor.popup_texture_updated.connect(_on_popup_texture_updated)
 	compositor.pointer_lock_changed.connect(focus.on_pointer_lock_changed)
+	focus.zone_capture_selected.connect(_on_focus_zone_capture)
 	compositor.drag_icon_updated.connect(_on_drag_icon_updated)
 	compositor.drag_icon_removed.connect(_on_drag_icon_removed)
 	compositor.layer_surface_mapped.connect(layers.on_layer_surface_mapped)
@@ -1223,6 +1224,35 @@ func _take_window_screenshot(wid: int) -> void:
 	if img == null or img.is_empty():
 		return
 	_save_screenshot_img(img, "cyberrealm-window-%d" % wid)
+
+# Capture d'une zone (PrtSc en mode focus) : le viewport complet est croppé
+# sur le rectangle choisi, puis enregistré comme les autres screenshots.
+# La marquise et l'assombrissement ont déjà été masqués par focus (émis avant
+# l'émission du signal) ; le curseur, lui, doit être masqué ici : on attend la
+# fin du render de la frame pour que get_image() ne voie ni l'overlay ni le
+# curseur, sinon le carré de sélection ET le curseur apparaîtraient dans le
+# cliché. Le curseur est restauré dès que la frame « propre » est capturée.
+func _on_focus_zone_capture(screen_rect: Rect2) -> void:
+	var local_cursor_visible := false
+	if focus.cursor_overlay != null and focus.cursor_overlay.visible:
+		local_cursor_visible = true
+		focus.cursor_overlay.visible = false
+	var remote_cursor_visible := false
+	if focus.remote_cursor_overlay != null and focus.remote_cursor_overlay.visible:
+		remote_cursor_visible = true
+		focus.remote_cursor_overlay.visible = false
+	await RenderingServer.frame_post_draw
+	var img: Image = get_viewport().get_texture().get_image()
+	if focus.cursor_overlay != null:
+		focus.cursor_overlay.visible = local_cursor_visible
+	if focus.remote_cursor_overlay != null:
+		focus.remote_cursor_overlay.visible = remote_cursor_visible
+	if img == null or img.is_empty():
+		return
+	var crop: Rect2i = focus.zone_rect_to_int(screen_rect, Vector2i(img.get_width(), img.get_height()))
+	if crop.size.x <= 0 or crop.size.y <= 0:
+		return
+	_save_screenshot_img(img.get_region(crop), "cyberrealm-zone")
 
 func _save_screenshot_img(img: Image, prefix: String) -> void:
 	# Readbacks GPU (viewport) peuvent arriver dans un format non PNG-friendly :
