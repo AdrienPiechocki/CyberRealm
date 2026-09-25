@@ -106,7 +106,7 @@ func _physics_process(delta):
 	if velocity.y > jump_speed:
 		velocity.y = jump_speed
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or session_locked or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()

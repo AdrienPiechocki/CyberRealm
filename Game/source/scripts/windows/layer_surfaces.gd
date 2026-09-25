@@ -362,8 +362,15 @@ func on_session_lock_locked() -> void:
 		session_lock_rect.material = mat
 		layer_overlay.add_child(session_lock_rect)
 	# Le lockscreen détient la souris et le clavier jusqu'à l'unlock.
+	# layer_interact_active/layer_pointer_active libèrent la souris ; le gate
+	# de mouvement du joueur s'appuie sur player.session_locked, qui ne doit
+	# pas dépendre de cet état mutable (recapture_if_needed peut l'effacer si
+	# une layer est unmappée pendant le lock — sinon la manette déplace le
+	# joueur en plein écran verrouillé, seul le clavier restant bloqué par le
+	# focus clavier du lockscreen).
 	layer_interact_active = true
 	player.layer_pointer_active = true
+	player.session_locked = true
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
 func on_session_lock_unlocked() -> void:
@@ -383,6 +390,9 @@ func on_session_lock_unlocked() -> void:
 		layer_interact_active = false
 		layer_interact_manual = false
 		player.layer_pointer_active = false
+	# Le gel du joueur pendant le lock est indépendant de l'état layer : il
+	# s'arrête TOUJOURS à l'unlock, mêmesi une layer interactive subsiste.
+	player.session_locked = false
 	# Retour à l'état normal (capture FPS) sauf si un overlay interactif
 	# ou un autre mode gère déjà la souris.
 	recapture_if_needed()

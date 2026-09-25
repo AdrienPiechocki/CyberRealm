@@ -750,8 +750,9 @@ func _process(delta: float) -> void:
 
 	# Session verrouillée : tout le pointeur part vers la surface de
 	# verrouillage (le curseur y est visible), rien ne va au jeu.
+	# player.session_locked est posé par layer_surfaces aux événements
+	# session_lock_locked/unlocked (gate de mouvement du joueur).
 	if layers.is_locked():
-		player.session_locked = true
 		# Forcer la souris visible pendant le lock : si un event ou un autre
 		# mode a remis la souris en CAPTURED entre-temps, le lockscreen ne
 		# recevrait aucun input pointeur.
@@ -760,7 +761,6 @@ func _process(delta: float) -> void:
 		layers.handle_locked_input()
 		layers.handle_layer_pointer(delta)
 		return
-	player.session_locked = false
 
 	# Sélecteur de cible de capture OBS : quand portal-wlr écrit
 	# cyberrealm-capture-pending (une source PipeWire ajoutée dans OBS), on

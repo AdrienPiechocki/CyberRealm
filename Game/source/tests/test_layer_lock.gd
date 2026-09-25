@@ -26,21 +26,23 @@ static func _make_script(code: String) -> Script:
 		return null
 	return s
 
-# Construit layer_surfaces + fakes. Le focus factice est ACTIVÉ (is_active()
-# -> true) pour reproduire "lockscreen déclenché pendant le mode focus" :
-# recapture_if_needed() ne doit alors pas ramener la souris.
-func _build_world() -> Variant:
+# Construit layer_surfaces + fakes. Le focus factice est activé quand
+# focus_active=true (is_active() -> true) pour reproduire "lockscreen déclenché
+# pendant le mode focus" : recapture_if_needed() ne doit alors pas ramener la
+# souris. Sinon (false), on reproduit un lock simple : une layer unmappée
+# pendant le lock clobbera le garde-fou pad via recapture_if_needed().
+func _build_world(focus_active := true) -> Variant:
 	ui = CanvasLayer.new()
 	get_tree().root.add_child(ui)
 
-	var player_script := _make_script("extends Node3D\nvar layer_pointer_active := false")
+	var player_script := _make_script("extends Node3D\nvar layer_pointer_active := false\nvar session_locked := false")
 	if player_script == null:
 		return "échec compilation fake player"
 	fake_player = Node3D.new()
 	fake_player.set_script(player_script)
 	get_tree().root.add_child(fake_player)
 
-	var focus_script := _make_script("extends Node3D\nfunc is_active() -> bool:\n\treturn true")
+	var focus_script := _make_script("extends Node3D\nfunc is_active() -> bool:\n\treturn %s" % ("true" if focus_active else "false"))
 	if focus_script == null:
 		return "échec compilation fake focus"
 	focus = Node3D.new()
@@ -101,5 +103,30 @@ func test_lock_unlock_keeps_real_interactive_layer_state() -> Variant:
 		return "layer_pointer_active doit rester vrai : layer interactive présente"
 	if layers.session_locked:
 		return "session_locked devrait être faux après on_session_lock_unlocked"
+	_teardown()
+	return true
+
+func test_lock_keeps_movement_frozen_through_recapture() -> Variant:
+	var build: Variant = _build_world(false)
+	if build != true:
+		return build
+	layers.on_session_lock_locked()
+	if not layers.session_locked:
+		return "session_locked (layers) devrait être vrai après lock"
+	if not fake_player.session_locked:
+		return "player.session_locked devrait être vrai après lock (gate de gel du joueur)"
+	# Un overlay est unmappé PENDANT le lock (barre/systray qui revient, ou
+	# fade-to-lock) : recapture_if_needed() traitait le lock comme un simple
+	# overlay interactif et effaçait son état → layer_pointer_active=false →
+	# pad_cursor_active faux → la manette déplaçait le joueur en plein écran
+	# verrouillé (seul le clavier restait bloqué, par le focus clavier du
+	# lockscreen). Le gate du joueur s'appuie sur session_locked : il ne doit
+	# JAMAIS être effacé par la recapture.
+	layers.recapture_if_needed()
+	if not fake_player.session_locked:
+		return "player.session_locked doit rester vrai après recapture pendant le lock"
+	layers.on_session_lock_unlocked()
+	if fake_player.session_locked:
+		return "player.session_locked doit être réinitialisé à l'unlock"
 	_teardown()
 	return true
