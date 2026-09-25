@@ -19,6 +19,19 @@
 // dépendre de Godot ici (le thread worker tourne hors de la boucle du jeu).
 namespace {
 
+// Handler d'erreurs X11 du worker. Indispensable : entre l'énumération des
+// toplevels et la lecture de leurs propriétés, une fenêtre peut être détruite
+// (fermeture d'une app pendant le refresh, ex. Skyrim). Sans handler, libX11
+// exécute son handler par défaut qui imprime l'erreur PUIS appelle exit(),
+// tuant le compositeur au milieu d'un rendu. On ignore ces erreurs attendues
+// (BadWindow) : les requêtes concernées renvoient simplement un échec, déjà
+// géré par les appelants.
+static int ignore_x11_errors(::Display *dpy, ::XErrorEvent *event) {
+	(void)dpy;
+	(void)event;
+	return 0;
+}
+
 // Extrait le numéro de display d'un nom du type ":1", ":1.0", "unix:1".
 int display_number_from_name(const std::string &name) {
 	size_t pos = name.rfind(':');
@@ -198,6 +211,12 @@ void X11PidResolver::start() {
 	if (worker.joinable()) {
 		return;
 	}
+	// Remplace le handler par défaut de libX11 (qui appelle exit() sur toute
+	// erreur asynchrone, ex. BadWindow quand une fenêtre est fermée pendant
+	// qu'on lit ses propriétés) par un handler qui ignore l'erreur. Le worker
+	// est l'unique consommateur Xlib du processus (le jeu EST le compositeur
+	// Wayland), un handler process-global permanent est donc sans effet de bord.
+	XSetErrorHandler(ignore_x11_errors);
 	stop_requested = false;
 	refresh_requested = false;
 	worker = std::thread(&X11PidResolver::worker_loop, this);
