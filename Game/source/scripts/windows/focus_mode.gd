@@ -61,12 +61,26 @@ const STACK_Z_OFFSET := -0.1
 const POPUP_CROP_SHADER_CODE = """
 shader_type canvas_item;
 uniform vec2 content_size = vec2(0.0, 0.0);
+// Fenêtres probe-classées OPAQUES : normalise l'alpha comme le shader 3D.
+// Les buffers de jeux portent un alpha < 1 aux UI semi-transparentes
+// composées dans leur buffer (inventaires, menus...) que les bureaux réels
+// neutralisent (formats RGBX). Sans ça, l'overlay focus révélerait
+// l'environnement 3D derrière au lieu du contenu de l'app (le 3D masque le
+// défaut en doublant l'alpha). Les fenêtres réellement translucides
+// (occludeur suspendu, ex. Konsole) gardent leur alpha brut.
+uniform bool opaque_mode = false;
 
 void fragment() {
 	vec2 ts = vec2(textureSize(TEXTURE, 0));
 	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
 		? UV * content_size / ts : UV;
-	COLOR = texture(TEXTURE, mapped_uv);
+	vec4 tex = texture(TEXTURE, mapped_uv);
+	if (opaque_mode) {
+		vec3 unmultiplied = tex.a > 0.01 ? tex.rgb / max(tex.a, 0.001) : tex.rgb;
+		COLOR = vec4(unmultiplied, clamp(tex.a * 2.0, 0.0, 1.0));
+	} else {
+		COLOR = tex;
+	}
 }
 """
 
@@ -347,6 +361,7 @@ func _update_occluder_for_alpha(delta: float) -> void:
 	if frac > OCCLUDER_OFF_FRAC:
 		_occluder_suspended = true
 		_world_occluder.visible = false
+	_apply_focus_alpha_mode()
 	_finish_alpha_probe()
 
 # Démarre la salve : enregistre la demande de copie CPU + délai limite.
@@ -354,6 +369,7 @@ func _start_alpha_probe() -> void:
 	if remote_focus:
 		return
 	_occluder_suspended = false
+	_apply_focus_alpha_mode()
 	_alpha_probing = true
 	_alpha_check_cd = 0.0 # première tentative dès la frame suivante
 	_alpha_probe_deadline = ALPHA_PROBE_TIMEOUT
@@ -371,6 +387,21 @@ func _reset_occluder_alpha_state() -> void:
 	_occluder_suspended = false
 	_alpha_check_cd = 0.0
 	_alpha_probe_deadline = 0.0
+
+# Mode d'affichage alpha de l'overlay plein écran : les fenêtres classées
+# OPAQUES par la sonde (occludeur actif) sont forcées opaques (opaque_mode)
+# — voir POPUP_CROP_SHADER_CODE ; les fenêtres réellement translucides
+# (occludeur suspendu, ex. Konsole) gardent leur alpha brut.
+func _focus_window_alpha_mode() -> bool:
+	return not _occluder_suspended
+
+func _apply_focus_alpha_mode() -> void:
+	var id := focus_fullscreen_id
+	if id == -1 or not focus_rects.has(id):
+		return
+	var fmat := focus_rects[id].material as ShaderMaterial
+	if fmat != null:
+		fmat.set_shader_parameter("opaque_mode", _focus_window_alpha_mode())
 
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D, keyboard: VirtualKeyboard) -> void:
 	compositor = compositor_ref
@@ -538,6 +569,7 @@ func enter_focus(id: int) -> void:
 	rect.z_index = FOCUS_Z_BASE + focus_stack.size()
 	ui.add_child(rect)
 	focus_rects[id] = rect
+	_apply_focus_alpha_mode()
 
 	# Récupérer la texture courante depuis le quad 3D
 	rect.texture = info.get("texture")
@@ -784,6 +816,7 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 		var fmat := focus_rects[id].material as ShaderMaterial
 		if fmat:
 			fmat.set_shader_parameter("content_size", st["content_size"])
+			fmat.set_shader_parameter("opaque_mode", _focus_window_alpha_mode())
 	# Nouvelle fenêtre / resize : ajuster la taille de l'overlay des fenêtres
 	# non plein écran à la nouvelle taille de surface.
 	_refresh_rect_layout(id)
