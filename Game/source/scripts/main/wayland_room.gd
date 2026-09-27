@@ -350,6 +350,7 @@ func _ready() -> void:
 	compositor.layer_surface_unmapped.connect(layers.on_layer_surface_unmapped)
 	compositor.layer_surface_texture_updated.connect(layers.on_layer_surface_texture_updated)
 	compositor.layer_surface_layout_changed.connect(layers.on_layer_surface_layout_changed)
+	compositor.layer_surface_keyboard_interactive_changed.connect(layers.on_layer_surface_keyboard_interactive_changed)
 	compositor.layer_popup_mapped.connect(layers.on_layer_popup_mapped)
 	compositor.session_lock_locked.connect(layers.on_session_lock_locked)
 	compositor.session_lock_unlocked.connect(layers.on_session_lock_unlocked)

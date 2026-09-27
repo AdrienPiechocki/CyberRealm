@@ -375,6 +375,15 @@ struct LayerSurfaceState {
     int x = 0;
     int y = 0;
 
+    // Dernière valeur de keyboard_interactive connue par le jeu. Maintien :
+    // le signal layer_surface_mapped ne l'émet qu'une seule fois (au map), or
+    // le client (quickshell) peut passer une surface en EXCLUSIVE APRÈS le
+    // mapping (popout DMS : focus clavier posé seulement après le 1er frame).
+    // Sans synchronisation, layer_rects[id].kb restait figé à 0 → à z égal,
+    // _layer_at donnait le hit au scrim plein écran :background inséré premier.
+    // Posé dans on_layer_surface_map, re-vérifié dans _process à chaque frame.
+    int last_keyboard_interactive = -1;
+
     // Buffer/mapping/tampon CPU réutilisés d'une frame à l'autre pour la
     // capture (voir CaptureCache).
     CaptureCache capture_cache;

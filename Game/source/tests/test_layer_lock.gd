@@ -130,3 +130,35 @@ func test_lock_keeps_movement_frozen_through_recapture() -> Variant:
 		return "player.session_locked doit être réinitialisé à l'unlock"
 	_teardown()
 	return true
+
+# Régression "clic pass-through" des popouts DMS : deux surfaces du même
+# layer (z égal), le scrim plein écran :background inséré AVANT le widget.
+# Toutes deux mappées non-interactives (kb=0) → _layer_at préfère la première
+# insérée (le scrim). Quand le client passe ensuite le widget en EXCLUSIVE
+# (set_keyboard_interactivity après le 1er frame), on_layer_surface_keyboard_
+# interactive_changed doit mettre kb à jour pour que le widget gagne le
+# tie-break (sinon les clics partent au scrim dont le masque les avale).
+func test_kb_change_makes_widget_beat_scrim_at_equal_z() -> Variant:
+	var build: Variant = _build_world()
+	if build != true:
+		return build
+	# Scrim plein écran inséré en premier (ordre observé après l'update DMS).
+	layers.on_layer_surface_mapped(1, "dms:popout:background", LayerSurfacesScript.LAYER_TOP,
+		15, 0, 0, 1920, 1080, 0)
+	# Widget contenu inséré ensuite, même layer → même z_index (1200).
+	layers.on_layer_surface_mapped(2, "dms:popout", LayerSurfacesScript.LAYER_TOP,
+		1, 40, 40, 200, 300, 0)
+	var hit: Dictionary = layers._layer_at(Vector2(100, 100))
+	if hit.get("id", -1) != 1:
+		return "les deux kb=0, le premier inséré (scrim id=1) doit gagner, hit=%s" % [str(hit)]
+	# Le client passe le widget en EXCLUSIVE (kb=2) après le 1er frame.
+	layers.on_layer_surface_keyboard_interactive_changed(2, 2)
+	if int(layers.layer_rects[2].get("kb", 0)) != 2:
+		return "kb du widget doit être mis à jour à 2, kb=%s" % [str(layers.layer_rects[2].get("kb", 0))]
+	if not layers._any_interactive_layer():
+		return "_any_interactive_layer() doit être vrai : le widget est EXCLUSIVE"
+	hit = layers._layer_at(Vector2(100, 100))
+	if hit.get("id", -1) != 2:
+		return "à z égal le widget interactif (id=2) doit gagner le tie-break, hit=%s" % [str(hit)]
+	_teardown()
+	return true

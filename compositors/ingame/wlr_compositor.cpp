@@ -275,6 +275,14 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::INT, "y"),
         PropertyInfo(Variant::INT, "width"),
         PropertyInfo(Variant::INT, "height")));
+    // Changement de keyboard_interactive d'une layer surface, APRÈS le map.
+    // Émis seulement quand la valeur change (pas à chaque frame) : le client
+    // peut la modifier n'importe quand (set_keyboard_interactivity), pas
+    // uniquement au moment du map. Permet au script de garder layer_rects[kb]
+    // synchronisé pour le tie-break du hit-testing à z égal.
+    ADD_SIGNAL(MethodInfo("layer_surface_keyboard_interactive_changed",
+        PropertyInfo(Variant::INT, "id"),
+        PropertyInfo(Variant::INT, "keyboard_interactive")));
     ADD_SIGNAL(MethodInfo("layer_popup_mapped",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::INT, "parent_layer_id"),
@@ -1304,6 +1312,19 @@ void WlrCompositor::_process(double delta) {
         wlr_surface *surf = ls.layer_surface ? ls.layer_surface->surface : nullptr;
         if (surf && surf->mapped) {
             wlr_surface_send_frame_done_tree(surf, &now);
+        }
+        // Suivi des changements de keyboard_interactive (set_keyboard_interactivity
+        // du client, ex. popout DMS passé en EXCLUSIVE après son premier frame).
+        // Détecté ici à chaque frame — un simple compare int, et uniquement sur
+        // les surfaces encore mappées — pour émettre le signal *_changed qui
+        // maintient layer_rects[id].kb synchronisé (sinon le tie-break du
+        // hit-testing à z égal se fie à la valeur figée du map).
+        if (surf && surf->mapped) {
+            int kb = (int)ls.layer_surface->current.keyboard_interactive;
+            if (kb != ls.last_keyboard_interactive) {
+                ls.last_keyboard_interactive = kb;
+                emit_signal("layer_surface_keyboard_interactive_changed", ls.id, kb);
+            }
         }
     }
     for (auto &pair : session_lock.surfaces) {

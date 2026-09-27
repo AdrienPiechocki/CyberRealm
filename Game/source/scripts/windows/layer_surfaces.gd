@@ -304,6 +304,17 @@ func on_layer_surface_layout_changed(id: int, x: int, y: int, w: int, h: int) ->
 	entry.rect.position = Vector2(x, y)
 	entry.rect.size = Vector2(max(w, 1), max(h, 1))
 
+# Changement de keyboard_interactive APRÈS le map (set_keyboard_interactivity
+# du client). Garde layer_rects[kb] synchronisé : sans ça, une surface mappée
+# non-interactive puis passée en EXCLUSIVE (popout DMS, focus clavier posé
+# après le 1er frame) gardait kb=0 → à z égal, _layer_at préférait la première
+# surface insérée, i.e. le scrim plein écran :background → clics avalés par le
+# masque contentHoleRect au lieu d'atteindre le widget.
+func on_layer_surface_keyboard_interactive_changed(id: int, kb: int) -> void:
+	if not layer_rects.has(id):
+		return
+	layer_rects[id]["kb"] = kb
+
 func on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, w: int, h: int) -> void:
 	if not layer_rects.has(parent_layer_id):
 		return

@@ -247,6 +247,10 @@ void WlrCompositor::on_layer_surface_map(wl_listener *listener, void *data) {
 
     wlr_layer_surface_v1_state &state = ls->layer_surface->current;
 
+    // Base du suivi des changements de keyboard_interactive (voir
+    // last_keyboard_interactive et le signal *_changed émis dans _process).
+    ls->last_keyboard_interactive = (int)state.keyboard_interactive;
+
     // Focus clavier automatique pour les surfaces EXCLUSIVE (waybar).
     // Jamais pour la couche background (fond d'écran) : elle est invisible
     // et ne doit pas avaler le clavier.
