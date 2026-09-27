@@ -1,10 +1,13 @@
 #pragma once
 
+#include <libdrm/drm_fourcc.h>
 #include <vulkan/vulkan.h>
 #include <godot_cpp/variant/rid.hpp>
 #include <godot_cpp/classes/texture2drd.hpp>
 #include <godot_cpp/classes/rendering_device.hpp>
 #include <vector>
+
+struct wlr_buffer; // wlroots, opaque ici (défini dans wlroots headers)
 
 namespace godot {
 
@@ -17,6 +20,11 @@ struct VulkanDmaBufTexture {
     VkImage vk_image = VK_NULL_HANDLE;
     VkDeviceMemory vk_memory = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    // Buffer client verrouillé (wlr_buffer_lock) dont ce VkImage est le
+    // zéro-copy. Déverrouillé (wlr_buffer_unlock) seulement au flush, une
+    // fois que le GPU de Godot a fini de l'échantillonner. nullptr pour les
+    // buffers offscreen alloués par le compositeur (pas de lock à relâcher).
+    wlr_buffer *source = nullptr;
 };
 
 // Holds deferred-release resources that must not be destroyed yet
@@ -28,6 +36,9 @@ struct PendingRelease {
     VkImage vk_image = VK_NULL_HANDLE;
     VkDeviceMemory vk_memory = VK_NULL_HANDLE;
     VkFence fence = VK_NULL_HANDLE;
+    // Buffer client à déverrouiller quand la texture associée est détruite
+    // (voir VulkanDmaBufTexture::source). Nullptr pour les offscreen.
+    wlr_buffer *source = nullptr;
 };
 
 // Imports DMA-BUF file descriptors into Godot's Vulkan renderer as
@@ -103,8 +114,18 @@ public:
     // Godot Texture2DRD.  Vulkan takes ownership of a dup() of `fd`.
     // Returns a VulkanDmaBufTexture with vk_image == VK_NULL_HANDLE on
     // failure.
+    //
+    // `modifier` / `plane_offset` / `plane_stride` proviennent du
+    // wlr_dmabuf_attributes du buffer client (chemin zéro-copy). Avec un
+    // modifier tiled, l'image est créée en VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT
+    // (VK_EXT_image_drm_format_modifier) ; les valeurs par défaut (LINEAR + 0)
+    // préservent l'ancien comportement pour les buffers offscreen alloués par
+    // le compositeur.
     VulkanDmaBufTexture import_dma_buf(int fd, uint32_t width,
-                                       uint32_t height, uint32_t drm_format);
+                                       uint32_t height, uint32_t drm_format,
+                                       uint64_t modifier = DRM_FORMAT_MOD_LINEAR,
+                                       uint32_t plane_offset = 0,
+                                       uint32_t plane_stride = 0);
 
     // Release a previously imported texture (RID + VkImage + VkDeviceMemory).
     // Safe to call with a failed/empty VulkanDmaBufTexture.

@@ -76,7 +76,7 @@ namespace godot {
 // (contenu qui change) et la copie CPU vers `bytes` se refont à chaque
 // frame.
 struct CaptureCache {
-    enum class Backend { NONE, VULKAN, DMABUF, PIXELS };
+    enum class Backend { NONE, VULKAN, DMABUF, PIXELS, ZERO_COPY };
     Backend backend = Backend::NONE;
 
     wlr_buffer *offscreen = nullptr;
@@ -117,6 +117,32 @@ struct CaptureCache {
     // quand le cache passe en backend VULKAN ; nullptr sinon (le reset n'a alors
     // que le RID à libérer, via `rd`).
     VulkanDmaBufImport *vulkan_import = nullptr;
+
+    // --- Pool zéro-copy (buffer client) -------------------------------
+    // Chemin capture_surface_zero_copy : on AFFICHE le buffer même que le
+    // client vient de committer (déjà rendu sur GPU) — aucune copie, aucun
+    // render pass EGL, aucun wait_for_dmabuf_gpu_writes. Le client Wayland
+    // tournant en double/triple buffering alterne entre 2-3 buffers : le
+    // même BO (même inode dma-buf, fstat dev+ino) revient plusieurs frames
+    // de suite, et notre VkImage earlier est un alias du BO → il montre le
+    // nouveau contenu SANS réimport. Le pool keyé par inode (pas par
+    // wlr_buffer*, qui meurt quand wlroots drop le buffer) + un fd dupliqué
+    // nous garantit que le BO reste vivant tant qu'un slot existe.
+    // Les 3 clauses captées par le backend ZERO_COPY sont : fenêtre focus
+    // plein écran, non partagée LAN, sans sous-surfaces, buffer mono-plan
+    // dmabuf == taille logique.
+    static constexpr size_t ZERO_COPY_MAX_SLOTS = 3;
+    struct ZeroCopySlot {
+        uint64_t key_dev = 0;
+        uint64_t key_ino = 0;
+        int fd_dup = -1; // notre copie du fd dma-buf (BO vivant + fstat)
+        uint32_t width = 0;
+        uint32_t height = 0;
+        uint64_t last_used = 0; // séquence LRU
+        VulkanDmaBufTexture vt;
+    };
+    std::vector<ZeroCopySlot> zero_copy_slots;
+    uint64_t zero_copy_seq = 0; // dernier usage global, pour l'éviction
 
     // Démappe et libère le buffer courant, remet le cache à zéro. Appelé
     // avant de recréer un buffer à une nouvelle taille, et depuis le
@@ -569,6 +595,13 @@ class WlrCompositor : public Node {
     int next_window_id = 1;
     int active_toplevel_id = -1;
 
+    // Fenêtre actuellement affichée plein écran par le mode focus (Gameplay),
+    // -1 = aucune. Sa cadence de recapture passe en FAST (60/s, dégradée par
+    // la pression GPU comme les fenêtres partagées vidéo) : l'overlay 2D du
+    // mode focus est alimenté par cette texture, sa fluidité est bornée par
+    // la cadence de capture. Voir set_focus_capture_priority_window.
+    int focus_capture_priority_window_id = -1;
+
     // État courant du pointer lock (zwp_pointer_constraints_v1::lock_pointer)
     // par fenêtre. Alimenté à la création/destruction d'un constraint LOCKED
     // et consulté par le script Godot (is_window_pointer_locked) quand une
@@ -755,6 +788,19 @@ class WlrCompositor : public Node {
     // synchronisation se refont à chaque appel.
     bool capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
 
+    // Chemin zéro-copy VRAI (pas de render pass EGL ni d'offscreen) : la
+    // texture affichée est l'import direct du buffer CLIENT (wlr_surface
+    // commité par le client, déjà sur GPU). Éligible uniquement à la fenêtre
+    // en focus plein écran non partagée, sans sous-surfaces, buffer dmabuf
+    // mono-plan == taille logique. Le contenu importé est le buffer même que
+    // le client a fini de rendre — aucune copie GPU, aucune attente de
+    // synchronisation cross-API (contrairement au render pass wlroots →
+    // offscreen → VkImage). Un petit pool keyé par inode dma-buf (fstat dev+
+    // ino du BO, PAS par wlr_buffer* qui meurt quand wlroots le drop) absorbe
+    // le double/triple buffering du client : le même BO re-committé est
+    // réutilisé SANS réimport. Fallback intégral sinon.
+    bool capture_surface_zero_copy(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache);
+
     // Chemin dmabuf: rendu GPU (GLES2) vers buffer offscreen dmabuf,
     // puis mmap du fd pour accès direct à la mémoire. Évite le readback
     // GL par pixel et le swizzle si le format est ABGR8888 (RGBA mémoire).
@@ -916,6 +962,14 @@ public:
     // popup) à la surface d'une fenêtre : utilisé par le mode focus quand une
     // nouvelle fenêtre devient active.
     void set_window_keyboard_focus(int window_id);
+
+    // Marque la fenêtre affichée PLEIN ÉCRAN par le mode focus (window_id)
+    // pour lui donner une cadence de capture prioritaire : le contenu affiché
+    // par l'overlay 2D ne peut pas être plus fluide que la recapture de sa
+    // texture. Un jeu plein écran doit être recapturé à 60/s (FAST), pas à
+    // 30/s (SLOW) ni 10/s (pression) — sinon la fluidité perçue est bridée par
+    // la texture même si le jeu rend à 60+ fps. -1 révoque la priorité.
+    void set_focus_capture_priority_window(int window_id);
 
     // Layout clavier (xkbcommon) transmis aux clients Wayland : même format
     // que setxkbmap ("fr", "us", "de"... + variante "oss", "intl", ...).

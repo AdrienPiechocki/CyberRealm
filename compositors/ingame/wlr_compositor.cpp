@@ -112,6 +112,8 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_keyboard_key);
     ClassDB::bind_method(D_METHOD("set_window_keyboard_focus", "window_id"),
         &WlrCompositor::set_window_keyboard_focus);
+    ClassDB::bind_method(D_METHOD("set_focus_capture_priority_window", "window_id"),
+        &WlrCompositor::set_focus_capture_priority_window);
     ClassDB::bind_method(D_METHOD("notify_activity"), &WlrCompositor::notify_activity);
     ClassDB::bind_method(D_METHOD("set_keyboard_layout", "layout", "variant"),
         &WlrCompositor::set_keyboard_layout);
@@ -1337,9 +1339,15 @@ void WlrCompositor::_process(double delta) {
             // Cadence par fenêtre, modulée par la pression GPU : 60/s pour
             // les fenêtres partagées vidéo (le stream doit rester fluide),
             // 30/s pour les autres dirty (rafraîchissement des quads 3D).
+            // La fenêtre affichée plein écran par le mode focus est traitée
+            // comme partagée : son overlay 2D est alimenté par cette texture
+            // et la fluidité du gameplay en dépend — même si le jeu rend à
+            // 60+ fps, sans cette priorité sa texture ne serait recapturée
+            // qu'à 30/s (puis 10/s en pression) et l'affichage saccaderait.
             // Sous pression, les deux cadences sont allongées par paliers
             // (voir SLOW_INTERVALS_US / FAST_INTERVALS_US).
-            bool shared = video_share.is_shared(ws.id);
+            bool shared = video_share.is_shared(ws.id) ||
+                (ws.id == focus_capture_priority_window_id);
             uint64_t interval = shared ? FAST_INTERVALS_US[capture_pressure]
                                        : SLOW_INTERVALS_US[capture_pressure];
             bool due = ws.dirty &&
@@ -1348,6 +1356,9 @@ void WlrCompositor::_process(double delta) {
             if (due || safety) {
                 // Budget anti-stall (voir MAX_WINDOW_CAPTURES_PER_FRAME) :
                 // au-delà, la fenêtre reste due pour une frame suivante.
+                // Idem partagées vidéo, la fenêtre en focus plein écran ne
+                // compte pas dans le budget : c'est l'image affichée à
+                // l'écran, son rafraîchissement passe avant les quads 3D.
                 if (!shared && window_captures_this_frame >= MAX_WINDOW_CAPTURES_PER_FRAME) {
                     continue;
                 }

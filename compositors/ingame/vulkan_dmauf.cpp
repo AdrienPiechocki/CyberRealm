@@ -3,6 +3,9 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <libdrm/drm_fourcc.h>
+extern "C" {
+#include <wlr/types/wlr_buffer.h>
+}
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
@@ -184,7 +187,10 @@ uint32_t VulkanDmaBufImport::find_memory_type(uint32_t type_bits,
 VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
                                                        uint32_t width,
                                                        uint32_t height,
-                                                       uint32_t drm_format) {
+                                                       uint32_t drm_format,
+                                                       uint64_t modifier,
+                                                       uint32_t plane_offset,
+                                                       uint32_t plane_stride) {
     VulkanDmaBufTexture result;
 
     if (!available) return result;
@@ -231,9 +237,20 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     }
 
     // --- Create VkImage with external memory --------------------------
+    bool is_linear = (modifier == DRM_FORMAT_MOD_LINEAR ||
+                      modifier == DRM_FORMAT_MOD_INVALID);
+    // Pour un buffer client tiled (modifier != LINEAR/INVALID), on doit créer
+    // l'image en VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT (VK_EXT_image_drm_format_modifier)
+    // avec le layout explicite du plan (offset/stride du wlr_dmabuf_attributes).
+    // Sans ce chemin, le GPU interprète la mémoire comme linéaire alors qu'elle
+    // est tiled → lecture au bon début (même BO) mais foulée/layout faux → garbage.
+    // Si l'extension n'est pas activée côté Godot, vkCreateImage échoue ici et on
+    // retombe proprement sur le render pass (chemin vulkan classique).
     VkExternalMemoryImageCreateInfo ext_mem_info = {};
     ext_mem_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
     ext_mem_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    VkImageDrmFormatModifierExplicitCreateInfoEXT mod_explicit = {};
 
     VkImageCreateInfo image_info = {};
     image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -244,20 +261,39 @@ VulkanDmaBufTexture VulkanDmaBufImport::import_dma_buf(int fd,
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    // LINEAR tiling: matches the DMA-BUF's DRM_FORMAT_MOD_LINEAR layout.
-    // Using OPTIMAL here causes GPUVM faults because the driver sets up
-    // GPU page tables for a tiled layout while the actual backing memory
-    // is linear → the GPU reads garbage addresses.
-    image_info.tiling = VK_IMAGE_TILING_LINEAR;
     image_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    if (is_linear) {
+        // LINEAR tiling: matches the DMA-BUF's DRM_FORMAT_MOD_LINEAR layout.
+        // Using OPTIMAL here causes GPUVM faults because the driver sets up
+        // GPU page tables for a tiled layout while the actual backing memory
+        // is linear → the GPU reads garbage addresses.
+        image_info.tiling = VK_IMAGE_TILING_LINEAR;
+    } else {
+        image_info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+
+        VkSubresourceLayout plane_layout = {};
+        plane_layout.offset = plane_offset;
+        plane_layout.rowPitch = plane_stride;
+        plane_layout.size = 0; // non utilisé pour un import mono-plan
+
+        mod_explicit.sType = VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT;
+        mod_explicit.drmFormatModifier = modifier;
+        mod_explicit.drmFormatModifierPlaneCount = 1;
+        mod_explicit.pPlaneLayouts = &plane_layout;
+
+        // Chaîne : image_info → ext_mem_info → mod_explicit (tous obligatoires
+        // pour un VkImage external + DRM modifier).
+        ext_mem_info.pNext = &mod_explicit;
+    }
 
     VkImage vk_image = VK_NULL_HANDLE;
     res = p_CreateImage(vk_device, &image_info, nullptr, &vk_image);
     if (res != VK_SUCCESS) {
         UtilityFunctions::printerr("waylandgodot: Vulkan: vkCreateImage failed: ",
-            String::num_int64(res));
+            String::num_int64(res), " modifier=0x", String::num_uint64(modifier, 16));
         close(dup_fd);
         return result;
     }
@@ -383,11 +419,13 @@ void VulkanDmaBufImport::release_texture(VulkanDmaBufTexture &tex) {
         pr.vk_image = tex.vk_image;
         pr.vk_memory = tex.vk_memory;
         pr.fence = tex.fence;
+        pr.source = tex.source;
         pending.push_back(pr);
         tex.rid = RID();
         tex.vk_image = VK_NULL_HANDLE;
         tex.vk_memory = VK_NULL_HANDLE;
         tex.fence = VK_NULL_HANDLE;
+        tex.source = nullptr;
     }
     tex.texture.unref();
 }
@@ -424,6 +462,9 @@ void VulkanDmaBufImport::flush_pending() {
             if (pr.fence != VK_NULL_HANDLE && p_DestroyFence) {
                 p_DestroyFence(vk_device, pr.fence, nullptr);
             }
+            if (pr.source != nullptr) {
+                wlr_buffer_unlock(pr.source);
+            }
         }
         pending.clear();
         return;
@@ -454,6 +495,9 @@ void VulkanDmaBufImport::flush_pending() {
             }
             if (pr.fence != VK_NULL_HANDLE && p_DestroyFence) {
                 p_DestroyFence(vk_device, pr.fence, nullptr);
+            }
+            if (pr.source != nullptr) {
+                wlr_buffer_unlock(pr.source);
             }
         } else {
             // Not ready yet — keep in pending.
@@ -486,6 +530,9 @@ void VulkanDmaBufImport::cleanup() {
         }
         if (pr.fence != VK_NULL_HANDLE && p_DestroyFence) {
             p_DestroyFence(vk_device, pr.fence, nullptr);
+        }
+        if (pr.source != nullptr) {
+            wlr_buffer_unlock(pr.source);
         }
     }
     pending.clear();

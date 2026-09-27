@@ -499,6 +499,13 @@ func enter_focus(id: int) -> void:
 	if focus_fullscreen_id == -1:
 		compositor.set_window_fullscreen(id, true)
 		focus_fullscreen_id = id
+		# Cadence de capture prioritaire pour cette fenêtre (60/s) : c'est
+		# l'image affichée plein écran, sa fluidité est bornée par la
+		# recapture de sa texture (voir wlr_compositor set_focus_capture_
+		# priority_window). Sans ça, un jeu plein écran resterait bridé à la
+		# cadence "quads 3D" (30/s, voire 10/s sous pression), même s'il rend
+		# à 60+ fps.
+		compositor.set_focus_capture_priority_window(id)
 
 	# TextureRect dédié à cette fenêtre : la première (plein écran) couvre
 	# tout l'écran, les suivantes sont centrées à taille naturelle (la
@@ -728,6 +735,9 @@ func on_window_unmapped(id: int) -> void:
 	if focus_fullscreen_id == id and not focus_stack.is_empty():
 		compositor.set_window_fullscreen(focus_stack[0], true)
 		focus_fullscreen_id = focus_stack[0]
+		# La priorité de capture suit la nouvelle fenêtre plein écran
+		# (l'overlay affiché grand écran doit rester fluide).
+		compositor.set_focus_capture_priority_window(focus_fullscreen_id)
 		# La fenêtre promue plein écran ne doit plus porter de barre de titre
 		# (non déplaçable) : retrait immédiat, pas d'attente du prochain
 		# rafraîchissement de layout.
@@ -1464,6 +1474,9 @@ func _reset_focus_ui() -> void:
 	focus_stack.clear()
 	focus_fullscreen_id = -1
 	focus_mode = false
+	# Plus aucune fenêtre plein écran en focus : révoquer la priorité de
+	# capture (la fenêtre repasse à la cadence "quads 3D").
+	compositor.set_focus_capture_priority_window(-1)
 	remote_focus = false
 	remote_focus_peer = -1
 	remote_focus_wid = -1

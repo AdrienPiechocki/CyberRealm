@@ -544,6 +544,11 @@ void WlrCompositor::release_all_keys() {
     // pause était ouvert, par ex.) sera ignoré au lieu de casser l'état xkb.
     pressed_keys.clear();
 }
+void WlrCompositor::set_focus_capture_priority_window(int window_id) {
+    if (window_id == focus_capture_priority_window_id) return;
+    focus_capture_priority_window_id = window_id;
+}
+
 void WlrCompositor::set_window_keyboard_focus(int window_id) {
     if (!seat) return;
     WindowState *ws = find_window(window_id);

@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <thread>
 #include <vector>
+#include <utility>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -117,6 +118,22 @@ bool WlrCompositor::probe_dmabuf_vulkan_import() {
     return true;
 }
 void CaptureCache::reset(RenderingDevice *rd) {
+    // Pool zéro-copy (buffer client) : chaque slot référence un BO gardé
+    // vivant par son fd dupliqué + le VkImage importé. On libère le VkImage
+    // (déféré au flush GPU) puis le fd de chaque slot. Appelé quand on sort
+    // du zéro-copy (défocus, partage LAN, reset fenêtre).
+    for (auto &slot : zero_copy_slots) {
+        if (vulkan_import) {
+            vulkan_import->release_texture(slot.vt);
+        }
+        if (slot.fd_dup >= 0) {
+            close(slot.fd_dup);
+            slot.fd_dup = -1;
+        }
+    }
+    zero_copy_slots.clear();
+    zero_copy_seq = 0;
+
     // Libérer les ressources Vulkan AVANT le wlr_buffer : le RID
     // wrappe un VkImageView qui référence le VkImage, lequel est backing
     // par le même fd DMA-BUF que le wlr_buffer.  Tant que le RID existe,
@@ -168,7 +185,17 @@ static inline int round_up_capture_size(int v) {
 }
 bool WlrCompositor::capture_surface(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
     static bool printed_path = false;
-    // Essayer d'abord le chemin Vulkan zero-copy (GPU→GPU, pas de CPU readback).
+    // Chemin zéro-copy (import direct du buffer client pour la fenêtre focus
+    // plein écran), puis Vulkan zero-copy (GPU→GPU, pas de CPU readback).
+    if (gpu_pipeline_active && dmabuf_available &&
+        capture_surface_zero_copy(surface, tex, out_w, out_h, cache)) {
+        if (!printed_path) {
+            UtilityFunctions::print("waylandgodot: [diag] capture -> zero_copy (gpu=", gpu_pipeline_active,
+                " dmabuf=", dmabuf_available, ")");
+            printed_path = true;
+        }
+        return true;
+    }
     if (gpu_pipeline_active && dmabuf_available &&
         capture_surface_vulkan(surface, tex, out_w, out_h, cache)) {
         if (!printed_path) {
@@ -1190,6 +1217,227 @@ Ref<Image> WlrCompositor::get_window_cpu_image(int window_id) {
 }
 void WlrCompositor::set_cpu_capture_requested(bool requested) {
     cpu_capture_requested = requested;
+}
+
+// =====================================================================
+// capture_surface_zero_copy — AFFICHE le buffer client directement
+// =====================================================================
+// La texture rendue est l'import Vulkan du buffer même que le client vient
+// de committer (wlr_surface->buffer, un wlr_client_buffer adossé à un
+// dma-buf rendu par le client sur GPU). Aucun render pass EGL, aucun
+// offscreen, aucune attente de synchronisation cross-API : le client a
+// terminé de rendre AVANT de committer (contrat Wayland), donc le contenu
+// est prêt à l'arrivée. C'est l'optimisation qui supprime la contention GPU
+// (render pass + wait_for_dmabuf_gpu_writes 4-10 ms) à l'origine de la
+// chute de FPS du jeu plein écran en mode focus.
+//
+// Pool de slots keyé par (st_dev, st_ino) du dma-buf (fstat) : le client
+// Wayland tourne en double/triple buffering (A/B/A/B...), donc le MÊME BO
+// revient régulièrement. Sur hit, on réutilise le VkImage déjà importé (qui
+// alias ce BO — le nouveau contenu re-rendu par le client s'y voit de
+// lui-même) SANS réimport ni vkDeviceWaitIdle. Le fd dupliqué dans le slot
+// garde le BO vivant indépendamment du wlr_client_buffer (que wlroots peut
+// détruire) et sert au fstat des frames suivantes.
+//
+// Éligibilité stricte (sinon fallback intégral vers capture_surface_vulkan) :
+//   - fenêtre en focus plein écran (focus_capture_priority_window_id)
+//   - PAS de partage LAN (video_share.is_shared) : le chemin zéro-copy n'a
+//     ni mmap CPU ni dma_fd de recapture → rien à encoder ni à lire en CPU.
+//   - pas de cpu_capture_requested (pas de readback demandé pour le LAN).
+//   - buffer client présent, dmabuf MONO-plan, no sous-surfaces (le buffer
+//     racine doit porter TOUT le contenu visible).
+//   - scale == 1, pas de viewport crop/dst, pas de transform → le buffer
+//     == la taille logique affiché 1:1.
+//   - format supporté par l'import Vulkan (BGRA/RGBA 8888).
+// =====================================================================
+bool WlrCompositor::capture_surface_zero_copy(wlr_surface *surface, Ref<Texture2D> &tex, int &out_w, int &out_h, CaptureCache &cache) {
+    // Diagnostic one-shot : explique pourquoi la fenêtre focus passe (ou non)
+    // par le zéro-copy. La vue `capture -> zero_copy/vulkan` de capture_surface
+    // n'imprime que le PREMIER chemin réussi du processus (avant le focus), donc
+    // elle ne prouve pas le backend réel du mode focus — ce log comble le trou.
+    static String diag_focus_state;
+    auto diag_focus = [&](const String &cause) {
+        if (cache.wid != focus_capture_priority_window_id || cache.wid < 0) return;
+        if (cause == diag_focus_state) return;
+        diag_focus_state = cause;
+        UtilityFunctions::print("waylandgodot: [diag] capture focus ", cache.wid,
+            " -> ", cause);
+    };
+    if (!gpu_pipeline_active || !dmabuf_available || !vulkan_import.is_available()) {
+        diag_focus("fallback(gpu/dmabuf/vulkan indisponible)");
+        return false;
+    }
+    // Focus plein écran uniquement : le zéro-copy sert exclusivement au mode
+    // focus (l'overlay 2D plein écran). Les autres fenêtres restent sur le
+    // chemin vulkan (quads 3D, partage LAN). wid < 0 exclut aussi les caches
+    // de layer/session-lock/drag dont wid reste à -1 par défaut quand aucun
+    // focus prioritaire n'est actif.
+    if (cache.wid != focus_capture_priority_window_id || cache.wid < 0) {
+        return false;
+    }
+    // Pas de partage LAN ni de readback CPU : le zéro-copy n'expose ni mmap
+    // (cache.data), ni dma_fd de capture (submit_video_frame). Une fenêtre
+    // partagée vidéo / demandée en CPU retombe sur le chemin vulkan.
+    if (video_share.is_shared(cache.wid) || cpu_capture_requested) {
+        diag_focus("fallback(partage LAN ou CPU demandé)");
+        return false;
+    }
+    // Session OBS/portal active sur cette fenêtre : blit_toplevel_capture lit
+    // cache.offscreen (vide en ZERO_COPY) → la capture fenêtre serait noire.
+    // On retombe sur le chemin vulkan qui remplit l'offscreen.
+    if (WindowState *ws = find_window(cache.wid)) {
+        if (ws->image_source &&
+            (ws->image_source->num_started > 0 || ws->image_source->needs_frame)) {
+            diag_focus("fallback(session OBS active)");
+            return false;
+        }
+    }
+    if (!surface->buffer) {
+        diag_focus("fallback(pas de buffer client)");
+        return false;
+    }
+    // Aucune sous-surface : le buffer racine doit porter tout le contenu
+    // (pas de sous-popup/overlay à composer), sinon le zéro-copy afficherait
+    // une fenêtre incomplète.
+    if (!wl_list_empty(&surface->current.subsurfaces_below) ||
+        !wl_list_empty(&surface->current.subsurfaces_above)) {
+        diag_focus("fallback(sous-surfaces présentes)");
+        return false;
+    }
+    // 1:1 buffer↔surface : si le client applique un scale != 1, un crop
+    // (viewport src) ou un redimensionnement dst, le buffer ne correspond
+    // plus à ce qu'il faut afficher → chemin vulkan (qui recadre).
+    if (surface->current.scale != 1 ||
+        surface->current.viewport.has_src ||
+        surface->current.viewport.has_dst) {
+        diag_focus("fallback(scale/viewport != 1:1)");
+        return false;
+    }
+
+    struct wlr_client_buffer *cb = surface->buffer;
+    // Lock court pendant la lecture des attributs + l'import : le buffer est
+    // déjà référencé par la surface (elle le présente), le lock couvre le
+    // temps de notre import dans le thread principal.
+    wlr_buffer_lock(&cb->base);
+
+    wlr_dmabuf_attributes attribs = {};
+    bool ok = wlr_buffer_get_dmabuf(&cb->base, &attribs);
+    if (ok && attribs.n_planes != 1) ok = false;
+    if (!ok || attribs.width == 0 || attribs.height == 0) {
+        diag_focus("fallback(pas de dmabuf mono-plan)");
+        wlr_buffer_unlock(&cb->base);
+        return false;
+    }
+    // Le buffer doit correspondre à la taille logique de la surface (scale==1
+    // + pas de viewport vérifiés plus haut, donc buffer == logique attendu).
+    if ((uint32_t)surface->current.width != attribs.width ||
+        (uint32_t)surface->current.height != attribs.height) {
+        diag_focus("fallback(taille buffer != taille logique)");
+        wlr_buffer_unlock(&cb->base);
+        return false;
+    }
+    // Format mappable par notre import Vulkan ?
+    if (VulkanDmaBufImport::drm_to_rd_format(attribs.format) ==
+        RenderingDevice::DATA_FORMAT_MAX) {
+        diag_focus("fallback(format dmabuf non mappable)");
+        wlr_buffer_unlock(&cb->base);
+        return false;
+    }
+
+    // Identité du BO (dev, ino) pour le pool : fstat sur le fd du buffer.
+    struct stat st = {};
+    if (fstat(attribs.fd[0], &st) != 0) {
+        wlr_buffer_unlock(&cb->base);
+        return false;
+    }
+    uint64_t key_dev = (uint64_t)st.st_dev;
+    uint64_t key_ino = (uint64_t)st.st_ino;
+
+    // ---- Pool lookup : le même BO (double/triple buffering) ? ----------
+    for (auto &slot : cache.zero_copy_slots) {
+        if (slot.key_dev == key_dev && slot.key_ino == key_ino &&
+            slot.width == attribs.width && slot.height == attribs.height) {
+            // Hit : le client a re-rendu dans le même BO → le VkImage déjà
+            // importé montre le nouveau contenu. Aucun import, aucun wait.
+            slot.last_used = ++cache.zero_copy_seq;
+            cache.backend = CaptureCache::Backend::ZERO_COPY;
+            cache.width = (int)attribs.width;
+            cache.height = (int)attribs.height;
+            cache.vulkan_import = &vulkan_import;
+            // NOTA : cache.vulkan_rid / vk_image / vk_memory restent vides en
+            // ZERO_COPY : la texture vit dans le pool, pas dans ces champs.
+            diag_focus("zero_copy (hit, modifier=" + String::num_uint64(attribs.modifier) + ")");
+            wlr_buffer_unlock(&cb->base);
+            tex = slot.vt.texture;
+            out_w = (int)attribs.width;
+            out_h = (int)attribs.height;
+            return true;
+        }
+    }
+
+    // ---- Miss : import du buffer client directement --------------------
+    VulkanDmaBufTexture vt = vulkan_import.import_dma_buf(
+        attribs.fd[0], attribs.width, attribs.height, attribs.format,
+        attribs.modifier, attribs.offset[0], attribs.stride[0]);
+
+    if (vt.vk_image == VK_NULL_HANDLE) {
+        // Godot n'a pas l'extension VK_EXT_image_drm_format_modifier (tiled)
+        // ou l'import échoue → fallback intégral vers le chemin vulkan.
+        diag_focus("fallback(import Vulkan échoué, modifier=" +
+                    String::num_uint64(attribs.modifier) + ")");
+        wlr_buffer_unlock(&cb->base);
+        return false;
+    }
+
+    // Notre propre référence sur le BO : garde le BO vivant même si wlroots
+    // détruit le wlr_client_buffer, et permet le fstat des prochaines frames.
+    int fd_dup = dup(attribs.fd[0]);
+    if (fd_dup < 0) {
+        vulkan_import.release_texture(vt);
+        wlr_buffer_unlock(&cb->base);
+        return false;
+    }
+
+    // Éviction LRU si le pool est plein.
+    while (cache.zero_copy_slots.size() >= CaptureCache::ZERO_COPY_MAX_SLOTS) {
+        size_t victim = 0;
+        for (size_t i = 1; i < cache.zero_copy_slots.size(); i++) {
+            if (cache.zero_copy_slots[i].last_used <
+                cache.zero_copy_slots[victim].last_used) {
+                victim = i;
+            }
+        }
+        CaptureCache::ZeroCopySlot &v = cache.zero_copy_slots[victim];
+        vulkan_import.release_texture(v.vt); // VkImage différé d'une frame
+        if (v.fd_dup >= 0) {
+            close(v.fd_dup);
+        }
+        cache.zero_copy_slots.erase(cache.zero_copy_slots.begin() + victim);
+    }
+
+    CaptureCache::ZeroCopySlot slot;
+    slot.key_dev = key_dev;
+    slot.key_ino = key_ino;
+    slot.fd_dup = fd_dup;
+    slot.width = attribs.width;
+    slot.height = attribs.height;
+    slot.last_used = ++cache.zero_copy_seq;
+    slot.vt = std::move(vt);
+    cache.zero_copy_slots.push_back(std::move(slot));
+
+    cache.backend = CaptureCache::Backend::ZERO_COPY;
+    cache.width = (int)attribs.width;
+    cache.height = (int)attribs.height;
+    cache.vulkan_import = &vulkan_import;
+    diag_focus("zero_copy (import, modifier=" + String::num_uint64(attribs.modifier) +
+        ")");
+
+    wlr_buffer_unlock(&cb->base);
+
+    tex = cache.zero_copy_slots.back().vt.texture;
+    out_w = (int)attribs.width;
+    out_h = (int)attribs.height;
+    return true;
 }
 void WlrCompositor::submit_video_frame(CaptureCache &cache) {
     if (!video_share.is_active() || cache.wid < 0 || cache.dma_fd < 0 ||
