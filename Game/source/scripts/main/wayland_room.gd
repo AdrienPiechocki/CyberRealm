@@ -707,6 +707,14 @@ func _toggle_remote_pin(peer_id: int, wid: int) -> void:
 
 # ── Boucle principale ────────────────────────────────────────────────
 
+# toggle_ui masque/affiche le CanvasLayer $Level/Player/UI. Or ce layer
+# héberge aussi les overlays du mode focus (focus_mode.gd) : le cacher
+# pendant un focus ferait disparaître la fenêtre focalisée. Le raccourci est
+# donc ignoré tant que le focus est actif (comme window_menu/layer_interact/
+# freecam) ou que le clavier virtuel est occupé.
+static func _ui_toggle_allowed(focus_active: bool, keyboard_busy: bool) -> bool:
+	return not focus_active and not keyboard_busy
+
 func _process(delta: float) -> void:
 	fx.process(delta)
 
@@ -842,7 +850,9 @@ func _process(delta: float) -> void:
 		return
 
 	# Masque/affiche le HUD (réticule, FPS) pour des captures propres.
-	if Input.is_action_just_pressed("toggle_ui", true) and not layers.keyboard_busy():
+	# Bloqué en mode focus (le layer UI porte les overlays focus).
+	if Input.is_action_just_pressed("toggle_ui", true) \
+			and _ui_toggle_allowed(focus.is_active(), layers.keyboard_busy()):
 		ui.visible = not ui.visible
 		return
 
