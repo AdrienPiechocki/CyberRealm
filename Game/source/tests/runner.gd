@@ -42,10 +42,27 @@ func _init() -> void:
 			print("  FAIL: " + e)
 	quit(1 if _failed > 0 else 0)
 
+## Un script de test est utilisable s'il est non nul ET instanciable.
+##
+## Piège : load() ne renvoie PAS null sur un script invalide. Godot renvoie
+## quand même un objet GDScript, seulement non instanciable — un `== null`
+## laisse donc passer tous les fichiers cassés, qui disparaissent alors
+## silencieusement de la suite (0 test, 0 échec, quit(0)).
+static func is_test_script_usable(script: Script) -> bool:
+	return script != null and script.can_instantiate()
+
 func _run_test_script(resource_path: String) -> void:
 	var script: Script = load(resource_path)
-	if script == null:
-		push_error("runner: cannot load " + resource_path)
+	# Sans ce controle, un fichier de test cassé ne comptait aucun test et
+	# aucun échec : le runner affichait un résumé propre et sortait en 0, donc
+	# une suite entièrement cassée passait en CI.
+	if not is_test_script_usable(script):
+		var short := resource_path.get_file()
+		_total += 1
+		_failed += 1
+		var msg := "script non instanciable (erreur de compilation ?)"
+		_errors.append(short + " — " + msg)
+		print("  ✗ " + short + " — " + msg)
 		return
 
 	var instance = Node.new()

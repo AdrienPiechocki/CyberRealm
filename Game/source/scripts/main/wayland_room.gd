@@ -430,10 +430,17 @@ func _ready() -> void:
 	pause_menu.pins_layer_changed.connect(_on_pins_layer_changed)
 	pause_menu.pins_opacity_changed.connect(_on_pins_opacity_changed)
 	pause_menu.pins_position_changed.connect(_on_pins_position_changed)
-	# Appliquer la couche, la transparence et la position des fenêtres épinglées
+	pause_menu.pins_border_color_changed.connect(_on_pins_border_color_changed)
+	pause_menu.pins_size_divisor_changed.connect(_on_pins_size_divisor_changed)
+	# Appliquer la couche, la transparence, la position, la taille et la couleur
+	# de bordure des fenêtres épinglées
 	pins.set_pins_above_focus(pause_menu.get_pins_above_focus())
 	pins.set_pins_opacity(pause_menu.get_pins_opacity())
 	pins.set_pins_position(pause_menu.get_pins_position())
+	# La taille d'abord : elle recalcule PIN_SIZE, dont dépend le ratio utilisé
+	# par la loupe.
+	pins.set_pins_size_divisor(pause_menu.get_pins_size_divisor())
+	pins.set_pins_border_color(pause_menu.get_pins_border_color())
 	# Appliquer les réglages graphiques & contrôles
 	pause_menu._apply_aa(pause_menu.get_aa_mode())
 	Engine.max_fps = pause_menu.get_fps_limit()
@@ -1595,6 +1602,12 @@ func _on_pins_opacity_changed(percent: int) -> void:
 
 func _on_pins_position_changed(position: String) -> void:
 	pins.set_pins_position(position)
+
+func _on_pins_border_color_changed(color: Color) -> void:
+	pins.set_pins_border_color(color)
+
+func _on_pins_size_divisor_changed(divisor: float) -> void:
+	pins.set_pins_size_divisor(divisor)
 
 # ── Cycle de vie ─────────────────────────────────────────────────────
 

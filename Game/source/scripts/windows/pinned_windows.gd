@@ -1,11 +1,15 @@
 extends Node3D
 
 var PIN_SIZE: Vector2
+# PIN_SIZE vaut viewport / pin_size_divisor. Le diviseur est réglable depuis
+# pause_menu > Graphics entre 2 (pin grand) et 4 (pin petit).
+const PIN_DIVISOR_MIN := 2.0
+const PIN_DIVISOR_MAX := 4.0
 const PIN_MARGIN := 8
 # Épaisseur du cadre du PiP, de chaque côté. La bordure fait donc
 # PIN_SIZE + PIN_BORDER * 2, et la texture est centrée dedans.
 const PIN_BORDER := 2
-# Rayon des coins arrondis (bordure comme texture).
+# Rayon des coins arrondis (cadre uniquement : la texture n'est pas masquée).
 const PIN_RADIUS := 4
 # En dessous du layer focus (FOCUS_Z_BASE = 2000) : le PiP est caché quand
 # une fenêtre est en mode focus.
@@ -34,12 +38,14 @@ const ZOOM_STICK_SPEED := 700.0
 # en permanence. Volontairement plus basse que celle du menu radial (0.5) :
 # recadrer demande une précision de pointeur, pas une frappe directionnelle.
 const ZOOM_STICK_DEADZONE := 0.2
-# Maintien des touches de zoom (LB/RB par defaut). Delai avant la rampe, puis
-# crans par seconde. Le delai n'est pas decoratif : sans lui, une pression
-# longue enchaine des crans et on ne peut plus s'arreter sur le bon niveau.
-# Avec lui, appui long = UN cran, puis rampe seulement si on insiste.
+# Maintien des touches de zoom (LB/RB par defaut), en crans par seconde. Aucun
+# delai avant la rampe : la loupe doit repondre vite a la manette, donc le
+# maintien enchaine des crans des le deuxieme frame. La separation entre
+# « nouvelle pression » et « meme pression » reste le garde-fou, assure par le
+# changement de direction dans _advance_scroll_hold.
 const ZOOM_HOLD_RATE := 10.0
-# Bordure bleue = mode loupe actif.
+# Bordure bleue = mode loupe actif. Défaut seulement : la couleur effective
+# vient de pins_border_color, réglable depuis pause_menu > Graphics.
 const ZOOM_BORDER_COLOR := Color(0.29, 0.59, 1.0, 1.0)
 
 ## Émis quand le mode loupe est activé/désactivé. wayland_room s'en sert pour
@@ -63,6 +69,13 @@ var _last_mouse_pos := Vector2(-1, -1)
 var mouse_pos := Vector2.ZERO
 var _layers: Node3D
 var border_color := Color.TRANSPARENT
+# Couleur CHOISIE pour la bordure de loupe, et diviseur CHOISI pour la taille.
+# Distincts de border_color / PIN_SIZE, qui sont les valeurs EFFECTIVES :
+# border_color vaut TRANSPARENT hors loupe, et PIN_SIZE est recalculé depuis le
+# viewport. Confondre les deux ferait qu'un réglage hors loupe ne s'appliquerait
+# qu'au redémarrage.
+var pins_border_color := ZOOM_BORDER_COLOR
+var pin_size_divisor := 3.0
 var zooming := false
 ## Facteur de zoom courant du PiP (ZOOM_MIN..ZOOM_MAX), 1.0 = fenêtre entière.
 var zoom_factor := ZOOM_MIN
@@ -75,11 +88,11 @@ var zoom_pan := Vector2(0.5, 0.5)
 ## conservée). Remis à faux quand le PiP est déposé — il n'y a qu'un seul PiP
 ## à la fois, une variable suffit donc.
 var _zoom_initialized := false
-# Etat du maintien des touches de zoom : direction courante (-1 / 0 / +1) et
-# temps restant avant la rampe. Un appui simple donne deja un cran via
-# l'evenement ; ces deux variables ne pilotent que la SUITE du maintien.
+# Direction courante du maintien des touches de zoom (-1 / 0 / +1). Un appui
+# simple donne deja un cran via l'evenement : cette variable ne sert qu'a
+# distinguer « nouvelle pression » de « meme pression », et c'est elle qui
+# empeche de doubler ce premier cran.
 var _scroll_hold_dir := 0.0
-var _scroll_hold_left := 0.0
 
 # Rectangle de la texture épinglée affiché par le PiP, en pixels de texture.
 # Fonction pure : aucune dépendance au viewport, testable en headless.
@@ -128,18 +141,69 @@ static func stick_pan_vector(raw: Vector2, deadzone: float) -> Vector2:
 
 func setup(ui_ref: CanvasLayer, focus_ref: Node3D, layers: Node3D) -> void:
 	_layers = layers
-	PIN_SIZE = get_viewport().get_visible_rect().size / 3
+	_sync_pin_size()
 	mouse_pos = _layers._cursor_pos
 	ui = ui_ref
 	focus = focus_ref
 	if ui != null and ui.get_viewport() != null:
-		ui.get_viewport().size_changed.connect(_reposition_all)
+		ui.get_viewport().size_changed.connect(_sync_pin_size)
 
 func _pin_z_index() -> int:
 	return PIN_Z_ABOVE_FOCUS if pins_above_focus else PIN_Z_BASE
 
 func _pin_alpha() -> float:
 	return 1.0 - float(pins_opacity) / 100.0
+
+## Géométrie d'un pin, en un seul endroit. La taille est une FONCTION de
+## PIN_SIZE : _add_pin et set_pins_size_divisor passent donc tous deux par ici,
+## sinon les deux se désynchronisent au premier réglage de taille (le cadre
+## garderait l'ancienne taille pendant que la texture prend la nouvelle).
+func _resize_pin(border: Control) -> void:
+	if not is_instance_valid(border):
+		return
+	var pip := border.get_child(0) as TextureRect
+	if pip != null:
+		pip.size = PIN_SIZE
+	border.size = PIN_SIZE + Vector2(PIN_BORDER, PIN_BORDER) * 2.0
+	border.position = _pin_position()
+
+## Recalcule PIN_SIZE depuis le viewport courant et réajuste les pins déjà
+## créés. PIN_SIZE est un facteur du viewport : un redimensionnement de fenêtre
+## doit le RESCALER, pas seulement le repositionner — sinon un pin né en
+## 1920x1080 garde 640x360 dans une fenêtre de 1280x720.
+func _sync_pin_size() -> void:
+	var vp := get_viewport()
+	if vp == null:
+		return
+	PIN_SIZE = vp.get_visible_rect().size / pin_size_divisor
+	for key in pinned_windows:
+		_resize_pin(pinned_windows[key])
+	# Le ratio de la région dépend de PIN_SIZE, mais on ne réapplique le zoom
+	# que si la loupe est ACTIVE : _apply_zoom() rebascule en texture pleine
+	# sous ZOOM_MIN, donc l'appeler ici effacerait un zoom déjà choisi par
+	# l'utilisateur, qui persiste justement hors loupe.
+	if zooming:
+		_apply_zoom()
+
+## Diviseur de taille du pin (viewport / X), borné à [PIN_DIVISOR_MIN,
+## PIN_DIVISOR_MAX]. Le clamp protège d'un settings.json corrompu et du slider
+## lui-même, qui a les mêmes bornes.
+func set_pins_size_divisor(divisor: float) -> void:
+	var d := clampf(divisor, PIN_DIVISOR_MIN, PIN_DIVISOR_MAX)
+	if is_equal_approx(d, pin_size_divisor):
+		return
+	pin_size_divisor = d
+	_sync_pin_size()
+
+## Couleur de la bordure de loupe. Ne touche PAS border_color : celle-ci reste
+## TRANSPARENT hors loupe, donc la nouvelle couleur n'apparaîtra qu'au prochain
+## set_zooming(true). _apply_border_color() est tout de même appelé pour qu'un
+## changement fait EN loupe s'applique immédiatement.
+func set_pins_border_color(color: Color) -> void:
+	if color.is_equal_approx(pins_border_color):
+		return
+	pins_border_color = color
+	_apply_border_color()
 
 func _pin_position() -> Vector2:
 	var size := Vector2(PIN_MARGIN, PIN_MARGIN)
@@ -217,12 +281,10 @@ func _add_pin(key, texture: Texture2D) -> void:
 	pip.texture = atlas
 	pip.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	pip.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	pip.size = PIN_SIZE
 	pip.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 	# Bordure
 	var border := PanelContainer.new()
-	border.size = PIN_SIZE + Vector2(PIN_BORDER, PIN_BORDER) * 2.0
 	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = border_color
@@ -241,7 +303,7 @@ func _add_pin(key, texture: Texture2D) -> void:
 	border.add_child(pip)
 	border.z_index = _pin_z_index()
 
-	border.position = _pin_position()
+	_resize_pin(border)
 	pip.set_meta("window_id", key)
 	ui.add_child(border)
 	pinned_windows[key] = border
@@ -269,7 +331,6 @@ func unpin(key) -> void:
 	# Un bouton encore enfonce ne doit pas relancer la rampe a la reouverture
 	# de la loupe : on repart d'un maintien neuf.
 	_scroll_hold_dir = 0.0
-	_scroll_hold_left = 0.0
 	set_zooming(false)
 
 
@@ -431,7 +492,7 @@ func set_zooming(active: bool) -> void:
 		_zoom_initialized = true
 		zoom_factor = ZOOM_FIRST
 		zoom_pan = Vector2(0.5, 0.5)
-	border_color = ZOOM_BORDER_COLOR if zooming else Color.TRANSPARENT
+	border_color = pins_border_color if zooming else Color.TRANSPARENT
 	_last_mouse_pos = Vector2(-1, -1)
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	_apply_border_color()
@@ -531,14 +592,13 @@ func _hold_zoom(delta: float) -> void:
 
 ## Avance le maintien et renvoie le nombre de crans a appliquer (-1/0/+1 en
 ## entree, crans fractionnaires en sortie : le zoom devient continu au lieu de
-## sauter de 0.15 en 0.15). delai-then-repeat classique — la separation entre
-## « nouvelle pression » et « meme pression » est ce qui evite de doubler le
-## cran que l'evenement d'appui a deja donne. Separe de la lecture des
-## boutons pour etre testable sans manette.
+## sauter de 0.15 en 0.15). Pas de delai : la rampe demarre des le deuxieme
+## frame. Ce qui evite de doubler le cran deja donne par l'evenement d'appui,
+## c'est le changement de direction — seule la meme direction prolonge. Separe
+## de la lecture des boutons pour etre testable sans manette.
 func _advance_scroll_hold(dir: float, delta: float) -> float:
 	if is_zero_approx(dir):
 		_scroll_hold_dir = 0.0
-		_scroll_hold_left = 0.0
 		return 0.0
 	if not is_equal_approx(dir, _scroll_hold_dir):
 		_scroll_hold_dir = dir

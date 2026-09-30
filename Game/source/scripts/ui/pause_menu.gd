@@ -7,6 +7,8 @@ signal polkit_agent_changed(path: String)
 signal pins_layer_changed(above: bool)
 signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
+signal pins_border_color_changed(color: Color)
+signal pins_size_divisor_changed(divisor: float)
 signal lan_host_requested
 signal lan_join_requested(ip: String, pin: String, encrypted: bool)
 signal lan_video_settings_changed(bitrate: int, codec: String, fps: int)
@@ -971,6 +973,37 @@ func get_pins_position() -> String:
 			return pos
 	return "top_left"
 
+# Taille de la fenêtre épinglée : viewport / diviseur. Diviseur plus petit =
+# pin plus grand. Les bornes du slider sont les MÊMES que celles du clamp dans
+# pinned_windows.gd (duplicate plutôt que const partagée : les deux scripts
+# ne se préchargent pas l'un l'autre, et un test vérifie qu'elles concordent).
+const PIN_SIZE_DIVISOR_MIN := 2.0
+const PIN_SIZE_DIVISOR_MAX := 4.0
+const PIN_SIZE_DIVISOR_STEP := 0.1
+
+func get_pins_size_divisor() -> float:
+	var d = _settings.get("pins_size_divisor", 3.0)
+	if not (d is float or d is int):
+		return 3.0
+	return clampf(float(d), PIN_SIZE_DIVISOR_MIN, PIN_SIZE_DIVISOR_MAX)
+
+# Couleur de la bordure du pin en loupe. Même format que lan_player_color
+# (hex de Color.to_html) : le repli couvre un ancien format Color et une
+# entrée illisible, pour qu'un settings.json corrompu ne peigne pas le pin
+# en noir.
+func get_pins_border_color() -> Color:
+	var fallback := Color(0.29, 0.59, 1.0, 1.0)
+	var v = _settings.get("pins_border_color", fallback)
+	if v is Color:
+		return v
+	if v is String:
+		var s := (v as String).strip_edges()
+		if s.begins_with("#"):
+			return Color.from_string(s, fallback)
+		if s.length() == 6 or s.length() == 8:
+			return Color.from_string("#" + s, fallback)
+	return fallback
+
 func get_aa_mode() -> String:
 	return _settings.get("aa_mode", "off")
 
@@ -1068,26 +1101,81 @@ func _show_pins() -> void:
 		slider_val.text = "%d%%" % int(value)
 	)
 
+	var size_label := Label.new()
+	size_label.text = "Size (viewport ÷ %.1f)" % PIN_SIZE_DIVISOR_MIN
+	size_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	size_label.add_theme_font_size_override("font_size", 13)
+	size_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(size_label)
+
+	var size_slider := HSlider.new()
+	size_slider.min_value = PIN_SIZE_DIVISOR_MIN
+	size_slider.max_value = PIN_SIZE_DIVISOR_MAX
+	size_slider.step = PIN_SIZE_DIVISOR_STEP
+	size_slider.value = get_pins_size_divisor()
+	size_slider.custom_minimum_size = Vector2(0, 30)
+	size_slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(size_slider)
+
+	# Le diviseur seul ne dit rien à l'écran : on montre la taille qu'il
+	# produit, sinon impossible de savoir si l'on agrandit ou réduit le pin.
+	var size_val := Label.new()
+	size_val.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	size_val.add_theme_font_size_override("font_size", 13)
+	size_val.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(size_val)
+
+	var _refresh_size := func(value: float) -> void:
+		var vp := get_viewport().get_visible_rect().size
+		size_val.text = "÷ %.1f  →  %d×%d" % [value, int(vp.x / value), int(vp.y / value)]
+	_refresh_size.call(size_slider.value)
+	size_slider.value_changed.connect(func(value: float):
+		_refresh_size.call(value)
+	)
+
+	var color_label := Label.new()
+	color_label.text = "Loupe border color"
+	color_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	color_label.add_theme_font_size_override("font_size", 13)
+	color_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(color_label)
+
+	var color_btn := ColorPickerButton.new()
+	color_btn.focus_mode = Control.FOCUS_ALL
+	color_btn.color = get_pins_border_color()
+	color_btn.custom_minimum_size = Vector2(64, 30)
+	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	container.add_child(color_btn)
+
 	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_pins_settings.bind(opt, pos_opt, slider))
+	apply_btn.pressed.connect(_apply_pins_settings.bind(opt, pos_opt, slider,
+		size_slider, color_btn))
 	container.add_child(apply_btn)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
-func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSlider) -> void:
+func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSlider,
+		size_slider: HSlider, color_btn: ColorPickerButton) -> void:
 	var above := opt.selected == 1
 	var percent: int = clampi(int(slider.value), 0, 100)
 	var pos := "top_left"
 	if pos_opt.selected >= 0 and pos_opt.selected < PIN_POSITIONS.size():
 		pos = String(PIN_POSITIONS[pos_opt.selected].get("id", "top_left"))
+	var divisor := clampf(snappedf(size_slider.value, PIN_SIZE_DIVISOR_STEP),
+		PIN_SIZE_DIVISOR_MIN, PIN_SIZE_DIVISOR_MAX)
+	var color: Color = color_btn.color
 	_settings["pins_above_focus"] = above
 	_settings["pins_opacity"] = percent
 	_settings["pins_position"] = pos
+	_settings["pins_size_divisor"] = divisor
+	_settings["pins_border_color"] = color.to_html(true)
 	_save_settings()
 	pins_layer_changed.emit(above)
 	pins_opacity_changed.emit(percent)
 	pins_position_changed.emit(pos)
+	pins_size_divisor_changed.emit(divisor)
+	pins_border_color_changed.emit(color)
 	_go_back()
 
 # ── LAN multiplayer ──────────────────────────────────────────────────

@@ -15,6 +15,10 @@ const PlayerScript = preload("res://scripts/player/player.gd")
 # est actif. _build_items est une fonction pure sur _items, donc testable sans
 # mettre le menu dans l'arbre.
 const Radial = preload("res://scripts/ui/radial_menu.gd")
+# Menu pause : fournit la taille et la couleur de bordure du pin. On ne teste
+# ici que les GETTERS (lecture de _settings), qui sont purs et ne demandent ni
+# _ready() ni l'arbre de scène — pas de construction de la page, trop lourde.
+const PauseMenu = preload("res://scripts/ui/pause_menu.gd")
 
 # Format du PiP : 640x360 -> 16/9.
 const ASPECT := 640.0 / 360.0
@@ -422,50 +426,47 @@ func test_pip_is_centered_in_border() -> Variant:
 		"la bordure doit faire PIN_SIZE + 2 * PIN_BORDER")
 	return _cleanup(ctx, res)
 
+func _corners_rounded(sb: StyleBoxFlat) -> bool:
+	return sb.corner_radius_top_left > 0 and sb.corner_radius_top_right > 0 \
+		and sb.corner_radius_bottom_left > 0 and sb.corner_radius_bottom_right > 0
+
 func test_border_corners_are_rounded() -> Variant:
-	## Coins arrondis sur la bordure ET sur la texture : un cadre arrondi sous
-	## une texture carrée se voit immédiatement (les coins de l'image depassent
-	## le cadre). Le masque doit donc etre applique a la texture.
+	## Coins arrondis sur le cadre du pin. La texture n'est PAS masquee (pas de
+	## shader) : on n'assure donc que le cadre, qui est ce que PIN_RADIUS
+	## pilote reellement via le StyleBoxFlat.
 	var ctx: Variant = _make_pin()
 	if ctx is String: return ctx
 	var border: Control = ctx["border"]
-	var tr: TextureRect = ctx["pip"]
 	var sb := border.get_theme_stylebox("panel") as StyleBoxFlat
 	if sb == null:
 		return _cleanup(ctx, "la bordure doit porter un StyleBoxFlat")
-	var res: Variant = Runner.assert_true(sb.corner_radius_top_left > 0
-			and sb.corner_radius_top_right > 0
-			and sb.corner_radius_bottom_left > 0
-			and sb.corner_radius_bottom_right > 0,
-		"les quatre coins de la bordure doivent etre arrondis")
-	if _fail(res): return _cleanup(ctx, res)
-	var mat := tr.material as ShaderMaterial
-	if mat == null:
-		return _cleanup(ctx, "la texture doit porter un masque de coins arrondis")
-	var shader := mat.shader
-	if shader == null:
-		return _cleanup(ctx, "le masque doit avoir un shader")
-	res = Runner.assert_true((shader.code as String).contains("radius"),
-		"le shader doit arrondir les coins via un rayon")
+	var res: Variant = Runner.assert_true(_corners_rounded(sb),
+		"les quatre coins du cadre doivent etre arrondis")
 	return _cleanup(ctx, res)
 
 func test_rounded_corners_survive_zoom() -> Variant:
-	## Le masque ne doit pas disparaitre en loupe (changement de stretch_mode
-	## et de region) ni au changement de texture.
+	## Les coins arrondis ne doivent ni disparaitre ni etre recrees en loupe
+	## (changement de stretch_mode et de region) ni au changement de texture :
+	## _apply_border_color mute le StyleBoxFlat existant, il ne le recree pas.
+	## Si on le recreait, les coins repartiraient a zero a chaque basculation.
 	var ctx: Variant = _make_pin()
 	if ctx is String: return ctx
 	var pins: Node3D = ctx["pins"]
-	var tr: TextureRect = ctx["pip"]
-	var mat := tr.material as ShaderMaterial
+	var border: Control = ctx["border"]
+	var sb := border.get_theme_stylebox("panel") as StyleBoxFlat
+	if sb == null:
+		return _cleanup(ctx, "la bordure doit porter un StyleBoxFlat")
 	pins.toggle_zoom()
 	pins.zoom_by_scroll(3.0)
-	var res: Variant = Runner.assert_true(tr.material == mat,
-		"le masque doit rester en loupe")
+	var res: Variant = Runner.assert_true(border.get_theme_stylebox("panel") == sb
+			and _corners_rounded(sb),
+		"les coins arrondis doivent survivre a l'entree en loupe")
 	if _fail(res): return _cleanup(ctx, res)
 	var img := Image.create(1280, 720, false, Image.FORMAT_RGBA8)
 	pins.on_window_texture_updated(1, ImageTexture.create_from_image(img))
-	res = Runner.assert_true(tr.material == mat,
-		"le masque doit survivre au changement de texture")
+	res = Runner.assert_true(border.get_theme_stylebox("panel") == sb
+			and _corners_rounded(sb),
+		"les coins arrondis doivent survivre au changement de texture")
 	return _cleanup(ctx, res)
 
 func test_later_zoom_keeps_user_value() -> Variant:
@@ -584,7 +585,8 @@ func test_mouse_drag_pans_through_the_real_input_path() -> Variant:
 
 func test_scroll_hold_does_not_double_the_tap() -> Variant:
 	## L'appui donne DEJA un cran via l'evenement (_handle_zoom_input). Le
-	## maintien ne doit pas le redoubler : il arme un delai.
+	## maintien ne doit donc pas redoubler ce cran sur son premier frame,
+	## sinon un simple appui vaudrait deux crans.
 	var pins = Pins.new()
 	var notches: float = pins._advance_scroll_hold(1.0, 0.016)
 	var res: Variant = Runner.assert_approx(notches, 0.0, 0.0001,
@@ -593,27 +595,35 @@ func test_scroll_hold_does_not_double_the_tap() -> Variant:
 	if _fail(res): return res
 	return true
 
-func test_scroll_hold_is_silent_during_the_delay() -> Variant:
-	## Une pression longue doit d'abord donner UN cran et rien de plus pendant
-	## le delai, sinon on ne peut pas s'arreter sur le bon niveau.
+func test_scroll_hold_ramps_immediately() -> Variant:
+	## Pas de delai avant la rampe : des la deuxieme frame, le maintien cran en
+	## continu et PROPORTIONNELLEMENT au temps ecoule (un zoom fluide, pas une
+	## salve de crans). C'est le comportement voulu : la loupe doit repondre
+	## vite a la manette.
 	var pins = Pins.new()
 	pins._advance_scroll_hold(1.0, 0.016)
-	var res: Variant = Runner.assert_approx(
-		pins._advance_scroll_hold(1.0, Pins.ZOOM_HOLD_DELAY * 0.5), 0.0, 0.0001,
-		"rien pendant le delai de maintien")
+	var notches: float = pins._advance_scroll_hold(1.0, 0.5)
+	var res: Variant = Runner.assert_approx(notches, Pins.ZOOM_HOLD_RATE * 0.5, 0.0001,
+		"la rampe doit suivre ZOOM_HOLD_RATE des la deuxieme frame")
 	pins.free()
 	if _fail(res): return res
 	return true
 
-func test_scroll_hold_ramps_after_the_delay() -> Variant:
-	## Passe le delai, le maintien cran en continu et PROPORTIONNELLEMENT au
-	## temps ecoule (un zoom continu), pas en salve de crans.
+func test_scroll_hold_is_continuous_across_frames() -> Variant:
+	## La rampe doit etre proportionnelle au temps, donc deux frames inegales
+	## donnent deux crans inegaux : c'est ce qui distingue un zoom continu d'un
+	## zoom qui saute par crans à intervalles fixes.
 	var pins = Pins.new()
 	pins._advance_scroll_hold(1.0, 0.016)
-	pins._advance_scroll_hold(1.0, Pins.ZOOM_HOLD_DELAY)
-	var notches: float = pins._advance_scroll_hold(1.0, 0.5)
-	var res: Variant = Runner.assert_approx(notches, Pins.ZOOM_HOLD_RATE * 0.5, 0.0001,
-		"apres le delai, la rampe doit suivre ZOOM_HOLD_RATE")
+	var slow: float = pins._advance_scroll_hold(1.0, 0.1)
+	var fast: float = pins._advance_scroll_hold(1.0, 0.4)
+	var res: Variant = Runner.assert_approx(slow, Pins.ZOOM_HOLD_RATE * 0.1, 0.0001,
+		"crans proportionnels au temps (frame courte)")
+	if _fail(res):
+		pins.free()
+		return res
+	res = Runner.assert_approx(fast, Pins.ZOOM_HOLD_RATE * 0.4, 0.0001,
+		"crans proportionnels au temps (frame longue)")
 	pins.free()
 	if _fail(res): return res
 	return true
@@ -622,7 +632,6 @@ func test_scroll_hold_direction_is_signed() -> Variant:
 	## RB (scroll_down) doit DEZOOMER : les crans sont negatifs.
 	var pins = Pins.new()
 	pins._advance_scroll_hold(-1.0, 0.016)
-	pins._advance_scroll_hold(-1.0, Pins.ZOOM_HOLD_DELAY)
 	var notches: float = pins._advance_scroll_hold(-1.0, 0.5)
 	var res: Variant = Runner.assert_approx(notches, -Pins.ZOOM_HOLD_RATE * 0.5, 0.0001,
 		"scroll_down doit dezoomer (crans negatifs)")
@@ -630,28 +639,28 @@ func test_scroll_hold_direction_is_signed() -> Variant:
 	if _fail(res): return res
 	return true
 
-func test_scroll_hold_release_rearms_the_delay() -> Variant:
-	## Relacher puis reappliquer doit redonner UN cran puis rearmer le delai,
-	## pas repartir en rampe immediate.
+func test_scroll_hold_release_rearms() -> Variant:
+	## Relacher puis reappliquer doit repartir a ZERO crans sur le premier frame
+	## (l'evenement redonne le cran unique), sinon un appui isole heriterait de
+	## la rampe du maintien precedent et sauterait plusieurs crans d'un coup.
 	var pins = Pins.new()
 	pins._advance_scroll_hold(1.0, 0.016)
-	pins._advance_scroll_hold(1.0, Pins.ZOOM_HOLD_DELAY)
-	pins._advance_scroll_hold(1.0, 0.1)
+	pins._advance_scroll_hold(1.0, 0.5)
 	pins._advance_scroll_hold(0.0, 0.016)
 	var res: Variant = Runner.assert_approx(pins._advance_scroll_hold(1.0, 0.016), 0.0, 0.0001,
-		"un nouvel appui doit repartir du delai")
+		"un nouvel appui doit repartir de zero cran")
 	pins.free()
 	if _fail(res): return res
 	return true
 
-func test_scroll_hold_direction_change_rearms_the_delay() -> Variant:
+func test_scroll_hold_direction_change_rearms() -> Variant:
 	## Inverser LB/RB en cours de maintien ne doit pas craner dans la mauvaise
-	## direction : on rearme aussi.
+	## direction : un changement de direction est un nouvel appui.
 	var pins = Pins.new()
 	pins._advance_scroll_hold(1.0, 0.016)
-	pins._advance_scroll_hold(1.0, Pins.ZOOM_HOLD_DELAY)
+	pins._advance_scroll_hold(1.0, 0.5)
 	var res: Variant = Runner.assert_approx(pins._advance_scroll_hold(-1.0, 0.016), 0.0, 0.0001,
-		"inverser le maintien doit rearmer le delai")
+		"inverser le maintien doit repartir de zero cran")
 	pins.free()
 	if _fail(res): return res
 	return true
@@ -728,7 +737,7 @@ func test_has_pin_tracks_pin_state() -> Variant:
 func test_zoom_pin_item_hidden_without_pin() -> Variant:
 	## Sans pin actif, ZOOM PIN n'a rien à basculer : il ne doit pas
 	## apparaître, sinon le menu radial propose une action morte.
-	for context in ["window", "fps"]:
+	for context in ["window", "fps", "focus"]:
 		var items := _radial_items(false, context)
 		var res: Variant = Runner.assert_eq(_count_action(items, "pin_zoom"), 0,
 			"ZOOM PIN doit être absent du contexte « %s » sans pin" % context)
@@ -739,7 +748,7 @@ func test_zoom_pin_item_shown_when_pin_active() -> Variant:
 	## Avec un pin actif, ZOOM PIN apparaît UNE fois, en dernier : le
 	## recalcul des angles de l'anneau ne décale donc pas les entrées
 	## existantes quand un pin est ajouté ou retiré.
-	for context in ["window", "fps"]:
+	for context in ["window", "fps", "focus"]:
 		var items := _radial_items(true, context)
 		var res: Variant = Runner.assert_eq(_count_action(items, "pin_zoom"), 1,
 			"ZOOM PIN doit apparaître dans le contexte « %s »" % context)
@@ -759,13 +768,15 @@ func test_window_radial_unchanged_without_pin() -> Variant:
 	if _fail(res): return res
 	return true
 
-func test_zoom_pin_item_absent_from_focus_and_binds() -> Variant:
-	## Meme avec un pin actif, ZOOM PIN n'a rien à faire dans « focus » (on est
-	## deja en plein ecran sur la fenetre) ni dans « binds » (liste de
-	## raccourcis, pas d'actions de fenetre).
+func test_zoom_pin_item_absent_from_binds_only() -> Variant:
+	## ZOOM PIN a sa place dans « focus » : on est deja en plein ecran sur la
+	## fenetre, c'est precisement le moment ou zoomer dans un detail est utile.
+	## En revanche « binds » est une LISTE DE RACCOURCIS, pas un menu d'actions :
+	## y mettre une action de fenetre la ferait apparaitre parmi les bind clavier
+	## et la confirmer declencherait la loupe depuis l'ecran des raccourcis.
 	var focus_items := _radial_items(true, "focus")
-	var res: Variant = Runner.assert_eq(_count_action(focus_items, "pin_zoom"), 0,
-		"ZOOM PIN ne doit pas polluer le contexte « focus »")
+	var res: Variant = Runner.assert_eq(_count_action(focus_items, "pin_zoom"), 1,
+		"ZOOM PIN doit etre propose en « focus » quand un pin est actif")
 	if _fail(res): return res
 	var menu := Radial.new()
 	menu.pin_active = true
@@ -773,7 +784,7 @@ func test_zoom_pin_item_absent_from_focus_and_binds() -> Variant:
 	var binds_items: Array = menu._items.duplicate(true)
 	menu.free()
 	res = Runner.assert_eq(_count_action(binds_items, "pin_zoom"), 0,
-		"ZOOM PIN ne doit pas polluer le contexte « binds »")
+		"ZOOM PIN ne doit pas polluer la liste des raccourcis")
 	return res
 
 # ── Helpers ─────────────────────────────────────────────────────────────
@@ -853,3 +864,219 @@ func _assert_rect(got: Rect2, want: Rect2, msg: String) -> Variant:
 	res = _assert_approx_v(got.size, want.size, msg + " taille")
 	if _fail(res): return res
 	return true
+
+# ── Taille et couleur du pin, réglables depuis pause_menu > Graphics ──────
+
+func _viewport_size(pins: Node3D) -> Vector2:
+	return pins.get_viewport().get_visible_rect().size
+
+func test_size_divisor_scales_the_live_pin() -> Variant:
+	## Le diviseur pilote la taille du pin DÉJÀ À L'ÉCRAN, pas seulement celle
+	## des prochains pins : changer le diviseur avec un pin existant doit
+	## retailler le cadre ET la texture, sinon le réglage n'aurait d'effet qu'au
+	## prochain SUPER+P.
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	var pip: TextureRect = ctx["pip"]
+	var border: Control = ctx["border"]
+	var before := pip.size.x
+	pins.set_pins_size_divisor(2.0)
+	var vp := _viewport_size(pins)
+	var res: Variant = Runner.assert_approx(pins.PIN_SIZE.x, vp.x / 2.0, 0.5,
+		"PIN_SIZE doit valoir viewport / diviseur")
+	if _fail(res): return _cleanup(ctx, res)
+	res = Runner.assert_true(before < vp.x / 2.0,
+		"precondition : diviser par 2 doit agrandir le pin")
+	if _fail(res): return _cleanup(ctx, res)
+	res = Runner.assert_approx(pip.size.x, vp.x / 2.0, 0.5,
+		"la texture doit être retaillée")
+	if _fail(res): return _cleanup(ctx, res)
+	res = Runner.assert_approx(border.size.x, vp.x / 2.0 + Pins.PIN_BORDER * 2.0, 0.5,
+		"le cadre doit suivre la texture, plus la bordure")
+	return _cleanup(ctx, res)
+
+func test_size_divisor_is_clamped_to_the_supported_range() -> Variant:
+	## Le réglage va de 2 à 4 : un diviseur hors bornes coming d'un fichier de
+	## settings corrompu ne doit pas produire un pin de la taille de l'écran
+	## (÷1) ou d'un quart de pixel (÷1000).
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	pins.set_pins_size_divisor(1.0)
+	var res: Variant = Runner.assert_approx(pins.pin_size_divisor, Pins.PIN_DIVISOR_MIN, 0.001,
+		"un diviseur trop petit doit être ramené au minimum")
+	if _fail(res): return _cleanup(ctx, res)
+	pins.set_pins_size_divisor(99.0)
+	res = Runner.assert_approx(pins.pin_size_divisor, Pins.PIN_DIVISOR_MAX, 0.001,
+		"un diviseur trop grand doit être ramené au maximum")
+	return _cleanup(ctx, res)
+
+func test_size_change_keeps_the_persisted_zoom() -> Variant:
+	## RÉGRESSION : le zoom choisi par l'utilisateur PERSISTE hors loupe. Un
+	## redimensionnement ne doit donc pas le perdre. Le piège est _apply_zoom()
+	## qui rebascule en texture pleine dès que zoom_factor <= ZOOM_MIN : l'appeler
+	## au redimensionnement remettrait à 1x un zoom déjà choisi.
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	var atlas: AtlasTexture = ctx["atlas"]
+	pins.toggle_zoom()
+	pins.zoom_by_scroll(3.0)
+	pins.toggle_zoom()
+	var chosen: float = pins.zoom_factor
+	var region := atlas.region
+	var res: Variant = Runner.assert_true(region.size.x
+			< (ctx["tex"] as Texture2D).get_size().x,
+		"precondition : la texture doit être recadrée avant redimensionnement")
+	if _fail(res): return _cleanup(ctx, res)
+	pins.set_pins_size_divisor(4.0)
+	res = Runner.assert_approx(pins.zoom_factor, chosen, 0.0001,
+		"redimensionner ne doit pas perdre le zoom choisi")
+	if _fail(res): return _cleanup(ctx, res)
+	res = Runner.assert_approx(atlas.region.size.x, region.size.x, 0.5,
+		"le recadrage doit rester appliqué après redimensionnement")
+	return _cleanup(ctx, res)
+
+func test_viewport_resize_rescales_the_pin() -> Variant:
+	## PIN_SIZE est un facteur du VIEWPORT : redimensionner la fenêtre doit donc
+	## le recalculer. _reposition_all seul ne le faisait pas, si bien qu'un pin
+	## créé en 1920x1080 gardait 640x360 dans une fenêtre de 1280x720.
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	var pip: TextureRect = ctx["pip"]
+	pins.PIN_SIZE = Vector2(10, 10)
+	pins._sync_pin_size()
+	var vp := _viewport_size(pins)
+	var res: Variant = Runner.assert_approx(pins.PIN_SIZE.x, vp.x / 3.0, 0.5,
+		"PIN_SIZE doit être recalculé depuis le viewport courant")
+	if _fail(res): return _cleanup(ctx, res)
+	res = Runner.assert_approx(pip.size.x, vp.x / 3.0, 0.5,
+		"la texture doit suivre le viewport redimensionné")
+	return _cleanup(ctx, res)
+
+func test_border_color_is_used_when_zooming() -> Variant:
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	var border: Control = ctx["border"]
+	var red := Color(1, 0, 0, 1)
+	pins.set_pins_border_color(red)
+	pins.toggle_zoom()
+	var sb := border.get_theme_stylebox("panel") as StyleBoxFlat
+	var res: Variant = Runner.assert_true(sb.bg_color.is_equal_approx(red),
+		"la bordure doit prendre la couleur choisie")
+	return _cleanup(ctx, res)
+
+func test_border_color_chosen_outside_zoom_applies_on_next_zoom() -> Variant:
+	## Changer la couleur hors loupe ne doit RIEN afficher (la bordure reste
+	## transparente quand elle ne sert pas), mais le prochain passage en loupe
+	## doit l'utiliser.
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	var border: Control = ctx["border"]
+	var green := Color(0, 1, 0, 1)
+	var sb := border.get_theme_stylebox("panel") as StyleBoxFlat
+	pins.set_pins_border_color(green)
+	var res: Variant = Runner.assert_true(sb.bg_color.a == 0.0,
+		"hors loupe, la bordure doit rester transparente")
+	if _fail(res): return _cleanup(ctx, res)
+	pins.toggle_zoom()
+	res = Runner.assert_true(sb.bg_color.is_equal_approx(green),
+		"la couleur doit s'appliquer au prochain passage en loupe")
+	return _cleanup(ctx, res)
+
+func test_border_color_survives_zoom_toggles() -> Variant:
+	## Changer la couleur PENDANT la loupe, puis sortir et rentrer, doit garder
+	## la nouvelle couleur. Le code ne doit donc pas resortir de la constante
+	## ZOOM_BORDER_COLOR à chaque set_zooming().
+	var ctx: Variant = _make_pin()
+	if ctx is String: return ctx
+	var pins: Node3D = ctx["pins"]
+	var border: Control = ctx["border"]
+	var sb := border.get_theme_stylebox("panel") as StyleBoxFlat
+	var orange := Color(1, 0.5, 0, 1)
+	pins.toggle_zoom()
+	pins.set_pins_border_color(orange)
+	pins.toggle_zoom()
+	pins.toggle_zoom()
+	var res: Variant = Runner.assert_true(sb.bg_color.is_equal_approx(orange),
+		"la couleur choisie doit survivre aux allers-retours de loupe")
+	return _cleanup(ctx, res)
+
+func test_pins_size_divisor_setting_defaults_to_three() -> Variant:
+	var menu := PanelContainer.new()
+	menu.set_script(PauseMenu)
+	var res: Variant = Runner.assert_approx(menu.get_pins_size_divisor(), 3.0, 0.001,
+		"sans réglage enregistré, le pin doit rester à viewport / 3")
+	menu.free()
+	return res
+
+func test_pins_border_color_setting_defaults_to_legacy_blue() -> Variant:
+	## Absence de réglage = la couleur d'origine, sinon les joueurs qui ont
+	## déjà épinglé avant ce réglage verraient leur bordure magenta.
+	var menu := PanelContainer.new()
+	menu.set_script(PauseMenu)
+	var res: Variant = Runner.assert_true(
+		menu.get_pins_border_color().is_equal_approx(Color(0.29, 0.59, 1.0, 1.0)),
+		"la couleur par défaut doit être le bleu d'origine")
+	menu.free()
+	return res
+
+func test_pins_border_color_setting_survives_a_corrupt_value() -> Variant:
+	var menu := PanelContainer.new()
+	menu.set_script(PauseMenu)
+	menu._settings["pins_border_color"] = "pas une couleur"
+	var res: Variant = Runner.assert_true(
+		menu.get_pins_border_color().is_equal_approx(Color(0.29, 0.59, 1.0, 1.0)),
+		"une valeur illisible doit retomber sur la couleur par défaut")
+	menu.free()
+	return res
+
+func test_slider_range_matches_the_pin_clamp() -> Variant:
+	## Le menu et le pin ont chacun leurs bornes (le menu pour le slider, le pin
+	## pour le clamp). Elles ne sont pas partagées par une constante commune,
+	## donc rien n'empêcherait de les faire diverger : un slider à 3.0 max
+	## alors que le pin clamp à 2 rendrait le haut de la course inopérant.
+	var res: Variant = Runner.assert_approx(PauseMenu.PIN_SIZE_DIVISOR_MIN,
+		Pins.PIN_DIVISOR_MIN, 0.001, "le minimum du slider doit être celui du clamp")
+	if _fail(res): return res
+	res = Runner.assert_approx(PauseMenu.PIN_SIZE_DIVISOR_MAX,
+		Pins.PIN_DIVISOR_MAX, 0.001, "le maximum du slider doit être celui du clamp")
+	if _fail(res): return res
+	res = Runner.assert_approx(PauseMenu.PIN_SIZE_DIVISOR_STEP, 0.1, 0.001,
+		"le pas du slider doit être de 0.1")
+	return res
+
+func test_viewport_resize_is_wired_to_the_pin_size() -> Variant:
+	## _sync_pin_size ne sert qu'au redimensionnement de fenêtre, et ce
+	## câblage tient en UNE ligne invisible dans setup(). Sans ce test, la
+	## débrancher ne casse rien d'autre : les autres tests appellent
+	## _sync_pin_size à la main et passeraient toujours.
+	var fake := GDScript.new()
+	fake.source_code = "extends Node3D\nvar _cursor_pos := Vector2.ZERO"
+	if fake.reload() != OK:
+		return "échec de compilation du fake layers"
+	var layers := Node3D.new()
+	layers.set_script(fake)
+	var focus := Node3D.new()
+	var ui := CanvasLayer.new()
+	get_tree().root.add_child(ui)
+	get_tree().root.add_child(layers)
+	var pins = Pins.new()
+	get_tree().root.add_child(pins)
+	pins.setup(ui, focus, layers)
+	var wired := false
+	for c in pins.get_viewport().size_changed.get_connections():
+		var cb: Callable = c["callable"]
+		if cb.get_object() == pins and cb.get_method() == "_sync_pin_size":
+			wired = true
+	var res: Variant = Runner.assert_true(wired,
+		"le redimensionnement du viewport doit recalculer la taille du pin")
+	pins.free()
+	layers.free()
+	ui.free()
+	focus.free()
+	return res

@@ -112,11 +112,13 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			else:
 				hide_menu()
 	# Hors du match : en GDScript on ne peut pas intercaler d'instruction entre
-	# deux motifs, et l'entree doit venir APRÈS les autres du contexte. Limitée
-	# aux contextes « fenetre » et « fps » : « focus » (loupe déjà hors de prix
-	# quand on est en focus) et « binds » (liste de raccourcis personnalisés)
-	# n'ont rien à propose de plus.
-	if context == "window" or context == "fps":
+	# deux motifs, et l'entree doit venir APRÈS les autres du contexte. Proposée
+	# dans tous les contextes SAUF « binds » : « focus » y a sa place (on est
+	# deja en plein ecran sur la fenetre, c'est le moment utile pour zoomer dans
+	# un detail), mais « binds » est une liste de raccourcis, pas un menu
+	# d'actions — y mettre la loupe la ferait apparaitre parmi les bind clavier
+	# et la confirmer la declencherait depuis l'ecran des raccourcis.
+	if context != "binds":
 		_append_pin_zoom()
 
 
