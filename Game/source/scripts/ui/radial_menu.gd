@@ -13,6 +13,11 @@ var _is_open := false
 var _open_scale := 0.0
 var _center_offset := Vector2.ZERO
 var _emoji_font: Font
+# Positionné par wayland_room.gd avant show_menu() : un pin est-il épinglé en
+# ce moment ? L'entrée « ZOOM PIN » n'apparaît que dans ce cas — sans pin, le
+# radial proposerait une action morte. Posé ici plutôt que calculé dans le
+## radial pour que ce script reste indépendant de pinned_windows.
+var pin_active := false
 
 
 func _ready() -> void:
@@ -106,9 +111,29 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 					_items.append({label = label, emoji = emoji, action = "bind:" + cmd})
 			else:
 				hide_menu()
+	# Hors du match : en GDScript on ne peut pas intercaler d'instruction entre
+	# deux motifs, et l'entree doit venir APRÈS les autres du contexte. Limitée
+	# aux contextes « fenetre » et « fps » : « focus » (loupe déjà hors de prix
+	# quand on est en focus) et « binds » (liste de raccourcis personnalisés)
+	# n'ont rien à propose de plus.
+	if context == "window" or context == "fps":
+		_append_pin_zoom()
 
+
+## Ajoute l'entrée « ZOOM PIN » — uniquement si un pin est épinglé, sinon le
+## radial proposerait une action morte. Appendue en DERNIER : le nombre
+## d'entrées détermine les angles de l'anneau, on ne veut pas décaler les
+## entrées existantes pour quelqu'un qui n'a pas de pin. Présente dans les
+## contextes « window » ET « fps » : la condition est « un pin est actif », pas
+## « on regarde la fenêtre épinglée » — sans cela, regarder ailleurs ferait
+## disparaître le seul moyen de revenir dans la loupe.
+func _append_pin_zoom() -> void:
+	if not pin_active:
+		return
+	_items.append({label = "ZOOM PIN", emoji = "🔎", action = "pin_zoom"})
 
 func _calc_geometry() -> void:
+
 	var n := _items.size()
 	if n == 0:
 		return

@@ -64,7 +64,17 @@ func _run_test_script(resource_path: String) -> void:
 				print("  ✓ " + short)
 			else:
 				_failed += 1
-				var msg := str(result) if result is bool and result == false else "assertion failed"
+				# Un test qui échoue renvoie soit false, soit le message
+				# d'assertion (String). Les deux sont utiles : sans ce
+				# branchement le message réel était écrasé par
+				# « assertion failed », ce qui rendait tout échec inexploitable.
+				var msg: String
+				if result is String:
+					msg = result
+				elif result is bool:
+					msg = "le test a renvoyé false (message non fourni)"
+				else:
+					msg = "retour inattendu : " + str(result)
 				print("  ✗ " + short + " — " + msg)
 				_errors.append(short + " — " + msg)
 

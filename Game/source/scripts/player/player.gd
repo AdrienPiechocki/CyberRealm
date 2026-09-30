@@ -42,6 +42,11 @@ var layer_pointer_active := false
 # Positionné par wayland_room.gd : vrai tant que le session est verrouillé.
 # Empêche la recapture de la souris (MOUSE_MODE_CAPTURED) pendant le lockscreen.
 var session_locked := false
+# Positionné par wayland_room.gd (via pins.zoom_changed) : vrai pendant la
+# loupe sur une fenêtre épinglée. La souris est alors capturée pour recadrer le
+# PiP : elle ne doit plus piloter la caméra, et le monde est figé comme pour le
+# menu pause.
+var pin_zoom_active := false
 # Positionné par wayland_room.gd : vrai pendant le chargement de la map LAN
 # (join pas encore finalisé). Gèle déplacement et caméra ; Escape (menu pause)
 # reste fonctionnel pour pouvoir annuler la connexion.
@@ -106,7 +111,7 @@ func _physics_process(delta):
 	if velocity.y > jump_speed:
 		velocity.y = jump_speed
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or session_locked or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or session_locked or pin_zoom_active or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -217,6 +222,14 @@ func _input(event):
 		if _pad_menu_activate(event):
 			return
 	if focus_mode_active:
+		return
+	# Loupe sur un PiP : la souris est capturée pour recadrer la fenêtre
+	# épinglée. Retour sans condition — pinned_windows consomme l'input de la
+	# loupe (molette, mouvement, Échap), et le joueur ne doit surtout pas
+	# ouvrir le menu pause sur l'Échap qui referme la loupe. Cette sortie
+	# inconditionnelle rend le comportement indépendant de l'ordre de
+	# propagation de _input entre les deux nœuds.
+	if pin_zoom_active:
 		return
 	if $RadialMenuLayer/RadialMenu.visible:
 		return

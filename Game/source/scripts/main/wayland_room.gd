@@ -328,6 +328,9 @@ func _ready() -> void:
 	focus.setup(compositor, player, ui, win3d, keyboard)
 	layers.setup(compositor, player, ui, focus, pause_menu, window_menu, keyboard)
 	pins.setup(ui, focus, layers)
+	# Loupe sur un PiP : la souris est capturée pour recadrer, elle ne doit donc
+	# plus piloter la caméra du joueur et le monde se fige.
+	pins.zoom_changed.connect(_on_pin_zoom_changed)
 	fx.setup(win3d)
 	presenter.setup(compositor)
 
@@ -705,6 +708,11 @@ func _toggle_remote_pin(peer_id: int, wid: int) -> void:
 		if tex != null:
 			pins.pin_remote(peer_id, wid, tex)
 
+# Loupe sur le PiP (SUPER+SHIFT+P) : fige le joueur. La souris reste capturée,
+# mais elle recadre la fenêtre épinglée au lieu de tourner la caméra.
+func _on_pin_zoom_changed(active: bool) -> void:
+	player.pin_zoom_active = active
+
 # ── Boucle principale ────────────────────────────────────────────────
 
 # toggle_ui masque/affiche le CanvasLayer $Level/Player/UI. Or ce layer
@@ -814,6 +822,10 @@ func _process(delta: float) -> void:
 				and not focus.in_game() \
 				and not window_menu.visible and not pause_menu.visible:
 			var ctx := _determine_radial_context()
+			# L'entree « ZOOM PIN » n'existe que si un pin est vivant : le radial
+			# ne connait pas pinned_windows, on lui passe donc l'etat, pas la
+			# reference. Pose avant show_menu, qui construit la liste d'entrees.
+			radial_menu.pin_active = pins.has_pin()
 			radial_menu.show_menu(ctx)
 
 	_menu_just_closed = false
@@ -863,6 +875,7 @@ func _process(delta: float) -> void:
 	if focus.is_active():
 		if Input.is_action_just_pressed("focus_window", true):
 			focus.exit_focus()
+			pins.set_zooming(false)
 			return
 		# force_game (remapable) : bascule is_game de la fenêtre focus pour la
 		# traiter (ou non) comme un jeu vidéo.
@@ -873,6 +886,15 @@ func _process(delta: float) -> void:
 		# fenêtre distante est vue seule : pas de fermeture possible.
 		if not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):
 			compositor.close_window(focus.get_focus_window_id())
+			return
+		if Input.is_action_just_pressed("pin_zoom", true) and not interact_mode_active:
+			pins.toggle_zoom()
+			return
+		# Loupe : plus aucun input monde, la molette et le mouvement souris
+		# appartiennent au recadrage du PiP (pinned_windows._input). Sans ce
+		# retour, handle_focus_input enverrait la molette au client Wayland en
+		# plus du zoom.
+		if pins.zooming:
 			return
 		focus.handle_focus_input(delta)
 		return
@@ -928,6 +950,14 @@ func _process(delta: float) -> void:
 		if target.has("remote_peer"):
 			_toggle_remote_pin(target["remote_peer"], target["remote_wid"])
 			return
+
+	if Input.is_action_just_pressed("pin_zoom", true) and not interact_mode_active:
+		pins.toggle_zoom()
+	# Loupe : le monde est gelé. Ce retour coupe tout ce qui suit — notamment
+	# win3d.process_raycast, dont le scroll de grab ferait changer la
+	# profondeur de la fenêtre en même temps que le zoom du PiP.
+	if pins.zooming:
+		return
 
 	# K en visant une fenêtre LOCALE → demander sa fermeture (close). Les
 	# fenêtres distantes ne sont pas fermables (aucune interaction).
@@ -1374,6 +1404,11 @@ func _on_radial_action(action: String) -> void:
 				_toggle_pin(target["local"])
 			elif target.has("remote_peer"):
 				_toggle_remote_pin(target["remote_peer"], target["remote_wid"])
+		"pin_zoom":
+			# Bascule la loupe sur le pin courant. Utilisable depuis le radial
+			# ouvert PAR-DESSUS la loupe : c'est le seul moyen d'en sortir a la
+			# manette, la loupe n'ecoutant que ui_cancel (ECHAP) et la molette.
+			pins.toggle_zoom()
 		"share":
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):
@@ -1385,6 +1420,7 @@ func _on_radial_action(action: String) -> void:
 		"exit_focus":
 			keyboard.hide_menu()
 			focus.exit_focus()
+			pins.set_zooming(false)
 		"kill_focused":
 			keyboard.hide_menu()
 			if focus.is_active() and not focus.is_remote():
@@ -1593,6 +1629,7 @@ func _on_pause_menu_visibility_changed() -> void:
 			player.interact_mode_active = false
 		if focus.is_active():
 			focus.exit_focus()
+			pins.set_zooming(false)
 
 func _on_menu_visibility_changed() -> void:
 	if not window_menu.visible and not pause_menu.visible:

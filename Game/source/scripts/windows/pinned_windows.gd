@@ -1,13 +1,51 @@
 extends Node3D
 
-const PIN_SIZE := Vector2(640, 360)
+var PIN_SIZE: Vector2
 const PIN_MARGIN := 8
+# Épaisseur du cadre du PiP, de chaque côté. La bordure fait donc
+# PIN_SIZE + PIN_BORDER * 2, et la texture est centrée dedans.
+const PIN_BORDER := 2
+# Rayon des coins arrondis (bordure comme texture).
+const PIN_RADIUS := 4
 # En dessous du layer focus (FOCUS_Z_BASE = 2000) : le PiP est caché quand
 # une fenêtre est en mode focus.
 const PIN_Z_BASE := 1900
 # Au-dessus du layer focus (y compris ses popups, FOCUS_POPUP_Z = 2050) : le
 # PiP reste visible pendant le mode focus. Choix via le menu pause.
 const PIN_Z_ABOVE_FOCUS := 2100
+
+# Loupe sur le PiP : zoom = 1.0 -> fenêtre entière visible (rendu actuel).
+const ZOOM_MIN := 1.0
+const ZOOM_MAX := 4.0
+# Valeur de départ au PREMIER passage en loupe sur une fenêtre : 2x, centré.
+# À 1x l'"agrandissement" est invisible (on verrait la même chose qu'avant) ;
+# 2x centré donne immédiatement une lecture lisible du milieu de la fenêtre.
+const ZOOM_FIRST := 2.0
+# Pas de zoom par cran de molette.
+const ZOOM_STEP := 0.15
+# Vitesse de déplacement (recadrage) : pixels de région par pixel de souris.
+const ZOOM_PAN_SPEED := 1.0
+# Recadrage au stick droit, en pixels de région par seconde à pleine deflection.
+# Le stick DROIT et non le gauche : le menu radial se navigue au stick gauche,
+# et la caméra est gelée pendant la loupe — les deux sticks sont donc libres,
+# mais seul le droit n'est jamais utilisé par un menu.
+const ZOOM_STICK_SPEED := 700.0
+# Zone morte du stick : sans elle, un stick au repos fait dériver le recadrage
+# en permanence. Volontairement plus basse que celle du menu radial (0.5) :
+# recadrer demande une précision de pointeur, pas une frappe directionnelle.
+const ZOOM_STICK_DEADZONE := 0.2
+# Maintien des touches de zoom (LB/RB par defaut). Delai avant la rampe, puis
+# crans par seconde. Le delai n'est pas decoratif : sans lui, une pression
+# longue enchaine des crans et on ne peut plus s'arreter sur le bon niveau.
+# Avec lui, appui long = UN cran, puis rampe seulement si on insiste.
+const ZOOM_HOLD_RATE := 10.0
+# Bordure bleue = mode loupe actif.
+const ZOOM_BORDER_COLOR := Color(0.29, 0.59, 1.0, 1.0)
+
+## Émis quand le mode loupe est activé/désactivé. wayland_room s'en sert pour
+## geler le joueur (souris capturée + caméra) sans que pinned_windows connaisse
+## le joueur.
+signal zoom_changed(active: bool)
 
 var ui: CanvasLayer
 var focus: Node3D
@@ -24,9 +62,73 @@ var _is_hovering := false
 var _last_mouse_pos := Vector2(-1, -1)
 var mouse_pos := Vector2.ZERO
 var _layers: Node3D
+var border_color := Color.TRANSPARENT
+var zooming := false
+## Facteur de zoom courant du PiP (ZOOM_MIN..ZOOM_MAX), 1.0 = fenêtre entière.
+var zoom_factor := ZOOM_MIN
+## Décalage de recadrage normalisé (0..1 sur chaque axe) : indépendant de la
+## résolution de la texture, donc stable quand la fenêtre épinglée se
+## redimensionne.
+var zoom_pan := Vector2(0.5, 0.5)
+## Faux tant que l'utilisateur n'a jamais ouvert la loupe sur ce PiP : sert à
+## n'appliquer ZOOM_FIRST qu'au PREMIER passage (ensuite sa valeur est
+## conservée). Remis à faux quand le PiP est déposé — il n'y a qu'un seul PiP
+## à la fois, une variable suffit donc.
+var _zoom_initialized := false
+# Etat du maintien des touches de zoom : direction courante (-1 / 0 / +1) et
+# temps restant avant la rampe. Un appui simple donne deja un cran via
+# l'evenement ; ces deux variables ne pilotent que la SUITE du maintien.
+var _scroll_hold_dir := 0.0
+var _scroll_hold_left := 0.0
+
+# Rectangle de la texture épinglée affiché par le PiP, en pixels de texture.
+# Fonction pure : aucune dépendance au viewport, testable en headless.
+#
+# pan est normalisé (0..1 par axe) : indépendant de la résolution, donc le
+# recadrage survit au redimensionnement de la fenêtre épinglée. La région est
+# recadrée au ratio de la boîte (aspect) plutôt qu'étirée, puis bornée dans la
+# texture — impossible de faire apparaître du vide, quel que soit le zoom.
+static func zoom_region(tex_size: Vector2, zoom: float, pan: Vector2, aspect: float) -> Rect2:
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		return Rect2(Vector2.ZERO, Vector2.ZERO)
+	var z := clampf(zoom, ZOOM_MIN, ZOOM_MAX)
+	var s := tex_size / z
+	# Recadrage au ratio de la boîte : on rogne le côté le plus long. Si le
+	# ratio est inconnu — PIN_SIZE pas encore calculée, donc 0/0 — on SAUTE
+	# l'ajustement : sans ce garde-fou, s.y = s.x / 0 donnait un rect non fini,
+	# affiché en texture cassée. L'agrandissement, lui, reste appliqué.
+	if is_finite(aspect) and aspect > 0.0:
+		if s.x / s.y > aspect:
+			s.x = s.y * aspect
+		else:
+			s.y = s.x / aspect
+	# Une texture plus petite que la région (petites fenêtres) reste entière.
+	s = Vector2(minf(s.x, tex_size.x), minf(s.y, tex_size.y))
+	var p := Vector2(clampf(pan.x, 0.0, 1.0), clampf(pan.y, 0.0, 1.0))
+	var pos := Vector2(
+		clampf(p.x * (tex_size.x - s.x), 0.0, maxf(tex_size.x - s.x, 0.0)),
+		clampf(p.y * (tex_size.y - s.y), 0.0, maxf(tex_size.y - s.y, 0.0)))
+	return Rect2(pos, s)
+
+## Transforme une deflection de stick en vecteur de recadrage normalisé, en
+## [0..1] : rien sous la zone morte, et surtout SANS SAUT au franchissement —
+## on retranche la zone morte puis on renormalise, sinon le recadrage bondirait
+## dès que le stick frôle le seuil. La direction du stick est conservee, seule
+## l'amplitude est réétalée. Isolé en statique car la manette n'est pas
+## simulable en headless : c'est la partie qui mérite un test, le reste n'est
+## qu'une lecture d'axes.
+static func stick_pan_vector(raw: Vector2, deadzone: float) -> Vector2:
+	var mag := raw.length()
+	# deadzone >= 1 rendrait le retranchement impossible (division par zéro) :
+	# on borne, et un stick au repos n'a rien à donner de toute façon.
+	var dz := clampf(deadzone, 0.0, 0.99)
+	if mag <= dz or mag <= 0.0:
+		return Vector2.ZERO
+	return raw / mag * clampf((mag - dz) / (1.0 - dz), 0.0, 1.0)
 
 func setup(ui_ref: CanvasLayer, focus_ref: Node3D, layers: Node3D) -> void:
 	_layers = layers
+	PIN_SIZE = get_viewport().get_visible_rect().size / 3
 	mouse_pos = _layers._cursor_pos
 	ui = ui_ref
 	focus = focus_ref
@@ -43,8 +145,8 @@ func _pin_position() -> Vector2:
 	var size := Vector2(PIN_MARGIN, PIN_MARGIN)
 	if ui != null and ui.get_viewport() != null:
 		size = ui.get_viewport().get_visible_rect().size
-	var px := PIN_SIZE.x + 4.0 + PIN_MARGIN
-	var py := PIN_SIZE.y + 4.0 + PIN_MARGIN
+	var px := PIN_SIZE.x + PIN_BORDER * 2.0 + PIN_MARGIN
+	var py := PIN_SIZE.y + PIN_BORDER * 2.0 + PIN_MARGIN
 	match pins_position:
 		"top_right":
 			return Vector2(size.x - px, PIN_MARGIN)
@@ -62,6 +164,12 @@ func _reposition_all() -> void:
 
 func is_pinned(id: int) -> bool:
 	return pinned_windows.has(id)
+
+## Un pin est-il vivant, sans savoir lequel ? C'est la seule question que pose
+## le menu radial (qui n'a pas, et ne doit pas avoir, de référence vers ce
+## script) pour décider d'afficher son entrée « ZOOM PIN ».
+func has_pin() -> bool:
+	return not pinned_windows.is_empty()
 
 func pin(id: int, texture: Texture2D) -> void:
 	_add_pin(id, texture)
@@ -97,7 +205,16 @@ func _add_pin(key, texture: Texture2D) -> void:
 	unpin_all()
 
 	var pip := TextureRect.new()
-	pip.texture = texture
+	# Le PiP ne porte jamais la texture brute mais un AtlasTexture : c'est ce
+	# qui permet de recadrer la loupe (region) sans toucher à l'arbre de
+	# nœuds. Hors loupe, la région vaut la texture entière — le rendu est donc
+	# identique à un TextureRect simple. filter_clip évite que l'échantillonnage
+	# déborde sur les pixels voisins au bord du recadrage.
+	var atlas := AtlasTexture.new()
+	atlas.atlas = texture
+	atlas.region = Rect2(Vector2.ZERO, texture.get_size() if texture != null else Vector2.ZERO)
+	atlas.filter_clip = true
+	pip.texture = atlas
 	pip.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	pip.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	pip.size = PIN_SIZE
@@ -105,14 +222,24 @@ func _add_pin(key, texture: Texture2D) -> void:
 
 	# Bordure
 	var border := PanelContainer.new()
-	border.size = PIN_SIZE + Vector2(4, 4)
+	border.size = PIN_SIZE + Vector2(PIN_BORDER, PIN_BORDER) * 2.0
 	border.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color.TRANSPARENT
+	bg.bg_color = border_color
+	# Marge interne = épaisseur du cadre : le PanelContainer dimensionne
+	# l'enfant sur son rect de contenu, la texture se retrouve donc centrée
+	# dans la bordure au lieu d'être collée en haut-gauche et étirée.
+	bg.content_margin_left = PIN_BORDER
+	bg.content_margin_right = PIN_BORDER
+	bg.content_margin_top = PIN_BORDER
+	bg.content_margin_bottom = PIN_BORDER
+	bg.corner_radius_top_left = PIN_RADIUS
+	bg.corner_radius_top_right = PIN_RADIUS
+	bg.corner_radius_bottom_left = PIN_RADIUS
+	bg.corner_radius_bottom_right = PIN_RADIUS
 	border.add_theme_stylebox_override("panel", bg)
 	border.add_child(pip)
 	border.z_index = _pin_z_index()
-	border.modulate.a = _pin_alpha()
 
 	border.position = _pin_position()
 	pip.set_meta("window_id", key)
@@ -131,6 +258,20 @@ func unpin(key) -> void:
 		if _hover_tween:
 			_hover_tween.kill()
 			_hover_tween = null
+		# Plus rien à inspecter : on ne doit pas rester en loupe (souris
+		# capturée et joueur gelé) avec un PiP vide. Le niveau de zoom, lui, est
+		# remis au neutre : la prochaine fenêtre épinglée est sans rapport avec
+		# celle-ci et ne doit pas hériter d'un 4x (une simple bascule, elle,
+		# conserve le zoom et le recadrage).
+		zoom_factor = ZOOM_MIN
+	zoom_pan = Vector2(0.5, 0.5)
+	_zoom_initialized = false
+	# Un bouton encore enfonce ne doit pas relancer la rampe a la reouverture
+	# de la loupe : on repart d'un maintien neuf.
+	_scroll_hold_dir = 0.0
+	_scroll_hold_left = 0.0
+	set_zooming(false)
+
 
 ## Retire toutes les fenêtres épinglées (pour garantir 1 seule fenêtre max)
 func unpin_all() -> void:
@@ -173,25 +314,44 @@ func set_pins_position(position: String) -> void:
 	_reposition_all()
 
 func on_window_texture_updated(id: int, texture: Texture2D) -> void:
-	if pinned_windows.has(id) and is_instance_valid(pinned_windows[id]):
-		var pip_tex: TextureRect = pinned_windows[id].get_child(0)
-		pip_tex.texture = texture
+	# On remplace la texture SOURCE de l'AtlasTexture, pas texture : le
+	# recadrage de la loupe doit survivre aux frames (la texture est
+	# réassignée à chaque frame pour une fenêtre vivante).
+	var atlas := _pip_atlas(id)
+	if atlas == null:
+		return
+	atlas.atlas = texture
+	_apply_zoom()
 
 # Mise à jour de la texture d'une fenêtre distante épinglée (appelé par
 # lan_manager à chaque frame streamée reçue).
 func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> void:
-	var key := _remote_key(peer_id, wid)
-	if pinned_windows.has(key) and is_instance_valid(pinned_windows[key]):
-		var pip_tex: TextureRect = pinned_windows[key].get_child(0)
-		pip_tex.texture = texture
+	var atlas := _pip_atlas(_remote_key(peer_id, wid))
+	if atlas == null:
+		return
+	atlas.atlas = texture
+	_apply_zoom()
 
 func _process(delta: float) -> void:
 	if pinned_windows.is_empty():
 		return
+
+	# Mode loupe : la caméra est gelée, donc le raycast de visée est statique et
+	# toucherait la fenêtre épinglée en permanence — le voile du hover
+	# effacerait la loupe qu'on est en train d'utiliser. Le recadrage, lui, se
+	# fait ici au stick : une souris capturée est un ENVENTEMENT (delta), donc
+	# impossible à pollonner, alors qu'un stick est un ETAT lisible chaque frame.
+	if zooming:
+		_set_hovering(false)
+		_stick_pan(delta)
+		_hold_zoom(delta)
+		return
+
 	# Hover = visée (rayon caméra sur la fenêtre 3D épinglée), quel que soit
 	# le mode souris ; en MOUSE_MODE_VISIBLE, survoler le PiP lui-même compte
 	# aussi.
 	var hovering := _look_hover()
+
 	if focus.focus_fullscreen_id in pinned_windows:
 		hovering = true
 	elif not hovering and (Input.mouse_mode == Input.MOUSE_MODE_VISIBLE or focus.focus_fullscreen_id != -1):
@@ -251,6 +411,181 @@ func _look_hover() -> bool:
 		return pinned_windows.has(_remote_key(int(rw.get("peer_id", -1)), int(rw.get("wid", -1))))
 	return false
 
+# Bascule du mode loupe (SUPER+SHIFT+P). Sans fenêtre épinglée il n'y a rien à
+# inspecter : l'activation est refusée.
+func toggle_zoom() -> void:
+	set_zooming(not zooming)
+
+# Transition d'état du mode loupe. La souris reste capturée dans les deux sens
+# (c'est déjà le mode FPS par défaut) : la molette et le mouvement souris
+# passent de la caméra du joueur au recadrage du PiP. wayland_room gèle le
+# joueur via le signal zoom_changed.
+func set_zooming(active: bool) -> void:
+	if zooming == active:
+		return
+	if active and pinned_windows.is_empty():
+		return
+	zooming = active
+	if zooming and not _zoom_initialized:
+		# Premier passage en loupe sur ce PiP : on démarre agrandi et centré.
+		_zoom_initialized = true
+		zoom_factor = ZOOM_FIRST
+		zoom_pan = Vector2(0.5, 0.5)
+	border_color = ZOOM_BORDER_COLOR if zooming else Color.TRANSPARENT
+	_last_mouse_pos = Vector2(-1, -1)
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	_apply_border_color()
+	_apply_zoom()
+	zoom_changed.emit(zooming)
+
+# Pousse zoom_factor / zoom_pan sur les PiP existants.
+func _apply_zoom() -> void:
+	var aspect := PIN_SIZE.x / PIN_SIZE.y
+	for key in pinned_windows:
+		var pip := _pip_atlas(key)
+		var tr := _pip_rect(key)
+		if pip == null or tr == null:
+			continue
+		if zoom_factor <= ZOOM_MIN:
+			# Fenêtre entière, letterboxée : le rendu d'origine. Attention, on ne
+			# teste PAS `zooming` ici : l'agrandissement est une propriété du PiP,
+			# il reste affiché en sortant du mode loupe (seul l'interactif —
+			# bordure bleue, souris capturée, molette, recadrage — s'arrête).
+			pip.region = Rect2(Vector2.ZERO, _atlas_size(pip))
+			tr.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			continue
+		pip.region = zoom_region(_atlas_size(pip), zoom_factor, zoom_pan, aspect)
+		# La région a déjà le ratio de la boîte : STRETCH_SCALE la remplit
+		# exactement, sans bandes noires.
+		tr.stretch_mode = TextureRect.STRETCH_SCALE
+
+func _atlas_size(atlas: AtlasTexture) -> Vector2:
+	return atlas.atlas.get_size() if atlas.atlas != null else Vector2.ZERO
+
+# AtlasTexture de recadrage d'un PiP (null si la clé n'a pas de PiP valide).
+func _pip_atlas(key) -> AtlasTexture:
+	var tr := _pip_rect(key)
+	return tr.texture as AtlasTexture if tr != null else null
+
+# TextureRect d'un PiP.
+func _pip_rect(key) -> TextureRect:
+	var pip: Control = pinned_windows.get(key)
+	if not is_instance_valid(pip) or pip.get_child_count() == 0:
+		return null
+	return pip.get_child(0) as TextureRect
+
+# Repaint la bordure de tous les PiP (changement de couleur en loupe).
+func _apply_border_color() -> void:
+	for key in pinned_windows:
+		var pip: Control = pinned_windows[key]
+		if not is_instance_valid(pip):
+			continue
+		var sb := pip.get_theme_stylebox("panel") as StyleBoxFlat
+		if sb != null:
+			sb.bg_color = border_color
+
+# Molette : un cran = un palier de zoom, borné à [ZOOM_MIN, ZOOM_MAX].
+func zoom_by_scroll(steps: float) -> void:
+	if not zooming:
+		return
+	zoom_factor = clampf(zoom_factor + steps * ZOOM_STEP, ZOOM_MIN, ZOOM_MAX)
+	_apply_zoom()
+
+# Mouvement souris (relatif, la souris étant capturée) : déplace le recadrage.
+# _region_size est la taille de la région courante en pixels de texture — le
+# déplacement est converti en fraction normalisée pour rester indépendant de
+# la résolution de la fenêtre.
+func pan_by(relative: Vector2, _region_size: Vector2) -> void:
+	if not zooming:
+		return
+	if _region_size.x > 0.0 and _region_size.y > 0.0:
+		zoom_pan += relative * ZOOM_PAN_SPEED / _region_size
+	zoom_pan = Vector2(clampf(zoom_pan.x, 0.0, 1.0), clampf(zoom_pan.y, 0.0, 1.0))
+	_apply_zoom()
+
+## Recadrage au stick droit. L'axe Y du stick est positif vers le bas, comme
+## l'Y d'une souris : stick vers le bas -> zoom_pan.y monte -> la vue descend.
+## Aucune inversion, donc.
+func _stick_pan(delta: float) -> void:
+	var raw := Vector2(
+		Input.get_joy_axis(0, JOY_AXIS_LEFT_X),
+		Input.get_joy_axis(0, JOY_AXIS_LEFT_Y))
+	var dir := stick_pan_vector(raw, ZOOM_STICK_DEADZONE)
+	if dir == Vector2.ZERO:
+		return
+	pan_by(dir * ZOOM_STICK_SPEED * delta, _current_region_size())
+
+## Maintien des touches de zoom. On interroge les ACTIONS et non les indices de
+## bouton : LB/RB y sont lies par defaut, mais un remappage continue de
+## fonctionner sans toucher a ce code (meme approche que focus_mode.gd, qui
+## combine les deux).
+func _hold_zoom(delta: float) -> void:
+	var dir := 0.0
+	if Input.is_action_pressed("scroll_up"):
+		dir += 1.0
+	if Input.is_action_pressed("scroll_down"):
+		dir -= 1.0
+	var notches := _advance_scroll_hold(dir, delta)
+	if not is_zero_approx(notches):
+		zoom_by_scroll(notches)
+
+## Avance le maintien et renvoie le nombre de crans a appliquer (-1/0/+1 en
+## entree, crans fractionnaires en sortie : le zoom devient continu au lieu de
+## sauter de 0.15 en 0.15). delai-then-repeat classique — la separation entre
+## « nouvelle pression » et « meme pression » est ce qui evite de doubler le
+## cran que l'evenement d'appui a deja donne. Separe de la lecture des
+## boutons pour etre testable sans manette.
+func _advance_scroll_hold(dir: float, delta: float) -> float:
+	if is_zero_approx(dir):
+		_scroll_hold_dir = 0.0
+		_scroll_hold_left = 0.0
+		return 0.0
+	if not is_equal_approx(dir, _scroll_hold_dir):
+		_scroll_hold_dir = dir
+		return 0.0
+	return dir * ZOOM_HOLD_RATE * delta
+
+
+## Taille de la région actuellement visible, pour convertir un décalage en
+## pixels en déplacement de recadrage normalisé. Partagée par la souris (_input)
+## et le stick (_process) : les deux doivent convertir à l'identique, sinon le
+## même geste nedonnerait pas le même résultat selon l'appareil.
+func _current_region_size() -> Vector2:
+	var tr := _pip_rect(_pip_key())
+	if tr == null:
+		return Vector2.ZERO
+	var atlas := tr.texture as AtlasTexture
+	if atlas == null:
+		return Vector2.ZERO
+	return zoom_region(_atlas_size(atlas), zoom_factor, zoom_pan,
+		PIN_SIZE.x / PIN_SIZE.y).size
+
 func _input(event: InputEvent) -> void:
+	if zooming:
+		_handle_zoom_input(event)
+		return
 	if event is InputEventMouseMotion:
 		mouse_pos = event.position
+
+# Input du mode loupe : tout est consommé pour que ni la caméra du joueur ni la
+# fenêtre 3D (ou le client Wayland en focus) ne réagissent au même événement.
+func _handle_zoom_input(event: InputEvent) -> void:
+	if event.is_action_pressed("ui_cancel"):
+		set_zooming(false)
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("scroll_up", true) and !(event is InputEventJoypadButton):
+		zoom_by_scroll(1.0)
+		get_viewport().set_input_as_handled()
+		return
+	if event.is_action_pressed("scroll_down", true) and !(event is InputEventJoypadButton):
+		zoom_by_scroll(-1.0)
+		get_viewport().set_input_as_handled()
+		return
+	if event is InputEventMouseMotion:
+		pan_by((event as InputEventMouseMotion).relative, _current_region_size())
+		get_viewport().set_input_as_handled()
+
+# Clé du PiP courant (il n'y en a qu'un d'actif à la fois).
+func _pip_key():
+	return pinned_windows.keys()[0] if not pinned_windows.is_empty() else null
