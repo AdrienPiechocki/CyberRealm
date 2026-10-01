@@ -28,7 +28,12 @@ func _init() -> void:
 	var file_name := dir.get_next()
 	while file_name != "":
 		if file_name.begins_with("test_") and file_name.ends_with(".gd"):
-			_run_test_script("res://tests/" + file_name)
+			# `await` ICI aussi, et c'est le maillon manquant : un appel nu
+			# à une fonction qui contient `await` la suspend et rend la main
+			# immédiatement. La boucle while repartait alors à son tour, le
+			# résumé s'imprimait, et le fichier courant comme tous les suivants
+			# n'étaient jamais exécutés — toujours sans le moindre échec.
+			await _run_test_script("res://tests/" + file_name)
 		file_name = dir.get_next()
 	dir.list_dir_end()
 
@@ -74,7 +79,16 @@ func _run_test_script(resource_path: String) -> void:
 		if mname.begins_with("test_") and (method["flags"] & METHOD_FLAG_CONST) == 0:
 			_total += 1
 			var short := resource_path.get_file() + "::" + mname
-			var result = instance.call(mname)
+			# `await` sur l'appel, et non un appel nu : un test qui contient
+			# `await` est une coroutine, et l'appeler sans `await` lève
+			# « Trying to call an async function without "await" », un
+			# FATAL qui interromp la boucle entière. Conséquence mesurée :
+			# le fichier de test concerné et tous les suivants disparaissaient
+			# de la suite, qui annonçait un résumé propre — exactement le
+			# genre de disappearance que ce runner existe pour empêcher.
+			# Sur une valeur ordinaire (test synchrone), `await` renvoie la
+			# valeur telle quelle : les deux formes passent par le même chemin.
+			var result = await instance.call(mname)
 			print(result)
 			if result is bool and result == true:
 				_passed += 1

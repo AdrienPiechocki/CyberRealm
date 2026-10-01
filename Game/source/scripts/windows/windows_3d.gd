@@ -38,6 +38,17 @@ const TITLEBAR_BUTTON_GAP_RATIO := 0.22 # espace entre boutons = 22% de la haute
 const WINDOW_OCCLUDER_DEPTH := 0.04
 const TITLEBAR_BUTTON_MARGIN_RATIO := 0.35 # marge du bord droit de la barre
 
+# Couche physique dédiée aux zones de collage. Distincte de la couche 2
+# (corps des fenêtres, utilisée par le raycast de pointage) pour qu'une zone
+# ne soit JAMAIS touchée par le raycast du grab : attraper la zone au lieu du
+# corps ferait rater la saisie. Bit 3 = valeur 8.
+const SNAP_ZONE_LAYER := 8
+# Les zones sont des Area3D enfants du quad. `monitorable` reste toujours
+# vrai (elles doivent pouvoir être détectées) ; `monitoring` n'est activé que
+# sur les 4 zones de la fenêtre SAISIE, ce qui limite le coût physique à un
+# seul inventaire de recouvrement par frame.
+const SNAP_ZONE_NAME := "Snap"
+
 # Position de spawn des nouvelles fenêtres : toujours 1 m devant la caméra,
 # mais décalée de STACK_Z_OFFSET derrière la précédente pour chaque fenêtre
 # déjà présente à cet endroit, pour que deux fenêtres ouvertes coup sur coup
@@ -45,6 +56,34 @@ const TITLEBAR_BUTTON_MARGIN_RATIO := 0.35 # marge du bord droit de la barre
 # focus (voir focus_mode.gd).
 const STACK_Z_OFFSET := 0.1 # m entre deux fenêtres empilées
 const SPAWN_STACK_RADIUS := 0.5 # m, portée de détection des fenêtres déjà empilées au point de spawn
+
+# ── Collage (snap) entre fenêtres ───────────────────────────────────────
+#
+# Modèle : une Area3D par côté de fenêtre (4 zones), enfant du quad — donc
+# position, rotation et taille suivent gratuitement, sans code par frame.
+# Deux zones de côtés OPPOSÉS qui se recouvrent => la fenêtre saisie se cale
+# bord à bord sur la voisine, en héritant de son orientation (modèle VR :
+# l'orientation est fixe, la fenêtre ne se réoriente plus vers la caméra).
+#
+# Les zones sont CENTRÉES sur le bord, jamais posées à l'extérieur : c'est ce
+# qui fait qu'elles se recouvrent quand on APPROCHE, et pas seulement quand on
+# a déjà dépassé la position flush.
+#
+# Épaisseur de la dalle : borne BASSE parce qu'une zone trop fine serait
+# inatteignable au pixel près, borne HAUTE parce qu'une zone trop épaisse
+# recouvrirait les fenêtres simplement voisines et produirait des collages
+# parasites (le garde-fou « >2 candidats » ne couvre pas ce cas).
+const SNAP_ZONE_THICKNESS := 0.5 # m
+# Ordre FIXE d'évaluation des côtés : à égalité de recouvrement, le premier
+# candidat l'emporte. Sans cet ordre stable, le collage dépendrait de
+# l'ordre d'itération et scintillerait d'une frame à l'autre.
+const SNAP_SIDES := ["left", "right", "top", "bottom"]
+# Un cran de rotation au scroll d'une fenêtre collée.
+const SNAP_YAW_STEP := deg_to_rad(15.0) # rad
+# Distance (m) dont le pointeur doit s'éloigner du point où le collage a eu
+# lieu pour décoller la fenêtre. Mesurée sur le POINTEUR et non sur la fenêtre :
+# la rotation au scroll déplace la fenêtre, jamais le pointeur.
+const SNAP_RELEASE_DISTANCE := 0.6
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
@@ -130,10 +169,37 @@ var is_in_window := false
 # Déplacement: distance (caméra -> fenêtre) figée au moment du grab, la
 # fenêtre suit ensuite le viseur le long de ce rayon.
 var move_depth := 0.0
+# Delta souris brut accumulé depuis le grab, et sa traduction dans le plan de
+# vue. C'est le SEUL mouvement latéral sans limite disponible : en
+# MOUSE_MODE_CAPTURED le viseur est figé au centre de l'écran, donc sans ce
+# delta la fenêtre ne pourrait pas s'écarter assez pour devenir bord à bord.
+var move_mouse_delta := Vector2.ZERO
+var move_view_offset := Vector3.ZERO
 
 var is_moving_2d := false
 var move_2d_plane := Plane()
 var move_2d_offset := Vector3.ZERO
+# Base du quad au moment du drag 2D. Elle sert d'ORIGINE au yaw : la rotation
+# est donc relative au regard au moment du grab, pas au monde — sans ça, un
+# yaw cumulé depuis un drag précédent ferait tourner la fenêtre dans le vide.
+var move_2d_basis := Basis.IDENTITY
+
+# Fenêtre sur laquelle celle-ci est collée : wid -> {wid, side}
+var snapped_to: Dictionary = {} # wid (int) -> Dictionary
+
+# Orientation figée par fenêtre : wid -> Basis.
+# Avant, une fenêtre était un billboard — `global_basis = base caméra` réécrit
+# à chaque frame, plus un yaw appliqué par-dessus. Une fenêtre qui hérite de
+# l'orientation de sa voisine ne peut PAS rester un billboard : ce modèle
+# écraserait l'héritage dès la frame suivante. D'où une base stockée, écrite
+# uniquement à la création, à l'héritage du collage et au scroll de rotation.
+var _window_basis: Dictionary = {} # wid (int) -> Basis
+
+# Fenêtre dont les zones de collage sont en surveillance (monitoring actif).
+var _snap_monitoring_wid := -1
+# Couple (cible:côté:côté) qu'on vient de décoller : interdit de recoller tant
+# que les zones se recouvrent encore, sinon la fenêtre recolle aussitôt.
+var _snap_lockout := ""
 
 # Redimensionnement: même principe de rayon à profondeur fixe, mais on
 # garde aussi la base locale du quad et ses dimensions de départ pour
@@ -334,6 +400,7 @@ func release_window_grab(wid: int) -> void:
 	if not is_window_grabbed(wid):
 		return
 	is_moving = false
+	_reset_view_drag()
 	active_window_id = -1
 	_set_window_occluder_active(wid, true)
 	windows_state_changed.emit()
@@ -388,6 +455,7 @@ func toggle_grab_window(wid: int) -> void:
 	var cam := _camera()
 	active_window_id = wid
 	is_moving = true
+	_reset_view_drag()
 	_set_window_occluder_active(wid, false)
 	move_depth = cam.global_position.distance_to(quad.global_position)
 	windows_state_changed.emit()
@@ -430,6 +498,11 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	body.add_child(col)
 	body.set_meta("window_id", id)
 	quad.add_child(body)
+
+	# Zones de collage : 4 Area3D, une par côté, enfants du quad. Enfant du
+	# quad => position, rotation et taille suivent gratuitement, sans code par
+	# frame ni reconstruction de cadre à chaque frame.
+	_build_snap_zones(quad)
 
 	# Occlusion culling : boîte fine alignée sur le quad. Enfant du quad →
 	# suit grab/déplacement/rotation sans code par frame, et se désactive
@@ -499,10 +572,9 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	quad.global_position = next_spawn_pos()
 	var camera := _camera()
 
-	quad.global_transform = Transform3D(
-		camera.global_transform.basis,
-		quad.global_position
-	)
+	# Face caméra à la création. Écriture directe : aucune rotation n'a encore
+	# été appliquée à cette fenêtre, il n'y a donc pas d'état à conserver.
+	quad.global_basis = camera.global_transform.basis
 
 	window_created.emit(id, quad)
 	windows_state_changed.emit()
@@ -521,10 +593,14 @@ func on_window_title_changed(id: int, title: String) -> void:
 # Recalcule la barre de titre après un changement de taille du contenu : la
 # barre reste collée au bord supérieur du contenu et suit sa largeur.
 func _sync_titlebar(quad: MeshInstance3D) -> void:
+	var mesh: QuadMesh = quad.mesh
+	# Zones de collage resynchronisées en PREMIER, avant tout early return :
+	# une fenêtre sans barre de titre doit malgré tout avoir ses zones à la
+	# bonne taille.
+	_sync_snap_zones(quad)
 	var titlebar: MeshInstance3D = quad.get_node_or_null("Titlebar")
 	if titlebar == null or not is_instance_valid(titlebar):
 		return
-	var mesh: QuadMesh = quad.mesh
 	var bar_h: float = TITLEBAR_HEIGHT
 	var bar_mesh: QuadMesh = titlebar.mesh
 	if bar_mesh == null:
@@ -542,6 +618,8 @@ func _sync_titlebar(quad: MeshInstance3D) -> void:
 	if occ != null and occ.occluder is BoxOccluder3D:
 		(occ.occluder as BoxOccluder3D).size = Vector3(
 			mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
+
+	# Les zones de collage sont resynchronisées en tête de fonction (_sync_titlebar).
 
 	# Boutons alignés à droite : maximiser, réduire, fermer (de gauche à droite).
 	var btn_size := bar_h * TITLEBAR_BUTTON_SIZE_RATIO
@@ -625,10 +703,7 @@ func on_window_unmapped(id: int) -> void:
 	if focused_window_id == id:
 		focused_window_id = -1
 	
-	window_textures.erase(id)
-	window_shared.erase(id)
-	window_server_side.erase(id)
-	_texture_versions.erase(id)
+	_erase_window_state(id)
 	if quads.has(id):
 		var quad = quads[id]
 		if is_instance_valid(quad):
@@ -639,6 +714,18 @@ func on_window_unmapped(id: int) -> void:
 			quad.queue_free()
 		quads.erase(id)
 	windows_state_changed.emit()
+
+# Vrai si le mesh de cette fenêtre est piloté par le redimensionnement en cours
+# (la fenêtre tirée, ou une voisine qui partage son bord).
+func _is_resize_controlled(id: int) -> bool:
+	if not is_resizing:
+		return false
+	if id == active_window_id:
+		return true
+	for r in _resize_shared:
+		if int(r["wid"]) == id:
+			return true
+	return false
 
 func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) -> void:
 	# Tracker la texture pour le menu de navigation
@@ -678,7 +765,11 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	# l'ancienne taille (le client n'a pas encore committé le buffer à la
 	# nouvelle taille), donc recalculer le mesh sur sa base causerait un
 	# flickering entre l'aspect cible et l'aspect stale à chaque frame.
-	if is_resizing and active_window_id == id:
+	# Idem pour les voisines qui partagent le bord tiré : leur mesh est piloté par
+	# _update_shared_edge. Sans ce garde, une texture encore à l'ancienne taille
+	# réécrivait leur largeur à chaque frame (sans recaler la position) : le
+	# bord partagé s'ouvrait ou se chevauchait visuellement.
+	if _is_resize_controlled(id):
 		return
 
 	# Garde le ratio d'aspect réel de la fenêtre. Utilise la hauteur
@@ -852,6 +943,12 @@ func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: i
 # Gère hover/clic/scroll vers les fenêtres et popups, ainsi que les grabs
 # de déplacement (G) et de redimensionnement (bords/coins).
 func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, interact_active: bool) -> void:
+	# Seule entrée appelée TOUTES les frames, grabs ou non : c'est donc ici
+	# qu'on rallume et qu'on éteint la surveillance des zones de collage, sans
+	# avoir à toucher aux six sites de prise et de relâchement. L'appel est
+	# idempotent, celui des frames de déplacement ne fait que l'anticiper.
+	_sync_snap_monitoring(
+		active_window_id if (is_moving or is_moving_2d) else -1)
 	# Efface le pointeur wayland de toutes les fenêtres : il n'est re-posé
 	# que si le raycast atteint une fenêtre ci-dessous. Les branches de
 	# retour (drag, raycast dans le vide) laissent ainsi les captures de
@@ -864,21 +961,33 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# bouge - donc on pilote le drag via le rayon caméra, pas via une
 	# position écran qui ne varie jamais pendant le drag.
 	if is_moving:
-		# just_pressed AVANT is_action_pressed : sur la frame d'appui d'un
-		# clic molette, les deux sont vrais — l'ordre inverse donnait toujours
-		# le petit pas (0.05) au lieu du saut (0.25).
-		if Input.is_action_just_pressed("scroll_up", false):
-			move_depth += 0.25
-		elif Input.is_action_pressed("scroll_up", false):
-			move_depth += 0.05
-		if Input.is_action_just_pressed("scroll_down", false):
-			move_depth -= 0.25
-		elif Input.is_action_pressed("scroll_down", false):
-			move_depth -= 0.05
+		# Fenêtre collée : le scroll pivote au lieu de pousser/tirer. Le
+		# push/pull n'est proposé QUE hors collage, sinon on perd le
+		# depth-move existant — c'est le même scroll, deux sens selon l'état.
+		if _scroll_rotates():
+			if Input.is_action_just_pressed("scroll_up", false) \
+					or Input.is_action_pressed("scroll_up", false):
+				_rotate_snapped(1.0)
+			if Input.is_action_just_pressed("scroll_down", false) \
+					or Input.is_action_pressed("scroll_down", false):
+				_rotate_snapped(-1.0)
+		else:
+			# just_pressed AVANT is_action_pressed : sur la frame d'appui d'un
+			# clic molette, les deux sont vrais — l'ordre inverse donnait toujours
+			# le petit pas (0.05) au lieu du saut (0.25).
+			if Input.is_action_just_pressed("scroll_up", false):
+				move_depth += 0.25
+			elif Input.is_action_pressed("scroll_up", false):
+				move_depth += 0.05
+			if Input.is_action_just_pressed("scroll_down", false):
+				move_depth -= 0.25
+			elif Input.is_action_pressed("scroll_down", false):
+				move_depth -= 0.05
 		_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab", true):
 			_set_window_occluder_active(active_window_id, true)
 			is_moving = false
+			_reset_view_drag()
 			active_window_id = -1
 			windows_state_changed.emit()
 		return
@@ -887,15 +996,26 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		if Input.is_action_just_released("left_click", false):
 			_set_window_occluder_active(active_window_id, true)
 			is_resizing = false
+			_end_group_resize()
 			resizing_edge = ""
 			active_window_id = -1
 			windows_state_changed.emit()
 		return
 	if is_moving_2d:
+		# Le drag 2D n'a jamais eu de push/pull : ici le scroll n'a rien à
+		# concurrencer, il pivote donc dès que la fenêtre est collée.
+		if _scroll_rotates():
+			if Input.is_action_just_pressed("scroll_up", false) \
+					or Input.is_action_pressed("scroll_up", false):
+				_rotate_snapped(1.0)
+			if Input.is_action_just_pressed("scroll_down", false) \
+					or Input.is_action_pressed("scroll_down", false):
+				_rotate_snapped(-1.0)
 		_update_move_2d(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("left_click", false):
 			_set_window_occluder_active(active_window_id, true)
 			is_moving_2d = false
+			_reset_view_drag()
 			active_window_id = -1
 			windows_state_changed.emit()
 		return
@@ -903,6 +1023,10 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	var to := ray_origin + ray_dir * 1000.0
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+	# Explicite, alors que c'est déjà le défaut : les zones de collage sont des
+	# Area3D, et si ce rayon les touchait un jour, on saisirait la ZONE au
+	# lieu du corps — le grab viserait à côté de la fenêtre attrapée.
+	params.collide_with_areas = false
 	var hit := space.intersect_ray(params)
 
 	if hit.is_empty():
@@ -986,6 +1110,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if Input.is_action_just_pressed("grab", true) and not interact_active:
 		active_window_id = wid
 		is_moving = true
+		_reset_view_drag()
 		# Même détachement d'occluder que toggle_grab_window/resize/move_2d :
 		# pendant le grab le quad réécrit sa transform à CHAQUE frame
 		# (billboard), ce qui rediriterait la scène Embree entière (incluant
@@ -997,6 +1122,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		active_window_id = wid
 		is_moving = false
 		move_depth = 0.0
+		_reset_view_drag()
 	if Input.is_action_just_pressed("left_click", false):
 		focused_window_id = wid
 		var edge := _border_edge(uv, win_size, body)
@@ -1033,14 +1159,17 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			window_start_content_offset = content_offset
 			window_start_mesh_size = mesh.size
 			window_start_local_pos = quad.position
+			_begin_group_resize(wid, edge)
 
 		elif in_titlebar:
 			# Move on a 2D plane (simulation de barre de titre)
 			active_window_id = wid
 			is_moving_2d = true
+			_reset_view_drag()
 			_set_window_occluder_active(wid, false)
 			
 			# On crée un plan infini basé sur l'orientation de la fenêtre (axe Z)
+			move_2d_basis = quad.global_transform.basis
 			var normal = quad.global_transform.basis.z.normalized()
 			move_2d_plane = Plane(normal, quad.global_position)
 
@@ -1156,6 +1285,8 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 	var quad: MeshInstance3D = quads[id]
 	var mesh: QuadMesh = quad.mesh
 	var body: StaticBody3D = quad.get_child(0)
+	# Le groupe collé suit le changement de taille (voisines poussées/rapprochées).
+	_begin_group_resize(id)
 
 	if fullscreen:
 		# 1. Store state prior to toggling fullscreen
@@ -1195,6 +1326,8 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 			var orig_surf: Vector2 = pre_fullscreen_surface_sizes[id]
 			compositor.set_window_size(id, int(orig_surf.x), int(orig_surf.y))
 			pre_fullscreen_surface_sizes.erase(id)
+	_update_group_resize(id)
+	_end_group_resize()
 	windows_state_changed.emit()
 
 # Clic sur la barre de titre du jeu -> déplacer la fenêtre sur son plan 2D
@@ -1207,9 +1340,11 @@ func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3)
 		focused_window_id = wid
 		active_window_id = wid
 		is_moving_2d = true
+		_reset_view_drag()
 		# Idem drag-content (move_2d) : détacher l'occluder tant que le quad
 		# bouge à chaque frame (sinon reconstruction Embree à chaque frame).
 		_set_window_occluder_active(wid, false)
+		move_2d_basis = quad.global_transform.basis
 		var normal = quad.global_transform.basis.z.normalized()
 		move_2d_plane = Plane(normal, quad.global_position)
 		var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
@@ -1223,6 +1358,7 @@ func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3)
 		active_window_id = -1
 		is_moving_2d = false
 		move_2d_offset = Vector3.ZERO
+		_reset_view_drag()
 
 # UV exact sur le plan visuel du quad : le point renvoyé par le raycast est
 # sur la face avant du boîtier de collision (épais), donc décalé du plan
@@ -1281,31 +1417,940 @@ func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
 # (distance capturée au moment du grab) - fonctionne même si la souris ne
 # se déplace jamais à l'écran (mode capturé), puisque seule l'orientation
 # de la caméra entre ici en jeu.
+# Remet à zéro le geste de translation : le décalage cumulé est propre à UNE
+# prise, sinon la fenêtre repartirait offsetée au grab suivant.
+func _reset_view_drag() -> void:
+	move_mouse_delta = Vector2.ZERO
+	move_view_offset = Vector3.ZERO
+
+func _input(event: InputEvent) -> void:
+	# Déplacement de fenêtre : on réemploie le delta souris BRUT, déjà capté
+	# par la caméra pour le look. Il n'est lu que pendant une prise, pour ne
+	# pas impacter le monde quand on bouge simplement la souris.
+	if not (is_moving or is_moving_2d):
+		return
+	if event is InputEventMouseMotion:
+		move_mouse_delta += (event as InputEventMouseMotion).relative
+
+# Traduit le delta souris accumulé en décalage dans le plan de vue, puis le
+# remet à zéro : le geste est consommé une fois par frame de drag.
+func _apply_view_drag(cam: Camera3D) -> void:
+	if move_mouse_delta == Vector2.ZERO:
+		return
+	var vp := get_viewport()
+	var world_per_pixel := pixels_to_world(move_depth, cam.fov,
+		vp.get_visible_rect().size.y)
+	move_view_offset += view_drag_delta(
+		cam.global_basis.x.normalized(), cam.global_basis.y.normalized(),
+		move_mouse_delta, world_per_pixel)
+	move_mouse_delta = Vector2.ZERO
+
 func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
 	var cam: Camera3D = _camera()
+	_sync_snap_monitoring(active_window_id)
+	# Plus de translation latérale à la souris pendant le grab 3D.
+	# Son décalage était cumulé SANS borne et réinjecté dans target_pos AVANT
+	# la recherche de snap : le point visé s'éloignait donc progressivement des
+	# zones, le collage sautait, la fenêtre repartait face caméra, et le
+	# décalage continuait de croître tant que le bouton restait enfoncé. C'était
+	# l'un des deux moteurs de l'oscillation observée en jeu. Le snap ajuste
+	# déjà la position : la translation était redondante ET destructrice.
 	var target_pos = ray_origin + ray_dir * move_depth
+	# Collage : la position visée est corrigée vers le bord d'une fenêtre
+	# voisine AVANT le lerp, sinon la fenêtre ne s'accroche jamais
+	# (le lerp la ramène vers le point brut à chaque frame).
+	var snap := _find_snap(target_pos)
+	var was_snapped := snapped_to.has(active_window_id)
+	# L'orientation AVANT la position, et non l'inverse.
+	#
+	# Les zones sont des ENFANTS du quad : écrire la base de la voisine les
+	# DÉPLACE. Caler d'abord, tourner ensuite, donnait un point de collage
+	# immédiatement périmé — les zones sortaient de la voisine, le collage
+	# sautait, la fenêtre repassait face caméra, et le cycle se refermait à la
+	# frame suivante. On reste alors collé sans jamais tenir : la fenêtre
+	# oscille tant qu'on la tient.
+	# L'orientation n'est adoptée qu'UNE fois, à l'entrée dans le collage (dans
+	# _set_snap). La réécrire à chaque frame annulait le scroll de rotation.
+	_set_snap(active_window_id, snap)
+	if not snap.is_empty():
+		# Recalculé APRÈS le changement d'orientation : _find_snap a raisonné
+		# sur les zones telles qu'elles étaient AVANT, donc sur une base qui
+		# n'est plus celle du quad. Le recalcul se fait dans le repère final,
+		# et le calage reste exact bord à bord.
+		target_pos = _snap_flush_position(active_window_id, snap)
 	# Déplacement fluide
 	quad.global_position = quad.global_position.lerp(
 		target_pos,
 		10.0 * delta
 	)
-	# Rotation
-	quad.global_basis = cam.global_basis
+
+	# Orientation : deux régimes, et c'est le COLLAGE qui les sépare.
+	#
+	# LIBRE : la fenêtre suit la caméra. Elle reste face au joueur pendant
+	# qu'il la déplace, et suit sa tête s'il regarde ailleurs — sans cela on la
+	# manipule de biais et on ne lit plus ce qu'elle affiche. On écrit
+	# l'ÉTAT STOCKÉ aussi, sinon la rotation au collage relirait plus tard une
+	# base périmée et la fenêtre se replacerait d'un coup.
+	#
+	# COLLÉE : au contraire, elle fige l'orientation de sa voisine (écrite par
+	# _adopt_neighbour_basis). La suivre ici anéantirait la rotation au
+	# collage à la frame suivante, et le raccord VR ne serait plus plat.
+	#
+	# `was_snapped` — l'état de la frame PRÉCÉDENTE — et non celui calculé
+	# plus haut. Dès qu'une fenêtre est ENGAGÉE dans un collage, son
+	# orientation lui appartient : la laisser repartir face caméra pendant
+	# une frame suffirait à faire perdre le recouvrement que le collage vient
+	# d'établir, et la fenêtre clignoterait entre les deux orientations pour
+	# toute la durée du grab. Le recouvrement est mesuré sur la pose
+	# précédente, donc l'orientation ne doit l'être qu'une fois le collage
+	# réel : c'est le tout premier frame, où elle n'était pas encore engagée.
+	if snap.is_empty() and not was_snapped:
+		_store_basis(active_window_id, cam.global_transform.basis)
 
 # La fenêtre glisse le long de son propre plan d'orientation initial.
 func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
+	_sync_snap_monitoring(active_window_id)
+	_apply_view_drag(_camera())
 	var hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
 
 	if hit != null:
-		var target_pos = hit + move_2d_offset
+		var target_pos = hit + move_2d_offset + move_view_offset
+		# Même collage qu'en drag 3D, et donc même cadre caméra. Ici le plan de
+		# déplacement reste celui capturé au grab (move_2d_plane) : la fenêtre
+		# glisse dans son plan, mais cale sa position dans le plan de vue.
+		var snap := _find_snap(target_pos)
+		_set_snap(active_window_id, snap)
+		if not snap.is_empty():
+			target_pos = _snap_flush_position(active_window_id, snap)
 		# Déplacement fluide uniquement sur les axes X/Y locaux du plan
 		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
+
+# ── Collage (snap) et rotation ─────────────────────────────────────────
+
+
+# Colle la fenêtre SAISIE sur une voisine, si deux zones opposées se
+# recouvrent.
+#
+# `raw_target` n'intervient que pour le LÂCHER : la position de calage se
+# déduit du monde et jamais du pointeur, sinon une fenêtre collée cesserait
+# d'être collée dès que la souris bouge. Voir zones_overlap_after_shift.
+func _find_snap(raw_target: Vector3) -> Dictionary:
+	var wid := active_window_id
+	if wid == -1:
+		return {}
+	# Déjà collée : le collage se TIENT, il ne se redécide pas. Le refaire à
+	# chaque frame depuis les recouvrements physiques bouclait : coller ->
+	# adopter la rotation de la voisine -> les zones bougent, le recouvrement
+	# disparaît -> décoller -> repasser face caméra -> recoller...
+	var held: Dictionary = snapped_to.get(wid, {})
+	if not held.is_empty():
+		return _hold_snap(held, raw_target)
+
+	var pairs := _snap_zone_pairs(wid)
+	if _snap_lockout != "":
+		var still_overlapping := false
+		var kept: Array = []
+		for p in pairs:
+			if _pair_key(int(p["their_wid"]), p["their_side"], p["our_side"]) == _snap_lockout:
+				still_overlapping = true
+			else:
+				kept.append(p)
+		if not still_overlapping:
+			_snap_lockout = ""
+		pairs = kept
+
+	var choice := _choose_snap(pairs)
+	if choice.is_empty():
+		return {}
+	var our_area: Area3D = choice.get("our_area", null)
+	var their_area: Area3D = choice.get("their_area", null)
+	if our_area == null or their_area == null:
+		return {}
+	# Position de calage dans la base FINALE (celle qui sera adoptée), et non
+	# celle des zones actuelles : sinon elle change dès que la rotation est
+	# recopiée.
+	var their_wid := int(choice["their_wid"])
+	var source := int(choice.get("adopt_basis_of", their_wid))
+	var flush := their_area.global_transform.origin \
+		- _stored_basis(source) * our_area.position
+	return {
+		"wid": their_wid,
+		"side": str(choice["their_side"]),
+		"our_side": str(choice["our_side"]),
+		"position": flush,
+		"anchor": raw_target,
+		"adopt_basis_of": source,
+		"our_area": our_area,
+		"their_area": their_area,
+	}
+
+# Tient un collage en cours, ou le rompt si le pointeur s'est assez éloigné de
+# l'endroit où il a eu lieu (ou si une des fenêtres a disparu).
+func _hold_snap(held: Dictionary, raw_target: Vector3) -> Dictionary:
+	var our_area = held.get("our_area", null)
+	var their_area = held.get("their_area", null)
+	var their_wid := int(held.get("wid", -1))
+	var valid: bool = is_instance_valid(our_area) and is_instance_valid(their_area) \
+		and quads.has(their_wid) and quads[their_wid].visible
+	if not valid:
+		return {}
+	var anchor: Vector3 = held.get("anchor", raw_target)
+	if raw_target.distance_to(anchor) > SNAP_RELEASE_DISTANCE:
+		_snap_lockout = _pair_key(their_wid, str(held.get("side", "")),
+			str(held.get("our_side", "")))
+		return {}
+	var snap := held.duplicate()
+	snap["position"] = _flush_position(our_area, their_area)
+	return snap
+
+func _pair_key(their_wid: int, their_side: String, our_side: String) -> String:
+	return "%d:%s:%s" % [their_wid, their_side, our_side]
+
+# Calage bord à bord, REJOUÉ après l'adoption d'orientation.
+#
+# _find_snap a raisonné sur les zones telles qu'elles étaient avant que la base
+# ne change : or la zone est un enfant du quad, donc la base écrite l'a
+# déplacée. Le `position` calculé à ce moment-là décrit une position qui n'est
+# plus la bonne. On le refait donc ici, sur les zones définitives.
+func _snap_flush_position(wid: int, snap: Dictionary) -> Vector3:
+	var our_area: Area3D = snap.get("our_area", null)
+	var their_area: Area3D = snap.get("their_area", null)
+	if our_area == null or their_area == null \
+			or not is_instance_valid(our_area) or not is_instance_valid(their_area):
+		return Vector3(snap.get("position", Vector3.ZERO))
+	return _flush_position(our_area, their_area)
+
+# Demi-dimensions visibles du quad d'une fenêtre, ou Zéro si elle a disparu.
+func _visual_half(wid: int) -> Vector2:
+	var quad: MeshInstance3D = quads.get(wid, null)
+	if quad == null or not is_instance_valid(quad):
+		return Vector2.ZERO
+	var mesh := quad.mesh as QuadMesh
+	return visual_half_extent(mesh.size) if mesh != null else Vector2.ZERO
+
+# Position du quad collé bord à bord, déduite du seul couple de zones.
+#
+# La zone est un ENFANT du quad, à l'offset local `position` : le quad est donc
+# exactement `centre_de_notre_zone - base * offset`. Imposer que notre zone
+# arrive sur LEUR zone revient à mettre le quad à
+# `centre_de_leur_zone - base * offset` : les deux centres de zone
+# coïncident, donc les deux bords aussi puisque les zones sont opposées.
+func _flush_position(our_area: Area3D, their_area: Area3D) -> Vector3:
+	return their_area.global_transform.origin \
+		- our_area.global_transform.basis * our_area.position
+
+# Liste les appariements de zones qui se recouvrent entre la fenêtre saisie et
+# les autres, sous la forme
+# {our_wid, our_side, our_area, their_wid, their_side, their_area}.
+#
+# Seuls des côtés RÉELLEMENT OPPOSÉS sont appariés : deux zones perpendiculaires
+# se touchent bien souvent sans que les fenêtres soient voisines, et les
+# apparier ferait coller une fenêtre contre le FLANC d'une autre. Les fenêtres
+# cachées sont ignorées — elles ne sont ni visibles ni cliquables, et collées
+# derrière une autre elles produiraient des liaisons invisibles.
+func _snap_zone_pairs(moving_wid: int) -> Array:
+	var pairs: Array = []
+	var moving_quad: MeshInstance3D = quads.get(moving_wid, null)
+	if moving_quad == null or not is_instance_valid(moving_quad):
+		return pairs
+	var our_zones := _zones_of(moving_quad)
+	for other_wid in quads:
+		if other_wid == moving_wid:
+			continue
+		var other_quad: MeshInstance3D = quads[other_wid]
+		if not is_instance_valid(other_quad) or not other_quad.visible:
+			continue
+		var their_zones := _zones_of(other_quad)
+		for our_pair in our_zones:
+			var our_area: Area3D = our_pair["area"]
+			if our_area == null:
+				continue
+			for their_pair in their_zones:
+				if not is_opposite_side(our_pair["side"], their_pair["side"]):
+					continue
+				var their_area: Area3D = their_pair["area"]
+				if their_area == null:
+					continue
+				if not our_area.overlaps_area(their_area):
+					continue
+				pairs.append({
+					"our_wid": moving_wid,
+					"our_side": our_pair["side"],
+					"our_area": our_area,
+					"their_wid": other_wid,
+					"their_side": their_pair["side"],
+					"their_area": their_area,
+				})
+	return pairs
+
+# Chemin de la zone d'un côté, à l'intérieur du quad. Un seul endroit décide
+# du nom : les cinq accès qui suivent (création, sync, surveillance, appariement,
+# pivot de rotation) ne peuvent alors pas diverger.
+func _zone_path(side: String) -> String:
+	return "%s%s" % [SNAP_ZONE_NAME, side.capitalize()]
+
+# Crée les 4 zones de collage d'une fenêtre. Enfant du quad, donc la rotation
+# de la fenêtre entraîne ses zones : c'est ce qui rend le collage exact
+# quelle que soit l'orientation, sans le moindre calcul de distance.
+func _build_snap_zones(quad: MeshInstance3D) -> void:
+	for side in SNAP_SIDES:
+		var area := Area3D.new()
+		area.name = _zone_path(side)
+		# Couche dédiée : le raycast de pointage (couche 2) ne peut pas
+		# attraper une zone, sinon le grab viserait la zone au lieu du corps.
+		area.collision_layer = SNAP_ZONE_LAYER
+		area.collision_mask = SNAP_ZONE_LAYER
+		# Détectable par les autres, mais on n'inventorie QUE les recouvrements
+		# de la fenêtre saisie : monitoring reste sinon éteint.
+		area.monitorable = true
+		area.monitoring = false
+		var col := CollisionShape3D.new()
+		col.shape = BoxShape3D.new()
+		area.add_child(col)
+		quad.add_child(area)
+	_sync_snap_zones(quad)
+
+# Recale les 4 zones sur la taille et la position courantes du quad. Appelé à
+# la création puis à chaque changement de taille (le même hook que la barre de
+# titre), donc resize / fullscreen / ratio de texture sont couverts.
+func _sync_snap_zones(quad: MeshInstance3D) -> void:
+	var mesh: QuadMesh = quad.mesh
+	if mesh == null:
+		return
+	var half := visual_half_extent(mesh.size)
+	for side in SNAP_SIDES:
+		var area := quad.get_node_or_null(_zone_path(side)) as Area3D
+		if area == null:
+			continue
+		var col := area.get_child(0) as CollisionShape3D
+		if col == null:
+			continue
+		var size := snap_zone_size(half, side)
+		var box := col.shape as BoxShape3D
+		if box != null:
+			box.size = size
+		area.position = snap_zone_local_offset(half, side)
+
+# N'active l'inventaire de recouvrements que sur la fenêtre saisie : une seule
+# Area3D surveille à la fois, le coût physique reste donc marginal.
+func _set_snap_monitoring(wid: int, on: bool) -> void:
+	var quad: MeshInstance3D = quads.get(wid, null)
+	if quad == null or not is_instance_valid(quad):
+		return
+	for side in SNAP_SIDES:
+		var area := quad.get_node_or_null(_zone_path(side)) as Area3D
+		if area != null:
+			area.monitoring = on
+
+# Bascule la surveillance sur la fenêtre saisie et coupe celle de la précédente.
+# Appelé en tête de chaque frame de déplacement, donc un simple point d'appel
+# suffit : inutile de’actionner les six sites de grab et de relâchement à la
+# main, et impossible d'en oublier un.
+func _sync_snap_monitoring(wid: int) -> void:
+	if wid == _snap_monitoring_wid:
+		return
+	_snap_lockout = ""
+	if _snap_monitoring_wid > -1:
+		_set_snap_monitoring(_snap_monitoring_wid, false)
+	_snap_monitoring_wid = -1
+	if wid > -1 and quads.has(wid) and is_instance_valid(quads[wid]):
+		_set_snap_monitoring(wid, true)
+		_snap_monitoring_wid = wid
+
+# Les zones d'un CÔTÉ, dans l'ordre de SNAP_SIDES.
+func _zones_of(quad: Node3D) -> Array:
+	var out: Array = []
+	for side in SNAP_SIDES:
+		var area := quad.get_node_or_null(_zone_path(side)) as Area3D
+		if area != null:
+			out.append({"side": side, "area": area})
+	return out
+
+# Choix du collage parmi les appariements recensés.
+#
+# Règle « plus de 2 candidats => PAS DE SNAP » : au-delà d'un seul
+# appariement, la position cible devient ambiguë et le collage
+# scintillerait d'une frame à l'autre entre deux voisins. La règle des
+# 3 fenêtres est la seule exception, et elle est décidée plus bas.
+#
+# Renvoie {} si aucun collage, sinon
+# {our_wid, our_side, our_area, their_wid, their_side, their_area}, plus
+# `adopt_basis_of` quand la règle des 3 fenêtres a tranché.
+func _choose_snap(pairs: Array) -> Dictionary:
+	if pairs.is_empty():
+		return {}
+	# Collage déjà établi et toujours recouvert : on le CONSERVE tel quel. Les
+	# règles ci-dessous ne s'évaluent qu'à l'entrée ; les rejouer pendant le
+	# scroll (la base de A change à chaque cran) ferait sauter le collage.
+	var first: Dictionary = _current_pair(pairs)
+	if first.is_empty():
+		# Plus de 2 zones qui se recouvrent => PAS DE SNAP.
+		if pairs.size() > 2:
+			return {}
+		first = pairs[0]
+		if pairs.size() == 2:
+			first = _resolve_three_windows(pairs)
+			if first.is_empty():
+				return {}
+	var choice := {
+		"our_wid": first["our_wid"],
+		"our_side": first["our_side"],
+		"our_area": first.get("our_area", null),
+		"their_wid": first["their_wid"],
+		"their_side": first["their_side"],
+		"their_area": first.get("their_area", null),
+	}
+	if first.has("adopt_basis_of"):
+		choice["adopt_basis_of"] = first["adopt_basis_of"]
+	return choice
+
+# Le couple correspondant au collage en cours, s'il est toujours dans `pairs`.
+func _current_pair(pairs: Array) -> Dictionary:
+	var cur: Dictionary = snapped_to.get(active_window_id, {})
+	if cur.is_empty():
+		return {}
+	for p in pairs:
+		if int(p["their_wid"]) == int(cur.get("wid", -1)) \
+				and p["their_side"] == cur.get("side", "") \
+				and p["our_side"] == cur.get("our_side", ""):
+			return p
+	return {}
+
+# Règle des 3 fenêtres. Notre fenêtre recouvre exactement 2 fenêtres du groupe :
+# A (pairs[0]) et B (pairs[1]). C est la fenêtre qui fait le lien entre A et B.
+#   rot(A) == rot(B)                      -> on prend rot(A)
+#   rot(A) != rot(B) et rot(A) == rot(C)  -> on prend rot(B)
+#   rot(A) != rot(B) et rot(B) == rot(C)  -> on prend rot(A)
+# On se cale sur la fenêtre dont on prend la rotation (adopt_basis_of).
+# Pas de lien A-C-B, ou trois rotations distinctes : pas de snap.
+func _resolve_three_windows(pairs: Array) -> Dictionary:
+	var pa: Dictionary = pairs[0]
+	var pb: Dictionary = pairs[1]
+	var a: int = pa["their_wid"]
+	var b: int = pb["their_wid"]
+	var res: Dictionary
+	if a == b:
+		# Deux zones de la même voisine : une seule fenêtre cible.
+		res = pa.duplicate()
+		res["adopt_basis_of"] = a
+		return res
+	var c := _linking_window(a, b)
+	if c == -1:
+		return {}
+	var basis_a := _stored_basis(a)
+	var basis_b := _stored_basis(b)
+	var basis_c := _stored_basis(c)
+	if basis_a.is_equal_approx(basis_b):
+		res = pa.duplicate()
+		res["adopt_basis_of"] = a
+	elif basis_a.is_equal_approx(basis_c):
+		res = pb.duplicate()
+		res["adopt_basis_of"] = b
+	elif basis_b.is_equal_approx(basis_c):
+		res = pa.duplicate()
+		res["adopt_basis_of"] = a
+	else:
+		return {}
+	return res
+
+# Fenêtre collée à la fois à `a` et à `b` (le maillon du groupe), ou -1.
+func _linking_window(a: int, b: int) -> int:
+	for c in quads:
+		if c == a or c == b:
+			continue
+		if _are_snapped(c, a) and _are_snapped(c, b):
+			return c
+	return -1
+
+# Deux fenêtres sont collées si l'une est la partenaire de l'autre.
+func _are_snapped(x: int, y: int) -> bool:
+	return _snapped_partner_of(x) == y or _snapped_partner_of(y) == x
+
+# Fenêtre déjà collée à `wid`, ou -1. Sert à retrouver C dans la règle des
+# 3 fenêtres.
+func _snapped_partner_of(wid: int) -> int:
+	var snap: Dictionary = snapped_to.get(wid, {})
+	if snap.is_empty():
+		return -1
+	return int(snap.get("wid", -1))
+
+# Enregistre (ou efface) l'état de collage d'une fenêtre et n'émet le changement
+# d'état réseau QUE sur transition : un emit par frame enverrait 60 fois/sec un
+# état identique.
+func _set_snap(wid: int, snap: Dictionary) -> void:
+	var before: Dictionary = snapped_to.get(wid, {})
+	if before.is_empty() and snap.is_empty():
+		return
+	if not before.is_empty() and not snap.is_empty():
+		if before.get("wid", -1) == snap.get("wid", -1) \
+				and before.get("side", "") == snap.get("side", "") \
+				and before.get("our_side", "") == snap.get("our_side", ""):
+			return
+	# Nouvelle liaison (ou rupture) : c'est le SEUL moment où l'orientation
+	# doit être réécrite. Tant que la liaison tient, la base reste figée —
+	# sinon le scroll n'aurait aucun effet et la règle des 3 fenêtres serait
+	# réévaluée sur une base qui change à chaque frame.
+	if snap.is_empty():
+		snapped_to.erase(wid)
+	else:
+		# Entrée OU changement de voisine : dans les deux cas c'est une nouvelle
+		# liaison, donc la fenêtre reprend l'orientation décidée par le collage.
+		snapped_to[wid] = snap
+		_adopt_neighbour_basis(wid, snap)
+	windows_state_changed.emit()
+
+# La fenêtre saisie prend l'orientation de sa voisine — le modèle VR : deux
+# fenêtres collées ont la même orientation, sinon le raccord n'est pas plat.
+func _adopt_neighbour_basis(wid: int, snap: Dictionary) -> void:
+	var source := int(snap.get("adopt_basis_of", -1))
+	if source == -1:
+		source = int(snap.get("wid", -1))
+	if source == -1 or source == wid or not quads.has(source):
+		return
+	_store_basis(wid, _stored_basis(source))
+
+# Le scroll ne pivote QUE si la fenêtre est collée : sinon il garde son sens
+# de push/pull (move_depth), qui n'a pas le droit de disparaître.
+func _scroll_rotates() -> bool:
+	return active_window_id != -1 and snapped_to.has(active_window_id)
+
+# ── Redimensionnement synchronisé du groupe collé ────────────────────────
+#
+# Redimensionner une fenêtre déplace son bord, donc les fenêtres collées de ce
+# côté doivent suivre (et celles qui leur sont collées derrière elles) : le
+# groupe se translate comme un bloc. On ne translate que le long de la normale
+# du bord — le décalage latéral entre voisines est conservé.
+#
+# Une entrée par fenêtre directement collée à la redimensionnée :
+# {side (côté de la redimensionnée), zone_start, members: [{wid, pos}]}.
+var _resize_links: Array = []
+# Voisines qui PARTAGENT le bord tiré : {side (côté de la tirée), wid, mesh, px,
+# offset, pos}.
+var _resize_shared: Array = []
+
+# Voisines directes d'une fenêtre dans le graphe de collage (les deux sens).
+func _snap_neighbours(wid: int) -> Array:
+	var out: Array = []
+	var own: Dictionary = snapped_to.get(wid, {})
+	if not own.is_empty():
+		out.append({"wid": int(own.get("wid", -1)), "side": str(own.get("our_side", ""))})
+	for other in snapped_to:
+		var sn: Dictionary = snapped_to[other]
+		if other != wid and int(sn.get("wid", -1)) == wid:
+			out.append({"wid": int(other), "side": str(sn.get("side", ""))})
+	return out
+
+# Toutes les fenêtres atteignables depuis `start` sans repasser par `visited`.
+func _collect_group(start: int, visited: Dictionary) -> Array:
+	var members: Array = []
+	var queue: Array = [start]
+	visited[start] = true
+	while not queue.is_empty():
+		var w: int = queue.pop_front()
+		members.append(w)
+		for n in _snap_neighbours(w):
+			var nw := int(n["wid"])
+			if nw != -1 and quads.has(nw) and not visited.has(nw):
+				visited[nw] = true
+				queue.append(nw)
+	return members
+
+# `edge` non vide (drag d'un bord) : la voisine collée sur ce bord le PARTAGE.
+# Le bord commun bouge pour les deux fenêtres, la tirée grandit de d et la
+# voisine rétrécit de d (son bord lointain reste fixe, donc ce qui est derrière
+# elle ne bouge pas). Les voisines des autres côtés, et tout le groupe lors d'un
+# maximize (`edge` vide), sont simplement translatées avec leur zone de collage.
+func _begin_group_resize(wid: int, edge: String = "") -> void:
+	_resize_links.clear()
+	_resize_shared.clear()
+	var quad: MeshInstance3D = quads.get(wid, null)
+	if quad == null:
+		return
+	var visited := {wid: true}
+	for link in _snap_neighbours(wid):
+		var nw := int(link["wid"])
+		if nw == -1 or not quads.has(nw) or visited.has(nw):
+			continue
+		var side: String = link["side"]
+		var area := quad.get_node_or_null(_zone_path(side)) as Area3D
+		if area == null:
+			continue
+		if edge != "" and edge.contains(side):
+			var nq: MeshInstance3D = quads[nw]
+			var nbody: StaticBody3D = nq.get_child(0)
+			visited[nw] = true
+			_set_window_occluder_active(nw, false)
+			# Zones de la voisine : `near` touche notre bord, `far` est son bord
+			# opposé (fixe). `near_delta` = écart initial entre sa zone proche et
+			# la nôtre (nul tant que rien n'a décalé les deux fenêtres), conservé
+			# pendant tout le drag pour ne pas recentrer la voisine.
+			var near_zone := nq.get_node_or_null(_zone_path(_opposite_side(side))) as Area3D
+			var far_zone := nq.get_node_or_null(_zone_path(side)) as Area3D
+			if near_zone == null or far_zone == null:
+				continue
+			_resize_shared.append({
+				"side": side, "wid": nw,
+				"near_delta": near_zone.global_transform.origin - area.global_transform.origin,
+				"far": far_zone.global_transform.origin,
+				"basis": nq.global_basis,
+				"mesh": (nq.mesh as QuadMesh).size,
+				"px": nbody.get_meta("surface_size", Vector2(1, 1)),
+				"offset": nbody.get_meta("content_offset", Vector2.ZERO),
+				"pos": nq.global_position,
+			})
+			continue
+		var members: Array = []
+		for m in _collect_group(nw, visited):
+			var q: MeshInstance3D = quads[m]
+			if is_instance_valid(q):
+				members.append({"wid": m, "pos": q.global_position})
+		_resize_links.append({
+			"kind": "translate",
+			"side": side,
+			"zone_start": area.global_transform.origin,
+			"members": members,
+		})
+
+func _end_group_resize() -> void:
+	for r in _resize_shared:
+		_set_window_occluder_active(int(r["wid"]), true)
+	_resize_shared.clear()
+	_resize_links.clear()
+	windows_state_changed.emit()
+
+# Croissance MAX (monde) de la fenêtre tirée sur l'axe horizontal ou vertical :
+# la voisine ne doit pas passer sous MIN_SURFACE_SIZE.
+func _shared_growth_limit(horizontal: bool) -> float:
+	var limit := INF
+	for r in _resize_shared:
+		var side: String = r["side"]
+		if (side == "left" or side == "right") != horizontal:
+			continue
+		var mesh: Vector2 = r["mesh"]
+		var px: Vector2 = r["px"]
+		var m := mesh.x if horizontal else mesh.y
+		var p := px.x if horizontal else px.y
+		limit = min(limit, max(m * (1.0 - MIN_SURFACE_SIZE / max(p, 1.0)), 0.0))
+	return limit
+
+func _opposite_side(side: String) -> String:
+	match side:
+		"left": return "right"
+		"right": return "left"
+		"top": return "bottom"
+		"bottom": return "top"
+	return ""
+
+# Place la voisine contre le bord partagé, que la fenêtre tirée déplace là où
+# le joueur vise. Seul ce bord bouge : le bord lointain de la voisine et ses
+# côtés perpendiculaires restent où ils sont.
+#
+# Si les deux fenêtres n'ont pas la même rotation, le bord partagé ne peut pas
+# glisser le long de l'axe de la tirée ET rester sur l'axe de la voisine : il
+# faut donc ROTATIONNER la voisine, autour de son bord lointain, pour qu'elle
+# pointe vers le nouveau bord partagé. Avec des rotations égales (fenêtres
+# coplanaires) l'angle est nul et on retrouve le simple redimensionnement.
+#
+#  - bord PROCHE de la voisine = zone de la tirée (déplacée) + écart initial ;
+#  - bord LOINTAIN = fixe ;
+#  - orientation : rotation autour de l'axe du bord (vertical pour un collage
+#    latéral) qui aligne son axe de largeur sur « lointain -> proche » ;
+#  - taille sur l'axe du collage = distance entre les deux bords ;
+#  - centre déduit de la position de sa zone proche, comme au collage.
+func _update_shared_edge(_d_x: float, _d_y: float) -> void:
+	var xq: MeshInstance3D = quads.get(active_window_id, null)
+	if xq == null:
+		return
+	for r in _resize_shared:
+		var nw := int(r["wid"])
+		var nq: MeshInstance3D = quads.get(nw, null)
+		if nq == null or not is_instance_valid(nq):
+			continue
+		var side: String = r["side"]
+		var xz := xq.get_node_or_null(_zone_path(side)) as Area3D
+		if xz == null:
+			continue
+		var near_side := _opposite_side(side)
+		var horizontal := side == "left" or side == "right"
+		var b0: Basis = r["basis"]
+		var near_pt: Vector3 = xz.global_transform.origin + Vector3(r["near_delta"])
+		var far_pt: Vector3 = r["far"]
+		# Sens proche -> lointain dans le repère DE DÉPART de la voisine, et
+		# axe du bord autour duquel elle pivote (hauteur pour un collage latéral,
+		# largeur pour un collage vertical).
+		var dir_old: Vector3
+		match side:
+			"right": dir_old = b0.x
+			"left": dir_old = -b0.x
+			"top": dir_old = b0.y
+			_: dir_old = -b0.y
+		dir_old = dir_old.normalized()
+		var axis := (b0.y if horizontal else b0.x).normalized()
+		var want := far_pt - near_pt
+		want -= axis * want.dot(axis)
+		var span := want.length()
+		var nb := b0
+		if span > 0.001:
+			var angle := dir_old.signed_angle_to(want / span, axis)
+			nb = Basis(axis, angle) * b0
+		else:
+			span = 0.001
+		var mesh0: Vector2 = r["mesh"]
+		var px0: Vector2 = r["px"]
+		var off: Vector2 = r["offset"]
+		var mesh1 := mesh0
+		var px1 := px0
+		if horizontal:
+			mesh1.x = span
+			px1.x = max(px0.x * mesh1.x / mesh0.x, MIN_SURFACE_SIZE)
+		else:
+			# La zone haute/basse est portée par l'empreinte VISIBLE (mesh +
+			# bandeau de titre).
+			mesh1.y = max(span - TITLEBAR_HEIGHT, 0.001)
+			px1.y = max(px0.y * mesh1.y / mesh0.y, MIN_SURFACE_SIZE)
+		(nq.mesh as QuadMesh).size = mesh1
+		var nbody: StaticBody3D = nq.get_child(0)
+		nbody.set_meta("user_sized", true)
+		var shape: BoxShape3D = (nbody.get_child(0) as CollisionShape3D).shape
+		shape.size = Vector3(mesh1.x, mesh1.y, shape.size.z)
+		# Orientation écrite dans l'ÉTAT STOCKÉ aussi : c'est lui que relisent
+		# la rotation au scroll et la règle des 3 fenêtres.
+		_store_basis(nw, nb)
+		_sync_titlebar(nq)
+		compositor.set_window_size(nw, int(px1.x) + int(off.x) * 2, int(px1.y) + int(off.y) * 2)
+		fullscreen_windows[nw] = false
+		var near_local := snap_zone_local_offset(visual_half_extent(mesh1), near_side)
+		nq.global_position = near_pt - nb * near_local
+
+func _update_group_resize(wid: int) -> void:
+	var quad: MeshInstance3D = quads.get(wid, null)
+	if quad == null or _resize_links.is_empty():
+		return
+	for link in _resize_links:
+		if link["kind"] != "translate":
+			continue
+		var area := quad.get_node_or_null(_zone_path(link["side"])) as Area3D
+		if area == null:
+			continue
+		var zb := area.global_transform.basis
+		var side: String = link["side"]
+		var normal := (zb.y if side == "top" or side == "bottom" else zb.x).normalized()
+		var moved := area.global_transform.origin - Vector3(link["zone_start"])
+		var shift := normal * moved.dot(normal)
+		for m in link["members"]:
+			var q: MeshInstance3D = quads.get(m["wid"], null)
+			if q != null and is_instance_valid(q):
+				q.global_position = Vector3(m["pos"]) + shift
+
+# Un cran de rotation d'une fenêtre collée, autour de l'ORIGINE MONDE DE SA
+# ZONE DE COLLAGE. Le pivot n'est ni deviné ni reconstruit depuis une base
+# périmée : c'est la position réelle de l'Area3D, donc exacte par construction
+# quelle que soit l'orientation des deux fenêtres.
+#
+# Comme la zone est un ENFANT du quad, une rotation autour de son origine la
+# laisse sur place : le recouvrement des zones — donc le collage — se maintient
+# tout seul pendant la rotation. C'est exactement le comportement demandé, et
+# il est géométrique, pas simulé.
+func _rotate_snapped(direction: float) -> void:
+	if not _scroll_rotates():
+		return
+	var snap: Dictionary = snapped_to.get(active_window_id, {})
+	var area := _snap_pivot_area(active_window_id)
+	if area == null:
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	var delta := direction * SNAP_YAW_STEP
+	var pivot := area.global_transform.origin
+	# L'axe est celui de la zone : verticale pour une zone latérale, ce qui
+	# fait tourner la fenêtre comme une porte sur son arête de liaison.
+	var axis := area.global_transform.basis.y.normalized()
+	var visual := visual_center(quad.global_position,
+		quad.global_basis.y.normalized())
+	var orbit := visual - pivot
+	# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
+	# qui pivote (sinon elle glisserait de 3 cm en montant).
+	var base_after := _stored_basis(active_window_id).rotated(axis, delta)
+	quad.global_position = pivot + orbit.rotated(axis, delta) \
+		- base_after.y.normalized() * (TITLEBAR_HEIGHT * 0.5)
+	_store_basis(active_window_id, base_after)
+
+# Area3D servant de pivot : celle du côté par lequel la fenêtre est collée.
+func _snap_pivot_area(wid: int) -> Area3D:
+	var snap: Dictionary = snapped_to.get(wid, {})
+	if snap.is_empty():
+		return null
+	var side := String(snap.get("our_side", ""))
+	var quad: MeshInstance3D = quads.get(wid, null)
+	if quad == null or not is_instance_valid(quad) or side == "":
+		return null
+	return quad.get_node_or_null(_zone_path(side)) as Area3D
+
+# ── Stockage de l'orientation (modèle VR : orientation FIXE) ────────────
+#
+func _stored_basis(wid: int) -> Basis:
+	if not quads.has(wid):
+		return Basis.IDENTITY
+	return _window_basis.get(wid, quads[wid].global_basis)
+
+func _store_basis(wid: int, basis: Basis) -> void:
+	if not quads.has(wid) or not is_instance_valid(quads[wid]):
+		return
+	_window_basis[wid] = basis
+	quads[wid].global_basis = basis
+
+# Recopie l'orientation complète d'une fenêtre sur une autre — utilisé à la
+# sortie du mode focus, où les fenêtres empilées repartent toutes avec la base
+# de la première.
+# Il faut recopier l'ÉTAT STOCKÉ et pas seulement global_basis : c'est
+# _window_basis que la rotation au collage relit. Ne recopier que la base
+# visible laisserait l'état à zéro angle, et la fenêtre se replacerait
+# d'un coup à l'angle précédent au prochain cran de rotation.
+func copy_window_basis(from_id: int, to_id: int) -> void:
+	if not quads.has(from_id) or not quads.has(to_id):
+		return
+	_store_basis(to_id, _stored_basis(from_id))
+
+# Oubli de toutes les données par fenêtre. Isolé de on_window_unmapped pour être
+# testable : celui-ci await la freeing de l'occulteur, donc ne peut pas être
+# appelé depuis un test runner synchrone.
+func _erase_window_state(id: int) -> void:
+	window_textures.erase(id)
+	window_shared.erase(id)
+	window_server_side.erase(id)
+	_texture_versions.erase(id)
+	_window_basis.erase(id)
+	snapped_to.erase(id)
+	if _snap_monitoring_wid == id:
+		_snap_monitoring_wid = -1
+
+# ── Géométrie de collage (fonctions PURES, testables sans scène) ───────
+#
+# Le titre-bandeau (TITLEBAR_HEIGHT) vit AU-DESSUS du quad : il n'est ni dans
+# la boîte de collision ni dans l'occluder. L'empreinte VISIBLE d'une fenêtre
+# est donc plus haute que son quad, et c'est elle qu'il faut coller — sinon
+# deux fenêtres s'imbriqueraient de 6 cm en se collant verticalement.
+
+# Demi-dimensions VISIBLES (quad + bandeau) d'une fenêtre.
+static func visual_half_extent(mesh_size: Vector2) -> Vector2:
+	return Vector2(mesh_size.x * 0.5, (mesh_size.y + TITLEBAR_HEIGHT) * 0.5)
+
+# Position LOCALE du centre d'une zone de collage, dans le repère du quad.
+# Volontairement CENTRÉE sur le bord (et non posée juste à l'extérieur) : deux
+# zones opposées doivent se recouvrir quand on approche la position flush, pas
+# seulement après l'avoir dépassée.
+static func snap_zone_local_offset(half: Vector2, side: String) -> Vector3:
+	match side:
+		"left": return Vector3(-half.x, 0.0, 0.0)
+		"right": return Vector3(half.x, 0.0, 0.0)
+		"top": return Vector3(0.0, half.y, 0.0)
+		"bottom": return Vector3(0.0, -half.y, 0.0)
+	return Vector3.ZERO
+
+# Taille de la dalle d'une zone, dans le repère du quad (X = droite,
+# Y = haut, Z = vers la caméra).
+#
+# L'épaisseur de capture est portée par l'axe du COLLAGE : X pour une zone
+# latérale, Y pour une zone horizontale. La confondre avec Z — l'épaisseur
+# habituelle d'un billboard — donnerait des zones plates, sans aucune
+# épaisseur latérale, donc aucun collage latéral possible.
+#
+# Z est ÉPAISSI lui aussi, à la même valeur. Un Z de 2 cm rendrait le collage
+# impossible dès que les deux fenêtres ont ne serait-ce que 1 cm de décalage
+# en profondeur — et le drag 3D fige la fenêtre sur une sphère autour de la
+# caméra, donc deux fenêtres voisines à l'écran sont presque toujours à des
+# profondeurs différentes. Épaissir Z rend le collage tolérant à ~50 cm de
+# décalage, et le calage ramenant les centres de zone l'un sur l'autre, les
+# deux fenêtres finissent COPLANAIRES : le collage reste exact.
+static func snap_zone_size(half: Vector2, side: String) -> Vector3:
+	var horizontal := side == "top" or side == "bottom"
+	# Côté horizontal : s'étale sur toute la LARGEUR, épais en hauteur.
+	# Côté latéral : s'étale sur toute la HAUTEUR, épais en largeur.
+	return Vector3(
+		half.x * 2.0 if horizontal else SNAP_ZONE_THICKNESS,
+		SNAP_ZONE_THICKNESS if horizontal else half.y * 2.0,
+		SNAP_ZONE_THICKNESS)
+
+# Le pointeur peut-il encore tirer la fenêtre hors de portée ?
+#
+# Un collage est un point fixe : une fois calée, la fenêtre reste sur sa zone,
+# donc elle ne peut plus s'en éloigner par elle-même et le recouvrement ne
+# JAMAIS ne s'interrompt. Sans cette question, le collage serait définitif et
+# la fenêtre collée impossible à déplacer.
+#
+# La réponse se lit sur la position VISE par le pointeur : `shift` est l'écart
+# entre cette position et le point de calage, exprimé dans le repère des zones.
+# Les deux zones sont alors coïncidentes et `slack` est la jeu exact, axe par
+# axe, entre les deux boîtes — la taille de la zone, pas une constante choisie
+# à la main.
+static func zones_overlap_after_shift(our_half: Vector2, our_side: String,
+		their_half: Vector2, their_side: String, shift: Vector3) -> bool:
+	var slack := (snap_zone_size(our_half, our_side)
+		+ snap_zone_size(their_half, their_side)) * 0.5
+	return absf(shift.x) <= slack.x \
+		and absf(shift.y) <= slack.y \
+		and absf(shift.z) <= slack.z
+
+# Deux côtés ne sont appariables que s'ils sont VRAIMENT opposés. Le même
+# côté (droite/droite) et les côtés perpendiculaires (gauche/haut) sont
+# exclus : sans ce filtre, une fenêtre près d'une autre en diagonale
+# produirait un collage absurde.
+static func is_opposite_side(a: String, b: String) -> bool:
+	return (a == "left" and b == "right") \
+		or (a == "right" and b == "left") \
+		or (a == "top" and b == "bottom") \
+		or (a == "bottom" and b == "top")
+
+# Centre VISIBLE d'une fenêtre : décalé vers le haut d'un demi-bandeau.
+static func visual_center(quad_position: Vector3, up: Vector3) -> Vector3:
+	return quad_position + up * (TITLEBAR_HEIGHT * 0.5)
+
+# ── Translation de vue (fonctions PURES) ─────────────────────────────────
+#
+# En MOUSE_MODE_CAPTURED la visée est figée au centre du viewport (_aim_pos
+# renvoie toujours le milieu de l'écran) : la seule entrée qui déplace la
+# fenêtre est la rotation de tête, et la fenêtre reste alors prisonnière d'une
+# sphère de rayon move_depth. Or devenir bord à bord une fenêtre de 3.56 m
+# impose 3.56 m d'écart latéral, pour 2.0 m de portée : le collage était donc
+# arithmétiquement inatteignable. On réintroduit un vrai mouvement en
+# réemployant le delta souris BRUT, que la caméra consomme déjà pour le look.
+
+# Valeur monde d'un pixel d'écran, à la profondeur `depth` donnée. On passe par
+# la hauteur du viewport (le fov de Godot est vertical) pour que le geste reste
+# un décalage 1:1 à l'écran, quelle que soit la profondeur du drag.
+static func pixels_to_world(depth: float, fov_degrees: float,
+		viewport_height: float) -> float:
+	if depth <= 0.0 or viewport_height <= 0.0:
+		return 0.0
+	return 2.0 * depth * tan(deg_to_rad(fov_degrees) * 0.5) \
+		/ viewport_height * VIEW_DRAG_GAIN
+
+## Amplification du drag latéral.
+##
+## En MOUSE_MODE_CAPTURED la visée est figée au centre de l'écran, donc le seul
+## mouvement latéral disponible vient du delta souris brut. À l'échelle de ce
+## jeu, le 1:1 pixel-écran est arithmétiquement INUTILISABLE : une fenêtre
+## 1920x1080 fait 3.56 m de large, donc plus d'une largeur d'écran de
+## mouvement à 2 m — le 1:1 exigeait 1253 px de souris, et la caméra tournait
+## de 144° sur le trajet (le joueur voyait le monde tourner pendant que la
+## fenêtre rampait de 3 mm par pixel, donc « la fenêtre ne bouge pas »).
+##
+## Le gain ramène un collage complet à ~310 px pour 36° de rotation. Au-delà de
+## ~6, le micro-déplacement devient ingérable au moment du collage fin.
+const VIEW_DRAG_GAIN := 4.0
+
+# Translation monde d'un geste souris, dans le DROIT de la caméra (et non dans
+# celui du monde) : c'est ce qui rend le collage atteignable quelle que soit
+# l'orientation de la caméra. L'axe Y souris est inversé, comme partout ailleurs.
+static func view_drag_delta(right: Vector3, up: Vector3, mouse_delta: Vector2,
+		world_per_pixel: float) -> Vector3:
+	return right * (mouse_delta.x * world_per_pixel) \
+		- up * (mouse_delta.y * world_per_pixel)
 
 func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
@@ -1335,6 +2380,12 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if "bottom" in resizing_edge:
 		new_h = window_start_size.y - local_dy * px_per_unit_y
 
+	# La voisine qui partage le bord tiré rétrécit d'autant : la croissance est
+	# bornée pour qu'elle ne passe pas sous la taille minimale.
+	if "left" in resizing_edge or "right" in resizing_edge:
+		new_w = min(new_w, window_start_size.x + _shared_growth_limit(true) * px_per_unit_x)
+	if "bottom" in resizing_edge:
+		new_h = min(new_h, window_start_size.y + _shared_growth_limit(false) * px_per_unit_y)
 	new_w = max(new_w, MIN_SURFACE_SIZE)
 	new_h = max(new_h, MIN_SURFACE_SIZE)
 
@@ -1378,3 +2429,6 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	elif "bottom" in resizing_edge:
 		shift -= resize_up_dir * delta_h_world
 	quad.position = window_start_local_pos + shift
+	_update_group_resize(active_window_id)
+	_update_shared_edge(new_mesh_w - window_start_mesh_size.x,
+		new_mesh_h - window_start_mesh_size.y)

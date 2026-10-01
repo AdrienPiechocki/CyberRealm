@@ -642,15 +642,21 @@ func exit_focus() -> void:
 	# quads et sont ignorées.
 	var stack_index := 0
 	var first_quad: MeshInstance3D = null
+	var first_id := -1
 	for id in focus_stack:
 		if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
 			var quad: MeshInstance3D = windows.quads[id]
 			if first_quad != null:
-				quad.global_basis = first_quad.global_basis
+				# Passe par windows : l'orientation stockée est ce que la
+				# rotation au collage relit. Ne recopier que global_basis
+				# laisserait l'état derrière, et la fenêtre se replacerait au
+				# prochain cran de rotation.
+				windows.copy_window_basis(first_id, id)
 				quad.global_position = first_quad.global_position \
 					- first_quad.global_basis.z.normalized() * STACK_Z_OFFSET * stack_index
 			else:
 				first_quad = quad
+				first_id = id
 			windows.set_quad_visible(id, true)
 			stack_index += 1
 
