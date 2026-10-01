@@ -161,7 +161,7 @@ var _shared_window_shader_no_depth: Shader = null
 
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 
-var resizing_edge := "" # "left", "right", "bottom", etc.
+var resizing_edge := "" # "left", "right", "top", "bottom", etc.
 var is_resizing := false
 var is_moving := false
 var active_window_id := -1
@@ -169,20 +169,6 @@ var is_in_window := false
 # Déplacement: distance (caméra -> fenêtre) figée au moment du grab, la
 # fenêtre suit ensuite le viseur le long de ce rayon.
 var move_depth := 0.0
-# Delta souris brut accumulé depuis le grab, et sa traduction dans le plan de
-# vue. C'est le SEUL mouvement latéral sans limite disponible : en
-# MOUSE_MODE_CAPTURED le viseur est figé au centre de l'écran, donc sans ce
-# delta la fenêtre ne pourrait pas s'écarter assez pour devenir bord à bord.
-var move_mouse_delta := Vector2.ZERO
-var move_view_offset := Vector3.ZERO
-
-var is_moving_2d := false
-var move_2d_plane := Plane()
-var move_2d_offset := Vector3.ZERO
-# Base du quad au moment du drag 2D. Elle sert d'ORIGINE au yaw : la rotation
-# est donc relative au regard au moment du grab, pas au monde — sans ça, un
-# yaw cumulé depuis un drag précédent ferait tourner la fenêtre dans le vide.
-var move_2d_basis := Basis.IDENTITY
 
 # Fenêtre sur laquelle celle-ci est collée : wid -> {wid, side}
 var snapped_to: Dictionary = {} # wid (int) -> Dictionary
@@ -212,12 +198,12 @@ var window_start_size := Vector2.ZERO # taille geometry (px) au moment du grab
 var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
 var window_start_content_offset := Vector2.ZERO # offset geometry dans la surface au moment du grab
-# Côté gauche/droit tiré en « charnière » : le bord peut aussi bouger en
-# PROFONDEUR, donc la fenêtre tirée pivote autour de son bord opposé (et sa
-# voisine aussi si le bord est partagé). On garde sa base et sa position MONDE
-# de départ ; la profondeur se règle en regardant en haut / en bas (voir
-# RESIZE_DEPTH_GAIN).
-var resize_hinge := false
+# Charnière du redimensionnement en cours : "" (plan), "yaw" (bord latéral
+# partagé tiré) ou "pitch" (bord haut/bas partagé tiré). Le bord tiré peut alors
+# bouger en PROFONDEUR, donc la fenêtre tirée pivote autour de son bord opposé
+# (et sa voisine aussi, cf. _update_shared_edge). La profondeur se règle en
+# regardant le long de l'axe du pivot (voir hinge_mode_for / RESIZE_DEPTH_GAIN).
+var resize_hinge_mode := ""
 var resize_start_basis := Basis.IDENTITY
 var resize_start_pos := Vector3.ZERO
 
@@ -364,7 +350,7 @@ func is_window_shared(wid: int) -> bool:
 # Vrai si le joueur local déplace ou redimensionne une fenêtre : pendant
 # ce temps le LAN envoie l'état des fenêtres à haute fréquence.
 func is_window_interacting() -> bool:
-	return is_moving or is_resizing or is_moving_2d
+	return is_moving or is_resizing
 
 # Infos nécessaires au mode focus pour basculer la fenêtre en overlay 2D.
 func get_quad_info(id: int) -> Dictionary:
@@ -408,7 +394,6 @@ func release_window_grab(wid: int) -> void:
 	if not is_window_grabbed(wid):
 		return
 	is_moving = false
-	_reset_view_drag()
 	active_window_id = -1
 	_set_window_occluder_active(wid, true)
 	windows_state_changed.emit()
@@ -463,7 +448,6 @@ func toggle_grab_window(wid: int) -> void:
 	var cam := _camera()
 	active_window_id = wid
 	is_moving = true
-	_reset_view_drag()
 	_set_window_occluder_active(wid, false)
 	move_depth = cam.global_position.distance_to(quad.global_position)
 	windows_state_changed.emit()
@@ -671,7 +655,7 @@ func _make_titlebar_button(titlebar: MeshInstance3D, wid: int, action: String, c
 	titlebar.add_child(btn)
 
 # Active/désactive les collisions des éléments de la barre de titre
-# (BarBody de drag + boutons) quand la décoration est masquée.
+# (BarBody de redimensionnement + boutons) quand la décoration est masquée.
 func _set_titlebar_interactive(titlebar: MeshInstance3D, enabled: bool) -> void:
 	for child in titlebar.get_children():
 		if child is StaticBody3D:
@@ -955,8 +939,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# qu'on rallume et qu'on éteint la surveillance des zones de collage, sans
 	# avoir à toucher aux six sites de prise et de relâchement. L'appel est
 	# idempotent, celui des frames de déplacement ne fait que l'anticiper.
-	_sync_snap_monitoring(
-		active_window_id if (is_moving or is_moving_2d) else -1)
+	_sync_snap_monitoring(active_window_id if is_moving else -1)
 	# Efface le pointeur wayland de toutes les fenêtres : il n'est re-posé
 	# que si le raycast atteint une fenêtre ci-dessous. Les branches de
 	# retour (drag, raycast dans le vide) laissent ainsi les captures de
@@ -995,7 +978,6 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		if Input.is_action_just_released("grab", true):
 			_set_window_occluder_active(active_window_id, true)
 			is_moving = false
-			_reset_view_drag()
 			active_window_id = -1
 			windows_state_changed.emit()
 		return
@@ -1006,24 +988,6 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			is_resizing = false
 			_end_group_resize()
 			resizing_edge = ""
-			active_window_id = -1
-			windows_state_changed.emit()
-		return
-	if is_moving_2d:
-		# Le drag 2D n'a jamais eu de push/pull : ici le scroll n'a rien à
-		# concurrencer, il pivote donc dès que la fenêtre est collée.
-		if _scroll_rotates():
-			if Input.is_action_just_pressed("scroll_up", false) \
-					or Input.is_action_pressed("scroll_up", false):
-				_rotate_snapped(1.0)
-			if Input.is_action_just_pressed("scroll_down", false) \
-					or Input.is_action_pressed("scroll_down", false):
-				_rotate_snapped(-1.0)
-		_update_move_2d(ray_origin, ray_dir, delta)
-		if Input.is_action_just_released("left_click", false):
-			_set_window_occluder_active(active_window_id, true)
-			is_moving_2d = false
-			_reset_view_drag()
 			active_window_id = -1
 			windows_state_changed.emit()
 		return
@@ -1064,8 +1028,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		return
 
 	if body.has_meta("titlebar_of"):
-		# Clic sur la barre de titre du jeu : on déplace la fenêtre, on ne
-		# forward rien à l'app (la barre n'est pas du contenu applicatif).
+		# Clic sur la barre de titre du jeu : on redimensionne la fenêtre par le
+		# haut, on ne forward rien à l'app (la barre n'est pas du contenu
+		# applicatif).
 		is_in_window = true
 		_handle_titlebar(body, ray_origin, ray_dir)
 		return
@@ -1118,8 +1083,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if Input.is_action_just_pressed("grab", true) and not interact_active:
 		active_window_id = wid
 		is_moving = true
-		_reset_view_drag()
-		# Même détachement d'occluder que toggle_grab_window/resize/move_2d :
+		# Même détachement d'occluder que toggle_grab_window/resize :
 		# pendant le grab le quad réécrit sa transform à CHAQUE frame
 		# (billboard), ce qui rediriterait la scène Embree entière (incluant
 		# l'AutoOcclusion du niveau) → gros pic CPU par frame. Le réattache
@@ -1130,69 +1094,15 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		active_window_id = wid
 		is_moving = false
 		move_depth = 0.0
-		_reset_view_drag()
 	if Input.is_action_just_pressed("left_click", false):
 		focused_window_id = wid
+		# Le haut du contenu n'est PAS une zone de drag : le clic y part vers
+		# l'app (barre d'outils, onglets CSD). Le redimensionnement depuis le
+		# haut se fait sur la barre de titre du jeu (voir _handle_titlebar).
 		var edge := _border_edge(uv, win_size, body)
-		# UV * win_size donne directement les coordonnées dans le repère
-		# contenu (la texture est découpée à la geometry), donc la zone
-		# de barre de titre est relative au bord visible du contenu.
-		var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
-		var content_size: Vector2 = body.get_meta("content_size", win_size)
-		if content_size.x <= 0 or content_size.y <= 0:
-			content_offset = Vector2.ZERO
-			content_size = win_size
-		var titlebar_px := uv.x * win_size.x
-		var titlebar_py := uv.y * win_size.y
-		# La zone de drag "virtuelle" (haut du contenu) n'est utile que si la
-		# barre 3D n'est pas affichée. Depuis qu'elle l'est toujours (SSD et
-		# CSD), on la désactive : sinon le haut du contenu (ex. les onglets
-		# de Firefox en CSD) déclencherait un drag au lieu de cliquer l'app.
-		var titlebar3d: MeshInstance3D = quad.get_node_or_null("Titlebar")
-		var no_3d_titlebar := titlebar3d == null or not titlebar3d.visible
-		var in_titlebar := no_3d_titlebar and titlebar_py >= 0 and titlebar_py < (win_size.y * TITLEBAR_HEIGHT) \
-			and titlebar_px > 75 and titlebar_px < content_size.x - 75
-
 		if edge != "":
 			# Bord de la fenêtre -> redimensionnement.
-			active_window_id = wid
-			resizing_edge = edge
-			is_resizing = true
-			_set_window_occluder_active(wid, false)
-			resize_depth = _camera().global_position.distance_to(quad.global_position)
-			resize_start_world = ray_origin + ray_dir * resize_depth
-			resize_right_dir = quad.global_transform.basis.x.normalized()
-			resize_up_dir = quad.global_transform.basis.y.normalized()
-			window_start_size = win_size
-			window_start_content_offset = content_offset
-			window_start_mesh_size = mesh.size
-			window_start_local_pos = quad.position
-			resize_start_basis = quad.global_basis
-			resize_start_pos = quad.global_position
-			_begin_group_resize(wid, edge)
-			# Charnière : tout côté gauche/droit tiré seul (partagé ou non), et
-			# les coins dont le côté latéral est partagé. Un coin sans voisine
-			# garde le redimensionnement plan.
-			resize_hinge = edge == "left" or edge == "right" \
-				or _has_shared_lateral_edge()
-
-		elif in_titlebar:
-			# Move on a 2D plane (simulation de barre de titre)
-			active_window_id = wid
-			is_moving_2d = true
-			_reset_view_drag()
-			_set_window_occluder_active(wid, false)
-			
-			# On crée un plan infini basé sur l'orientation de la fenêtre (axe Z)
-			move_2d_basis = quad.global_transform.basis
-			var normal = quad.global_transform.basis.z.normalized()
-			move_2d_plane = Plane(normal, quad.global_position)
-
-			# Calcul de l'offset initial pour éviter que la fenêtre "saute" au centre du curseur
-			var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
-			if _hit != null:
-				move_2d_offset = quad.global_position - _hit
-
+			_start_resize(wid, quad, ray_origin, ray_dir, edge)
 		else:
 			compositor.forward_pointer_button(wid, 0x110, true) # BTN_LEFT (evdev)
 	if Input.is_action_just_released("left_click", false):
@@ -1345,35 +1255,26 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 	_end_group_resize()
 	windows_state_changed.emit()
 
-# Clic sur la barre de titre du jeu -> déplacer la fenêtre sur son plan 2D
-# (même mécanique que le drag sur la tranche supérieure du contenu).
+# Clic sur la barre de titre du jeu -> redimensionnement depuis le HAUT de la
+# fenêtre : on tire la hauteur, bord bas et largeur restent en place. Même
+# mécanique que le drag d'un bord (helper _start_resize), le seul écart est
+# que la barre n'est pas un bord de l'écran : on la vise directement.
 func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var titlebar: MeshInstance3D = body.get_parent()
 	var quad: MeshInstance3D = titlebar.get_parent()
 	var wid: int = body.get_meta("titlebar_of")
 	if Input.is_action_just_pressed("left_click", false):
 		focused_window_id = wid
-		active_window_id = wid
-		is_moving_2d = true
-		_reset_view_drag()
-		# Idem drag-content (move_2d) : détacher l'occluder tant que le quad
-		# bouge à chaque frame (sinon reconstruction Embree à chaque frame).
-		_set_window_occluder_active(wid, false)
-		move_2d_basis = quad.global_transform.basis
-		var normal = quad.global_transform.basis.z.normalized()
-		move_2d_plane = Plane(normal, quad.global_position)
-		var _hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
-		if _hit != null:
-			move_2d_offset = quad.global_position - _hit
+		_start_resize(wid, quad, ray_origin, ray_dir, "top")
 	if Input.is_action_just_released("left_click", false):
 		# Press + release sur la MÊME frame (clic rapide) : le relâchement
-		# inter-frame passe par la branche is_moving_2d de process_raycast,
-		# pas ici — réattacher ici garantit l'équilibre détachement/reliure.
+		# inter-frame passe par la branche is_resizing de process_raycast, pas
+		# ici — réattacher ici garantit l'équilibre détachement/reliure.
 		_set_window_occluder_active(wid, true)
+		is_resizing = false
+		_end_group_resize()
+		resizing_edge = ""
 		active_window_id = -1
-		is_moving_2d = false
-		move_2d_offset = Vector3.ZERO
-		_reset_view_drag()
 
 # UV exact sur le plan visuel du quad : le point renvoyé par le raycast est
 # sur la face avant du boîtier de collision (épais), donc décalé du plan
@@ -1428,38 +1329,57 @@ func _border_edge(uv: Vector2, win_size: Vector2, body: StaticBody3D) -> String:
 		edge += "right"
 	return edge
 
+# Lance un redimensionnement sur le côté `edge` de la fenêtre `wid`, d'après la
+# position de la fenêtre et le point visé par le rayon caméra au moment du clic.
+#
+# Les deux entrées passent par ici : le drag d'un bord de la fenêtre et le drag
+# de sa barre de titre (côté "top"). L'état de départ est identique dans les
+# deux cas, donc il n'est figé qu'une fois — sans quoi les deux sites
+# divergeaient dès qu'un champ de plus était ajouté.
+#
+# `edge` ne contient jamais "left"/"right" pour un drag de barre de titre : le
+# pivot en profondeur n'a de sens que sur un bord PARTAGÉ, où le bord commun
+# bouge pour les deux fenêtres. Le mode est donc déduit du voisinage, pas du
+# côté tiré seul (voir hinge_mode_for).
+func _start_resize(wid: int, quad: MeshInstance3D, ray_origin: Vector3,
+		ray_dir: Vector3, edge: String) -> void:
+	if not quads.has(wid) or not is_instance_valid(quad):
+		return
+	var body: StaticBody3D = quad.get_child(0)
+	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
+	var content_offset: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
+	var content_size: Vector2 = body.get_meta("content_size", win_size)
+	if content_size.x <= 0 or content_size.y <= 0:
+		content_offset = Vector2.ZERO
+
+	active_window_id = wid
+	resizing_edge = edge
+	is_resizing = true
+	# Même détachement d'occluder que toggle_grab_window : le quad réécrit sa
+	# transform à chaque frame du drag, ce qui reconstruction Embree à chaque
+	# frame. Le réattache se fait au relâchement.
+	_set_window_occluder_active(wid, false)
+	resize_depth = _camera().global_position.distance_to(quad.global_position)
+	resize_start_world = ray_origin + ray_dir * resize_depth
+	resize_right_dir = quad.global_transform.basis.x.normalized()
+	resize_up_dir = quad.global_transform.basis.y.normalized()
+	window_start_size = win_size
+	window_start_content_offset = content_offset
+	window_start_mesh_size = (quad.mesh as QuadMesh).size
+	window_start_local_pos = quad.position
+	resize_start_basis = quad.global_basis
+	resize_start_pos = quad.global_position
+	_begin_group_resize(wid, edge)
+	# Charnière : uniquement si le bord TIRÉ est partagé avec une voisine. Un
+	# coin dont le côté latéral est partagé reste en lacet ; un coin partagé par
+	# le haut ou le bas seulement passe en tangage ; sans voisin, le resize est
+	# plan, barre de titre comprise (le regard vertical y est la hauteur).
+	resize_hinge_mode = hinge_mode_for(edge, _shared_sides())
+
 # La fenêtre suit le viseur le long du rayon caméra, à profondeur figée
 # (distance capturée au moment du grab) - fonctionne même si la souris ne
 # se déplace jamais à l'écran (mode capturé), puisque seule l'orientation
 # de la caméra entre ici en jeu.
-# Remet à zéro le geste de translation : le décalage cumulé est propre à UNE
-# prise, sinon la fenêtre repartirait offsetée au grab suivant.
-func _reset_view_drag() -> void:
-	move_mouse_delta = Vector2.ZERO
-	move_view_offset = Vector3.ZERO
-
-func _input(event: InputEvent) -> void:
-	# Déplacement de fenêtre : on réemploie le delta souris BRUT, déjà capté
-	# par la caméra pour le look. Il n'est lu que pendant une prise, pour ne
-	# pas impacter le monde quand on bouge simplement la souris.
-	if not (is_moving or is_moving_2d):
-		return
-	if event is InputEventMouseMotion:
-		move_mouse_delta += (event as InputEventMouseMotion).relative
-
-# Traduit le delta souris accumulé en décalage dans le plan de vue, puis le
-# remet à zéro : le geste est consommé une fois par frame de drag.
-func _apply_view_drag(cam: Camera3D) -> void:
-	if move_mouse_delta == Vector2.ZERO:
-		return
-	var vp := get_viewport()
-	var world_per_pixel := pixels_to_world(move_depth, cam.fov,
-		vp.get_visible_rect().size.y)
-	move_view_offset += view_drag_delta(
-		cam.global_basis.x.normalized(), cam.global_basis.y.normalized(),
-		move_mouse_delta, world_per_pixel)
-	move_mouse_delta = Vector2.ZERO
-
 func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
 		return
@@ -1524,27 +1444,6 @@ func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 	# réel : c'est le tout premier frame, où elle n'était pas encore engagée.
 	if snap.is_empty() and not was_snapped:
 		_store_basis(active_window_id, cam.global_transform.basis)
-
-# La fenêtre glisse le long de son propre plan d'orientation initial.
-func _update_move_2d(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
-	if active_window_id == -1 or not quads.has(active_window_id):
-		return
-	var quad: MeshInstance3D = quads[active_window_id]
-	_sync_snap_monitoring(active_window_id)
-	_apply_view_drag(_camera())
-	var hit = move_2d_plane.intersects_ray(ray_origin, ray_dir)
-
-	if hit != null:
-		var target_pos = hit + move_2d_offset + move_view_offset
-		# Même collage qu'en drag 3D, et donc même cadre caméra. Ici le plan de
-		# déplacement reste celui capturé au grab (move_2d_plane) : la fenêtre
-		# glisse dans son plan, mais cale sa position dans le plan de vue.
-		var snap := _find_snap(target_pos)
-		_set_snap(active_window_id, snap)
-		if not snap.is_empty():
-			target_pos = _snap_flush_position(active_window_id, snap)
-		# Déplacement fluide uniquement sur les axes X/Y locaux du plan
-		quad.global_position = quad.global_position.lerp(target_pos, 15.0 * delta)
 
 # ── Collage (snap) et rotation ─────────────────────────────────────────
 
@@ -2035,21 +1934,20 @@ func _begin_group_resize(wid: int, edge: String = "") -> void:
 		})
 
 func _end_group_resize() -> void:
-	resize_hinge = false
+	resize_hinge_mode = ""
 	for r in _resize_shared:
 		_set_window_occluder_active(int(r["wid"]), true)
 	_resize_shared.clear()
 	_resize_links.clear()
 	windows_state_changed.emit()
 
-# Le bord tiré est-il un côté gauche/droit partagé avec une voisine ? Un coin
-# dont le côté latéral est partagé reste alors en charnière verticale.
-func _has_shared_lateral_edge() -> bool:
+# Côtés de la fenêtre redimensionnée qui portent une voisine collée ET
+# partagent le bord tiré (donc une entrée par _resize_shared).
+func _shared_sides() -> Array:
+	var out: Array = []
 	for r in _resize_shared:
-		var side: String = r["side"]
-		if side == "left" or side == "right":
-			return true
-	return false
+		out.append(str(r["side"]))
+	return out
 
 # Croissance MAX (monde) de la fenêtre tirée sur l'axe horizontal ou vertical :
 # la voisine ne doit pas passer sous MIN_SURFACE_SIZE.
@@ -2198,17 +2096,51 @@ func _rotate_snapped(direction: float) -> void:
 	var pivot := area.global_transform.origin
 	# L'axe est celui de la zone : verticale pour une zone latérale, ce qui
 	# fait tourner la fenêtre comme une porte sur son arête de liaison.
-	var axis := area.global_transform.basis.y.normalized()
-	var visual := visual_center(quad.global_position,
-		quad.global_basis.y.normalized())
-	var orbit := visual - pivot
-	# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
-	# qui pivote (sinon elle glisserait de 3 cm en montant).
-	var base_after := _stored_basis(active_window_id).rotated(axis, delta)
-	quad.global_position = pivot + orbit.rotated(axis, delta) \
-		- base_after.y.normalized() * (TITLEBAR_HEIGHT * 0.5)
-	_store_basis(active_window_id, base_after)
-
+	if snap["side"] == "right":
+		var axis := area.global_transform.basis.y.normalized()
+		var visual := visual_center(quad.global_position,
+			quad.global_basis.y.normalized())
+		var orbit := visual - pivot
+		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
+		# qui pivote (sinon elle glisserait de 3 cm en montant).
+		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
+		quad.global_position = pivot + orbit.rotated(axis, delta) \
+			- base_after.y.normalized() * (TITLEBAR_HEIGHT * 0.5)
+		_store_basis(active_window_id, base_after)
+	if snap["side"] == "left":
+		var axis := -area.global_transform.basis.y.normalized()
+		var visual := visual_center(quad.global_position,
+			-quad.global_basis.y.normalized())
+		var orbit := visual - pivot
+		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
+		# qui pivote (sinon elle glisserait de 3 cm en montant).
+		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
+		quad.global_position = pivot + orbit.rotated(axis, delta) \
+			+ base_after.y.normalized() * (TITLEBAR_HEIGHT * 0.5)
+		_store_basis(active_window_id, base_after)
+	if snap["side"] == "bottom":
+		var axis := area.global_transform.basis.x.normalized()
+		var visual := visual_center(quad.global_position,
+			quad.global_basis.x.normalized())
+		var orbit := visual - pivot
+		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
+		# qui pivote (sinon elle glisserait de 3 cm en montant).
+		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
+		quad.global_position = pivot + orbit.rotated(axis, delta) \
+			- base_after.x.normalized() * (TITLEBAR_HEIGHT * 0.5)
+		_store_basis(active_window_id, base_after)
+	if snap["side"] == "top":
+		var axis := -area.global_transform.basis.x.normalized()
+		var visual := visual_center(quad.global_position,
+			-quad.global_basis.x.normalized())
+		var orbit := visual - pivot
+		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
+		# qui pivote (sinon elle glisserait de 3 cm en montant).
+		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
+		quad.global_position = pivot + orbit.rotated(axis, delta) \
+			+ base_after.x.normalized() * (TITLEBAR_HEIGHT * 0.5)
+		_store_basis(active_window_id, base_after)
+	
 # Area3D servant de pivot : celle du côté par lequel la fenêtre est collée.
 func _snap_pivot_area(wid: int) -> Area3D:
 	var snap: Dictionary = snapped_to.get(wid, {})
@@ -2339,57 +2271,120 @@ static func is_opposite_side(a: String, b: String) -> bool:
 static func visual_center(quad_position: Vector3, up: Vector3) -> Vector3:
 	return quad_position + up * (TITLEBAR_HEIGHT * 0.5)
 
-# ── Translation de vue (fonctions PURES) ─────────────────────────────────
+# ── Redimensionnement (fonctions PURES) ─────────────────────────────────
 #
-# En MOUSE_MODE_CAPTURED la visée est figée au centre du viewport (_aim_pos
-# renvoie toujours le milieu de l'écran) : la seule entrée qui déplace la
-# fenêtre est la rotation de tête, et la fenêtre reste alors prisonnière d'une
-# sphère de rayon move_depth. Or devenir bord à bord une fenêtre de 3.56 m
-# impose 3.56 m d'écart latéral, pour 2.0 m de portée : le collage était donc
-# arithmétiquement inatteignable. On réintroduit un vrai mouvement en
-# réemployant le delta souris BRUT, que la caméra consomme déjà pour le look.
+# Un bord tiré grandit VERS L'EXTÉRIEUR : tirer le bord droit vers la droite
+# agrandit, tirer le bord haut vers le haut agrandit aussi (et non l'inverse,
+# qui est le piège de lecture quand on passe des px aux unités monde, y vers le
+# haut). La largeur ne bouge que si le côté tiré est latéral, la hauteur que si
+# le côté tiré est horizontal — d'où un bord haut qui ne touche QUE la hauteur,
+# bord bas et largeur inchangés.
 
-# Valeur monde d'un pixel d'écran, à la profondeur `depth` donnée. On passe par
-# la hauteur du viewport (le fov de Godot est vertical) pour que le geste reste
-# un décalage 1:1 à l'écran, quelle que soit la profondeur du drag.
-static func pixels_to_world(depth: float, fov_degrees: float,
-		viewport_height: float) -> float:
-	if depth <= 0.0 or viewport_height <= 0.0:
-		return 0.0
-	return 2.0 * depth * tan(deg_to_rad(fov_degrees) * 0.5) \
-		/ viewport_height * VIEW_DRAG_GAIN
+# Taille de surface après le déplacement `d` (unités monde, dans la base du
+# quad) du côté `edge`, au ratio `px_per_unit` figé au grab.
+static func resized_surface_size(start: Vector2, edge: String, d: Vector2,
+		px_per_unit: Vector2) -> Vector2:
+	var out := start
+	if "right" in edge:
+		out.x = start.x + d.x * px_per_unit.x
+	elif "left" in edge:
+		out.x = start.x - d.x * px_per_unit.x
+	if "bottom" in edge:
+		out.y = start.y - d.y * px_per_unit.y
+	elif "top" in edge:
+		out.y = start.y + d.y * px_per_unit.y
+	return out
 
-## Amplification du drag latéral.
+## Profondeur d'un bord partagé tiré, pilotée par le REGARD le long de l'axe du
+## pivot : vertical en lacet, horizontal en tangage.
 ##
-## En MOUSE_MODE_CAPTURED la visée est figée au centre de l'écran, donc le seul
-## mouvement latéral disponible vient du delta souris brut. À l'échelle de ce
-## jeu, le 1:1 pixel-écran est arithmétiquement INUTILISABLE : une fenêtre
-## 1920x1080 fait 3.56 m de large, donc plus d'une largeur d'écran de
-## mouvement à 2 m — le 1:1 exigeait 1253 px de souris, et la caméra tournait
-## de 144° sur le trajet (le joueur voyait le monde tourner pendant que la
-## fenêtre rampait de 3 mm par pixel, donc « la fenêtre ne bouge pas »).
-##
-## Le gain ramène un collage complet à ~310 px pour 36° de rotation. Au-delà de
-## ~6, le micro-déplacement devient ingérable au moment du collage fin.
-const VIEW_DRAG_GAIN := 4.0
-
-## Profondeur d'un côté gauche/droit tiré (partagé ou non), pilotée par le
-## REGARD vertical.
-##
-## En regardant plus HAUT que là où le drag a commencé, le bord s'éloigne ; plus
-## BAS, il se rapproche. L'écart vertical du point visé (en mètres, à la
-## profondeur du drag) est converti en mètres de profondeur avec ce gain. Mettre
-## une valeur négative inverse le sens. Rien n'est lu pendant un drag de coin :
-## le regard vertical y règle déjà la hauteur de la fenêtre.
+## En regardant plus HAUT (lacet) ou plus À DROITE (tangage) que là où le drag a
+## commencé, le bord s'éloigne ; l'inverse le rapproche. L'écart du point visé,
+## exprimé en mètres dans la base de la fenêtre au grab, est converti en mètres
+## de profondeur avec ce gain. Mettre une valeur négative inverse le sens.
+## Rien n'est lu pendant un drag de coin : le regard le long de l'axe du pivot
+## y règle déjà l'autre dimension.
 const RESIZE_DEPTH_GAIN := 1.0
 
-# Translation monde d'un geste souris, dans le DROIT de la caméra (et non dans
-# celui du monde) : c'est ce qui rend le collage atteignable quelle que soit
-# l'orientation de la caméra. L'axe Y souris est inversé, comme partout ailleurs.
-static func view_drag_delta(right: Vector3, up: Vector3, mouse_delta: Vector2,
-		world_per_pixel: float) -> Vector3:
-	return right * (mouse_delta.x * world_per_pixel) \
-		- up * (mouse_delta.y * world_per_pixel)
+## Charnière d'un drag : "" (plan), "yaw" (bord latéral tiré) ou "pitch" (bord
+## haut/bas tiré).
+##
+## Elle n'existe que si le bord TIRÉ est PARTAGÉ avec une voisine collée : le
+## bord commun bouge pour les deux fenêtres, donc le pivot en profondeur est
+## visible des deux côtés. Sans voisin, les quatre côtés restent plans — y
+## compris les latéraux, dont le lacet n'aurait rien à partager.
+##
+## `shared_sides` : les côtés de CETTE fenêtre qui portent une voisine collée.
+## Un coin dont les deux côtés sont partagés reste en lacet : c'est le seul mode
+## où les deux fenêtres peuvent se suivre mutuellement.
+static func hinge_mode_for(edge: String, shared_sides: Array) -> String:
+	var lateral := false
+	var vertical := false
+	for s in shared_sides:
+		var side := str(s)
+		if side == "left" or side == "right":
+			lateral = true
+		elif side == "top" or side == "bottom":
+			vertical = true
+	if lateral and ("left" in edge or "right" in edge):
+		return "yaw"
+	if vertical and ("top" in edge or "bottom" in edge):
+		return "pitch"
+	return ""
+
+## Charnière : géométrie pure d'un drag en lacet ou en tangage.
+##
+## Le bord OPPOSÉ au bord tiré est le pivot et reste fixe ; le bord tiré suit le
+## point visé dans le plan de la fenêtre, qui pivote pour pointer vers lui. Le
+## composant du déplacement le long de l'axe du pivot (le vertical en lacet,
+## l'horizontale en tangage) est retiré du plan — le pivot ne peut pas le suivre
+## — et converti en profondeur (RESIZE_DEPTH_GAIN), sauf si le côté
+## perpendiculaire est lui aussi tiré, auquel cas ce regard règle déjà cette
+## dimension.
+##
+## Renvoie :
+##  - basis : orientation de la fenêtre après rotation autour de l'axe du pivot ;
+##  - delta : croissance (unités monde) à passer à resized_surface_size, seule
+##    l'axe de la charnière est renseignée — le côté perpendiculaire reste à la
+##    charge du delta projeté par l'appelant ;
+##  - pivot : direction du bord opposé vers le bord tiré, au moment du grab
+##    (signe compris) : c'est la position du pivot qui en découle ;
+##  - out : la même direction dans la base tournée, du pivot vers le nouveau
+##    centre.
+static func resize_hinge(mode: String, edge: String, basis: Basis,
+		mesh_size: Vector2, world_delta: Vector3) -> Dictionary:
+	var x0 := basis.x.normalized()
+	var y0 := basis.y.normalized()
+	if mode == "":
+		return {"basis": basis, "delta": Vector2.ZERO, "pivot": Vector3.ZERO, "out": Vector3.ZERO}
+	var yaw := mode == "yaw"
+	var axis := (y0 if yaw else x0).normalized()
+	var sgn := 1.0 if (("right" in edge) if yaw else ("top" in edge)) else -1.0
+	var extent: float = mesh_size.x if yaw else mesh_size.y
+	var pivot := (x0 if yaw else y0) * sgn
+	# Le côté perpendiculaire est-il aussi tiré ? (coin)
+	var corner := (("top" in edge) or ("bottom" in edge)) if yaw \
+		else (("left" in edge) or ("right" in edge))
+	var along := world_delta.dot(axis)
+	var depth := Vector3.ZERO
+	if not corner:
+		depth = -basis.z.normalized() * (along * RESIZE_DEPTH_GAIN)
+	var target := pivot * extent + (world_delta - axis * along) + depth
+	var nb := basis
+	if target.length() > 0.001:
+		nb = Basis(axis, pivot.signed_angle_to(target.normalized(), axis)) * basis
+	var delta := Vector2.ZERO
+	var growth := target.length() - extent
+	if yaw:
+		delta.x = sgn * growth
+	else:
+		delta.y = sgn * growth
+	return {
+		"basis": nb,
+		"delta": delta,
+		"pivot": pivot,
+		"out": (nb.x.normalized() * sgn) if yaw else (nb.y.normalized() * sgn),
+	}
 
 func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	if active_window_id == -1 or not quads.has(active_window_id):
@@ -2404,26 +2399,16 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var local_dx := world_delta.dot(resize_right_dir)
 	var local_dy := world_delta.dot(resize_up_dir)
 
-	# Charnière : le bord partagé suit le point visé dans le plan horizontal de la
-	# fenêtre. Latéralement, c'est le déplacement du viseur ; en PROFONDEUR, c'est
-	# le regard vertical (haut = plus loin, bas = plus près), dans le sens de la
-	# normale de la fenêtre. Le bord opposé reste fixe ; la largeur devient la
-	# distance entre ce bord fixe et la cible, et la fenêtre pivote autour de son
-	# bord fixe pour pointer vers elle.
-	var hinge_s := 1.0 if "right" in resizing_edge else -1.0
-	var hinge_v := Vector3.ZERO
-	if resize_hinge:
-		var up0 := resize_start_basis.y.normalized()
-		var x0 := resize_start_basis.x.normalized()
-		var dh := world_delta - up0 * world_delta.dot(up0)
-		# Profondeur au regard vertical, hors coin (le vertical y règle la hauteur).
-		var depth_move := Vector3.ZERO
-		if not ("bottom" in resizing_edge):
-			var z0 := resize_start_basis.z.normalized()
-			depth_move = -z0 * (world_delta.dot(up0) * RESIZE_DEPTH_GAIN)
-		hinge_v = x0 * (hinge_s * window_start_mesh_size.x) + dh + depth_move
-		# Même convention que le mode plan : croissance > 0 = bord vers l'extérieur.
-		local_dx = hinge_s * (hinge_v.length() - window_start_mesh_size.x)
+	# Charnière (bord tiré PARTAGÉ) : le bord commun suit le point visé, en
+	# lacet comme en tangage, et le bord opposé reste fixe. La rotation, la
+	# croissance et la profondeur sont calculées par resize_hinge ; le côté
+	# perpendiculaire d'un coin reste sur le delta projeté ci-dessus.
+	var hinge := {}
+	if resize_hinge_mode != "":
+		hinge = resize_hinge(resize_hinge_mode, resizing_edge, resize_start_basis,
+			window_start_mesh_size, world_delta)
+		local_dx = (hinge["delta"] as Vector2).x
+		local_dy = (hinge["delta"] as Vector2).y
 
 	# Ratio pixels de surface / unité monde, figé au grab (le mesh ne
 	# change pas de taille pendant le drag, seul window_texture_updated
@@ -2431,20 +2416,19 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var px_per_unit_x: float = window_start_size.x / max(window_start_mesh_size.x, 0.001)
 	var px_per_unit_y: float = window_start_size.y / max(window_start_mesh_size.y, 0.001)
 
-	var new_w := window_start_size.x
-	var new_h := window_start_size.y
-	if "right" in resizing_edge:
-		new_w = window_start_size.x + local_dx * px_per_unit_x
-	elif "left" in resizing_edge:
-		new_w = window_start_size.x - local_dx * px_per_unit_x
-	if "bottom" in resizing_edge:
-		new_h = window_start_size.y - local_dy * px_per_unit_y
+	var new_size := resized_surface_size(window_start_size, resizing_edge,
+		Vector2(local_dx, local_dy),
+		Vector2(px_per_unit_x, px_per_unit_y))
+	var new_w := new_size.x
+	var new_h := new_size.y
 
 	# La voisine qui partage le bord tiré rétrécit d'autant : la croissance est
-	# bornée pour qu'elle ne passe pas sous la taille minimale.
+	# bornée pour qu'elle ne passe pas sous la taille minimale. Un bord HAUT
+	# partagé tire la voisine par son bord bas, donc la borne vaut aussi pour
+	# "top".
 	if "left" in resizing_edge or "right" in resizing_edge:
 		new_w = min(new_w, window_start_size.x + _shared_growth_limit(true) * px_per_unit_x)
-	if "bottom" in resizing_edge:
+	if "bottom" in resizing_edge or "top" in resizing_edge:
 		new_h = min(new_h, window_start_size.y + _shared_growth_limit(false) * px_per_unit_y)
 	new_w = max(new_w, MIN_SURFACE_SIZE)
 	new_h = max(new_h, MIN_SURFACE_SIZE)
@@ -2479,27 +2463,36 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	# du delta taille, de sorte que le bord opposé ne bouge pas.
 	var delta_w_world: float = (new_mesh_w - window_start_mesh_size.x) / 2.0
 	var delta_h_world: float = (new_mesh_h - window_start_mesh_size.y) / 2.0
-	if resize_hinge:
+	if resize_hinge_mode != "":
 		# Bord FIXE = bord opposé au bord tiré, au départ du drag. La fenêtre
-		# pivote autour de lui (axe = sa hauteur) vers le point visé, puis son
-		# centre se déduit de ce bord fixe, de sa nouvelle largeur et de son
-		# nouvel angle. La hauteur change (bord bas) le long de la même hauteur.
+		# pivote autour de lui (axe = celui du bord) vers le point visé, puis son
+		# centre se déduit de ce bord fixe, de sa nouvelle taille et de son nouvel
+		# angle. Le côté perpendiculaire (coin) se cale sur le delta plan, comme
+		# en mode plan, mais dans la base de DÉPART : le bord fixe ne doit pas
+		# dériver.
+		var pivot: Vector3 = hinge["pivot"]
+		var out_dir: Vector3 = hinge["out"]
+		var yaw := resize_hinge_mode == "yaw"
 		var up0 := resize_start_basis.y.normalized()
 		var x0 := resize_start_basis.x.normalized()
-		var far_pt := resize_start_pos - x0 * (hinge_s * window_start_mesh_size.x * 0.5)
-		var nb := resize_start_basis
-		if hinge_v.length() > 0.001:
-			var angle := (x0 * hinge_s).signed_angle_to(hinge_v.normalized(), up0)
-			nb = Basis(up0, angle) * resize_start_basis
+		var far_pt := resize_start_pos - pivot * ((window_start_mesh_size.x if yaw
+				else window_start_mesh_size.y) * 0.5)
+		var new_extent: float = new_mesh_w if yaw else new_mesh_h
 		# Orientation écrite dans l'ÉTAT STOCKÉ aussi : c'est lui que relisent
 		# la rotation au scroll et la règle des 3 fenêtres.
-		_store_basis(active_window_id, nb)
-		var vshift := Vector3.ZERO
-		if "top" in resizing_edge:
-			vshift += up0 * delta_h_world
-		elif "bottom" in resizing_edge:
-			vshift -= up0 * delta_h_world
-		quad.global_position = far_pt + nb.x.normalized() * (hinge_s * new_mesh_w * 0.5) + vshift
+		_store_basis(active_window_id, hinge["basis"])
+		var perp_shift := Vector3.ZERO
+		if yaw:
+			if "top" in resizing_edge:
+				perp_shift += up0 * delta_h_world
+			elif "bottom" in resizing_edge:
+				perp_shift -= up0 * delta_h_world
+		else:
+			if "left" in resizing_edge:
+				perp_shift -= x0 * delta_w_world
+			elif "right" in resizing_edge:
+				perp_shift += x0 * delta_w_world
+		quad.global_position = far_pt + out_dir * (new_extent * 0.5) + perp_shift
 	else:
 		var shift := Vector3.ZERO
 		if "left" in resizing_edge:

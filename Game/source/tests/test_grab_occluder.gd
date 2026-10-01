@@ -8,8 +8,8 @@ extends Node
 ## et le réattache au lâcher.
 ## Toutes les entrées de déplacement partagent le même helper
 ## _set_window_occluder_active : toggle_grab_window (menu + radial),
-## process_raycast (Super+G en visant une fenêtre), resize et les deux drags
-## move_2d (tranche du contenu + barre de titre 3D).
+## process_raycast (Super+G en visant une fenêtre), resize et le drag de la barre
+## de titre (redimensionnement par le haut).
 
 const Windows3DScript := preload("res://scripts/windows/windows_3d.gd")
 
