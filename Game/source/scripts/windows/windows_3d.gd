@@ -212,6 +212,14 @@ var window_start_size := Vector2.ZERO # taille geometry (px) au moment du grab
 var window_start_mesh_size := Vector2.ONE # taille quad (unités monde) au moment du grab
 var window_start_local_pos := Vector3.ZERO # position locale du quad au moment du grab
 var window_start_content_offset := Vector2.ZERO # offset geometry dans la surface au moment du grab
+# Côté gauche/droit tiré en « charnière » : le bord peut aussi bouger en
+# PROFONDEUR, donc la fenêtre tirée pivote autour de son bord opposé (et sa
+# voisine aussi si le bord est partagé). On garde sa base et sa position MONDE
+# de départ ; la profondeur se règle en regardant en haut / en bas (voir
+# RESIZE_DEPTH_GAIN).
+var resize_hinge := false
+var resize_start_basis := Basis.IDENTITY
+var resize_start_pos := Vector3.ZERO
 
 var pre_fullscreen_mesh_sizes: Dictionary = {} # wid (int) -> Vector2
 var pre_fullscreen_surface_sizes: Dictionary = {} # wid (int) -> Vector2
@@ -1159,7 +1167,14 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			window_start_content_offset = content_offset
 			window_start_mesh_size = mesh.size
 			window_start_local_pos = quad.position
+			resize_start_basis = quad.global_basis
+			resize_start_pos = quad.global_position
 			_begin_group_resize(wid, edge)
+			# Charnière : tout côté gauche/droit tiré seul (partagé ou non), et
+			# les coins dont le côté latéral est partagé. Un coin sans voisine
+			# garde le redimensionnement plan.
+			resize_hinge = edge == "left" or edge == "right" \
+				or _has_shared_lateral_edge()
 
 		elif in_titlebar:
 			# Move on a 2D plane (simulation de barre de titre)
@@ -1962,10 +1977,11 @@ func _collect_group(start: int, visited: Dictionary) -> Array:
 	return members
 
 # `edge` non vide (drag d'un bord) : la voisine collée sur ce bord le PARTAGE.
-# Le bord commun bouge pour les deux fenêtres, la tirée grandit de d et la
-# voisine rétrécit de d (son bord lointain reste fixe, donc ce qui est derrière
-# elle ne bouge pas). Les voisines des autres côtés, et tout le groupe lors d'un
-# maximize (`edge` vide), sont simplement translatées avec leur zone de collage.
+# Le bord commun bouge pour les deux fenêtres, mais leurs bords EXTÉRIEURS (le
+# bord opposé de la tirée, le bord lointain de la voisine) restent en place :
+# chacune pivote autour du sien pour garder le contact avec le bord commun. Les
+# voisines des autres côtés, et tout le groupe lors d'un maximize (`edge`
+# vide), sont simplement translatées avec leur zone de collage.
 func _begin_group_resize(wid: int, edge: String = "") -> void:
 	_resize_links.clear()
 	_resize_shared.clear()
@@ -1987,9 +2003,10 @@ func _begin_group_resize(wid: int, edge: String = "") -> void:
 			visited[nw] = true
 			_set_window_occluder_active(nw, false)
 			# Zones de la voisine : `near` touche notre bord, `far` est son bord
-			# opposé (fixe). `near_delta` = écart initial entre sa zone proche et
-			# la nôtre (nul tant que rien n'a décalé les deux fenêtres), conservé
-			# pendant tout le drag pour ne pas recentrer la voisine.
+			# opposé (reste en place pendant tout le drag). `near_delta` = écart initial entre
+			# sa zone proche et la nôtre (nul tant que rien n'a décalé les deux
+			# fenêtres), conservé pendant tout le drag pour ne pas recentrer la
+			# voisine.
 			var near_zone := nq.get_node_or_null(_zone_path(_opposite_side(side))) as Area3D
 			var far_zone := nq.get_node_or_null(_zone_path(side)) as Area3D
 			if near_zone == null or far_zone == null:
@@ -2018,11 +2035,21 @@ func _begin_group_resize(wid: int, edge: String = "") -> void:
 		})
 
 func _end_group_resize() -> void:
+	resize_hinge = false
 	for r in _resize_shared:
 		_set_window_occluder_active(int(r["wid"]), true)
 	_resize_shared.clear()
 	_resize_links.clear()
 	windows_state_changed.emit()
+
+# Le bord tiré est-il un côté gauche/droit partagé avec une voisine ? Un coin
+# dont le côté latéral est partagé reste alors en charnière verticale.
+func _has_shared_lateral_edge() -> bool:
+	for r in _resize_shared:
+		var side: String = r["side"]
+		if side == "left" or side == "right":
+			return true
+	return false
 
 # Croissance MAX (monde) de la fenêtre tirée sur l'axe horizontal ou vertical :
 # la voisine ne doit pas passer sous MIN_SURFACE_SIZE.
@@ -2047,21 +2074,21 @@ func _opposite_side(side: String) -> String:
 		"bottom": return "top"
 	return ""
 
-# Place la voisine contre le bord partagé, que la fenêtre tirée déplace là où
-# le joueur vise. Seul ce bord bouge : le bord lointain de la voisine et ses
-# côtés perpendiculaires restent où ils sont.
+# Redimensionne ET fait pivoter la voisine qui PARTAGE le bord tiré (la fenêtre
+# tirée est déjà à jour : voir _update_resize).
 #
-# Si les deux fenêtres n'ont pas la même rotation, le bord partagé ne peut pas
-# glisser le long de l'axe de la tirée ET rester sur l'axe de la voisine : il
-# faut donc ROTATIONNER la voisine, autour de son bord lointain, pour qu'elle
-# pointe vers le nouveau bord partagé. Avec des rotations égales (fenêtres
-# coplanaires) l'angle est nul et on retrouve le simple redimensionnement.
+# Le bord commun suit le viseur, y compris en profondeur. Le bord LOINTAIN de la
+# voisine ne bouge pas : c'est son pivot, comme le bord opposé de la tirée.
 #
-#  - bord PROCHE de la voisine = zone de la tirée (déplacée) + écart initial ;
+#  - bord PROCHE = zone de la tirée (déplacée) + écart initial ;
 #  - bord LOINTAIN = fixe ;
 #  - orientation : rotation autour de l'axe du bord (vertical pour un collage
-#    latéral) qui aligne son axe de largeur sur « lointain -> proche » ;
-#  - taille sur l'axe du collage = distance entre les deux bords ;
+#    latéral) qui aligne l'axe de largeur sur « proche -> lointain ». Avec des
+#    rotations égales (fenêtres coplanaires) l'angle est nul : on retrouve le
+#    simple redimensionnement ;
+#  - taille sur l'axe du collage = distance entre les deux bords (mesh,
+#    collision et surface côté client, à densité de pixels constante), jamais
+#    sous MIN_SURFACE_SIZE ;
 #  - centre déduit de la position de sa zone proche, comme au collage.
 func _update_shared_edge(_d_x: float, _d_y: float) -> void:
 	var xq: MeshInstance3D = quads.get(active_window_id, null)
@@ -2107,13 +2134,15 @@ func _update_shared_edge(_d_x: float, _d_y: float) -> void:
 		var mesh1 := mesh0
 		var px1 := px0
 		if horizontal:
-			mesh1.x = span
-			px1.x = max(px0.x * mesh1.x / mesh0.x, MIN_SURFACE_SIZE)
+			# Jamais sous la taille minimale : le mesh et les pixels restent
+			# cohérents quand le bord commun se rapproche trop du bord lointain.
+			mesh1.x = max(span, mesh0.x * MIN_SURFACE_SIZE / max(px0.x, 1.0))
+			px1.x = max(px0.x * mesh1.x / max(mesh0.x, 0.001), MIN_SURFACE_SIZE)
 		else:
 			# La zone haute/basse est portée par l'empreinte VISIBLE (mesh +
 			# bandeau de titre).
-			mesh1.y = max(span - TITLEBAR_HEIGHT, 0.001)
-			px1.y = max(px0.y * mesh1.y / mesh0.y, MIN_SURFACE_SIZE)
+			mesh1.y = max(span - TITLEBAR_HEIGHT, mesh0.y * MIN_SURFACE_SIZE / max(px0.y, 1.0))
+			px1.y = max(px0.y * mesh1.y / max(mesh0.y, 0.001), MIN_SURFACE_SIZE)
 		(nq.mesh as QuadMesh).size = mesh1
 		var nbody: StaticBody3D = nq.get_child(0)
 		nbody.set_meta("user_sized", true)
@@ -2344,6 +2373,16 @@ static func pixels_to_world(depth: float, fov_degrees: float,
 ## ~6, le micro-déplacement devient ingérable au moment du collage fin.
 const VIEW_DRAG_GAIN := 4.0
 
+## Profondeur d'un côté gauche/droit tiré (partagé ou non), pilotée par le
+## REGARD vertical.
+##
+## En regardant plus HAUT que là où le drag a commencé, le bord s'éloigne ; plus
+## BAS, il se rapproche. L'écart vertical du point visé (en mètres, à la
+## profondeur du drag) est converti en mètres de profondeur avec ce gain. Mettre
+## une valeur négative inverse le sens. Rien n'est lu pendant un drag de coin :
+## le regard vertical y règle déjà la hauteur de la fenêtre.
+const RESIZE_DEPTH_GAIN := 1.0
+
 # Translation monde d'un geste souris, dans le DROIT de la caméra (et non dans
 # celui du monde) : c'est ce qui rend le collage atteignable quelle que soit
 # l'orientation de la caméra. L'axe Y souris est inversé, comme partout ailleurs.
@@ -2364,6 +2403,27 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var world_delta := cur_world - resize_start_world
 	var local_dx := world_delta.dot(resize_right_dir)
 	var local_dy := world_delta.dot(resize_up_dir)
+
+	# Charnière : le bord partagé suit le point visé dans le plan horizontal de la
+	# fenêtre. Latéralement, c'est le déplacement du viseur ; en PROFONDEUR, c'est
+	# le regard vertical (haut = plus loin, bas = plus près), dans le sens de la
+	# normale de la fenêtre. Le bord opposé reste fixe ; la largeur devient la
+	# distance entre ce bord fixe et la cible, et la fenêtre pivote autour de son
+	# bord fixe pour pointer vers elle.
+	var hinge_s := 1.0 if "right" in resizing_edge else -1.0
+	var hinge_v := Vector3.ZERO
+	if resize_hinge:
+		var up0 := resize_start_basis.y.normalized()
+		var x0 := resize_start_basis.x.normalized()
+		var dh := world_delta - up0 * world_delta.dot(up0)
+		# Profondeur au regard vertical, hors coin (le vertical y règle la hauteur).
+		var depth_move := Vector3.ZERO
+		if not ("bottom" in resizing_edge):
+			var z0 := resize_start_basis.z.normalized()
+			depth_move = -z0 * (world_delta.dot(up0) * RESIZE_DEPTH_GAIN)
+		hinge_v = x0 * (hinge_s * window_start_mesh_size.x) + dh + depth_move
+		# Même convention que le mode plan : croissance > 0 = bord vers l'extérieur.
+		local_dx = hinge_s * (hinge_v.length() - window_start_mesh_size.x)
 
 	# Ratio pixels de surface / unité monde, figé au grab (le mesh ne
 	# change pas de taille pendant le drag, seul window_texture_updated
@@ -2419,16 +2479,38 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	# du delta taille, de sorte que le bord opposé ne bouge pas.
 	var delta_w_world: float = (new_mesh_w - window_start_mesh_size.x) / 2.0
 	var delta_h_world: float = (new_mesh_h - window_start_mesh_size.y) / 2.0
-	var shift := Vector3.ZERO
-	if "left" in resizing_edge:
-		shift -= resize_right_dir * delta_w_world
-	elif "right" in resizing_edge:
-		shift += resize_right_dir * delta_w_world
-	if "top" in resizing_edge:
-		shift += resize_up_dir * delta_h_world
-	elif "bottom" in resizing_edge:
-		shift -= resize_up_dir * delta_h_world
-	quad.position = window_start_local_pos + shift
+	if resize_hinge:
+		# Bord FIXE = bord opposé au bord tiré, au départ du drag. La fenêtre
+		# pivote autour de lui (axe = sa hauteur) vers le point visé, puis son
+		# centre se déduit de ce bord fixe, de sa nouvelle largeur et de son
+		# nouvel angle. La hauteur change (bord bas) le long de la même hauteur.
+		var up0 := resize_start_basis.y.normalized()
+		var x0 := resize_start_basis.x.normalized()
+		var far_pt := resize_start_pos - x0 * (hinge_s * window_start_mesh_size.x * 0.5)
+		var nb := resize_start_basis
+		if hinge_v.length() > 0.001:
+			var angle := (x0 * hinge_s).signed_angle_to(hinge_v.normalized(), up0)
+			nb = Basis(up0, angle) * resize_start_basis
+		# Orientation écrite dans l'ÉTAT STOCKÉ aussi : c'est lui que relisent
+		# la rotation au scroll et la règle des 3 fenêtres.
+		_store_basis(active_window_id, nb)
+		var vshift := Vector3.ZERO
+		if "top" in resizing_edge:
+			vshift += up0 * delta_h_world
+		elif "bottom" in resizing_edge:
+			vshift -= up0 * delta_h_world
+		quad.global_position = far_pt + nb.x.normalized() * (hinge_s * new_mesh_w * 0.5) + vshift
+	else:
+		var shift := Vector3.ZERO
+		if "left" in resizing_edge:
+			shift -= resize_right_dir * delta_w_world
+		elif "right" in resizing_edge:
+			shift += resize_right_dir * delta_w_world
+		if "top" in resizing_edge:
+			shift += resize_up_dir * delta_h_world
+		elif "bottom" in resizing_edge:
+			shift -= resize_up_dir * delta_h_world
+		quad.position = window_start_local_pos + shift
 	_update_group_resize(active_window_id)
 	_update_shared_edge(new_mesh_w - window_start_mesh_size.x,
 		new_mesh_h - window_start_mesh_size.y)
