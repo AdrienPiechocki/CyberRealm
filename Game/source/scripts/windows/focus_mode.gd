@@ -365,14 +365,30 @@ func _process(delta: float) -> void:
 # question de la laisser tourner pendant tout le focus. Focus DISTANT exclu :
 # le stream vidéo n'a pas de canal alpha.
 func _update_occluder_for_alpha(delta: float) -> void:
-	if _world_occluder == null:
-		return
-	if remote_focus or focus_fullscreen_id == -1 \
-			or not windows.quads.has(focus_fullscreen_id):
+	# Le compte à rebours avance AVANT toute sortie possible. Sinon une salve
+	# qui bute sur une garde ne peut plus expirer : elle garde son consommateur
+	# CPU jusqu'à la sortie du focus, et chaque capture paie alors une copie
+	# synchrone de 14-30 ms sur le thread principal (cap_surface.cpp:953).
+	if _alpha_probing:
+		_alpha_probe_deadline -= delta
+	# Toutes les reasons de ne pas pouvoir procéder tiennent en une condition,
+	# pour qu'aucun retour précoce puisse manquer de relâcher la copie CPU.
+	# focus_fullscreen_id n'est posé que si le CLIENT demande le plein écran xdg
+	# (is_window_fullscreen_requested) : une fenêtre simplement MAXIMISÉE le
+	# laisse à -1, et la salve ne peut alors pas aboutir du tout.
+	var can_probe: bool = _world_occluder != null and not remote_focus \
+			and focus_fullscreen_id != -1 \
+			and windows.quads.has(focus_fullscreen_id)
+	if not can_probe:
+		if _alpha_probing:
+			print("[focus-alpha] préconditions absentes (occl=%s remote=%s fs_id=%d quad=%s) — copie CPU relâchée" % [
+				_world_occluder != null, remote_focus, focus_fullscreen_id,
+				windows.quads.has(focus_fullscreen_id),
+			])
+			_finish_alpha_probe()
 		return
 	if not _alpha_probing:
 		return
-	_alpha_probe_deadline -= delta
 	_alpha_check_cd -= delta
 	if _alpha_check_cd > 0.0:
 		return

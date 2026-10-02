@@ -546,6 +546,18 @@ static constexpr int WINDOW_SAFETY_RECAPTURE_INTERVAL = 60;
 // fluide) ; CYBERREALM_CAPTURE_UNTHROTTLED=1 force le niveau 0 pour comparer.
 static constexpr double CAPTURE_PRESSURE_FRAME_MS = 25.0;   // < ~40 fps
 static constexpr double CAPTURE_CRITICAL_FRAME_MS = 40.0;   // < ~25 fps
+// Plafond de l'échantillon qui entre dans l'EMA de pression. Un frame unique
+// très long est un hitch (ouverture de fenêtre, compilation de shader, pause
+// GC), PAS une mesure de charge soutenue. Sans ce plafond, un seul frame de
+// 150 ms suffit à porter l'EMA de 16.7 à 31 ms — pressure 1 puis 2, et il faut
+// ensuite 2 s par palier pour redescendre : une ouverture de fenêtre dégrade
+// les cadences de capture pendant plusieurs secondes.
+//
+// Le plafond porte sur l'ÉCHANTILLON, pas sur l'EMA calculée : clamper l'EMA
+// après coup ne servirait à rien, un spike de 250 ms l'a déjà portée à 40 ms.
+// 60 ms (≈16.7 fps) préserve la détection de charge soutenue : tout ce qui est
+// durablement plus lent reste ≥ 40 ms, donc palier 2.
+static constexpr double CAPTURE_PRESSURE_SAMPLE_CLAMP_MS = 60.0;
 static constexpr uint64_t SLOW_INTERVALS_US[3] = {33'333, 100'000, 200'000}; // 30/10/5 par s
 static constexpr uint64_t FAST_INTERVALS_US[3] = {16'667, 33'333, 50'000};   // 60/30/20 par s
 
@@ -1256,8 +1268,13 @@ void WlrCompositor::_process(double delta) {
             // Ignore les deltas aberrants (pause, gdb, première frame après
             // un long gel) pour ne pas fausser l'EMA.
             if (dt_ms > 0.0 && dt_ms < 500.0) {
+                // Plafond anti-hitch : voir CAPTURE_PRESSURE_SAMPLE_CLAMP_MS.
+                // Un frame isolé très long ne doit pas monter la pression —
+                // seule une charge SOUTENUE doit la monter.
+                const double sample = dt_ms < CAPTURE_PRESSURE_SAMPLE_CLAMP_MS
+                    ? dt_ms : CAPTURE_PRESSURE_SAMPLE_CLAMP_MS;
                 capture_frame_ms_ema = capture_frame_ms_ema == 0.0
-                    ? dt_ms : capture_frame_ms_ema * 0.9 + dt_ms * 0.1;
+                    ? sample : capture_frame_ms_ema * 0.9 + sample * 0.1;
             }
         }
         capture_last_frame_us = now_us;

@@ -162,6 +162,18 @@ func setup(ui_ref: CanvasLayer, focus_ref: Node3D, layers: Node3D, compositor_re
 ##   - opacité 100 %.
 ## Le voile de hover (_set_hovering) est volontairement absent : il est
 ## transitoire et le joueur regarde de toute façon la fenêtre 3D à ce moment-là.
+## Interrogatif public (diagnostic de rendu) : le PiP est-il RÉELLEMENT
+## affiché ? C'est la condition d'octroi de la priorité de capture — sans elle
+## le PiP reste au palier SLOW (30 captures/s) et saccade en focus.
+func is_pip_visible() -> bool:
+	return _pip_visible()
+
+## Identifiant de la fenêtre à qui la priorité de capture est actuellement
+## accordée (-1 = aucune). Miroir de l'état réellement poussé vers le
+## compositeur, pour confirmer d'un coup que le contrat tient en vrai.
+func capture_priority_id() -> int:
+	return _capture_priority_id
+
 func _pip_visible() -> bool:
 	if pinned_windows.is_empty() or pins_opacity >= 100:
 		return false

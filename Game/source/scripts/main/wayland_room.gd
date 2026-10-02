@@ -299,6 +299,13 @@ func _ready() -> void:
 		RenderingServer.get_current_rendering_method(),
 	])
 	_rdi_enabled = OS.get_environment(RENDER_DEBUG_ENV) == "1"
+	# S'auto-déclare : sans cette ligne, un log sans "[render] fps=" est
+	# ambigu (variable d'env non arrivée au process ? _process gelé ?). On écrit
+	# donc l'état, pour qu'un log muet se lise sans deviner.
+	print("[render] diagnostic periodique : %s" % [
+		"ACTIF (fps toutes les %.1fs)" % RENDER_DEBUG_PERIOD_SEC if _rdi_enabled
+		else "INACTIF — %s absent de l'environnement du process" % RENDER_DEBUG_ENV,
+	])
 
 	# Plafond FPS surchargeable : le projet tourne à run/max_fps=60 (rendre
 	# plus vite que l'écran ne sert qu'à chauffer). CYBERREALM_MAX_FPS=30
@@ -742,11 +749,16 @@ func _process(delta: float) -> void:
 		_rdi_accum += delta
 		_rdi_frames += 1
 		if _rdi_accum >= RENDER_DEBUG_PERIOD_SEC:
-			print("[render] fps=%d setup_cpu=%.2fms grab=%s focus=%s draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
+			print("[render] fps=%d setup_cpu=%.2fms grab=%s focus=%s pip=%s pinprio=%d draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
 				int(_rdi_frames / _rdi_accum),
 				RenderingServer.get_frame_setup_time_cpu(),
 				bool(win3d.get("is_moving")),
 				bool(focus.get("focus_mode")),
+				# pip/pinprio : le contrat de priorité de capture se lit ici.
+				# pip=true pinprio=-1 => le PiP est affiché mais NON prioritaire
+				# (le bug). pip=false pinprio=-1 => correct, rien à afficher.
+				("oui" if pins.is_pip_visible() else "non"),
+				pins.capture_priority_id(),
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME),
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME),
 				RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED) / 1048576.0,
