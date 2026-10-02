@@ -36,6 +36,22 @@ if [[ ! -x "$GAME" ]]; then
     exit 1
 fi
 
+# Le layer Vulkan LSFGVK (Lossless Scaling Frame Generation) est un layer
+# *implicit* : le loader Vulkan le charge dans tout process qui appelle
+# vkCreateInstance. Avec ce binaire il abort sur « free(): invalid size » en
+# parsant son ~/.config/lsfg-vk/conf.toml, avant même le premier rendu.
+# Stack : vkCreateInstance -> vkNegotiateLoaderLayerInterfaceVersion ->
+# lsfgvk::Layer::Layer -> lsfgvk::utils::readConfig ->
+# std::locale::~locale -> free -> abort.
+# CyberRealm n'utilise pas le frame generation (les profils LSFGVK ciblent
+# vkcube et Genshin), on neutralise donc le layer pour ce lancement.
+# Variable documentée par le manifeste du layer lui-même (disable_environment).
+# Les autres applications Vulkan gardent le layer.
+# NB: le mécanisme exact du crash est interne au layer (binaire tiers, non
+# packagé) et n'est pas établi. Observé sur le template d'export et sur
+# l'éditeur official ; /usr/bin/godot (build Arch) charge le layer sans crash.
+export DISABLE_LSFGVK=1
+
 # Sans systemd utilisateur (session non-systemd), on lance directement : le
 # nettoyage interne shutdown_apps() reste la seule protection.
 if ! command -v systemd-run >/dev/null 2>&1; then
