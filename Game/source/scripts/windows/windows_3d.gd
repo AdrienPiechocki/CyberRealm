@@ -2557,11 +2557,15 @@ func _update_group_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> 
 		return
 	var target := ray_origin + ray_dir * move_depth
 	quad.global_position = quad.global_position.lerp(target, 10.0 * delta)
+	# La fenêtre visée fait face au joueur (état stocké inclus, comme _update_move)
+	_store_basis(active_window_id, _camera().global_transform.basis)
 	var t := quad.global_transform
 	for m in _group_rel:
 		var q: MeshInstance3D = quads.get(m, null)
 		if q != null and is_instance_valid(q):
-			q.global_transform = t * (_group_rel[m] as Transform3D)
+			var mt: Transform3D = t * (_group_rel[m] as Transform3D)
+			q.global_transform = mt
+			_window_basis[m] = mt.basis
 
 func _end_group_grab() -> void:
 	for m in _group_rel:
