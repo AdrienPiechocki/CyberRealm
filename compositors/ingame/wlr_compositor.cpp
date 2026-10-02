@@ -114,6 +114,8 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::set_window_keyboard_focus);
     ClassDB::bind_method(D_METHOD("set_focus_capture_priority_window", "window_id"),
         &WlrCompositor::set_focus_capture_priority_window);
+    ClassDB::bind_method(D_METHOD("set_pin_capture_priority_window", "window_id", "active"),
+        &WlrCompositor::set_pin_capture_priority_window);
     ClassDB::bind_method(D_METHOD("notify_activity"), &WlrCompositor::notify_activity);
     ClassDB::bind_method(D_METHOD("set_keyboard_layout", "layout", "variant"),
         &WlrCompositor::set_keyboard_layout);
@@ -1368,8 +1370,11 @@ void WlrCompositor::_process(double delta) {
             // qu'à 30/s (puis 10/s en pression) et l'affichage saccaderait.
             // Sous pression, les deux cadences sont allongées par paliers
             // (voir SLOW_INTERVALS_US / FAST_INTERVALS_US).
-            bool shared = video_share.is_shared(ws.id) ||
-                (ws.id == focus_capture_priority_window_id);
+            // La fenêtre ÉPINGLÉE dont le PiP est visible suit la même règle
+            // (is_capture_priority) : c'est une image affichée à l'écran, et
+            // c'est en mode focus que le PiP saccade le plus, puisque c'est
+            // là que la pression GPU monte et allonge le palier SLOW.
+            bool shared = video_share.is_shared(ws.id) || is_capture_priority(ws.id);
             uint64_t interval = shared ? FAST_INTERVALS_US[capture_pressure]
                                        : SLOW_INTERVALS_US[capture_pressure];
             bool due = ws.dirty &&

@@ -327,7 +327,7 @@ func _ready() -> void:
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d, keyboard)
 	layers.setup(compositor, player, ui, focus, pause_menu, window_menu, keyboard)
-	pins.setup(ui, focus, layers)
+	pins.setup(ui, focus, layers, compositor)
 	# Loupe sur un PiP : la souris est capturée pour recadrer, elle ne doit donc
 	# plus piloter la caméra du joueur et le monde se fige.
 	pins.zoom_changed.connect(_on_pin_zoom_changed)

@@ -55,6 +55,7 @@ signal zoom_changed(active: bool)
 
 var ui: CanvasLayer
 var focus: Node3D
+var compositor
 var pinned_windows: Dictionary = {} # clé (int window_id local, ou String "r:peer:wid" distant) -> TextureRect
 # True : la fenêtre épinglée s'affiche au-dessus du layer focus.
 var pins_above_focus := false
@@ -93,6 +94,9 @@ var _zoom_initialized := false
 # distinguer « nouvelle pression » de « meme pression », et c'est elle qui
 # empeche de doubler ce premier cran.
 var _scroll_hold_dir := 0.0
+# Cache de l'état de priorité de capture appliqué au compositeur : la sync
+# étant idempotente, la poll de _process ne coûte qu'une comparaison par frame.
+var _capture_priority_id := -1
 
 # Rectangle de la texture épinglée affiché par le PiP, en pixels de texture.
 # Fonction pure : aucune dépendance au viewport, testable en headless.
@@ -139,14 +143,44 @@ static func stick_pan_vector(raw: Vector2, deadzone: float) -> Vector2:
 		return Vector2.ZERO
 	return raw / mag * clampf((mag - dz) / (1.0 - dz), 0.0, 1.0)
 
-func setup(ui_ref: CanvasLayer, focus_ref: Node3D, layers: Node3D) -> void:
+func setup(ui_ref: CanvasLayer, focus_ref: Node3D, layers: Node3D, compositor_ref = null) -> void:
 	_layers = layers
 	_sync_pin_size()
 	mouse_pos = _layers._cursor_pos
 	ui = ui_ref
 	focus = focus_ref
+	compositor = compositor_ref
 	if ui != null and ui.get_viewport() != null:
 		ui.get_viewport().size_changed.connect(_sync_pin_size)
+
+## Le PiP EST-il réellement affiché à l'écran ? Une priorité de capture payée
+## pour une image invisible est du gaspillage GPU — et ça aggrave la pression
+## qui dégrade justement la cadence des autres. Trois raisons de ne pas l'être :
+##   - pas de fenêtre épinglée ;
+##   - le mode focus : le PiP est sous l'overlay plein écran (PIN_Z_BASE <
+##     FOCUS_Z_BASE) SAUF si pins_above_focus est activé ;
+##   - opacité 100 %.
+## Le voile de hover (_set_hovering) est volontairement absent : il est
+## transitoire et le joueur regarde de toute façon la fenêtre 3D à ce moment-là.
+func _pip_visible() -> bool:
+	if pinned_windows.is_empty() or pins_opacity >= 100:
+		return false
+	return not (focus.focus_mode and not pins_above_focus)
+
+## Aligne la priorité de capture du compositeur sur la visibilité réelle du
+## PiP. Idempotente : seule la transition appelle le compositeur.
+func _sync_capture_priority() -> void:
+	if compositor == null or not is_instance_valid(compositor):
+		return
+	# Un pin DISTANT est le flux d'un autre joueur : il n'y a pas de surface
+	# wlr locale à capturer, la priorité serait un no-op. Sa clé est une
+	# String, pas un int — le typage du test le garantit.
+	var key = _pip_key()
+	var want: int = int(key) if key is int and _pip_visible() else -1
+	if want == _capture_priority_id:
+		return
+	compositor.set_pin_capture_priority_window(want, want >= 0)
+	_capture_priority_id = want
 
 func _pin_z_index() -> int:
 	return PIN_Z_ABOVE_FOCUS if pins_above_focus else PIN_Z_BASE
@@ -394,6 +428,16 @@ func on_remote_texture_updated(peer_id: int, wid: int, texture: Texture2D) -> vo
 	_apply_zoom()
 
 func _process(delta: float) -> void:
+	# AVANT le test « aucun pin » : c'est précisément au dépôt du DERNIER pin
+	# que la priorité doit être révoquée, et un early-return la laisserait
+	# fuiter (60/s payées pour une image disparue, jusqu'à la fin de session).
+	# Le mode focus n'émet aucun signal : son entrée/sortie n'est pas
+	# observable d'ici, et c'est pourtant elle qui décide de la visibilité du
+	# PiP (pins_above_focus). On réévalue donc ici — c'est déjà là que
+	# focus.focus_mode est lu chaque frame pour le survol. Idempotent, donc
+	# une frame stable ne coûte qu'une comparaison.
+	_sync_capture_priority()
+
 	if pinned_windows.is_empty():
 		return
 

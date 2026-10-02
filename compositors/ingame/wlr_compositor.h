@@ -611,6 +611,24 @@ class WlrCompositor : public Node {
     // la cadence de capture. Voir set_focus_capture_priority_window.
     int focus_capture_priority_window_id = -1;
 
+    // Fenêtre épinglée en PiP (pinned_windows.gd) dont le PiP est RÉELLEMENT
+    // affiché, -1 = aucune. Même traitement de cadence que ci-dessus : le PiP
+    // est une image à l'écran, sa fluidité est bornée par la capture, et le
+    // mode focus — qui fait monter capture_pressure et donc allonger le palier
+    // SLOW de 33 à 200 ms — est précisément quand on la regarde. Voir
+    // set_pin_capture_priority_window.
+    //
+    // Un slot suffit : le script garantit qu'il n'y a qu'un PiP à la fois
+    // (unpin_all avant chaque pin). Si cette invariant change, ce champ doit
+    // devenir un ensemble — c'est le piège à surveiller.
+    //
+    // Délibérément distinct de focus_capture_priority_window_id : le chemin
+    // zéro-copy de capture_surface_zero_copy reste réservé au focus plein
+    // écran. Un PiP est affiché réduit et n'a pas les mêmes contraintes
+    // (mmap CPU, submit_video_frame) ; l'élargir serait un changement de
+    // backend, pas de cadence.
+    int pin_capture_priority_window_id = -1;
+
     // État courant du pointer lock (zwp_pointer_constraints_v1::lock_pointer)
     // par fenêtre. Alimenté à la création/destruction d'un constraint LOCKED
     // et consulté par le script Godot (is_window_pointer_locked) quand une
@@ -980,6 +998,19 @@ public:
     // 30/s (SLOW) ni 10/s (pression) — sinon la fluidité perçue est bridée par
     // la texture même si le jeu rend à 60+ fps. -1 révoque la priorité.
     void set_focus_capture_priority_window(int window_id);
+
+    // Même contrat de cadence pour la fenêtre épinglée en PiP, mais piloté par
+    // le Script de pinned_windows et révoqué par paires (add/remove) plutôt
+    // qu'avec une sentinelle : la visibilité du PiP dépend de réglages que
+    // seul le script connaît (pins_above_focus, pins_opacity, focus_mode), et
+    // un « -1 revoke » serait ambigu avec « aucune fenêtre ».
+    // N'affecte PAS le zéro-copy, réservé au focus (voir le champ).
+    void set_pin_capture_priority_window(int window_id, bool active);
+
+    // Vrai si la fenêtre est prioritaire de capture, quel que soit le motif
+    // (focus plein écran ou PiP visible). Point de décision UNIQUE du palier
+    // de cadence et de l'exemption au budget par frame.
+    bool is_capture_priority(int window_id) const;
 
     // Layout clavier (xkbcommon) transmis aux clients Wayland : même format
     // que setxkbmap ("fr", "us", "de"... + variante "oss", "intl", ...).

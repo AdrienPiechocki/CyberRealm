@@ -5,9 +5,27 @@ extends Node
 
 var _requests: Dictionary = {}
 var fullscreen_calls: Array = []
+# La fenêtre en cadence prioritaire (focus) : id, -1 = aucune. Piloté par
+# set_focus_capture_priority_window, inchangé — le zéro-copy en dépend.
+var focus_priority_id := -1
+# La fenêtre épinglée en cadence prioritaire (PiP) : id, -1 = aucune. Un slot
+# suffit : pinned_windows garantit qu'il n'y a qu'un PiP à la fois.
+var pin_priority_id := -1
+var pin_priority_calls: Array = []
 
 func _init() -> void:
 	fullscreen_calls.clear()
+	pin_priority_calls.clear()
+
+func set_focus_capture_priority_window(id: int) -> void:
+	focus_priority_id = id
+
+func set_pin_capture_priority_window(id: int, active: bool) -> void:
+	pin_priority_calls.append([id, active])
+	pin_priority_id = id if active else -1
+
+func is_capture_priority(id: int) -> bool:
+	return id != -1 and id == pin_priority_id
 
 func request_fullscreen(id: int, requested: bool) -> void:
 	_requests[id] = requested
@@ -22,9 +40,6 @@ func is_window_fullscreen_requested(id: int) -> bool:
 
 func set_window_fullscreen(id: int, fs: bool) -> void:
 	fullscreen_calls.append([id, fs])
-
-func set_focus_capture_priority_window(_id: int) -> void:
-	pass
 
 func set_window_keyboard_focus(_id: int) -> void:
 	pass

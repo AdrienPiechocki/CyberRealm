@@ -549,6 +549,18 @@ void WlrCompositor::set_focus_capture_priority_window(int window_id) {
     focus_capture_priority_window_id = window_id;
 }
 
+void WlrCompositor::set_pin_capture_priority_window(int window_id, bool active) {
+    int target = (active && window_id >= 0) ? window_id : -1;
+    if (target == pin_capture_priority_window_id) return;
+    pin_capture_priority_window_id = target;
+}
+
+bool WlrCompositor::is_capture_priority(int window_id) const {
+    return window_id >= 0 &&
+        (window_id == focus_capture_priority_window_id ||
+            window_id == pin_capture_priority_window_id);
+}
+
 void WlrCompositor::set_window_keyboard_focus(int window_id) {
     if (!seat) return;
     WindowState *ws = find_window(window_id);
