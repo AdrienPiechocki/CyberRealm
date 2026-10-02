@@ -179,6 +179,55 @@ static func _number(value: Variant) -> float:
 		return float(value)
 	return (value as String).strip_edges().to_float()
 
+## Rectangles SOURCE des 8 pièces du 9-patch, en pixels de texture. Les marges
+## sont les métriques (`border_size` / `titlebar_height`), pas une mesure de la
+## texture : l'auteur redimensionne donc le 9-patch sans toucher au code.
+static func border_source_rects(tex_size: Vector2, m: Dictionary) -> Dictionary:
+	var t := float(m.get("border_size", 10.0))
+	var b := float(m.get("titlebar_height", 20.0))
+	var w := tex_size.x
+	var h := tex_size.y
+	return {
+		"topleft": _clamp_rect(Rect2(0.0, 0.0, t, b), w, h),
+		"top": _clamp_rect(Rect2(t, 0.0, w - 2.0 * t, b), w, h),
+		"topright": _clamp_rect(Rect2(w - t, 0.0, t, b), w, h),
+		"left": _clamp_rect(Rect2(0.0, b, t, h - b - t), w, h),
+		"right": _clamp_rect(Rect2(w - t, b, t, h - b - t), w, h),
+		"bottomleft": _clamp_rect(Rect2(0.0, h - t, t, t), w, h),
+		"bottom": _clamp_rect(Rect2(t, h - t, w - 2.0 * t, t), w, h),
+		"bottomright": _clamp_rect(Rect2(w - t, h - t, t, t), w, h),
+	}
+
+## Recadre un rect dans la texture. Une découpe impossible (texture plus
+## petite que les marges) ressort en `Rect2()` : taille nulle = « ne pas
+## dessiner », jamais une UV hors texture.
+static func _clamp_rect(r: Rect2, w: float, h: float) -> Rect2:
+	var x0 := clampf(r.position.x, 0.0, w)
+	var y0 := clampf(r.position.y, 0.0, h)
+	var x1 := clampf(r.position.x + r.size.x, 0.0, w)
+	var y1 := clampf(r.position.y + r.size.y, 0.0, h)
+	var out := Rect2(x0, y0, x1 - x0, y1 - y0)
+	if out.size.x <= 0.0 or out.size.y <= 0.0:
+		return Rect2()
+	return out
+
+## Un `Rect2` par état de bouton. La cellule est CARRÉE et vaut la hauteur de la
+## texture ; le pas est dérivé, donc un strip collé comme un strip espacé
+## donnent le même résultat. `states <= 1` : une seule région, réutilisée.
+static func button_state_rects(tex_size: Vector2, states: float) -> Array:
+	var out: Array = []
+	var cell := tex_size.y
+	if cell <= 0.0 or tex_size.x <= 0.0:
+		return out
+	var count := int(states)
+	if count <= 1:
+		out.append(Rect2(0.0, 0.0, tex_size.x, cell))
+		return out
+	var pitch := (tex_size.x - cell) / float(count - 1)
+	for i in count:
+		out.append(Rect2(float(i) * pitch, 0.0, cell, cell))
+	return out
+
 ## Ne charge que les MÉTRIQUES. Le plan d'origine appelait ici `current_mtimes()`
 ## et `_load_asset()`, introduits plus tard : GDScript rejette l'appel d'une
 ## statique inconnue à la compilation, donc le fichier ne se chargeait pas du
