@@ -320,25 +320,33 @@ static func current_mtimes() -> Dictionary:
 ## `user://` d'abord : c'est le principe de `style.css`, la personnalisation
 ## locale écrase le fichier livré.
 static func asset_path(asset: String) -> String:
-	for dir: String in [USER_DIR, RES_DIR]:
-		var path := "%s/%s.svg" % [dir, asset]
-		if ResourceLoader.exists(path):
-			return path
+	var user_path := "%s%s.svg" % [USER_DIR, asset]   # USER_DIR = "user://"
+	if FileAccess.file_exists(user_path):
+		return user_path
+	var res_path := "%s/%s.svg" % [RES_DIR, asset]
+	if ResourceLoader.exists(res_path):
+		return res_path
 	return ""
-
-static func texture(asset: String) -> Texture2D:
-	if not _loaded:
-		reload()
-	return _textures.get(asset, null)
 
 static func _load_asset(asset: String) -> Texture2D:
 	var path := asset_path(asset)
 	if path == "":
 		return null
-	# CACHE_MODE_REPLACE : sans lui un SVG réédité resterait l'ancienne version
-	# en cache, et le rechargement automatique ne se verrait pas à l'écran.
-	var res := ResourceLoader.load(path, "Texture2D", ResourceLoader.CACHE_MODE_REPLACE)
-	return res as Texture2D
+	if path.begins_with("user://"):
+		# Pas d'import dans user:// : on rastérise le SVG à l'échelle 1
+		# (1 px de texture = 1 px de contenu, comme le suppose le 9-patch).
+		var img := Image.load_from_file(path)
+		if img == null or img.is_empty():
+			push_warning("WindowDecorations: %s illisible" % path)
+			return null
+		img.generate_mipmaps()
+		return ImageTexture.create_from_image(img)
+	return ResourceLoader.load(path, "Texture2D", ResourceLoader.CACHE_MODE_REPLACE) as Texture2D
+
+static func texture(asset: String) -> Texture2D:
+	if not _loaded:
+		reload()
+	return _textures.get(asset, null)
 
 static func border_piece(piece: String) -> AtlasTexture:
 	if not _loaded:
