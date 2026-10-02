@@ -98,9 +98,9 @@ static func _unshaded(priority: int = PRIORITY_FRAME) -> StandardMaterial3D:
 	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	mat.render_priority = priority
 	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	# Le SVG a des coins arrondis : sans alpha le cadre aurait des rectangles
-	# opaques. ALPHA (et pas SCISSOR) pour garder un bord lissé.
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	mat.texture_repeat = false
+	mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR
 	return mat
 
 static func _build_titlebar(quad: MeshInstance3D, wid: int) -> MeshInstance3D:
@@ -217,7 +217,7 @@ static func sync(quad: MeshInstance3D) -> void:
 ## Les quads sont répartis À L'ÉGALITÉ : le bord atteint toujours le coin, sans
 ## débordement ni trou visible, au prix d'une échelle variant de 1/N par motif.
 ## N grandit avec la fenêtre, donc l'écart à l'échelle naturelle décroît.
-static func tiled_mesh(size: Vector2, band_px: Vector2, vertical: bool, s: float) -> Mesh:
+static func tiled_mesh(size: Vector2, band_px: Vector2, vertical: bool, s: float, uv_rect: Rect2) -> Mesh:
 	var length := size.y if vertical else size.x
 	var cross := size.x if vertical else size.y
 	var n := 1
@@ -231,6 +231,7 @@ static func tiled_mesh(size: Vector2, band_px: Vector2, vertical: bool, s: float
 	var norms := PackedVector3Array()
 	var uvs := PackedVector2Array()
 	var idx := PackedInt32Array()
+	var uu := [Vector2(0.0, 0.0), Vector2(1.0, 0.0), Vector2(1.0, 1.0), Vector2(0.0, 1.0)]
 	for i in n:
 		var a0 := start + span * float(i)
 		var a1 := a0 + span
@@ -239,12 +240,11 @@ static func tiled_mesh(size: Vector2, band_px: Vector2, vertical: bool, s: float
 		var xy: Array = [Vector2(-c, a0), Vector2(c, a0), Vector2(c, a1), Vector2(-c, a1)] \
 			if vertical \
 			else [Vector2(a0, -c), Vector2(a1, -c), Vector2(a1, c), Vector2(a0, c)]
-		var uu := [Vector2(0.0, 0.0), Vector2(1.0, 0.0), Vector2(1.0, 1.0), Vector2(0.0, 1.0)]
 		var base := verts.size()
 		for j in 4:
 			verts.append(Vector3(xy[j].x, xy[j].y, 0.0))
 			norms.append(Vector3.FORWARD)
-			uvs.append(uu[j])
+			uvs.append(uv_rect.position + uu[j] * uv_rect.size)
 		idx.append(base + 0)
 		idx.append(base + 1)
 		idx.append(base + 2)
@@ -275,18 +275,13 @@ static func _place(node: StaticBody3D, pos: Vector2, size: Vector2, atlas: Textu
 	var shape := (node.get_child(0) as CollisionShape3D).shape as BoxShape3D
 	shape.size = Vector3(maxf(size.x, 0.001), maxf(size.y, 0.001), FRAME_DEPTH)
 	var visual := node.get_child(1) as MeshInstance3D
-	if TILED_PIECES.has(piece):
-		var band := band_px_of(atlas)
-		visual.mesh = tiled_mesh(size, band, piece == "left" or piece == "right", s) \
-			if band.x > 0.0 and band.y > 0.0 else QuadMesh.new()
-		if band.x <= 0.0 or band.y <= 0.0:
-			(visual.mesh as QuadMesh).size = size
+	var band := band_px_of(atlas)
+	var uv := atlas_uv_rect(atlas)
+	if TILED_PIECES.has(piece) and band.x > 0.0 and band.y > 0.0:
+		visual.mesh = tiled_mesh(size, band, piece == "left" or piece == "right", s, uv)
 	else:
-		(visual.mesh as QuadMesh).size = size
-	var mat := visual.material_override as StandardMaterial3D
-	# `null` = cette pièce ne se dessine pas (texture absente) : le collider,
-	# lui, reste — le redimensionnement ne dépend pas du visuel.
-	mat.albedo_texture = atlas
+		visual.mesh = quad_uv_mesh(size, uv)
+	(visual.material_override as StandardMaterial3D).albedo_texture = tiled_albedo(atlas)
 
 static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vector2) -> void:
 	var titlebar := quad.get_node_or_null("Titlebar") as MeshInstance3D
@@ -296,11 +291,18 @@ static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vect
 	var bar_size := Vector2(mesh.size.x, bar_h)
 	var top_atlas := Decorations.border_piece("top")
 	var top_band := band_px_of(top_atlas)
-	titlebar.mesh = tiled_mesh(bar_size, top_band, false, s) \
-		if top_band.x > 0.0 and top_band.y > 0.0 else QuadMesh.new()
+	var has_top := top_band.x > 0.0 and top_band.y > 0.0
+	if has_top:
+		titlebar.mesh = tiled_mesh(bar_size, top_band, false, s, atlas_uv_rect(top_atlas))
+	else:
+		var q := QuadMesh.new()
+		q.size = bar_size
+		titlebar.mesh = q
+	(titlebar.material_override as StandardMaterial3D).albedo_texture = \
+		tiled_albedo(top_atlas) if has_top else top_atlas
 	if top_band.x <= 0.0 or top_band.y <= 0.0:
 		(titlebar.mesh as QuadMesh).size = bar_size
-	titlebar.position = Vector3(0.0, half.y + bar_h * 0.5, 0.0)
+	titlebar.position = Vector3(0.0, half.y + bar_h * 0.5, 0.001)
 	(titlebar.material_override as StandardMaterial3D).albedo_texture = top_atlas
 	var bar_body := titlebar.get_node_or_null("BarBody") as StaticBody3D
 	if bar_body != null:
@@ -371,3 +373,36 @@ static func set_frame_visible(quad: MeshInstance3D, on: bool) -> void:
 		for shape_node in node.get_children():
 			if shape_node is CollisionShape3D:
 				shape_node.disabled = not on
+				
+## Région de l'atlas en UV normalisés (0..1 sur la texture de base).
+static func atlas_uv_rect(atlas: Texture2D) -> Rect2:
+	var at := atlas as AtlasTexture
+	if at == null or at.atlas == null:
+		return Rect2(0.0, 0.0, 1.0, 1.0)
+	var tex_size := Vector2(at.atlas.get_size())
+	return Rect2(at.region.position / tex_size, at.region.size / tex_size)
+
+## Texture réellement assignée au matériau d'une pièce tilée.
+static func tiled_albedo(atlas: Texture2D) -> Texture2D:
+	var at := atlas as AtlasTexture
+	return at.atlas if at != null and at.atlas != null else atlas
+
+## Quad simple dont les UV pointent la région de l'atlas (orientation QuadMesh : v=0 en haut).
+static func quad_uv_mesh(size: Vector2, uv_rect: Rect2) -> Mesh:
+	var hx := size.x * 0.5
+	var hy := size.y * 0.5
+	var p := uv_rect.position
+	var e := uv_rect.end
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = PackedVector3Array([
+		Vector3(-hx, -hy, 0.0), Vector3(hx, -hy, 0.0),
+		Vector3(hx, hy, 0.0), Vector3(-hx, hy, 0.0)])
+	arrays[Mesh.ARRAY_NORMAL] = PackedVector3Array([
+		Vector3.BACK, Vector3.BACK, Vector3.BACK, Vector3.BACK])
+	arrays[Mesh.ARRAY_TEX_UV] = PackedVector2Array([
+		Vector2(p.x, e.y), Vector2(e.x, e.y), Vector2(e.x, p.y), Vector2(p.x, p.y)])
+	arrays[Mesh.ARRAY_INDEX] = PackedInt32Array([0, 1, 2, 0, 2, 3])
+	var m := ArrayMesh.new()
+	m.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	return m

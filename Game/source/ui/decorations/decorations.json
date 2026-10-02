@@ -1,18 +1,18 @@
 {
-    // Barre de titre : hauteur de la bande du haut du cadre, en px.
-    // C'est aussi la marge haute du 9-patch.
+	// Barre de titre : hauteur de la bande du haut du cadre, en px.
+	// C'est aussi la marge haute du 9-patch.
     "titlebar_height": 20,
     // Taille « em » du titre, en px (la moitié de la barre).
     "label_size": 10,
     "label_color": "#dbe1f0",
     // Cadre : épaisseur des bandes gauche / droite / bas, en px.
-    // C'est aussi la marge du 9-patch.
-    "border_size": 10,
-    // Boutons : carrés, alignés à droite par défaut.
-    "button_size": 11,
-    "button_gap": 4,
-    "button_margin": 7,
-    "button_alignment": "right",   // ou "left"
-    // Cellules dans la bande d'états (défaut 3).
+	// C'est aussi la marge du 9-patch.
+	"border_size": 10,
+	// Boutons : carrés, alignés à droite par défaut.
+	"button_size": 11,
+	"button_gap": 4,
+	"button_margin": 7,
+	"button_alignment": "right",   // ou "left"
+	// Cellules dans la bande d'états (défaut 3).
     "button_states": 3,
 }
