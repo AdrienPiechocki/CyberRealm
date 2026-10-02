@@ -117,7 +117,12 @@ void fragment() {
 
 var popup_crop_shader: Shader
 
-var compositor: WlrCompositor
+# Duck-typé volontairement (pas `WlrCompositor`) : le type statique résout
+# les appels vers la table de méthodes NATIVES, ce qui rend impossible
+# d'injecter un double dans les tests headless. Les effets de la règle
+# plein écran (setter appelé, ou non, et seulement sur transition) sont
+# justement ce qu'on doit pouvoir vérifier.
+var compositor
 var player: Node3D
 var ui: CanvasLayer
 var windows: Node3D
@@ -339,6 +344,7 @@ func _update_world_occluder() -> void:
 
 func _process(delta: float) -> void:
 	if focus_mode:
+		_sync_active_fullscreen()
 		_update_world_occluder()
 		_update_occluder_for_alpha(delta)
 		var st = _state(_active_id())
@@ -434,7 +440,7 @@ func _apply_focus_alpha_mode() -> void:
 	if fmat != null:
 		fmat.set_shader_parameter("opaque_mode", _focus_window_alpha_mode())
 
-func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D, keyboard: VirtualKeyboard) -> void:
+func setup(compositor_ref, player_ref: Node3D, ui_ref: CanvasLayer, windows_ref: Node3D, keyboard: VirtualKeyboard) -> void:
 	compositor = compositor_ref
 	player = player_ref
 	ui = ui_ref
@@ -496,6 +502,51 @@ func get_focus_window_id() -> int:
 
 func _active_id() -> int:
 	return focus_stack[-1] if not focus_stack.is_empty() else -1
+
+# Règle unique du plein écran du mode focus : une fenêtre n'est traitée en
+# plein écran QUE si son client l'a demandé (xdg_toplevel.request_fullscreen).
+# Le mode focus n'impose plus rien — un terminal ou un éditeur garde sa taille
+# naturelle et sa barre de titre.
+#
+# `requested` est l'état demandé par le client, pas l'état courant : le getter
+# natif lit toplevel->requested.fullscreen. On n'appelle le setter que sur
+# TRANSITION (sinon on renvoie un configure au client à chaque frame).
+func _apply_fullscreen_request(id: int, requested: bool) -> void:
+	if not focus_mode or id < 0:
+		return
+	var current := focus_fullscreen_id == id
+	if requested == current:
+		# Déjà dans l'état voulu : ne rien envoyer au compositeur.
+		return
+	if requested:
+		compositor.set_window_fullscreen(id, true)
+		focus_fullscreen_id = id
+		# Cadence de capture prioritaire (60/s) : c'est l'image affichée plein
+		# écran, sa fluidité est bornée par la recapture de sa texture. Sans
+		# ça, un jeu plein écran resterait bridé à la cadence "quads 3D".
+		compositor.set_focus_capture_priority_window(id)
+		# La fenêtre en plein écran n'est pas déplaçable : pas de barre de titre.
+		_remove_title_bar(id)
+	else:
+		compositor.set_window_fullscreen(id, false)
+		focus_fullscreen_id = -1
+		_remove_title_bar(id)
+		var st := _state(id)
+		compositor.set_window_size(id, int(st["original_size"].x), int(st["original_size"].y))
+		_ensure_title_bar(id)
+	# Recalcule la géométrie de TOUTE la pile : une bascule plein écran change
+	# la taille de l'overlay concerné et le cadrage des fenêtres au premier plan.
+	for wid in focus_stack:
+		_refresh_rect_layout(wid)
+
+# Réaction en direct : la fenêtre ACTIVE peut demander (ou annuler) le plein
+# écran en cours de session. On n'agit que sur transition — c'est ce qui
+# garantit zéro appel au compositeur sur une frame stable.
+func _sync_active_fullscreen() -> void:
+	var id := _active_id()
+	if id < 0:
+		return
+	_apply_fullscreen_request(id, compositor.is_window_fullscreen_requested(id))
 
 # Renvoie true si la motion (cible, position) est identique à la dernière
 # envoyée (dans l'epsilon) ET met à jour la trace. À appeler juste avant le
@@ -559,15 +610,23 @@ func enter_focus(id: int) -> void:
 	# pile l'est ; les suivantes conservent leur taille (leur overlay 2D plein
 	# écran les affiche quand même à l'écran).
 	if focus_fullscreen_id == -1:
-		compositor.set_window_fullscreen(id, true)
-		focus_fullscreen_id = id
-		# Cadence de capture prioritaire pour cette fenêtre (60/s) : c'est
-		# l'image affichée plein écran, sa fluidité est bornée par la
-		# recapture de sa texture (voir wlr_compositor set_focus_capture_
-		# priority_window). Sans ça, un jeu plein écran resterait bridé à la
-		# cadence "quads 3D" (30/s, voire 10/s sous pression), même s'il rend
-		# à 60+ fps.
-		compositor.set_focus_capture_priority_window(id)
+		# Plein écran UNIQUEMENT si le client l'a demandé. Le getter lit
+		# toplevel->requested.fullscreen : c'est la seule source fiable, y
+		# compris quand la demande précède le premier commit du client (un
+		# lecteur vidéo qui s'ouvre directement en plein écran), cas où le
+		# compositeur n'émet aucun signal.
+# À l'entrée, il n'y a pas de « courant » à préserver : la fenêtre
+		# entre fresh, donc on applique directement l'état demandé. Le helper
+		# pose focus_fullscreen_id et n'appelle le setter que si l'état
+		# change — ici c'est toujours le premier poser, donc un appel.
+		if compositor.is_window_fullscreen_requested(id):
+			compositor.set_window_fullscreen(id, true)
+			focus_fullscreen_id = id
+			# Cadence de capture prioritaire (60/s) : l'image affichée plein
+			# écran est bornée par la recapture de sa texture. Sans ça, un jeu
+			# plein écran resterait bridé à la cadence "quads 3D".
+			compositor.set_focus_capture_priority_window(id)
+			_remove_title_bar(id)
 
 	# TextureRect dédié à cette fenêtre : la première (plein écran) couvre
 	# tout l'écran, les suivantes sont centrées à taille naturelle (la
@@ -798,19 +857,20 @@ func on_window_unmapped(id: int) -> void:
 	if window_press_id == id:
 		window_press_id = -1
 		window_press_buttons = 0
-	# Si la fenêtre plein écran quitte la pile, promouvoir la nouvelle
-	# première fenêtre : le mode focus garde toujours exactement une fenêtre
-	# plein écran côté compositeur.
-	if focus_fullscreen_id == id and not focus_stack.is_empty():
-		compositor.set_window_fullscreen(focus_stack[0], true)
-		focus_fullscreen_id = focus_stack[0]
-		# La priorité de capture suit la nouvelle fenêtre plein écran
-		# (l'overlay affiché grand écran doit rester fluide).
-		compositor.set_focus_capture_priority_window(focus_fullscreen_id)
-		# La fenêtre promue plein écran ne doit plus porter de barre de titre
-		# (non déplaçable) : retrait immédiat, pas d'attente du prochain
-		# rafraîchissement de layout.
-		_remove_title_bar(focus_fullscreen_id)
+	# Si la fenêtre plein écran quitte la pile, on ne promeut le nouveau
+	# sommet QUE s'il a lui-même demandé le plein écran. L'ancien invariant
+	# (« le mode focus garde toujours exactement une fenêtre plein écran ») est
+	# abandonné : le mode focus n'impose plus le plein écran à personne.
+	if focus_fullscreen_id == id:
+		focus_fullscreen_id = -1
+		# `id` vient d'être retiré de la pile : le nouveau sommet est
+		# focus_stack[0]. On ne le promeut en plein écran que s'il l'a
+		# demandé lui-même. L'ancien invariant (« le mode focus garde
+		# toujours exactement une fenêtre plein écran ») est abandonné : le
+		# mode focus n'impose plus le plein écran à personne.
+		if not focus_stack.is_empty():
+			_apply_fullscreen_request(focus_stack[0],
+				compositor.is_window_fullscreen_requested(focus_stack[0]))
 	if focus_stack.is_empty():
 		# Plus aucune fenêtre dans la pile : sortir du mode focus
 		compositor.release_all_keys()
@@ -843,7 +903,8 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	# UV → surface doit utiliser la même base.
 	var st := _state(id)
 	st["surface_size"] = texture.get_size()
-	var geo := compositor.get_window_geometry(id)
+	# Type explicite : `compositor` est duck-typé, l'inférence := échoue.
+	var geo: Dictionary = compositor.get_window_geometry(id)
 	st["content_offset"] = Vector2(geo["x"], geo["y"])
 	st["content_size"] = Vector2(geo["width"], geo["height"])
 	# Fenêtre plein écran : le shader de crop doit suivre la géométrie du
@@ -1574,7 +1635,7 @@ func _reset_focus_ui() -> void:
 # pour éviter un double curseur ; sans image custom capturée on retombe sur
 # le curseur système.
 func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: Vector2) -> void:
-	var cursor_info := compositor.get_window_cursor(window_id)
+	var cursor_info: Dictionary = compositor.get_window_cursor(window_id)
 	if cursor_info.is_empty():
 		_show_system_cursor()
 		return
