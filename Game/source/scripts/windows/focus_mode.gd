@@ -275,7 +275,7 @@ const OCCLUDER_DIST := 0.12 # m devant la caméra (> near plane par défaut 0.05
 # scène 3D derrière l'overlay continue d'être rendue. Mettre à true pour
 # retrouver l'occlusion culling plein écran. La sonde alpha tourne dans les
 # deux cas (elle règle aussi opaque_mode de l'overlay).
-const FOCUS_OCCLUDES_WORLD := false
+const FOCUS_OCCLUDES_WORLD := true
 const OCCLUDER_MARGIN := 1.4 # marge de couverture du frustum
 const OCCLUDER_THICKNESS := 0.02 # m, épaisseur du box
 
@@ -1094,19 +1094,17 @@ func _compute_popup_layout(parent_window_id: int, parent_popup_id: int) -> Dicti
 				parent_rect.size.y / max(p_content.y, 1.0)),
 			"offset": parent_rect.position,
 		}
-	elif focus_mode and parent_window_id == _active_id():
-		return _compute_focus_displayed_info()
+	elif focus_mode and (parent_window_id == _active_id() or _is_stack_base(parent_window_id)):
+		return _compute_focus_displayed_info(parent_window_id)
 	return {}
 
-func _compute_focus_displayed_info() -> Dictionary:
-	"""Calcule l'offset, la taille et le scale de la zone affichée du TextureRect
-	de la fenêtre ACTIVE."""
-	var active_id := _active_id()
-	if active_id == -1 or not focus_rects.has(active_id):
+func _compute_focus_displayed_info(window_id: int = -1) -> Dictionary:
+	var wid := window_id if window_id != -1 else _active_id()
+	if wid == -1 or not focus_rects.has(wid):
 		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
-	var rect: TextureRect = focus_rects[active_id]
-	if focus_maximized.has(active_id):
-		var mcs: Vector2 = _state(active_id)["content_size"]
+	var rect: TextureRect = focus_rects[wid]
+	if focus_maximized.has(wid):
+		var mcs: Vector2 = _state(wid)["content_size"]
 		var mgr := rect.get_global_rect()
 		if mcs.x > 0.0 and mcs.y > 0.0:
 			return {"offset": mgr.position, "size": mgr.size,
@@ -1279,7 +1277,8 @@ func _refresh_popups() -> void:
 	_clear_popup_overlays()
 	for popup_id in windows.popup_parent_info:
 		var pinfo = windows.popup_parent_info[popup_id]
-		if pinfo.parent_window_id == active or \
+		if pinfo.parent_window_id == active \
+			or _is_stack_base(pinfo.parent_window_id) or \
 			(pinfo.parent_popup_id != -1 and focus_popup_rects.has(pinfo.parent_popup_id)):
 			_create_popup_overlay(popup_id, pinfo.parent_window_id, pinfo.parent_popup_id,
 				pinfo.x, pinfo.y, pinfo.width, pinfo.height)

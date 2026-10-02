@@ -413,9 +413,13 @@ func _process(delta: float) -> void:
 	# aussi.
 	var hovering := _look_hover()
 
+	var pointer_free = Input.mouse_mode == Input.MOUSE_MODE_VISIBLE \
+		or focus.focus_fullscreen_id != -1 \
+		or (focus.focus_mode and Input.mouse_mode == Input.MOUSE_MODE_HIDDEN)
+		
 	if focus.focus_fullscreen_id in pinned_windows:
 		hovering = true
-	elif not hovering and (Input.mouse_mode == Input.MOUSE_MODE_VISIBLE or focus.focus_fullscreen_id != -1):
+	elif not hovering and pointer_free:
 		if focus.focus_mode:
 			mouse_pos = focus.mouse_pos
 		else:
