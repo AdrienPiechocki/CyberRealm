@@ -12,8 +12,6 @@ extends Node3D
 ## au sommet de la pile et l'active. Chaque fenêtre (sauf la plein écran) a
 ## une BARRE DE TITRE dessinée au-dessus de son contenu (décoration 2D façon
 ## windows_3d.gd) : clic-glisser dessus déplace la fenêtre sans modificateur ;
-## Super+clic gauche dans le contenu reste disponible en secours (selon le
-## bureau hôte, la capture Meta+boutons peut avaler les événements bouton).
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 const ZoneSelectMarqueeScript := preload("res://scripts/ui/zone_select_marquee.gd")
@@ -136,15 +134,23 @@ var focus_stack: Array = []
 var focus_rects: Dictionary = {}
 # window_id (int) -> état propre à la fenêtre : original_size, mouse_captured,
 # mouse_uv, surface_size, content_offset, content_size, ui_offset (décalage
-# 2D de l'overlay accumulé par le déplacement Super+clic gauche).
+# 2D de l'overlay accumulé par le déplacement).
 var focus_states: Dictionary = {}
 # La seule fenêtre de la pile passée en plein écran côté compositeur (la
 # première entrée en focus). Les suivantes conservent leur taille d'origine.
 var focus_fullscreen_id := -1
+# window_id (int) -> true pour les fenêtres agrandies (maximize) à l'entrée en
+# focus : leur taille d'origine (focus_states[id].original_size) est restaurée
+# à la sortie. Miroir de pre_fullscreen_surface_sizes de windows_3d.gd.
+var focus_maximized: Dictionary = {}
 # popup_id (int) -> TextureRect overlay en mode focus. Seuls les popups de la
 # fenêtre ACTIVE sont overlayés : les fenêtres du dessous sont couvertes par
 # l'overlay actif et leurs popups sont recréés à la réactivation.
 var focus_popup_rects: Dictionary = {}
+# window_id (int) -> true pour les fenêtres ouvertes PENDANT le mode focus
+# (ajoutées à la pile alors que focus_mode était déjà actif). Elles n'ont pas
+# de taille d'origine fiable : on ne leur restaure rien à la sortie.
+var focus_opened_during: Dictionary = {}
 
 # Grab pointeur sur un popup (drag-and-drop) : tant qu'un bouton est enfoncé
 # sur un popup, TOUS les événements (motion + boutons) partent vers CE popup,
@@ -162,7 +168,7 @@ var popup_buttons_down: int = 0
 var window_press_id: int = -1
 var window_press_buttons: int = 0
 
-# Déplacement d'une fenêtre de la pile par Super+clic gauche : l'overlay suit
+# Déplacement d'une fenêtre de la pile : l'overlay suit
 # le curseur (décalage persistant dans l'état de la fenêtre, cf. ui_offset),
 # tous les événements pointeur sont absorbés jusqu'au relâchement du bouton.
 # La fenêtre plein écran (fond de pile) n'est pas déplaçable.
@@ -175,17 +181,10 @@ var window_move_last_pos := Vector2.ZERO
 # pour ne pas interférer avec la routing souris du mode focus.
 var focus_title_bars: Dictionary = {}
 
-# État de la touche Super/Meta, suivi depuis le flux InputEventKey (le même
-# flux que le forward clavier : garantie de livraison, là où le polling
-# Input.is_key_pressed peut dépendre de la plateforme / du grab du bureau
-# hôte). Mis à jour dans handle_input_event.
-var _super_down := false
-
 # État brut du bouton gauche, suivi depuis le flux InputEventMouseButton :
-# l'action Godot "left_click" est bindée sans modifieur, un clic émis avec
-# Super tenu peut selon la version être filtré du cache d'actions ; le flux
+# l'action Godot "left_click" est bindée sans modifieur ; le flux
 # d'événements, lui, ne ment jamais. Utilisé en complément des polls action
-# pour le démarrage/la fin du déplacement Super+clic.
+# pour le démarrage/la fin du déplacement.
 var _left_down := false
 var _left_event_pressed := false
 var _left_event_frame := -1
@@ -272,6 +271,11 @@ var remote_focus_rect: TextureRect = null
 # winding, occlusion valide quel que soit l'angle.
 
 const OCCLUDER_DIST := 0.12 # m devant la caméra (> near plane par défaut 0.05)
+# Le focus n'occlude PAS le reste du jeu : l'occludeur reste invisible, la
+# scène 3D derrière l'overlay continue d'être rendue. Mettre à true pour
+# retrouver l'occlusion culling plein écran. La sonde alpha tourne dans les
+# deux cas (elle règle aussi opaque_mode de l'overlay).
+const FOCUS_OCCLUDES_WORLD := false
 const OCCLUDER_MARGIN := 1.4 # marge de couverture du frustum
 const OCCLUDER_THICKNESS := 0.02 # m, épaisseur du box
 
@@ -360,7 +364,7 @@ func _process(delta: float) -> void:
 # question de la laisser tourner pendant tout le focus. Focus DISTANT exclu :
 # le stream vidéo n'a pas de canal alpha.
 func _update_occluder_for_alpha(delta: float) -> void:
-	if _world_occluder == null or not _world_occluder.visible:
+	if _world_occluder == null:
 		return
 	if remote_focus or focus_fullscreen_id == -1 \
 			or not windows.quads.has(focus_fullscreen_id):
@@ -521,6 +525,7 @@ func _apply_fullscreen_request(id: int, requested: bool) -> void:
 	if requested:
 		compositor.set_window_fullscreen(id, true)
 		focus_fullscreen_id = id
+		focus_maximized.erase(id)
 		# Cadence de capture prioritaire (60/s) : c'est l'image affichée plein
 		# écran, sa fluidité est bornée par la recapture de sa texture. Sans
 		# ça, un jeu plein écran resterait bridé à la cadence "quads 3D".
@@ -531,11 +536,11 @@ func _apply_fullscreen_request(id: int, requested: bool) -> void:
 		compositor.set_window_fullscreen(id, false)
 		focus_fullscreen_id = -1
 		_remove_title_bar(id)
-		var st := _state(id)
-		compositor.set_window_size(id, int(st["original_size"].x), int(st["original_size"].y))
+		# Retour à l'état « maximisé » du mode focus (et non à original_size).
+		_maximize_window(id)
 		# Fenêtre ACTIVE : pas de barre (invariant _activate_window). Fenêtre
 		# de pile : elle redevient une fenêtre de titre normale.
-		if id == _active_id():
+		if id == _active_id() and not focus_opened_during.has(id):
 			_remove_title_bar(id)
 		else:
 			_ensure_title_bar(id)
@@ -587,6 +592,26 @@ func _state(id: int) -> Dictionary:
 	}
 	return focus_states[id]
 
+# Maximise la fenêtre : le client reçoit la taille du viewport, comme
+# toggle_window_fullscreen(id, true) de windows_3d.gd. Pas d'xdg fullscreen :
+# la fenêtre garde son statut de fenêtre normale (barre de titre, déplaçable).
+func _maximize_window(id: int) -> void:
+	if focus_opened_during.has(id):
+		return
+	var vp_size := get_viewport().get_visible_rect().size
+	compositor.set_window_size(id, int(vp_size.x), int(vp_size.y))
+	focus_maximized[id] = true
+
+# Restaure la taille d'origine d'une fenêtre maximisée (no-op sinon).
+func _restore_window_size(id: int) -> void:
+	if not focus_maximized.has(id):
+		return
+	focus_maximized.erase(id)
+	if focus_opened_during.has(id):
+		return
+	var orig: Vector2 = _state(id)["original_size"]
+	compositor.set_window_size(id, int(orig.x), int(orig.y))
+
 func enter_focus(id: int) -> void:
 	if remote_focus:
 		return
@@ -595,12 +620,14 @@ func enter_focus(id: int) -> void:
 	if focus_stack.has(id):
 		return
 	var entering := not focus_mode
+	if not entering:
+		focus_opened_during[id] = true
 	focus_mode = true
 	focus_stack.append(id)
 	# L'overlay couvre la vue : activer l'occludeur plein écran pour que
 	# l'occlusion culling retire la scène 3D derrière.
 	_ensure_world_occluder()
-	_world_occluder.visible = true
+	_world_occluder.visible = FOCUS_OCCLUDES_WORLD
 	# Nouvelle fenêtre focus : relance une salve d'analyse de transparence.
 	_reset_occluder_alpha_state()
 	_start_alpha_probe()
@@ -633,6 +660,11 @@ func enter_focus(id: int) -> void:
 			compositor.set_focus_capture_priority_window(id)
 			_remove_title_bar(id)
 
+	# Maximize : toute fenêtre qui n'est pas passée en plein écran xdg est
+	# agrandie à la taille du viewport.
+	if focus_fullscreen_id != id:
+		_maximize_window(id)
+
 	# TextureRect dédié à cette fenêtre : la première (plein écran) couvre
 	# tout l'écran, les suivantes sont centrées à taille naturelle (la
 	# fenêtre plein écran reste visible autour). L'overlay de la fenêtre
@@ -648,8 +680,9 @@ func enter_focus(id: int) -> void:
 	rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
 	rect.mouse_filter = Control.MOUSE_FILTER_PASS
 	rect.visible = true
-	if is_fullscreen:
-		rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	if is_fullscreen or focus_maximized.has(id):
+		if is_fullscreen:
+			rect.set_anchors_preset(Control.PRESET_FULL_RECT)
 		# Le buffer de capture est arrondi au multiple de 64 (1920x1088 pour
 		# un contenu 1920x1080) : en KEEP_ASPECT_CENTERED sur ce buffer, le
 		# fullscreen était légèrement dé-zoomé (fines barres latérales). On
@@ -704,7 +737,7 @@ func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
 	remote_focus_rect = rect
 	# Idem focus local : l'overlay plein écran masque la scène 3D.
 	_ensure_world_occluder()
-	_world_occluder.visible = true
+	_world_occluder.visible = FOCUS_OCCLUDES_WORLD
 	player.focus_mode_active = true
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 
@@ -728,8 +761,15 @@ func exit_focus() -> void:
 	if focus_fullscreen_id != -1 and windows.quads.has(focus_fullscreen_id) \
 		and is_instance_valid(windows.quads[focus_fullscreen_id]):
 		compositor.set_window_fullscreen(focus_fullscreen_id, false)
-		var st := _state(focus_fullscreen_id)
-		compositor.set_window_size(focus_fullscreen_id, int(st["original_size"].x), int(st["original_size"].y))
+		if not focus_opened_during.has(focus_fullscreen_id):
+			var st := _state(focus_fullscreen_id)
+			compositor.set_window_size(focus_fullscreen_id, int(st["original_size"].x), int(st["original_size"].y))
+	# Fenêtres maximisées à l'entrée en focus : taille d'origine.
+	for mid in focus_maximized.keys():
+		if windows.quads.has(mid) and is_instance_valid(windows.quads[mid]):
+			_restore_window_size(mid)
+	focus_maximized.clear()
+	focus_opened_during.clear()
 	# Réafficher les quads 3D en les empilant l'un devant l'autre : la
 	# première fenêtre garde sa position, chacune des suivantes est posée
 	# STACK_Z_OFFSET devant la précédente (le long de la normale du quad,
@@ -857,6 +897,8 @@ func on_window_unmapped(id: int) -> void:
 			focus_rects[id].queue_free()
 		focus_rects.erase(id)
 	focus_states.erase(id)
+	focus_maximized.erase(id)
+	focus_opened_during.erase(id)
 	if window_move_id == id:
 		window_move_id = -1
 	if window_press_id == id:
@@ -922,7 +964,7 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	# Fenêtre plein écran : le shader de crop doit suivre la géométrie du
 	# client (resize en fullscreen) pour que le contenu remplisse toujours
 	# exactement le viewport.
-	if id == focus_fullscreen_id:
+	if id == focus_fullscreen_id or focus_maximized.has(id):
 		var fmat := focus_rects[id].material as ShaderMaterial
 		if fmat:
 			fmat.set_shader_parameter("content_size", st["content_size"])
@@ -930,6 +972,17 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 	# Nouvelle fenêtre / resize : ajuster la taille de l'overlay des fenêtres
 	# non plein écran à la nouvelle taille de surface.
 	_refresh_rect_layout(id)
+
+# UV de l'overlay -> coordonnées surface du client. Une fenêtre maximisée
+# affiche son CONTENU étiré (crop shader) : l'UV [0,1] couvre content_size, pas
+# le buffer arrondi au multiple de 64 (surface_size).
+func _uv_to_surface(id: int, st: Dictionary) -> Vector2:
+	var uv: Vector2 = st["mouse_uv"]
+	if focus_maximized.has(id):
+		var cs: Vector2 = st["content_size"]
+		if cs.x > 0.0 and cs.y > 0.0:
+			return uv * cs + (st["content_offset"] as Vector2)
+	return uv * (st["surface_size"] as Vector2) + (st["content_offset"] as Vector2)
 
 func _nonfullscreen_display_size(surface_size: Vector2, viewport_size: Vector2) -> Vector2:
 	if surface_size.x <= 0.0 or surface_size.y <= 0.0:
@@ -945,6 +998,14 @@ func _refresh_rect_layout(id: int) -> void:
 	if not rect or id == focus_fullscreen_id:
 		return
 	var viewport_size := get_viewport().get_visible_rect().size
+	# Fenêtre maximisée : le contenu (crop shader + STRETCH_SCALE) couvre tout
+	# le viewport, sans letterbox ni centrage ; seul ui_offset (déplacement)
+	# s'applique.
+	if focus_maximized.has(id):
+		rect.size = viewport_size
+		rect.position = _state(id)["ui_offset"]
+		_sync_title_bar(id)
+		return
 	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], viewport_size)
 	rect.size = display_size
 	# Centrage fin sur le CONTENU VISIBLE (pas le buffer) : compense le
@@ -963,7 +1024,7 @@ func _refresh_rect_layout(id: int) -> void:
 	# a pas, et sans cette garde elle serait décalée d'une demi-barre.
 	if focus_title_bars.has(id):
 		rect.position.y += titlebar_h() * 0.5
-	# ui_offset = décalage accumulé par le drag barre de titre / Super+clic ;
+	# ui_offset = décalage accumulé par le drag barre de titre ;
 	# appliqué APRÈS le centrage sinon chaque rafraîchissement (texture,
 	# frames du drag) recentrerait la fenêtre et annulerait le déplacement.
 	rect.position += _state(id)["ui_offset"]
@@ -1044,6 +1105,12 @@ func _compute_focus_displayed_info() -> Dictionary:
 	if active_id == -1 or not focus_rects.has(active_id):
 		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
 	var rect: TextureRect = focus_rects[active_id]
+	if focus_maximized.has(active_id):
+		var mcs: Vector2 = _state(active_id)["content_size"]
+		var mgr := rect.get_global_rect()
+		if mcs.x > 0.0 and mcs.y > 0.0:
+			return {"offset": mgr.position, "size": mgr.size,
+				"scale": Vector2(mgr.size.x / mcs.x, mgr.size.y / mcs.y)}
 	var tex := rect.texture
 	if not tex:
 		return {"offset": Vector2.ZERO, "size": Vector2.ZERO, "scale": Vector2.ONE}
@@ -1175,10 +1242,11 @@ func _activate_window(id: int) -> void:
 	if previous_active >= 0 and previous_active != id \
 			and previous_active != focus_fullscreen_id:
 		_ensure_title_bar(previous_active)
-	# La fenêtre ACTIVE n'affiche pas de barre de titre : elle est au premier
-	# plan et l'utilisateur interagit directement avec elle, une barre y serait
-	# un leurre. Les fenêtres DERRIÈRE dans la pile gardent la leur.
-	_remove_title_bar(id)
+	
+	if focus_opened_during.has(id):
+		_ensure_title_bar(id)
+	else:
+		_remove_title_bar(id)
 	# Donner le focus clavier du seat à la fenêtre : les touches forwardées
 	# par forward_keyboard_key partent vers la surface qui détient le focus
 	# clavier (pas vers un window_id). Sans ça, une nouvelle fenêtre active de
@@ -1205,7 +1273,7 @@ func _clear_popup_overlays() -> void:
 	focus_popup_rects.clear()
 
 # Recrée les overlays de popups de la fenêtre active : positions recalculées
-# depuis le rect courant du parent (appelé après un déplacement Super+clic).
+# depuis le rect courant du parent (appelé après un déplacement).
 func _refresh_popups() -> void:
 	var active := _active_id()
 	_clear_popup_overlays()
@@ -1235,7 +1303,7 @@ func _displayed_rect(id: int) -> Rect2:
 	# complet évite que les bords de l'écran soient hors de la zone affichée
 	# (bug : clics droite non routés car _displayed_rect calcule un rect plus
 	# étroit via KEEP_ASPECT_CENTERED sur le buffer arrondi au multiple de 64).
-	if id == focus_fullscreen_id:
+	if id == focus_fullscreen_id or focus_maximized.has(id):
 		return crect
 	var tex := rect.texture
 	if tex == null:
@@ -1301,6 +1369,9 @@ func _displayed_content_rect(id: int) -> Rect2:
 	var disp := _displayed_rect(id)
 	if disp.size.x <= 0.0 or disp.size.y <= 0.0:
 		return Rect2()
+	# Maximisée : l'overlay affiche déjà exactement le contenu (crop shader).
+	if focus_maximized.has(id):
+		return disp
 	var st := _state(id)
 	var surf: Vector2 = st.get("surface_size", Vector2.ZERO)
 	var coff: Vector2 = st.get("content_offset", Vector2.ZERO)
@@ -1410,9 +1481,6 @@ func _raise_window(id: int) -> void:
 		if bar != null and is_instance_valid(bar):
 			bar.z_index = FOCUS_Z_BASE + i + 1
 
-func _is_super_pressed() -> bool:
-	return _super_down or Input.is_key_pressed(KEY_META)
-
 # Appui/relâchement du bouton gauche pour la frame courante : front de l'état
 # brut (source primaire, insensible aux modificateurs), complété par l'action
 # Godot et les événements bruts au cas où le sondage passerait à côté.
@@ -1436,7 +1504,7 @@ func _left_release_this_frame() -> bool:
 		return true
 	return (not _left_down and _left_event_frame == Engine.get_process_frames())
 
-# Démarre le déplacement Super+clic gauche : la fenêtre remonte au sommet et
+# Démarre le déplacement : la fenêtre remonte au sommet et
 # devient active ; ses popups (ancrés au rect parent à la création) sont
 # masqués jusqu'à la fin du déplacement.
 func _start_window_move(id: int, mouse_pos: Vector2) -> void:
@@ -1628,7 +1696,6 @@ func _reset_focus_ui() -> void:
 	window_press_buttons = 0
 	for bar_id in focus_title_bars.keys():
 		_remove_title_bar(bar_id)
-	_super_down = false
 	_left_down = false
 	_left_event_pressed = false
 	_left_event_frame = -1
@@ -1637,6 +1704,7 @@ func _reset_focus_ui() -> void:
 			focus_rects[id].queue_free()
 	focus_rects.clear()
 	focus_states.clear()
+	focus_maximized.clear()
 	focus_stack.clear()
 	focus_fullscreen_id = -1
 	focus_mode = false
@@ -1711,8 +1779,7 @@ func _hide_cursor_overlay() -> void:
 # fenêtre SURVOLÉE de la pile — pas forcément la fenêtre active — tandis que
 # le clavier reste sur l'active (set_window_keyboard_focus). Un appui bouton
 # sur une fenêtre d'arrière-plan la remonte au sommet de la pile et
-# l'active ; Super+clic gauche déplace une fenêtre (fullscreen exclue) en
-# absorbant tous les événements pointeur.
+# l'active.
 func handle_focus_input(delta: float) -> void:
 	if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
 		var active_id_tmp := _active_id()
@@ -1756,8 +1823,9 @@ func handle_focus_input(delta: float) -> void:
 	# relatif est livré immédiatement par wlr_relative_pointer_manager_v1,
 	# suivi d'un frame (cf. forward_pointer_relative_motion).
 	if st["mouse_captured"]:
-		surf_x = st["mouse_uv"].x * st["surface_size"].x + st["content_offset"].x
-		surf_y = st["mouse_uv"].y * st["surface_size"].y + st["content_offset"].y
+		var sp := _uv_to_surface(active_id, st)
+		surf_x = sp.x
+		surf_y = sp.y
 		compositor.set_window_pointer(active_id, surf_x, surf_y, true)
 		if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
 			print("forward_buttons: id=%d scroll_up=%s scroll_down=%s" % [
@@ -1829,17 +1897,6 @@ func handle_focus_input(delta: float) -> void:
 			_start_window_move(tb_id, mouse_pos)
 			return
 
-	# Super+clic gauche : secours si la barre n'est pas touchée (selon le
-	# bureau hôte, la capture Meta+boutons peut aussi avaler ces événements).
-	# Jamais via un popup, jamais la fenêtre fullscreen du fond de pile.
-	if press_left and _is_super_pressed() and popup_target.is_empty():
-		if target_window == focus_fullscreen_id:
-			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-				print("focus-move: refused, fullscreen window id=", target_window)
-		else:
-			_start_window_move(target_window, mouse_pos)
-			return
-
 	# Cible popup (menus, dropdowns...) : router mouvement + clics vers la
 	# SURFACE du popup (forward_*_popup), pas vers la fenêtre. En mode focus
 	# seuls les popups de la fenêtre active sont overlayés ; sans ce routage,
@@ -1878,7 +1935,7 @@ func handle_focus_input(delta: float) -> void:
 		if window_press_id == -1:
 			window_press_id = target_window
 			window_press_buttons = 1
-			if target_window != active_id and target_window != focus_fullscreen_id:
+			if target_window != active_id and not _is_stack_base(target_window):
 				_raise_window(target_window)
 				_activate_window(target_window)
 		else:
@@ -1913,8 +1970,9 @@ func handle_focus_input(delta: float) -> void:
 		display_scale = disp.size / tst["surface_size"]
 	_update_cursor_overlay(target_window, mouse_pos, display_scale)
 
-	surf_x = tst["mouse_uv"].x * tst["surface_size"].x + tst["content_offset"].x
-	surf_y = tst["mouse_uv"].y * tst["surface_size"].y + tst["content_offset"].y
+	var tsp := _uv_to_surface(target_window, tst)
+	surf_x = tsp.x
+	surf_y = tsp.y
 	# Le motion redundant avant chaque frame d'axis envoie wl_pointer.motion
 	# + frame INUTILEMENT au client (la souris est stationnaire). Le client
 	# reçoit alors 2 frames par tick de scroll au lieu d'1, ce qui perturbe
@@ -2101,13 +2159,6 @@ func handle_input_event(event: InputEvent) -> bool:
 		# xkbcommon reçoit des DOWN non appariés → modificateur "coincé".
 		if key_event.echo:
 			return true
-		# Suivi de Super/Meta pour le déplacement Super+clic gauche (voir
-		# _super_down). Avant tout le reste : même si un raccourci consomme
-		# une combinaison avec Meta, l'état du modificateur reste à jour.
-		if key_event.keycode == KEY_META or key_event.physical_keycode == KEY_META:
-			_super_down = key_event.pressed
-			if OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
-				print("focus-move: super ", "down" if _super_down else "up")
 		# Raccourcis clavier gérés par le jeu lui-même (le raccourci focus
 		# pour sortir, la touche de fermeture de la fenêtre) : les consommer
 		# SANS les forwarder au client. Sinon la touche est tapée dans la
@@ -2261,3 +2312,11 @@ func _input(event: InputEvent) -> void:
 			_scroll_down_held = jpb.pressed
 		if in_game() and jpb.pressed:
 			get_viewport().set_input_as_handled()
+
+# Fenêtre de FOND de pile : celle qui a ouvert le mode focus (plein écran xdg
+# ou maximisée). Elle ne passe jamais au-dessus des fenêtres ouvertes PENDANT
+# le focus : un clic dedans est forwardé normalement, mais ne la remonte pas
+# et ne lui vole pas le clavier.
+func _is_stack_base(id: int) -> bool:
+	return id == focus_fullscreen_id \
+		or (focus_maximized.has(id) and not focus_opened_during.has(id))
