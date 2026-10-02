@@ -173,6 +173,12 @@ var move_depth := 0.0
 # Fenêtre sur laquelle celle-ci est collée : wid -> {wid, side}
 var snapped_to: Dictionary = {} # wid (int) -> Dictionary
 
+# Collage coupé (réglage pause_menu > GENERAL > Disable Window Snapping).
+# Ne coupe que la DÉTECTION : un collage déjà établi se poursuit exactement
+# comme si le pointeur s'en éloignait — la coupure est faite APRÈS la branche
+# « déjà collée » de _find_snap, jamais avant.
+var snapping_enabled := true
+
 # Orientation figée par fenêtre : wid -> Basis.
 # Avant, une fenêtre était un billboard — `global_basis = base caméra` réécrit
 # à chaque frame, plus un yaw appliqué par-dessus. Une fenêtre qui hérite de
@@ -1466,6 +1472,10 @@ func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 
 # ── Collage (snap) et rotation ─────────────────────────────────────────
 
+# Coupe ou rétablit la détection de collage (réglage GENERAL). Idempotent :
+# le menu est rebranché à chaque changement, et le réglage survit au redémarrage.
+func set_snapping_enabled(on: bool) -> void:
+	snapping_enabled = on
 
 # Colle la fenêtre SAISIE sur une voisine, si deux zones opposées se
 # recouvrent.
@@ -1484,6 +1494,14 @@ func _find_snap(raw_target: Vector3) -> Dictionary:
 	var held: Dictionary = snapped_to.get(wid, {})
 	if not held.is_empty():
 		return _hold_snap(held, raw_target)
+
+	# Collage coupé : plus aucun nouveau raccord. La coupure est ICI, après la
+	# branche « déjà collée » — un collage établi n'a plus besoin d'être
+	# redécidé, il tient sur les transformations de ses deux zones, et il doit
+	# pouvoir se poursuivre (puis être lâché à la distance) même avec le
+	# collage désactivé.
+	if not snapping_enabled:
+		return {}
 
 	var pairs := _snap_zone_pairs(wid)
 	if _snap_lockout != "":

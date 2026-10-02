@@ -20,6 +20,7 @@ signal lan_avatar_changed(path: String)
 signal lan_name_changed(name: String)
 
 signal graphics_settings_changed(aa_mode: String, fps_limit: int)
+signal snapping_disabled_changed(disabled: bool)
 signal mouse_sens_changed(mult: float)
 signal pad_look_sens_changed(mult: float)
 signal focus_stick_sens_changed(mult: float)
@@ -475,6 +476,23 @@ func _show_general() -> void:
 	)
 
 	container.add_child(_make_spacer())
+
+	# ── Collage des fenêtres ──
+	# Appliqué comme le Max FPS ci-dessus : cette page n'a pas de bouton Apply,
+	# la case est donc pré-appliquée dès qu'on la coche.
+	var snap_check := CheckButton.new()
+	snap_check.text = "Disable Window Snapping"
+	snap_check.button_pressed = is_snapping_disabled()
+	snap_check.custom_minimum_size = Vector2(0, 36)
+	snap_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	snap_check.add_theme_font_size_override("font_size", 14)
+	container.add_child(snap_check)
+
+	snap_check.toggled.connect(func(on: bool):
+		_settings["snapping_disabled"] = on
+		_save_settings()
+		snapping_disabled_changed.emit(on)
+	)
 
 	container.add_child(_make_back_btn())
 
@@ -1024,6 +1042,11 @@ func get_gyro_sens_mult() -> float:
 
 func get_fps_limit() -> int:
 	return _settings.get("fps_limit", 60)
+
+# Collage des fenêtres coupé ? (GENERAL). Absent du réglage = collage actif :
+# un défaut inversé le désactiverait pour tout le monde, en silence.
+func is_snapping_disabled() -> bool:
+	return bool(_settings.get("snapping_disabled", false))
 
 func _show_pins() -> void:
 	_clear()

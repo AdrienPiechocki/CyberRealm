@@ -469,6 +469,10 @@ func _ready() -> void:
 	pause_menu.graphics_settings_changed.connect(func(_aa: String, fps: int):
 		Engine.max_fps = fps
 	)
+	win3d.set_snapping_enabled(not pause_menu.is_snapping_disabled())
+	pause_menu.snapping_disabled_changed.connect(func(disabled: bool):
+		win3d.set_snapping_enabled(not disabled)
+	)
 	pause_menu.environment_settings_changed.connect(func(settings: Dictionary):
 		_apply_environment_settings(settings)
 	)
