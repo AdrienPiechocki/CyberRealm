@@ -287,6 +287,48 @@ func test_border_pieces_and_button_atlas() -> Variant:
 
 const Decoration := preload("res://scripts/windows/window_decoration_3d.gd")
 
+const Windows3DScript := preload("res://scripts/windows/windows_3d.gd")
+
+var win3d: Node3D
+var player: Node3D
+
+## Monde de test minimal : une fenêtre mappée, sans texture (les metas de
+## surface sont écrites à la main, comme tests/test_window_top_resize.gd).
+func _build_world() -> Variant:
+	win3d = Node3D.new()
+	win3d.set_script(Windows3DScript)
+	player = Node3D.new()
+	player.name = "Player"
+	var cam := Camera3D.new()
+	cam.name = "Camera3D"
+	cam.position = Vector3(0.0, 1.5, 0.0)
+	player.add_child(cam)
+	get_tree().root.add_child(player)
+	get_tree().root.add_child(win3d)
+	win3d.setup(null, player)
+	win3d.on_window_mapped(3, "Test Window", "app")
+	if not win3d.quads.has(3):
+		return "le quad de la fenêtre 3 n'a pas été créé"
+	var body: StaticBody3D = win3d.quads[3].get_child(0)
+	body.set_meta("surface_size", Vector2(1000.0, 500.0))
+	body.set_meta("content_offset", Vector2.ZERO)
+	body.set_meta("content_size", Vector2(1000.0, 500.0))
+	# Le décor a été construit sans surface connue, donc au repli de 0,005 u/px.
+	# On resynchronise : c'est exactement ce que fait `on_texture_updated` quand
+	# la première texture arrive.
+	win3d._sync_decorations(win3d.quads[3])
+	return true
+
+func _quad() -> Node3D:
+	return win3d.quads[3]
+
+func _teardown() -> void:
+	if is_instance_valid(win3d):
+		win3d.free()
+	if is_instance_valid(player):
+		player.free()
+
+
 func test_frame_piece_rects() -> Variant:
 	var half := Vector2(100.0, 50.0)
 	var t := 4.0
@@ -341,3 +383,103 @@ func test_titlebar_metrics_from_json() -> Variant:
 	if _fail(r):
 		return r
 	return Runner.assert_eq(d["alignment"], "right", "alignement")
+
+func test_decoration_nodes_are_built() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var quad := _quad()
+	# Les chemins lus par on_window_title_changed et par
+	# tests/test_window_top_resize.gd ne doivent pas bouger.
+	for path: String in ["Titlebar", "Titlebar/BarBody", "Titlebar/Label3D",
+			"Titlebar/BtnClose", "Titlebar/BtnMaximize", "Titlebar/BtnMinimize"]:
+		if quad.get_node_or_null(path) == null:
+			return "chemin manquant: " + path
+	var deco := quad.get_node_or_null("Decoration") as Node3D
+	if deco == null:
+		return "Decoration manquant"
+	for spec: Dictionary in Decoration.FRAME_PIECES:
+		var node := deco.get_node_or_null(spec["node"]) as StaticBody3D
+		if node == null:
+			return "pièce manquante: " + spec["node"]
+		if not node.has_meta("decoration_edge"):
+			return "meta decoration_edge absente sur " + spec["node"]
+		if str(node.get_meta("decoration_edge")) != str(spec["edge"]):
+			return "mauvais edge sur " + spec["node"]
+		if int(node.get_meta("window_of", -1)) != 3:
+			return "meta window_of absente sur " + spec["node"]
+	_teardown()
+	return true
+
+func test_frame_sizes_follow_the_metrics() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var quad := _quad()
+	var mesh: QuadMesh = quad.mesh
+	# mesh 3.2x2.0 sur 1000x500 px => 320 px/u en x, 250 en y.
+	var s: float = Decorations.px_scale(Vector2(1000.0, 500.0), mesh.size)
+	var d: Dictionary = Decoration.titlebar_metrics(s)
+	var deco := quad.get_node_or_null("Decoration")
+	var left := deco.get_node("FrameLeft") as StaticBody3D
+	var shape: BoxShape3D = (left.get_child(0) as CollisionShape3D).shape
+	var r = Runner.assert_approx(shape.size.y, mesh.size.y, 0.001, "bande gauche = hauteur du contenu")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(shape.size.x, d["border"], 0.001, "épaisseur = border_size en monde")
+	if _fail(r):
+		return r
+	var bottom := deco.get_node("FrameBottom") as StaticBody3D
+	var bshape: BoxShape3D = (bottom.get_child(0) as CollisionShape3D).shape
+	r = Runner.assert_approx(bshape.size.x, mesh.size.x, 0.001, "bande basse = largeur du contenu")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(bshape.size.y, d["border"], 0.001, "bande basse fine")
+	if _fail(r):
+		return r
+	# La barre fait toute la largeur du CONTENU, les coins portent le cadre.
+	var titlebar := quad.get_node_or_null("Titlebar") as MeshInstance3D
+	r = Runner.assert_approx((titlebar.mesh as QuadMesh).size.x, mesh.size.x, 0.001, "barre = largeur du contenu")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(titlebar.position.y, mesh.size.y * 0.5 + d["titlebar"] * 0.5, 0.001,
+		"barre collée au bord haut du contenu")
+	if _fail(r):
+		return r
+	_teardown()
+	return true
+
+func test_frame_visibility_follows_ssd() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	win3d.on_window_decorations_changed(3, false)
+	var deco := _quad().get_node_or_null("Decoration") as Node3D
+	if deco == null:
+		return "Decoration manquant"
+	var r = Runner.assert_true(not deco.visible, "un client CSD dessine son propre cadre")
+	if _fail(r):
+		return r
+	win3d.on_window_decorations_changed(3, true)
+	r = Runner.assert_true(deco.visible, "un client SSD laisse le jeu dessiner le cadre")
+	if _fail(r):
+		return r
+	_teardown()
+	return true
+
+func test_toggle_hide_disables_frame_colliders() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	win3d.toggle_hide(3)
+	var left := (_quad().get_node_or_null("Decoration/FrameLeft") as StaticBody3D)
+	if left == null:
+		return "le cadre doit exister avant d'être caché"
+	var col := left.get_child(0) as CollisionShape3D
+	# Le décor est un Node3D intermédiaire : sans récursion Node3D, la fenêtre
+	# cachée garderait un collider de cadre vivant et resterait attrapable.
+	var r = Runner.assert_true(col.disabled, "le collider du cadre doit suivre le hide")
+	if _fail(r):
+		return r
+	_teardown()
+	return true

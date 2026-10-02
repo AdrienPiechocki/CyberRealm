@@ -19,24 +19,20 @@ const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
 # unité monde sont divisés d'autant, l'échantillonnage reste le même).
 const WINDOW_QUAD_SCALE := 2.0
 
+const Decorations := preload("res://scripts/ui/window_decorations.gd")
+const WindowDecoration := preload("res://scripts/windows/window_decoration_3d.gd")
+
 # Barre de titre du jeu (décorations server-side). Le compositeur répond
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
 # qui crashe si on lui laisse dessiner ses barres) ne dessinent rien, c'est
 # le jeu qui affiche la barre au-dessus du contenu de chaque fenêtre.
+# La geometrie de la barre ne vit plus ici : elle vient des SVG et du
+# `decorations.json` de `ui/decorations/`, convertis en monde par fenêtre.
 const TITLEBAR_HEIGHT = 0.06
-const TITLEBAR_BG = Color(0.13, 0.15, 0.22)
-const TITLEBAR_FG = Color(0.85, 0.88, 0.96)
-# Boutons de la barre de titre (droite) : fermer / réduire / agrandir.
-const TITLEBAR_BTN_CLOSE := Color(0.9, 0.25, 0.25)
-const TITLEBAR_BTN_MIN := Color(0.95, 0.7, 0.2)
-const TITLEBAR_BTN_MAX := Color(0.3, 0.78, 0.42)
-const TITLEBAR_BUTTON_SIZE_RATIO := 0.55 # taille d'un bouton = 55% de la hauteur de barre
-const TITLEBAR_BUTTON_GAP_RATIO := 0.22 # espace entre boutons = 22% de la hauteur de barre
 # Épaisseur (m) du BoxOccluder3D plaqué sur chaque quad fenêtre : assez fine
 # pour rester proche du plan visuel, assez épaisse pour être rasterisée
 # proprement par l'occlusion culling.
 const WINDOW_OCCLUDER_DEPTH := 0.04
-const TITLEBAR_BUTTON_MARGIN_RATIO := 0.35 # marge du bord droit de la barre
 
 # Couche physique dédiée aux zones de collage. Distincte de la couche 2
 # (corps des fenêtres, utilisée par le raycast de pointage) pour qu'une zone
@@ -386,14 +382,19 @@ func set_quad_visible(id: int, visible: bool) -> void:
 		_set_quad_interactive(quad, visible)
 
 # Active/désactive toutes les collisions d'un quad (corps du contenu, barre
-# de titre, boutons) : un quad invisible ne doit plus être touchable.
-func _set_quad_interactive(quad: MeshInstance3D, enabled: bool) -> void:
+# de titre, boutons, cadre) : un quad invisible ne doit plus être touchable.
+# Paramètre `Node3D` et non `MeshInstance3D` : la récursion traverse des
+# conteneurs qui ne sont pas des maillages, dont l'occluder et le décor.
+func _set_quad_interactive(quad: Node3D, enabled: bool) -> void:
 	for child in quad.get_children():
 		if child is StaticBody3D:
 			for shape_node in child.get_children():
 				if shape_node is CollisionShape3D:
 					shape_node.disabled = not enabled
-		elif child is MeshInstance3D:
+		elif child is Node3D and not (child is Area3D):
+			# Node3D et pas MeshInstance3D : le décor est un simple conteneur,
+			# la récursion doit le traverser. Area3D exclus : les zones de
+			# collage sont today ignorées par cette fonction, on ne change rien.
 			_set_quad_interactive(child, enabled)
 
 # La fenêtre actuellement déplacée (grab menu), -1 si aucune.
@@ -513,7 +514,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	# Occlusion culling : boîte fine alignée sur le quad. Enfant du quad →
 	# suit grab/déplacement/rotation sans code par frame, et se désactive
 	# automatiquement quand la fenêtre est cachée (hide/minimise/focus).
-	# La dimension est tenue à jour par _sync_titlebar(), appelée après
+	# La dimension est tenue à jour par _sync_decorations(), appelée après
 	# chaque changement de taille du mesh.
 	var occ := OccluderInstance3D.new()
 	occ.name = "Occluder"
@@ -529,48 +530,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	# contenu (ne recouvre jamais le contenu de l'app). Ajoutée APRÈS body
 	# pour que quad.get_child(0) continue de renvoyer le corps du contenu.
 	window_titles[id] = title
-	var titlebar := MeshInstance3D.new()
-	titlebar.name = "Titlebar"
-	# Visible seulement si le client a accepté des décorations gérées par le
-	# jeu (SERVER_SIDE) : le signal window_decorations_changed suit le map.
-	titlebar.visible = false
-	titlebar.mesh = QuadMesh.new() # dimensionné par _sync_titlebar
-	var bar_mat := StandardMaterial3D.new()
-	bar_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	bar_mat.albedo_color = TITLEBAR_BG
-	bar_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	titlebar.material_override = bar_mat
-	titlebar.set_meta("titlebar_of", id)
-	titlebar.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	var bar_body := StaticBody3D.new()
-	bar_body.name = "BarBody"
-	bar_body.collision_layer = 2
-	bar_body.collision_mask = 2
-	var bar_col := CollisionShape3D.new()
-	var bar_shape := BoxShape3D.new()
-	bar_shape.size = Vector3(mesh.size.x, TITLEBAR_HEIGHT, 0.02)
-	bar_col.shape = bar_shape
-	bar_body.add_child(bar_col)
-	bar_body.set_meta("titlebar_of", id)
-	titlebar.add_child(bar_body)
-	_make_titlebar_button(titlebar, id, "minimize", TITLEBAR_BTN_MIN)
-	_make_titlebar_button(titlebar, id, "maximize", TITLEBAR_BTN_MAX)
-	_make_titlebar_button(titlebar, id, "close", TITLEBAR_BTN_CLOSE)
-	var bar_label := Label3D.new()
-	bar_label.name = "Label3D"
-	bar_label.text = title
-	bar_label.double_sided = true
-	bar_label.billboard = BaseMaterial3D.BILLBOARD_DISABLED
-	bar_label.font_size = 6
-	bar_label.outline_size = 0
-	bar_label.modulate = TITLEBAR_FG
-	bar_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	bar_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	bar_label.position = Vector3(0.0, 0.0, 0.001)
-	titlebar.add_child(bar_label)
-	bar_label.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	quad.add_child(titlebar)
-	_sync_titlebar(quad)
+	WindowDecoration.build(quad, id, title)
 
 	add_child(quad)
 	quads[id] = quad
@@ -596,77 +556,13 @@ func on_window_title_changed(id: int, title: String) -> void:
 		bar_label.text = title
 	windows_state_changed.emit()
 
-# Recalcule la barre de titre après un changement de taille du contenu : la
-# barre reste collée au bord supérieur du contenu et suit sa largeur.
-func _sync_titlebar(quad: MeshInstance3D) -> void:
-	var mesh: QuadMesh = quad.mesh
-	# Zones de collage resynchronisées en PREMIER, avant tout early return :
-	# une fenêtre sans barre de titre doit malgré tout avoir ses zones à la
-	# bonne taille.
+# Recalcule décor et barre de titre après un changement de taille du contenu.
+func _sync_decorations(quad: MeshInstance3D) -> void:
+	# Zones de collage resynchronisées en PREMIER, avant tout early return : une
+	# fenêtre sans barre de titre doit malgré tout avoir ses zones à la bonne
+	# taille.
 	_sync_snap_zones(quad)
-	var titlebar: MeshInstance3D = quad.get_node_or_null("Titlebar")
-	if titlebar == null or not is_instance_valid(titlebar):
-		return
-	var bar_h: float = TITLEBAR_HEIGHT
-	var bar_mesh: QuadMesh = titlebar.mesh
-	if bar_mesh == null:
-		bar_mesh = QuadMesh.new()
-		titlebar.mesh = bar_mesh
-	bar_mesh.size = Vector2(mesh.size.x, bar_h)
-	titlebar.position = Vector3(0.0, mesh.size.y * 0.5 + bar_h * 0.5, 0.0)
-	var bar_body: StaticBody3D = titlebar.get_node("BarBody")
-	var bar_shape: BoxShape3D = bar_body.get_child(0).shape
-	bar_shape.size = Vector3(mesh.size.x, bar_h, 0.02)
-
-	# L'occludeur suit la taille du contenu (appelé après chaque resize,
-	# ratio du premier frame inclus).
-	var occ := quad.get_node_or_null("Occluder") as OccluderInstance3D
-	if occ != null and occ.occluder is BoxOccluder3D:
-		(occ.occluder as BoxOccluder3D).size = Vector3(
-			mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
-
-	# Les zones de collage sont resynchronisées en tête de fonction (_sync_titlebar).
-
-	# Boutons alignés à droite : maximiser, réduire, fermer (de gauche à droite).
-	var btn_size := bar_h * TITLEBAR_BUTTON_SIZE_RATIO
-	var gap := bar_h * TITLEBAR_BUTTON_GAP_RATIO
-	var x := mesh.size.x * 0.5 - bar_h * TITLEBAR_BUTTON_MARGIN_RATIO - btn_size * 0.5
-	for btn_name in ["BtnClose", "BtnMaximize", "BtnMinimize"]:
-		var btn: StaticBody3D = titlebar.get_node_or_null(btn_name)
-		if btn != null:
-			btn.position = Vector3(x, 0.0, 0.001)
-			var btn_col: CollisionShape3D = btn.get_child(0)
-			(btn_col.shape as BoxShape3D).size = Vector3(btn_size, btn_size, 0.03)
-			var visual: MeshInstance3D = btn.get_child(1)
-			(visual.mesh as QuadMesh).size = Vector2(btn_size, btn_size)
-		x -= btn_size + gap
-
-# Crée un bouton carré de la barre de titre (StaticBody3D + collision +
-# mesh coloré). Le clic est géré via la meta "titlebar_button".
-func _make_titlebar_button(titlebar: MeshInstance3D, wid: int, action: String, color: Color) -> void:
-	var btn := StaticBody3D.new()
-	btn.name = "Btn" + action.capitalize()
-	btn.collision_layer = 2
-	btn.collision_mask = 2
-	var col := CollisionShape3D.new()
-	var shape := BoxShape3D.new()
-	shape.size = Vector3(0.05, 0.05, 0.03)
-	col.shape = shape
-	btn.add_child(col)
-	var visual := MeshInstance3D.new()
-	var quad := QuadMesh.new()
-	quad.size = Vector2(0.05, 0.05)
-	visual.mesh = quad
-	var mat := StandardMaterial3D.new()
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.albedo_color = color
-	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
-	visual.material_override = mat
-	visual.position = Vector3(0.0, 0.0, 0.001)
-	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	btn.add_child(visual)
-	btn.set_meta("titlebar_button", {"wid": wid, "action": action})
-	titlebar.add_child(btn)
+	WindowDecoration.sync(quad)
 
 # Active/désactive les collisions des éléments de la barre de titre
 # (BarBody de redimensionnement + boutons) quand la décoration est masquée.
@@ -704,6 +600,7 @@ func on_window_decorations_changed(id: int, server_side: bool) -> void:
 	titlebar.visible = true
 	_set_titlebar_interactive(titlebar, true)
 	_set_titlebar_buttons(titlebar, server_side)
+	WindowDecoration.set_frame_visible(quad, server_side)
 
 func on_window_unmapped(id: int) -> void:
 	if focused_window_id == id:
@@ -807,7 +704,7 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	var col: CollisionShape3D = body.get_child(0)
 	var shape: BoxShape3D = col.shape
 	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
-	_sync_titlebar(quad)
+	_sync_decorations(quad)
 	windows_state_changed.emit()
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
@@ -1250,7 +1147,7 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 		var col: CollisionShape3D = body.get_child(0)
 		var shape: BoxShape3D = col.shape
 		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
-		_sync_titlebar(quad)
+		_sync_decorations(quad)
 
 		# Notify Wayland client buffer of target size
 		compositor.set_window_size(id, int(vp_size.x), int(vp_size.y))
@@ -1265,7 +1162,7 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 		var col: CollisionShape3D = body.get_child(0)
 		var shape: BoxShape3D = col.shape
 		shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
-		_sync_titlebar(quad)
+		_sync_decorations(quad)
 
 		# 2. Restore original Wayland client surface size
 		if pre_fullscreen_surface_sizes.has(id):
@@ -2084,7 +1981,7 @@ func _update_shared_edge(_d_x: float, _d_y: float) -> void:
 		# Orientation écrite dans l'ÉTAT STOCKÉ aussi : c'est lui que relisent
 		# la rotation au scroll et la règle des 3 fenêtres.
 		_store_basis(nw, nb)
-		_sync_titlebar(nq)
+		_sync_decorations(nq)
 		compositor.set_window_size(nw, int(px1.x) + int(off.x) * 2, int(px1.y) + int(off.y) * 2)
 		fullscreen_windows[nw] = false
 		var near_local := snap_zone_local_offset(visual_half_extent(mesh1), near_side)
@@ -2558,7 +2455,7 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var col: CollisionShape3D = body.get_child(0)
 	var shape: BoxShape3D = col.shape
 	shape.size = Vector3(new_mesh_w, new_mesh_h, shape.size.z)
-	_sync_titlebar(quad)
+	_sync_decorations(quad)
 
 	# Repositionne le bord fixe: le shift compense exactement la moitié
 	# du delta taille, de sorte que le bord opposé ne bouge pas.
