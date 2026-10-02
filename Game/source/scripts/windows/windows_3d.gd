@@ -26,9 +26,8 @@ const WindowDecoration := preload("res://scripts/windows/window_decoration_3d.gd
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
 # qui crashe si on lui laisse dessiner ses barres) ne dessinent rien, c'est
 # le jeu qui affiche la barre au-dessus du contenu de chaque fenêtre.
-# La geometrie de la barre ne vit plus ici : elle vient des SVG et du
+# La géométrie de la barre ne vit plus ici : elle vient des SVG et du
 # `decorations.json` de `ui/decorations/`, convertis en monde par fenêtre.
-const TITLEBAR_HEIGHT = 0.06
 # Épaisseur (m) du BoxOccluder3D plaqué sur chaque quad fenêtre : assez fine
 # pour rester proche du plan visuel, assez épaisse pour être rasterisée
 # proprement par l'occlusion culling.
@@ -2284,10 +2283,11 @@ func _erase_window_state(id: int) -> void:
 
 # ── Géométrie de collage (fonctions PURES, testables sans scène) ───────
 #
-# Le titre-bandeau (TITLEBAR_HEIGHT) vit AU-DESSUS du quad : il n'est ni dans
-# la boîte de collision ni dans l'occluder. L'empreinte VISIBLE d'une fenêtre
-# est donc plus haute que son quad, et c'est elle qu'il faut coller — sinon
-# deux fenêtres s'imbriqueraient de 6 cm en se collant verticalement.
+# Le cadre et le bandeau vivent AU-DESSUS du quad : ils ne sont ni dans la
+# boîte de collision du contenu ni dans son occluder. L'empreinte VISIBLE
+# d'une fenêtre est donc plus grande que son quad, et c'est elle qu'il faut
+# coller — sinon deux fenêtres s'imbriqueraient en se collant. Les épaisseurs
+# viennent du `decorations.json`, plus d'une constante en dur.
 
 # Demi-dimensions VISIBLES (quad + cadre + bandeau) d'une fenêtre. Les
 # épaisseurs viennent du JSON, plus d'une constante en dur.

@@ -186,7 +186,7 @@ static func sync(quad: MeshInstance3D) -> void:
 				continue
 			var rect: Array = frame_piece_rect(spec["piece"], half, t, b)
 			_place(node, rect[0], rect[1], Decorations.border_piece(spec["piece"]))
-	_sync_titlebar(quad, s, mesh, half)
+	_sync_bar(quad, s, mesh, half)
 
 static func _place(node: StaticBody3D, pos: Vector2, size: Vector2, atlas: Texture2D) -> void:
 	node.position = Vector3(pos.x, pos.y, 0.0)
@@ -199,7 +199,7 @@ static func _place(node: StaticBody3D, pos: Vector2, size: Vector2, atlas: Textu
 	# lui, reste — le redimensionnement ne dépend pas du visuel.
 	mat.albedo_texture = atlas
 
-static func _sync_titlebar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vector2) -> void:
+static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vector2) -> void:
 	var titlebar := quad.get_node_or_null("Titlebar") as MeshInstance3D
 	if titlebar == null or not is_instance_valid(titlebar):
 		return
