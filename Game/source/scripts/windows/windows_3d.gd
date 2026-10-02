@@ -381,6 +381,26 @@ func set_quad_visible(id: int, visible: bool) -> void:
 		quad.visible = visible
 		_set_quad_interactive(quad, visible)
 
+# L'occluder doit couvrir l'EMPREINTE VISIBLE, cadre et barre compris : sinon
+# le culling mange les bords du décor quand deux fenêtres se font face.
+func _sync_occluder(occ: OccluderInstance3D, quad: MeshInstance3D) -> void:
+	# La boîte est lue dans les MÉTADONUES et pas dans `occ.occluder` : pendant
+	# un resize détaché `occ.occluder` vaut null, la boîte ne vit plus que là.
+	# Sans cette nuance, le réattachement resynchroniserait un objet vide et
+	# laisserait l'occluder à sa taille périmée.
+	var box := occ.get_meta("occluder_box", null) as BoxOccluder3D
+	if box == null:
+		box = occ.occluder as BoxOccluder3D
+	if box == null:
+		return
+	var mesh := quad.mesh as QuadMesh
+	if mesh == null:
+		return
+	var deco := _deco_of(quad)
+	occ.position = Vector3(0.0, (deco["titlebar"] - deco["border"]) * 0.5, 0.0)
+	box.size = Vector3(mesh.size.x + deco["border"] * 2.0,
+		mesh.size.y + deco["titlebar"] + deco["border"], WINDOW_OCCLUDER_DEPTH)
+
 # Active/désactive toutes les collisions d'un quad (corps du contenu, barre
 # de titre, boutons, cadre) : un quad invisible ne doit plus être touchable.
 # Paramètre `Node3D` et non `MeshInstance3D` : la récursion traverse des
@@ -443,9 +463,7 @@ func _set_window_occluder_active(wid: int, active: bool) -> void:
 			# Resynchronise la taille : pendant un resize détaché le box n'est
 			# plus mis à jour (gardé dans les métadonnées), il peut donc être
 			# périmé par rapport au mesh au moment de réattacher.
-			var mesh := quads[wid].mesh as QuadMesh
-			if mesh != null:
-				occ_box.size = Vector3(mesh.size.x, mesh.size.y, WINDOW_OCCLUDER_DEPTH)
+			_sync_occluder(occ, quads[wid])
 			if occ.occluder == null:
 				occ.occluder = occ_box
 	else:
@@ -525,6 +543,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	# l'occluder (occ.occluder = null) lâche la dernière référence autrement.
 	occ.set_meta("occluder_box", occ_box)
 	quad.add_child(occ)
+	_sync_occluder(occ, quad)
 
 	# Barre de titre du jeu (SSD) : quad coloré + Label3D posés AU-DESSUS du
 	# contenu (ne recouvre jamais le contenu de l'app). Ajoutée APRÈS body
@@ -563,6 +582,9 @@ func _sync_decorations(quad: MeshInstance3D) -> void:
 	# taille.
 	_sync_snap_zones(quad)
 	WindowDecoration.sync(quad)
+	var occ := quad.get_node_or_null("Occluder") as OccluderInstance3D
+	if occ != null:
+		_sync_occluder(occ, quad)
 
 # Active/désactive les collisions des éléments de la barre de titre
 # (BarBody de redimensionnement + boutons) quand la décoration est masquée.
@@ -1478,7 +1500,17 @@ func _visual_half(wid: int) -> Vector2:
 	if quad == null or not is_instance_valid(quad):
 		return Vector2.ZERO
 	var mesh := quad.mesh as QuadMesh
-	return visual_half_extent(mesh.size) if mesh != null else Vector2.ZERO
+	return visual_half_extent(mesh.size, _deco_of(quad)) if mesh != null else Vector2.ZERO
+
+# Métriques de la fenêtre exprimées en unités MONDE : c'est le seul endroit où
+# le ratio px/unité est calculé pour le décor.
+func _deco_of(quad: MeshInstance3D) -> Dictionary:
+	var mesh := quad.mesh as QuadMesh
+	if mesh == null:
+		return Decorations.world(Decorations.metrics(), Decorations.FALLBACK_PX_SCALE)
+	var body := quad.get_child(0) as StaticBody3D
+	var surface: Vector2 = body.get_meta("surface_size", Vector2.ZERO) if body != null else Vector2.ZERO
+	return Decorations.world(Decorations.metrics(), Decorations.px_scale(surface, mesh.size))
 
 # Position du quad collé bord à bord, déduite du seul couple de zones.
 #
@@ -1569,7 +1601,7 @@ func _sync_snap_zones(quad: MeshInstance3D) -> void:
 	var mesh: QuadMesh = quad.mesh
 	if mesh == null:
 		return
-	var half := visual_half_extent(mesh.size)
+	var half := visual_half_extent(mesh.size, _deco_of(quad))
 	for side in SNAP_SIDES:
 		var area := quad.get_node_or_null(_zone_path(side)) as Area3D
 		if area == null:
@@ -1970,8 +2002,11 @@ func _update_shared_edge(_d_x: float, _d_y: float) -> void:
 			px1.x = max(px0.x * mesh1.x / max(mesh0.x, 0.001), MIN_SURFACE_SIZE)
 		else:
 			# La zone haute/basse est portée par l'empreinte VISIBLE (mesh +
-			# bandeau de titre).
-			mesh1.y = max(span - TITLEBAR_HEIGHT, mesh0.y * MIN_SURFACE_SIZE / max(px0.y, 1.0))
+			# cadre + bandeau de titre). `deco` est calculé sur le mesh COURANT
+			# de la voisine : c'est l'épaisseur telle qu'elle était avant le
+			# drag, donc bien l'empreinte visible à retrancher du `span`.
+			var deco := _deco_of(nq)
+			mesh1.y = max(span - deco["titlebar"] - deco["border"], mesh0.y * MIN_SURFACE_SIZE / max(px0.y, 1.0))
 			px1.y = max(px0.y * mesh1.y / max(mesh0.y, 0.001), MIN_SURFACE_SIZE)
 		(nq.mesh as QuadMesh).size = mesh1
 		var nbody: StaticBody3D = nq.get_child(0)
@@ -1984,7 +2019,7 @@ func _update_shared_edge(_d_x: float, _d_y: float) -> void:
 		_sync_decorations(nq)
 		compositor.set_window_size(nw, int(px1.x) + int(off.x) * 2, int(px1.y) + int(off.y) * 2)
 		fullscreen_windows[nw] = false
-		var near_local := snap_zone_local_offset(visual_half_extent(mesh1), near_side)
+		var near_local := snap_zone_local_offset(visual_half_extent(mesh1, _deco_of(nq)), near_side)
 		nq.global_position = near_pt - nb * near_local
 
 func _update_group_resize(wid: int) -> void:
@@ -2085,6 +2120,7 @@ func _rotate_snapped(angle: float) -> void:
 	if area == null:
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
+	var deco := _deco_of(quad)
 	var delta := angle
 	var pivot := area.global_transform.origin
 	# L'axe est celui de la zone : verticale pour une zone latérale, ce qui
@@ -2092,46 +2128,46 @@ func _rotate_snapped(angle: float) -> void:
 	if snap["side"] == "right":
 		var axis := area.global_transform.basis.y.normalized()
 		var visual := visual_center(quad.global_position,
-			quad.global_basis.y.normalized())
+			quad.global_basis.y.normalized(), deco)
 		var orbit := visual - pivot
 		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
 		# qui pivote (sinon elle glisserait de 3 cm en montant).
 		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
 		quad.global_position = pivot + orbit.rotated(axis, delta) \
-			- base_after.y.normalized() * (TITLEBAR_HEIGHT * 0.5)
+			- base_after.y.normalized() * ((deco["titlebar"] - deco["border"]) * 0.5)
 		_store_basis(active_window_id, base_after)
 	if snap["side"] == "left":
 		var axis := -area.global_transform.basis.y.normalized()
 		var visual := visual_center(quad.global_position,
-			-quad.global_basis.y.normalized())
+			-quad.global_basis.y.normalized(), deco)
 		var orbit := visual - pivot
 		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
 		# qui pivote (sinon elle glisserait de 3 cm en montant).
 		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
 		quad.global_position = pivot + orbit.rotated(axis, delta) \
-			+ base_after.y.normalized() * (TITLEBAR_HEIGHT * 0.5)
+			+ base_after.y.normalized() * ((deco["titlebar"] - deco["border"]) * 0.5)
 		_store_basis(active_window_id, base_after)
 	if snap["side"] == "bottom":
 		var axis := area.global_transform.basis.x.normalized()
 		var visual := visual_center(quad.global_position,
-			quad.global_basis.x.normalized())
+			quad.global_basis.x.normalized(), deco)
 		var orbit := visual - pivot
 		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
 		# qui pivote (sinon elle glisserait de 3 cm en montant).
 		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
 		quad.global_position = pivot + orbit.rotated(axis, delta) \
-			- base_after.x.normalized() * (TITLEBAR_HEIGHT * 0.5)
+			- base_after.x.normalized() * ((deco["titlebar"] - deco["border"]) * 0.5)
 		_store_basis(active_window_id, base_after)
 	if snap["side"] == "top":
 		var axis := -area.global_transform.basis.x.normalized()
 		var visual := visual_center(quad.global_position,
-			-quad.global_basis.x.normalized())
+			-quad.global_basis.x.normalized(), deco)
 		var orbit := visual - pivot
 		# La base APRÈS rotation, pour que le décalage du bandeau suive la fenêtre
 		# qui pivote (sinon elle glisserait de 3 cm en montant).
 		var base_after := _stored_basis(active_window_id).rotated(axis, delta)
 		quad.global_position = pivot + orbit.rotated(axis, delta) \
-			+ base_after.x.normalized() * (TITLEBAR_HEIGHT * 0.5)
+			+ base_after.x.normalized() * ((deco["titlebar"] - deco["border"]) * 0.5)
 		_store_basis(active_window_id, base_after)
 	
 # Area3D servant de pivot : celle du côté par lequel la fenêtre est collée.
@@ -2190,9 +2226,12 @@ func _erase_window_state(id: int) -> void:
 # est donc plus haute que son quad, et c'est elle qu'il faut coller — sinon
 # deux fenêtres s'imbriqueraient de 6 cm en se collant verticalement.
 
-# Demi-dimensions VISIBLES (quad + bandeau) d'une fenêtre.
-static func visual_half_extent(mesh_size: Vector2) -> Vector2:
-	return Vector2(mesh_size.x * 0.5, (mesh_size.y + TITLEBAR_HEIGHT) * 0.5)
+# Demi-dimensions VISIBLES (quad + cadre + bandeau) d'une fenêtre. Les
+# épaisseurs viennent du JSON, plus d'une constante en dur.
+static func visual_half_extent(mesh_size: Vector2, deco: Dictionary) -> Vector2:
+	var t: float = deco.get("border", 0.0)
+	var b: float = deco.get("titlebar", 0.0)
+	return Vector2(mesh_size.x * 0.5 + t, (mesh_size.y + b + t) * 0.5)
 
 # Position LOCALE du centre d'une zone de collage, dans le repère du quad.
 # Volontairement CENTRÉE sur le bord (et non posée juste à l'extérieur) : deux
@@ -2261,8 +2300,10 @@ static func is_opposite_side(a: String, b: String) -> bool:
 		or (a == "bottom" and b == "top")
 
 # Centre VISIBLE d'une fenêtre : décalé vers le haut d'un demi-bandeau.
-static func visual_center(quad_position: Vector3, up: Vector3) -> Vector3:
-	return quad_position + up * (TITLEBAR_HEIGHT * 0.5)
+static func visual_center(quad_position: Vector3, up: Vector3, deco: Dictionary) -> Vector3:
+	var t: float = deco.get("border", 0.0)
+	var b: float = deco.get("titlebar", 0.0)
+	return quad_position + up * ((b - t) * 0.5)
 
 # ── Redimensionnement (fonctions PURES) ─────────────────────────────────
 #

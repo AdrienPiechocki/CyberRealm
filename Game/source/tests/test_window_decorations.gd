@@ -483,3 +483,94 @@ func test_toggle_hide_disables_frame_colliders() -> Variant:
 		return r
 	_teardown()
 	return true
+
+func test_visual_half_extent_includes_frame_and_bar() -> Variant:
+	var d: Dictionary = Decoration.titlebar_metrics(0.01)
+	var r = Runner.assert_approx(
+		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).x, 1.7, 0.001,
+		"demi-largeur visible = contenu + cadre")
+	if _fail(r):
+		return r
+	return Runner.assert_approx(
+		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).y, 1.15, 0.001,
+		"demi-hauteur visible = contenu + barre + cadre")
+
+func test_visual_center_is_offset_by_the_frame_asymmetry() -> Variant:
+	var d: Dictionary = Decoration.titlebar_metrics(0.01)
+	var up := Vector3(0.0, 1.0, 0.0)
+	var r = Runner.assert_eq(Windows3DScript.visual_center(Vector3(2.0, 3.0, 4.0), up, d),
+		Vector3(2.0, 3.05, 4.0), "centre visuel décalé vers le haut de (barre - cadre)/2")
+	if _fail(r):
+		return r
+	# Cadre et barre de même épaisseur : plus rien à décaler.
+	return Runner.assert_eq(
+		Windows3DScript.visual_center(Vector3.ZERO, up,
+			{"border": 0.2, "titlebar": 0.2}),
+		Vector3.ZERO, "barre = cadre => aucun décalage")
+
+func test_occluder_covers_the_frame() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var occ := _quad().get_node_or_null("Occluder") as OccluderInstance3D
+	if occ == null:
+		return "Occluder manquant"
+	var box: BoxOccluder3D = occ.occluder
+	var s: float = Decorations.px_scale(Vector2(1000.0, 500.0), _quad().mesh.size)
+	var d: Dictionary = Decoration.titlebar_metrics(s)
+	# L'occluder doit couvrir l'empreinte VISIBLE : sans cela le culling mange
+	# les bords du décor quand deux fenêtres se font face.
+	var r = Runner.assert_approx(box.size.x, 3.2 + d["border"] * 2.0, 0.001, "largeur + cadre des deux côtés")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(box.size.y, 2.0 + d["titlebar"] + d["border"], 0.001, "hauteur + barre + cadre")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(occ.position.y, (d["titlebar"] - d["border"]) * 0.5, 0.001,
+		"occluder centré sur l'empreinte visible")
+	if _fail(r):
+		return r
+	_teardown()
+	return true
+
+func test_occluder_survives_a_detach_reattach() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var occ := _quad().get_node_or_null("Occluder") as OccluderInstance3D
+	if occ == null:
+		return "Occluder manquant"
+	var s: float = Decorations.px_scale(Vector2(1000.0, 500.0), _quad().mesh.size)
+	var d: Dictionary = Decoration.titlebar_metrics(s)
+	# Pendant un resize la boîte est détachée : elle ne vit plus que dans les
+	# métadonnées. Le réattachement doit la remettre à jour malgré ça.
+	win3d._set_window_occluder_active(3, false)
+	if occ.occluder != null:
+		return "l'occluder aurait dû être détaché"
+	win3d._set_window_occluder_active(3, true)
+	if occ.occluder == null:
+		return "l'occluder aurait dû être réattaché"
+	var box: BoxOccluder3D = occ.occluder
+	var r = Runner.assert_approx(box.size.y, 2.0 + d["titlebar"] + d["border"], 0.001,
+		"la boîte détachée doit être resynchronisée au réattachement")
+	if _fail(r):
+		return r
+	_teardown()
+	return true
+
+func test_snap_zones_follow_the_frame() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var quad := _quad()
+	var s: float = Decorations.px_scale(Vector2(1000.0, 500.0), quad.mesh.size)
+	var d: Dictionary = Decoration.titlebar_metrics(s)
+	var expected_x: float = quad.mesh.size.x * 0.5 + d["border"]
+	var zone := quad.get_node_or_null("SnapLeft") as Area3D
+	if zone == null:
+		return "SnapLeft manquant"
+	var box: BoxShape3D = (zone.get_child(0) as CollisionShape3D).shape
+	var r = Runner.assert_approx(zone.position.x, -expected_x, 0.001, "zone Recentrée sur le bord du cadre")
+	if _fail(r):
+		return r
+	return Runner.assert_approx(box.size.z, 0.3, 0.001, "épaisseur de capture inchangée")
