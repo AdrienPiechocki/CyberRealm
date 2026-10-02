@@ -439,7 +439,7 @@ func test_frame_sizes_follow_the_metrics() -> Variant:
 		return r
 	# La barre fait toute la largeur du CONTENU, les coins portent le cadre.
 	var titlebar := quad.get_node_or_null("Titlebar") as MeshInstance3D
-	r = Runner.assert_approx((titlebar.mesh as QuadMesh).size.x, mesh.size.x, 0.001, "barre = largeur du contenu")
+	r = Runner.assert_approx(_mesh_extent(titlebar.mesh, false), mesh.size.x, 0.001, "barre = largeur du contenu")
 	if _fail(r):
 		return r
 	r = Runner.assert_approx(titlebar.position.y, mesh.size.y * 0.5 + d["titlebar"] * 0.5, 0.001,
@@ -623,6 +623,89 @@ func test_label_typography_reloads_with_the_json() -> Variant:
 	_reset_deco()
 	return true
 
+func test_tiled_mesh_divide_evenly() -> Variant:
+	# Cas dégénéré : une arête plus courte que la bande ne doit produire qu'un
+	# quad, pas une grille vide ou une division par zéro.
+	var s := 0.0032
+	# La bande « left » fait 10 px de large sur 159 px de haut : c'est sa HAUTEUR
+	# qui se répète le long de l'arête verticale.
+	var band := Vector2(10.0, 159.0)
+	var short := Decoration.tiled_mesh(Vector2(0.032, 0.16), band, true, s)
+	var r = Runner.assert_true(short.get_surface_count() == 1,
+		"une arête plus courte que la bande reste un seul quad")
+	if _fail(r):
+		return r
+	# Cas réel : fenêtre 1000x500 px sur un mesh 3.2x2.0, s = 0.0032. L'arête
+	# gauche fait 2.0 unités = 625 px, la bande 159 px = 0.5088 unités, donc
+	# 2.0 / 0.5088 = 3.93 motifs -> 4 quads.
+	var long := Decoration.tiled_mesh(Vector2(0.032, 2.0), band, true, s)
+	var quads: int = _count_quads(long)
+	r = Runner.assert_true(quads == 4,
+		"625 px sur une bande de 159 px doit donner 4 quads (pas 1 étiré, pas 6)")
+	if _fail(r):
+		return r
+	# La somme des quads doit reporter la longueur demandée : sinon le bord
+	# n'atteint plus le coin et le cadre se voit.
+	return Runner.assert_approx(_mesh_extent(long, true), 2.0, 0.0001,
+		"la grille doit couvrir exactement la longueur de l'arête")
+
+## Nombre de quads d'un mesh (2 triangles chacun).
+func _count_quads(m: Mesh) -> int:
+	if m is ArrayMesh and (m as ArrayMesh).get_surface_count() > 0:
+		return ((m as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array).size() / 4
+	return 1
+
+## Longueur couverte par la grille selon son axe long.
+func _mesh_extent(m: Mesh, vertical: bool) -> float:
+	if not (m is ArrayMesh) or (m as ArrayMesh).get_surface_count() == 0:
+		var q: float = (m as QuadMesh).size.y if vertical else (m as QuadMesh).size.x
+		return q
+	var verts := (m as ArrayMesh).surface_get_arrays(0)[Mesh.ARRAY_VERTEX] as PackedVector3Array
+	var lo := INF
+	var hi := -INF
+	for v in verts:
+		var a: float = v.y if vertical else v.x
+		lo = minf(lo, a)
+		hi = maxf(hi, a)
+	return hi - lo
+
+func test_decoration_draw_order_is_explicit() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	# Les quads du décor SE CHEVAUCHENT : les boutons sont posés SUR la bande de
+	# titre. Tous sont en transparence ALPHA, donc Godot les trie par la distance
+	# du CENTRE de chaque objet à la caméra — le décalage Z ne compte pas. Sans
+	# priorities explicites, un bouton disparaît quand la caméra passe de l'autre
+	# côté de la fenêtre. Ce test verrouille l'ordre, pas le rendu.
+	var bar := _quad().get_node_or_null("Titlebar") as MeshInstance3D
+	var bar_mat := bar.material_override as StandardMaterial3D
+	var bar_pri := bar_mat.render_priority
+	var btn := _quad().get_node_or_null("Titlebar/BtnClose") as StaticBody3D
+	var btn_mat := ((btn.get_child(1) as MeshInstance3D).material_override \
+		as StandardMaterial3D)
+	var r = Runner.assert_true(btn_mat.render_priority > bar_pri,
+		"un bouton doit être dessiné APRÈS la bande qui le porte")
+	if _fail(r):
+		return r
+	var label := _quad().get_node_or_null("Titlebar/Label3D") as Label3D
+	r = Runner.assert_true(label.render_priority >= bar_pri,
+		"le titre doit être dessiné au-dessus de la bande")
+	if _fail(r):
+		return r
+	var deco := _quad().get_node_or_null("Decoration") as Node3D
+	var piece := deco.get_node("FrameLeft") as StaticBody3D
+	var piece_mat := ((piece.get_child(1) as MeshInstance3D).material_override \
+		as StandardMaterial3D)
+	r = Runner.assert_true(piece_mat.render_priority <= bar_pri,
+		"le cadre ne doit pas passer devant la barre")
+	if _fail(r):
+		return r
+	# Le tri par transparence étant le vrai coupable, aucun objet du décor ne
+	# doit être opaque : un opaque écrase le tri et masque le test.
+	return Runner.assert_true(bar_mat.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA,
+		"la bande doit rester en transparence ALPHA")
+
 func test_frame_edge_starts_a_resize() -> Variant:
 	var build: Variant = _build_world()
 	if _fail(build):
@@ -710,7 +793,7 @@ func test_reload_resyncs_every_window() -> Variant:
 	var mesh: QuadMesh = quad.mesh
 	var s: float = Decorations.px_scale(Vector2(1000.0, 500.0), mesh.size)
 	var bar := quad.get_node_or_null("Titlebar") as MeshInstance3D
-	var r = Runner.assert_approx((bar.mesh as QuadMesh).size.y, 30.0 * s, 0.001,
+	var r = Runner.assert_approx(_mesh_extent(bar.mesh, true), 30.0 * s, 0.001,
 		"la barre doit suivre la nouvelle métrique")
 	if _fail(r):
 		return r
