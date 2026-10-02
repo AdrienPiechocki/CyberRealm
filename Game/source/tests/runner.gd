@@ -2,6 +2,10 @@
 ## Minimalist test runner for CyberRealm GDScript tests.
 ## Usage: godot --headless --script tests/runner.gd
 ##
+## On a fresh checkout, run `godot --headless --import` FIRST: this script does
+## not trigger Godot's import pass, so the tests that load real textures (the
+## SVG of ui/decorations) would find an empty import cache.
+##
 ## Discovers all test_*.gd files in the same directory, instantiates them,
 ## runs every public test_*() method, and reports PASS/FAIL with a summary.
 
