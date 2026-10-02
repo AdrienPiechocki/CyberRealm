@@ -657,6 +657,15 @@ void WlrCompositor::set_window_fullscreen(int window_id, bool fullscreen) {
     wlr_xdg_surface_schedule_configure(ws->toplevel->base);
     emit_signal("window_fullscreen_changed", ws->id, fullscreen);
 }
+
+bool WlrCompositor::is_window_fullscreen_requested(int window_id) {
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel) {
+        return false;
+    }
+    return ws->toplevel->requested.fullscreen;
+}
+
 Dictionary WlrCompositor::get_window_geometry(int window_id) {
     Dictionary result;
     WindowState *ws = find_window(window_id);

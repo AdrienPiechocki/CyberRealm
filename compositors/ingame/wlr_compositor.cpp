@@ -142,6 +142,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("shutdown_apps"), &WlrCompositor::shutdown_apps);
     ClassDB::bind_method(D_METHOD("set_window_size", "window_id", "width", "height"), &WlrCompositor::set_window_size);
     ClassDB::bind_method(D_METHOD("set_window_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_window_fullscreen);
+    ClassDB::bind_method(D_METHOD("is_window_fullscreen_requested", "window_id"), &WlrCompositor::is_window_fullscreen_requested);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
