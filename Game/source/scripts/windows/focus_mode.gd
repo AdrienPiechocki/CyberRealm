@@ -1261,6 +1261,12 @@ func _activate_window(id: int) -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	else:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	# Cadence de capture prioritaire (60/s) : pas seulement pour le plein
+	# écran xdg. Une fenêtre MAXIMISÉE est affichée plein écran elle aussi ;
+	# sans priorité elle reste à la cadence "quads 3D" (lag). Si une fenêtre
+	# fullscreen existe, elle garde la priorité posée à son entrée.
+	if focus_fullscreen_id == -1:
+		compositor.set_focus_capture_priority_window(id)
 	# Rafraîchir les popups overlayés
 	_refresh_popups()
 
