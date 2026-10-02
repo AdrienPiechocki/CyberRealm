@@ -10,7 +10,7 @@ signal window_created(window_id: int, quad: MeshInstance3D)
 # sert pour resynchroniser les quads noirs des autres joueurs.
 signal windows_state_changed
 
-const BORDER_MARGIN = 5 # en pixels sur la texture, zone de bord = redimensionnement
+const BORDER_MARGIN = 10 # en pixels sur la texture, zone de bord = redimensionnement
 const CORNER_MARGIN = 20 # px, zone de coin (carrée, plus large que BORDER_MARGIN
 						 # pour rester cliquable via raycast) = redimensionnement diagonal
 const MIN_SURFACE_SIZE = 500 # px, garde-fou anti-fenêtre-écrasée
