@@ -442,8 +442,6 @@ func _show_general() -> void:
 	screenshots_btn.pressed.connect(_show_screenshots)
 	container.add_child(screenshots_btn)
 
-	container.add_child(_make_spacer())
-
 	# ── Max FPS (appliqué immédiatement) ──
 	var fps_label := Label.new()
 	fps_label.text = "Max FPS"
@@ -475,7 +473,6 @@ func _show_general() -> void:
 		graphics_settings_changed.emit(get_aa_mode(), int(v))
 	)
 
-	container.add_child(_make_spacer())
 
 	# ── Collage des fenêtres ──
 	# Appliqué comme le Max FPS ci-dessus : cette page n'a pas de bouton Apply,
@@ -494,6 +491,7 @@ func _show_general() -> void:
 		snapping_disabled_changed.emit(on)
 	)
 
+	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
 func _show_graphics() -> void:
@@ -1286,8 +1284,6 @@ func _show_graphics_general() -> void:
 		_: aa_opt.selected = 0
 	container.add_child(aa_opt)
 
-	container.add_child(_make_spacer())
-
 	# ── Environment (WorldEnvironment du niveau courant) ──
 	var env_title := Label.new()
 	env_title.text = "Effects"
@@ -1305,8 +1301,6 @@ func _show_graphics_general() -> void:
 		env_btn.add_theme_font_size_override("font_size", 14)
 		container.add_child(env_btn)
 		env_btns[String(pair[0])] = env_btn
-
-	container.add_child(_make_spacer())
 
 	var adj_title := Label.new()
 	adj_title.text = "Color Adjustments"
@@ -1389,7 +1383,6 @@ func _show_controls_general() -> void:
 	)
 
 	# ── Gyroscope aim ──
-	container.add_child(_make_spacer())
 
 	var gyro_check := CheckButton.new()
 	gyro_check.text = "Gyroscope Aim"
@@ -1794,8 +1787,6 @@ func _show_lan() -> void:
 	container.add_child(_lan_players_label)
 	_update_lan_players_label()
 	
-	container.add_child(_make_spacer())
-	
 	var video_title := Label.new()
 	video_title.text = "Video share"
 	video_title.add_theme_font_size_override("font_size", 16)
@@ -1870,11 +1861,6 @@ func _show_lan() -> void:
 	container.add_child(disconnect_btn)
 
 	container.add_child(_make_back_btn())
-
-
-func _on_unban(ip: String) -> void:
-	if _lan:
-		_lan.unban_ip(ip)
 
 func set_lan_status(text: String) -> void:
 	_lan_status_text = text

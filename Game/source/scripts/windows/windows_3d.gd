@@ -78,12 +78,15 @@ const SNAP_ZONE_THICKNESS := 0.3 # m
 # candidat l'emporte. Sans cet ordre stable, le collage dépendrait de
 # l'ordre d'itération et scintillerait d'une frame à l'autre.
 const SNAP_SIDES := ["left", "right", "top", "bottom"]
-# Un cran de rotation au scroll d'une fenêtre collée.
-const SNAP_YAW_STEP := deg_to_rad(15.0) # rad
+# Vitesse de rotation d'une fenêtre collée quand on tient une GÂCHETTE de
+# manette (rad/s), et non le cran de la molette. Un quart de tour par seconde :
+# assez vif pour un aller-retour entre deux angles, assez lent pour s'arrêter
+# sur un angle précis.
+const SNAP_ROTATE_RATE := deg_to_rad(90.0) # rad/s
 # Distance (m) dont le pointeur doit s'éloigner du point où le collage a eu
 # lieu pour décoller la fenêtre. Mesurée sur le POINTEUR et non sur la fenêtre :
 # la rotation au scroll déplace la fenêtre, jamais le pointeur.
-const SNAP_RELEASE_DISTANCE := 0.6
+const SNAP_RELEASE_DISTANCE := 0.5
 
 const WAYLAND_SHADER_CODE = """
 shader_type spatial;
@@ -967,12 +970,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		# push/pull n'est proposé QUE hors collage, sinon on perd le
 		# depth-move existant — c'est le même scroll, deux sens selon l'état.
 		if _scroll_rotates():
-			if Input.is_action_just_pressed("scroll_up", false) \
-					or Input.is_action_pressed("scroll_up", false):
-				_rotate_snapped(1.0)
-			if Input.is_action_just_pressed("scroll_down", false) \
-					or Input.is_action_pressed("scroll_down", false):
-				_rotate_snapped(-1.0)
+			_rotate_from_scroll(delta)
 		else:
 			# just_pressed AVANT is_action_pressed : sur la frame d'appui d'un
 			# clic molette, les deux sont vrais — l'ordre inverse donnait toujours
@@ -2112,6 +2110,64 @@ func _update_group_resize(wid: int) -> void:
 			if q != null and is_instance_valid(q):
 				q.global_position = Vector3(m["pos"]) + shift
 
+# Traduit le scroll en rotation. C'est le SEUL endroit du code où la
+# distinction souris/manette a lieu d'être.
+#
+# UNE action (« scroll_up »/« scroll_down »), DEUX sémantiques opposées. La
+# molette émet un événement par cran : un cran par événement. Une gâchette de
+# manette reste PRESSÉE tant qu'on la tient : c'est une vitesse, pas un
+# compteur. Les traiter pareil appliquait un cran de 15° à chaque frame, soit
+# 900°/s — un tour en quatre secondes.
+#
+# La molette garde son comportement de référence, inchangé : un cran par frame
+# pendant l'appui (une molette n'étant pas maintenable en pratique).
+func _rotate_from_scroll(delta: float) -> void:
+	# elif, et non if : la gâchette choisit ENTRE le taux et le cran, elle ne
+	# doit pas cumuler les deux.
+	if _scroll_from_gamepad("scroll_up"):
+		_rotate_snapped(SNAP_ROTATE_RATE * delta)
+	elif Input.is_action_just_pressed("scroll_up", false) \
+			or Input.is_action_pressed("scroll_up", false):
+		_rotate_snapped(SNAP_ROTATE_RATE * 3 * delta)
+	if _scroll_from_gamepad("scroll_down"):
+		_rotate_snapped(-SNAP_ROTATE_RATE * delta)
+	elif Input.is_action_just_pressed("scroll_down", false) \
+			or Input.is_action_pressed("scroll_down", false):
+		_rotate_snapped(-SNAP_ROTATE_RATE * 3 * delta)
+
+# L'action est-elle tenue par une manette ? On regarde les ÉVÉNEMENTS de
+# l'action (et non le périphérique « courant » : la souris et la manette
+# cohabitent, c'est le dernier à avoir parlé qui compte) et on vérifie que le
+# bouton correspondant est enfoncé, sur les manettes RÉELLEMENT branchées.
+#
+# Un axe de stick reste un ÉVÉNEMENT de molette du point de vue de cette
+# fonction : remapper le scroll sur un stick ne la ferait pas basculer en mode
+# continu, ce qui est le comportement voulu — l'angle par cran reste alors la
+# seule unité.
+func _scroll_from_gamepad(action: String) -> bool:
+	for ev in InputMap.action_get_events(action):
+		if not (ev is InputEventJoypadButton):
+			continue
+		for device: int in _pad_devices(ev):
+			if Input.is_joy_button_pressed(device, ev.button_index):
+				return true
+	return false
+
+# Les périphériques à interroger pour un bind de manette.
+#
+# Les binds sont enregistrés avec device = -1, qui signifie « n'importe quelle
+# manette » et ne désigne AUCUN périphérique : l'état d'un -1 n'existe pas, et
+# is_joy_button_pressed(-1, …) répond toujours faux. Interroger le -1 de
+# l'événement faisait donc passer toute gâchette pour une molette — et la
+# fenêtrecollée tournait alors de SNAP_YAW_STEP à chaque frame au lieu du taux
+# continu, indépendamment de SNAP_ROTATE_RATE.
+static func _pad_devices(ev: InputEvent,
+		connected: Array[int] = Input.get_connected_joypads()) -> Array[int]:
+	var devices: Array[int] = connected.duplicate()
+	if ev.device >= 0 and not devices.has(ev.device):
+		devices.append(ev.device)
+	return devices
+
 # Un cran de rotation d'une fenêtre collée, autour de l'ORIGINE MONDE DE SA
 # ZONE DE COLLAGE. Le pivot n'est ni deviné ni reconstruit depuis une base
 # périmée : c'est la position réelle de l'Area3D, donc exacte par construction
@@ -2121,7 +2177,10 @@ func _update_group_resize(wid: int) -> void:
 # laisse sur place : le recouvrement des zones — donc le collage — se maintient
 # tout seul pendant la rotation. C'est exactement le comportement demandé, et
 # il est géométrique, pas simulé.
-func _rotate_snapped(direction: float) -> void:
+# Tourne la fenêtre collée de `angle` radians (signe = sens). L'angle est
+# Decide en amont : _rotate_from_scroll est seul juge du pas, molette ou
+# gâchette.
+func _rotate_snapped(angle: float) -> void:
 	if not _scroll_rotates():
 		return
 	var snap: Dictionary = snapped_to.get(active_window_id, {})
@@ -2129,7 +2188,7 @@ func _rotate_snapped(direction: float) -> void:
 	if area == null:
 		return
 	var quad: MeshInstance3D = quads[active_window_id]
-	var delta := direction * SNAP_YAW_STEP
+	var delta := angle
 	var pivot := area.global_transform.origin
 	# L'axe est celui de la zone : verticale pour une zone latérale, ce qui
 	# fait tourner la fenêtre comme une porte sur son arête de liaison.
