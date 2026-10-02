@@ -222,6 +222,7 @@ var _left_release_edge := false
 var cursor_overlay: TextureRect
 var cursor_overlay_tex: ImageTexture
 var cursor_overlay_serial := -1
+var _hw_cursor_serial := -1
 
 # Curseur du propriétaire affiché par-dessus le focus DISTANT (vue seule) :
 # réplique la position et l'apparence du curseur du joueur qui possède la
@@ -1763,12 +1764,24 @@ func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: V
 	if img_size.x <= 0.0 or img_size.y <= 0.0:
 		_show_system_cursor()
 		return
+	if absf(display_scale.x - 1.0) < 0.05 and absf(display_scale.y - 1.0) < 0.05 \
+			and img_size.x <= 256.0 and img_size.y <= 256.0:
+		if _hw_cursor_serial != cursor_overlay_serial:
+			Input.set_custom_mouse_cursor(cursor_overlay_tex, Input.CURSOR_ARROW, hotspot)
+			_hw_cursor_serial = cursor_overlay_serial
+		cursor_overlay.visible = false
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		return
+	_hw_cursor_serial = -1
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 	cursor_overlay.size = img_size * display_scale
 	cursor_overlay.position = mouse_pos - hotspot * display_scale
 	cursor_overlay.visible = true
 
 func _show_system_cursor() -> void:
+	if _hw_cursor_serial != -1:
+		Input.set_custom_mouse_cursor(null)
+		_hw_cursor_serial = -1
 	if cursor_overlay and cursor_overlay.visible:
 		cursor_overlay.visible = false
 		cursor_overlay_serial = -1
