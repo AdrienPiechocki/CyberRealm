@@ -120,6 +120,46 @@ func test_reaction_directe_demande_pendant_session() -> Variant:
 ## barre de titre : elle redevient une fenêtre de pile, pas la fenêtre active.
 ## Le bug : _apply_fullscreen_request(false) faisait _ensure_title_bar(id) sans
 ## vérifier si id est la fenêtre active.
+## Chemin réel en jeu : clic sur une fenêtre de PILE. Elle est remontée et
+## activée : elle perd sa barre, l'ancienne active la récupère. C'est le chemin
+## le plus fréquent (l'utilisateur clique pour changer de fenêtre).
+func test_activation_par_clic_preserve_invariant_pile() -> Variant:
+	if _setup() != true: return "setup"
+	var a := 40
+	var b := 41
+	var c := 42
+	winstub.ensure_quad(a, "A", "app", Vector2(640, 360))
+	winstub.ensure_quad(b, "B", "app", Vector2(640, 360))
+	winstub.ensure_quad(c, "C", "app", Vector2(640, 360))
+	focus.enter_focus(a)
+	focus.enter_focus(b)
+	focus.enter_focus(c)
+	# c active, a et b en pile avec barre
+	var r = Runner.assert_true(not _has_bar(c), "c active sans barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(a), "a en pile avec barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(b), "b en pile avec barre")
+	if _fail(r): return r
+	# Clic sur a : a est remontée et devient active
+	focus._raise_window(a)
+	focus._activate_window(a)
+	r = Runner.assert_true(not _has_bar(a), "a devient active : plus de barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(b), "b redevient pile : garde sa barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(c), "c redevient pile : garde sa barre")
+	if _fail(r): return r
+	# Réactivation de c : doit reprendre sa barre, a la perdre
+	focus._raise_window(c)
+	focus._activate_window(c)
+	r = Runner.assert_true(not _has_bar(c), "c active : plus de barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(a), "a en pile : barre retrouvée")
+	if _fail(r): return r
+	_teardown()
+	return true
+
 func test_annulation_fullscreen_active_ne_rend_pas_de_barre() -> Variant:
 	if _setup() != true: return "setup"
 	var id := 22
