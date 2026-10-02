@@ -284,3 +284,60 @@ func test_border_pieces_and_button_atlas() -> Variant:
 	if btn == null:
 		return "close.svg absent"
 	return Runner.assert_true(btn.region.size.x > 0.0, "région d'état non vide")
+
+const Decoration := preload("res://scripts/windows/window_decoration_3d.gd")
+
+func test_frame_piece_rects() -> Variant:
+	var half := Vector2(100.0, 50.0)
+	var t := 4.0
+	var b := 8.0
+	var r = Runner.assert_eq(Decoration.frame_piece_rect("left", half, t, b),
+		[Vector2(-102.0, 0.0), Vector2(4.0, 100.0)], "bande gauche")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(Decoration.frame_piece_rect("right", half, t, b),
+		[Vector2(102.0, 0.0), Vector2(4.0, 100.0)], "bande droite")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(Decoration.frame_piece_rect("bottom", half, t, b),
+		[Vector2(0.0, -52.0), Vector2(200.0, 4.0)], "bande basse")
+	if _fail(r):
+		return r
+	# Les coins hauts portent la HAUTEUR DE LA BARRE, pas celle du cadre : ils
+	# sont les coins de la barre de titre, pas des coins de simple bordure.
+	r = Runner.assert_eq(Decoration.frame_piece_rect("topleft", half, t, b),
+		[Vector2(-102.0, 54.0), Vector2(4.0, 8.0)], "coin haut-gauche = hauteur de barre")
+	if _fail(r):
+		return r
+	return Runner.assert_eq(Decoration.frame_piece_rect("bottomleft", half, t, b),
+		[Vector2(-102.0, -52.0), Vector2(4.0, 4.0)], "coin bas-gauche = carré")
+
+func test_button_positions_right_alignment() -> Variant:
+	var xs: Array = Decoration.button_positions(3, "right", 10.0, 4.0, 7.0, 100.0)
+	var r = Runner.assert_approx(xs[0], 88.0, 0.001, "fermé le plus à droite")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(xs[1], 74.0, 0.001, "puis maximiser")
+	if _fail(r):
+		return r
+	return Runner.assert_approx(xs[2], 60.0, 0.001, "puis réduire")
+
+func test_button_positions_left_alignment() -> Variant:
+	var xs: Array = Decoration.button_positions(3, "left", 10.0, 4.0, 7.0, 100.0)
+	var r = Runner.assert_approx(xs[0], -88.0, 0.001, "fermé le plus à gauche")
+	if _fail(r):
+		return r
+	return Runner.assert_approx(xs[2], -60.0, 0.001, "réduire le plus à droite du lot")
+
+func test_titlebar_metrics_from_json() -> Variant:
+	# `titlebar_metrics()` lit l'état statique du loader : on repart du défaut
+	# pour que ce test ne dépende pas du fichier de test précédent.
+	_reset_deco()
+	var d: Dictionary = Decoration.titlebar_metrics(0.005)
+	var r = Runner.assert_eq(d["border"], 0.05, "cadre 10 px")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(d["titlebar"], 0.1, "barre 20 px")
+	if _fail(r):
+		return r
+	return Runner.assert_eq(d["alignment"], "right", "alignement")
