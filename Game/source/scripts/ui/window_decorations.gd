@@ -228,6 +228,28 @@ static func button_state_rects(tex_size: Vector2, states: float) -> Array:
 		out.append(Rect2(float(i) * pitch, 0.0, cell, cell))
 	return out
 
+## Unités MONDE par pixel pour une fenêtre. Isotrope par construction : sans
+## ça le cadre aurait une épaisseur différente en X et en Y.
+static func px_scale(surface_px: Vector2, mesh_size: Vector2) -> float:
+	if mesh_size.x <= 0.0 or mesh_size.y <= 0.0:
+		return FALLBACK_PX_SCALE
+	if surface_px.x < 2.0 or surface_px.y < 2.0:
+		return FALLBACK_PX_SCALE
+	return minf(mesh_size.x / surface_px.x, mesh_size.y / surface_px.y)
+
+## Les mêmes clés que `metrics()`, converties en unités monde via l'échelle px
+## de la fenêtre. Tout le calcul géométrique du décor part de là.
+static func world(m: Dictionary, s: float) -> Dictionary:
+	return {
+		"border": float(m.get("border_size", 10.0)) * s,
+		"titlebar": float(m.get("titlebar_height", 20.0)) * s,
+		"label": float(m.get("label_size", 10.0)) * s,
+		"button": float(m.get("button_size", 11.0)) * s,
+		"gap": float(m.get("button_gap", 4.0)) * s,
+		"margin": float(m.get("button_margin", 7.0)) * s,
+		"alignment": str(m.get("button_alignment", "right")),
+	}
+
 ## Ne charge que les MÉTRIQUES. Le plan d'origine appelait ici `current_mtimes()`
 ## et `_load_asset()`, introduits plus tard : GDScript rejette l'appel d'une
 ## statique inconnue à la compilation, donc le fichier ne se chargeait pas du

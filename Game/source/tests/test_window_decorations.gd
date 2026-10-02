@@ -152,3 +152,30 @@ func test_button_state_rects_single_cell() -> Variant:
 	if rects.size() != 1:
 		return "1 état attendu, obtenu %d" % rects.size()
 	return Runner.assert_eq(rects[0], Rect2(0.0, 0.0, 22.0, 22.0), "région unique = texture entière")
+
+func test_px_scale_is_isotropic() -> Variant:
+	# 800x600 px sur 3.2x2.0 : 250 px/u en x, 300 en y. Un cadre doit garder la
+	# MÊME épaisseur à l'écran sur les deux axes, donc on prend le plus petit —
+	# soit 2.0/600, pas 3.2/800.
+	var s: float = Decorations.px_scale(Vector2(800.0, 600.0), Vector2(3.2, 2.0))
+	return Runner.assert_approx(s, minf(3.2 / 800.0, 2.0 / 600.0), 0.000001,
+		"px_scale = min(3.2/800, 2.0/600)")
+
+func test_px_scale_fallback_before_first_texture() -> Variant:
+	var r = Runner.assert_eq(Decorations.px_scale(Vector2.ZERO, Vector2(3.2, 2.0)),
+		Decorations.FALLBACK_PX_SCALE, "pas de surface connue = repli")
+	if _fail(r):
+		return r
+	return Runner.assert_eq(Decorations.px_scale(Vector2(800.0, 600.0), Vector2.ZERO),
+		Decorations.FALLBACK_PX_SCALE, "mesh vide = repli")
+
+func test_world_metrics_scale_px() -> Variant:
+	var m: Dictionary = Decorations.default_metrics()
+	var w: Dictionary = Decorations.world(m, 0.005)
+	var r = Runner.assert_eq(w["border"], 0.05, "10 px à 0,005 u/px")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(w["titlebar"], 0.1, "20 px à 0,005 u/px")
+	if _fail(r):
+		return r
+	return Runner.assert_true(w["button"] < w["titlebar"], "un bouton tient dans la barre")
