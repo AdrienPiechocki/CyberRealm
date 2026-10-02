@@ -630,7 +630,7 @@ func test_tiled_mesh_divide_evenly() -> Variant:
 	# La bande « left » fait 10 px de large sur 159 px de haut : c'est sa HAUTEUR
 	# qui se répète le long de l'arête verticale.
 	var band := Vector2(10.0, 159.0)
-	var short := Decoration.tiled_mesh(Vector2(0.032, 0.16), band, true, s)
+	var short := Decoration.tiled_mesh(Vector2(0.032, 0.16), band, true, s, Rect2(0.0, 0.0, 1.0, 1.0))
 	var r = Runner.assert_true(short.get_surface_count() == 1,
 		"une arête plus courte que la bande reste un seul quad")
 	if _fail(r):
@@ -638,7 +638,7 @@ func test_tiled_mesh_divide_evenly() -> Variant:
 	# Cas réel : fenêtre 1000x500 px sur un mesh 3.2x2.0, s = 0.0032. L'arête
 	# gauche fait 2.0 unités = 625 px, la bande 159 px = 0.5088 unités, donc
 	# 2.0 / 0.5088 = 3.93 motifs -> 4 quads.
-	var long := Decoration.tiled_mesh(Vector2(0.032, 2.0), band, true, s)
+	var long := Decoration.tiled_mesh(Vector2(0.032, 2.0), band, true, s, Rect2(0.0, 0.0, 1.0, 1.0))
 	var quads: int = _count_quads(long)
 	r = Runner.assert_true(quads == 4,
 		"625 px sur une bande de 159 px doit donner 4 quads (pas 1 étiré, pas 6)")

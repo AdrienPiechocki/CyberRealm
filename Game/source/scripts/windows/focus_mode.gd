@@ -17,6 +17,7 @@ extends Node3D
 ## Créé et configuré par wayland_room.gd (setup), piloté par ses signaux.
 
 const ZoneSelectMarqueeScript := preload("res://scripts/ui/zone_select_marquee.gd")
+const Decorations := preload("res://scripts/ui/window_decorations.gd")
 
 # Sélection de zone (PrtSc) : outil de capture rectangulaire sur l'écran.
 # L'outil armé (zone_select_active) avale tout l'input ; un glisser du bouton
@@ -43,9 +44,39 @@ const FOCUS_POPUP_Z := FOCUS_Z_BASE + 50
 # AFFICHÉ (zone KEEP_ASPECT_CENTERED), largeur = celle du contenu. Un
 # clic-glisser dessus déplace la fenêtre sans modificateur ; les couleurs
 # reprennent TITLEBAR_BG/TITLEBAR_FG de windows_3d.gd.
-const FOCUS_TITLEBAR_H := 32.0
+# FOCUS_TITLEBAR_BG/FG ne servent plus que de REPLI, quand l'asset SVG est
+# absent : voir `titlebar_style`.
 const FOCUS_TITLEBAR_BG := Color(0.13, 0.15, 0.22)
 const FOCUS_TITLEBAR_FG := Color(0.85, 0.88, 0.96)
+
+## Hauteur de la barre en px, lue dans le JSON des décorations. La bande « top »
+## du SVG mesure `titlebar_height` px de haut : c'est donc cette métrique qui
+## donne un affichage 1:1, identique à la barre 3D. Une constante codée en dur
+## (32) étirait la bande de 20 px, ou la rognait.
+static func titlebar_h() -> float:
+	return float(Decorations.metrics().get("titlebar_height", 32.0))
+
+## Style de la barre. La bande « top » vient du MÊME loader que la décoration
+## 3D, tuilée en largeur comme les bords 3D : étirer 292 px sur 1000 px
+## déformerait le motif d'un facteur 3.4.
+## `atlas == null` = asset absent, on garde l'aplat historique : sinon la
+## fenêtre se retrouverait sans barre alors que le client n'a rien demandé.
+static func titlebar_style(atlas: Texture2D) -> StyleBox:
+	if atlas != null:
+		var sb := StyleBoxTexture.new()
+		sb.texture = atlas
+		sb.axis_stretch_horizontal = StyleBoxTexture.AXIS_STRETCH_MODE_TILE
+		return sb
+	var flat := StyleBoxFlat.new()
+	flat.bg_color = FOCUS_TITLEBAR_BG
+	flat.corner_radius_top_left = 4
+	flat.corner_radius_top_right = 4
+	return flat
+
+## Couleur du titre : la métrique `label_color` du JSON, lue comme la 3D en
+## `_sync_bar`, pour que les deux rasters parlent du même gris.
+static func titlebar_fg() -> Color:
+	return Decorations.metrics().get("label_color", Color.WHITE) as Color
 
 # Écart (m) entre les fenêtres de la pile à la sortie du mode focus : chacune
 # est posée STACK_Z_OFFSET devant la précédente, vers la caméra.
@@ -855,7 +886,7 @@ func _refresh_rect_layout(id: int) -> void:
 	# Le visuel complet = barre de titre AU-DESSUS du contenu : décaler d'une
 	# demi-hauteur de barre vers le haut pour centrer l'ENSEMBLE et non le
 	# seul contenu (sinon l'assemblage paraît descendu de H/2).
-	rect.position.y += FOCUS_TITLEBAR_H * 0.5
+	rect.position.y += titlebar_h() * 0.5
 	# ui_offset = décalage accumulé par le drag barre de titre / Super+clic ;
 	# appliqué APRÈS le centrage sinon chaque rafraîchissement (texture,
 	# frames du drag) recentrerait la fenêtre et annulerait le déplacement.
@@ -1115,7 +1146,7 @@ func _displayed_rect(id: int) -> Rect2:
 	# La fenêtre plein écran utilise STRETCH_SCALE + crop shader : le contenu
 	# remplit tout le viewport, pas de barres letterbox. Retourner le rect
 	# complet évite que les bords de l'écran soient hors de la zone affichée
-	# (bug : clics droite non routés car _displayed_rect计算 un rect plus
+	# (bug : clics droite non routés car _displayed_rect calcule un rect plus
 	# étroit via KEEP_ASPECT_CENTERED sur le buffer arrondi au multiple de 64).
 	if id == focus_fullscreen_id:
 		return crect
@@ -1154,11 +1185,7 @@ func _ensure_title_bar(id: int) -> void:
 		_sync_title_bar(id)
 		return
 	var bar := Panel.new()
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = FOCUS_TITLEBAR_BG
-	sb.corner_radius_top_left = 4
-	sb.corner_radius_top_right = 4
-	bar.add_theme_stylebox_override("panel", sb)
+	bar.add_theme_stylebox_override("panel", titlebar_style(Decorations.border_piece("top")))
 	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bar.z_index = _rect_z_index(id)
 	var lbl := Label.new()
@@ -1166,7 +1193,7 @@ func _ensure_title_bar(id: int) -> void:
 	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl.clip_text = true
-	lbl.add_theme_color_override("font_color", FOCUS_TITLEBAR_FG)
+	lbl.add_theme_color_override("font_color", titlebar_fg())
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bar.add_child(lbl)
 	ui.add_child(bar)
@@ -1225,8 +1252,21 @@ func _sync_title_bar(id: int) -> void:
 			bar.visible = false
 			return
 	bar.visible = true
-	bar.size = Vector2(bar_rect.size.x, FOCUS_TITLEBAR_H)
-	bar.position = Vector2(bar_rect.position.x, bar_rect.position.y - FOCUS_TITLEBAR_H)
+	var bar_h := titlebar_h()
+	bar.size = Vector2(bar_rect.size.x, bar_h)
+	bar.position = Vector2(bar_rect.position.x, bar_rect.position.y - bar_h)
+	# Rechargement a chaud : le stylebox est reapplique a chaque sync, donc un
+	# SVG edite, remplace ou supprime est pris en compte au prochain
+	# deplacement, redimensionnement ou remontee, sans quitter le mode focus.
+	# On ne reconstruit que si l'asset a change, pour ne pas allouer un
+	# StyleBox a chaque frame de drag.
+	var atlas := Decorations.border_piece("top")
+	var current := bar.get_theme_stylebox("panel")
+	var unchanged := (atlas != null and current is StyleBoxTexture \
+		and (current as StyleBoxTexture).texture == atlas) \
+		or (atlas == null and current is StyleBoxFlat)
+	if not unchanged:
+		bar.add_theme_stylebox_override("panel", titlebar_style(atlas))
 	var lbl: Label = bar.get_node_or_null("Title")
 	if lbl != null:
 		lbl.text = String(windows.window_titles.get(id, ""))
