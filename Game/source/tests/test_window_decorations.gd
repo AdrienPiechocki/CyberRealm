@@ -576,6 +576,53 @@ func test_snap_zones_follow_the_frame() -> Variant:
 	_teardown()
 	return Runner.assert_approx(box.size.z, 0.3, 0.001, "épaisseur de capture inchangée")
 
+func test_label_typography_follows_the_json() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	_reset_deco()
+	var label := _quad().get_node_or_null("Titlebar/Label3D") as Label3D
+	if label == null:
+		return "Label3D manquant"
+	# Comparaison à `Color.from_string`, PAS au littéral arrondi de
+	# `default_metrics()` : 219/255 != 0.859 exactement, et c'est la couleur du
+	# JSON livré qu'on veut vérifier, pas un arrondi de secours.
+	var r = Runner.assert_eq(label.modulate, Color.from_string("#dbe1f0", Color.WHITE),
+		"couleur du titre lue dans le JSON")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(label.font_size, 10, "taille du titre lue dans le JSON")
+	if _fail(r):
+		return r
+	# Le titre doit être posé dès la construction, pas seulement à la première
+	# notification de titre.
+	r = Runner.assert_eq(label.text, "Test Window", "titre posé à la construction")
+	if _fail(r):
+		return r
+	_teardown()
+	return true
+
+func test_label_typography_reloads_with_the_json() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	Decorations.load_config(RES_TEST_JSON, USER_TEST_JSON)
+	_write(USER_TEST_JSON, '{"label_color": "#ff0000", "label_size": 22}')
+	if not Decorations.tick(10.0):
+		return "le tick doit voir le JSON modifié"
+	win3d._sync_all_decorations()
+	var label := _quad().get_node_or_null("Titlebar/Label3D") as Label3D
+	var r = Runner.assert_eq(label.modulate, Color.from_string("#ff0000", Color.WHITE),
+		"la couleur du titre suit le rechargement à chaud")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(label.font_size, 22, "la taille du titre suit le rechargement à chaud")
+	if _fail(r):
+		return r
+	_teardown()
+	_reset_deco()
+	return true
+
 func test_frame_edge_starts_a_resize() -> Variant:
 	var build: Variant = _build_world()
 	if _fail(build):

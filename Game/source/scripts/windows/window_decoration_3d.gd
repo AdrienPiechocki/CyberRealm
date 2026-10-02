@@ -212,6 +212,14 @@ static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vect
 		((bar_body.get_child(0) as CollisionShape3D).shape as BoxShape3D).size = \
 			Vector3(mesh.size.x, bar_h, 0.02)
 	_sync_buttons(titlebar, Decorations.world(Decorations.metrics(), s), half.x)
+	# Typographie relue ici, et pas à la construction : `sync` est aussi le chemin
+	# du rechargement à chaud, donc éditer `label_size` ou `label_color` dans le
+	# JSON change le titre sans redémarrer.
+	var label := titlebar.get_node_or_null("Label3D") as Label3D
+	if label != null:
+		var m: Dictionary = Decorations.metrics()
+		label.font_size = int(m.get("label_size", 10.0))
+		label.modulate = m.get("label_color", Color.WHITE) as Color
 
 static func _sync_buttons(titlebar: MeshInstance3D, d: Dictionary, half_width: float) -> void:
 	var xs := button_positions(BUTTON_ORDER.size(), str(d["alignment"]),
