@@ -73,7 +73,7 @@ const SPAWN_STACK_RADIUS := 0.5 # m, portée de détection des fenêtres déjà 
 # inatteignable au pixel près, borne HAUTE parce qu'une zone trop épaisse
 # recouvrirait les fenêtres simplement voisines et produirait des collages
 # parasites (le garde-fou « >2 candidats » ne couvre pas ce cas).
-const SNAP_ZONE_THICKNESS := 0.5 # m
+const SNAP_ZONE_THICKNESS := 0.3 # m
 # Ordre FIXE d'évaluation des côtés : à égalité de recouvrement, le premier
 # candidat l'emporte. Sans cet ordre stable, le collage dépendrait de
 # l'ordre d'itération et scintillerait d'une frame à l'autre.
@@ -2550,6 +2550,43 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	_update_shared_edge(new_mesh_w - window_start_mesh_size.x,
 		new_mesh_h - window_start_mesh_size.y)
 
+
+# Un grab de groupe vaut-il quelque chose depuis cette fenêtre ? Elle a au
+# moins une voisine collée ET encore là : le groupe inclut la fenêtre saisie
+# elle-même (_start_group_grab), donc sans voisine ce serait un grab ordinaire.
+#
+# Une voisine disparue ne compte pas — et le cas est réel : un unmapped
+# n'efface que SA propre entrée (voir _erase_window_state), la voisine garde la
+# sienne et pointerait sur une fenêtre qui n'existe plus.
+func can_group_grab(wid: int) -> bool:
+	if not quads.has(wid):
+		return false
+	for link in _snap_neighbours(wid):
+		if quads.has(int(link["wid"])):
+			return true
+	return false
+
+# Bascule le grab de groupe sur `wid` : le menu radial est le seul point
+# d'entrée à même de l'INTERROMPRE. L'action Maj+G, elle, ne fait que le
+# démarrer, le moteur du grab le terminant au relâchement physique de la touche
+# (cf. _update_move). Un grab amorcé depuis l'anneau n'a aucun appui derrière
+# lui : sans cette seconde validation, la fenêtre resterait accrochée au viseur
+# pour toujours — « pas de relâchement d'action » ne veut pas dire « pas de fin ».
+func toggle_group_grab(wid: int) -> void:
+	if is_group_grabbed(wid):
+		release_window_grab(wid)
+		return
+	var quad: MeshInstance3D = quads.get(wid, null)
+	if quad == null or not is_instance_valid(quad):
+		return
+	_start_group_grab(wid, quad)
+
+# Le groupe est-il en train d'être saisi, sur CETTE fenêtre ? _group_grab vaut
+# pour tout grab de groupe, y compris celui d'une autre fenêtre : c'est
+# l'identifiant de la fenêtre saisie qui fait foi, sinon l'anneau proposerait
+# « DROP GROUP » devant une fenêtre qui n'a rien à voir avec la saisie en cours.
+func is_group_grabbed(wid: int) -> bool:
+	return _group_grab and is_window_grabbed(wid)
 
 func _start_group_grab(wid: int, quad: MeshInstance3D) -> void:
 	active_window_id = wid

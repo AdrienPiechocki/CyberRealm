@@ -837,6 +837,15 @@ func _process(delta: float) -> void:
 			# ne connait pas pinned_windows, on lui passe donc l'etat, pas la
 			# reference. Pose avant show_menu, qui construit la liste d'entrees.
 			radial_menu.pin_active = pins.has_pin()
+			# Idem pour « GRAB GROUP » : l'entree n'existe que si la fenetre
+			# visee a une voisine collee, un groupe d'une fenetre n'etant
+			# qu'un grab ordinaire. Pose avant show_menu, qui construit la
+			# liste d'entrees.
+			var aimed := _raycast_window_target(_aim_pos())
+			radial_menu.group_grab_available = aimed.has("local") \
+				and win3d.can_group_grab(aimed["local"])
+			radial_menu.group_grab_active = aimed.has("local") \
+				and win3d.is_group_grabbed(aimed["local"])
 			radial_menu.show_menu(ctx)
 
 	_menu_just_closed = false
@@ -1394,6 +1403,15 @@ func _on_radial_action(action: String) -> void:
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):
 				win3d.toggle_grab_window(target["local"])
+		"grab_group":
+			# Toute la chaîne de fenêtres collées est saisie d'un bloc. Le
+			# radial est le seul moyen de LÂCHER ce grab : l'action Maj+G n'a
+			# pas d'appui physique derrière elle une fois l'anneau validé,
+			# c'est donc la seconde validation sur la même entrée qui termine
+			# la saisie (et renomme l'entrée « DROP GROUP » entre-temps).
+			var target := _raycast_window_target(_aim_pos())
+			if target.has("local"):
+				win3d.toggle_group_grab(target["local"])
 		"focus":
 			interact_mode_active = false
 			player.interact_mode_active = false

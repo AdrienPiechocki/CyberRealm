@@ -19,6 +19,16 @@ var _emoji_font: Font
 ## radial pour que ce script reste indépendant de pinned_windows.
 var pin_active := false
 
+# Un groupe collé est-il saisissable depuis la fenêtre visée ? Même principe que
+# pin_active : le radial ne connait pas windows_3d, wayland_room lui passe donc
+# l'état, pas la référence. Posé avant show_menu(), qui construit les entrées.
+var group_grab_available := false
+
+# La fenêtre visée est-elle EN CE MOMENT saisie avec son groupe ? Bascule le
+# libellé de l'entrée : « GRAB GROUP » ne propose rien pendant la saisie, il faut
+# que le joueur voie que l'action est de lâcher.
+var group_grab_active := false
+
 
 func _ready() -> void:
 	visible = false
@@ -112,15 +122,35 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			else:
 				hide_menu()
 	# Hors du match : en GDScript on ne peut pas intercaler d'instruction entre
-	# deux motifs, et l'entree doit venir APRÈS les autres du contexte. Proposée
-	# dans tous les contextes SAUF « binds » : « focus » y a sa place (on est
-	# deja en plein ecran sur la fenetre, c'est le moment utile pour zoomer dans
-	# un detail), mais « binds » est une liste de raccourcis, pas un menu
-	# d'actions — y mettre la loupe la ferait apparaitre parmi les bind clavier
-	# et la confirmer la declencherait depuis l'ecran des raccourcis.
+	# deux motifs, et les entrées conditionnelles doivent venir APRÈS les autres
+	# du contexte.
+	#
+	# « ZOOM PIN » est proposée dans tous les contextes SAUF « binds » : « focus »
+	# y a sa place (on est deja en plein ecran sur la fenetre, c'est le moment
+	# utile pour zoomer dans un detail), mais « binds » est une liste de
+	# raccourcis, pas un menu d'actions — y mettre la loupe la ferait apparaitre
+	# parmi les bind clavier et la confirmer la declencherait depuis l'ecran des
+	# raccourcis.
+	#
+	# « GRAB GROUP » n'existe que dans le contexte « window » : ailleurs le
+	# radial ne vise aucune fenêtre, l'entrée serait morte.
 	if context != "binds":
+		_append_group_grab(context)
 		_append_pin_zoom()
 
+
+## Ajoute l'entrée « GRAB GROUP » — saisir toute la chaîne de fenêtres collées
+## plutôt que la seule fenêtre visée. Deux conditions, toutes deux nécessaires :
+## le contexte « window », et le signal de wayland_room — sans voisine collée le
+## « groupe » se réduit au grab ordinaire proposé dans le même anneau.
+## Appendue AVANT « ZOOM PIN », qui reste le dernier (cf. _append_pin_zoom).
+func _append_group_grab(context: String) -> void:
+	if context != "window" or not group_grab_available:
+		return
+	# Même action dans les deux sens : c'est windows_3d qui bascule, le radial ne
+	# fait qu'afficher l'état réel. Le libellé, lui, doit dire ce qui va se passer.
+	var label := "DROP GROUP" if group_grab_active else "GRAB GROUP"
+	_items.append({label = label, emoji = "👥", action = "grab_group"})
 
 ## Ajoute l'entrée « ZOOM PIN » — uniquement si un pin est épinglé, sinon le
 ## radial proposerait une action morte. Appendue en DERNIER : le nombre
