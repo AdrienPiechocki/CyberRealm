@@ -116,6 +116,72 @@ func test_reaction_directe_demande_pendant_session() -> Variant:
 	return true
 
 ## Reaction en direct : annulation pendant session → retour taille naturelle
+## L'annulation du fullscreen par la fenêtre ACTIVE ne doit PAS lui rendre une
+## barre de titre : elle redevient une fenêtre de pile, pas la fenêtre active.
+## Le bug : _apply_fullscreen_request(false) faisait _ensure_title_bar(id) sans
+## vérifier si id est la fenêtre active.
+func test_annulation_fullscreen_active_ne_rend_pas_de_barre() -> Variant:
+	if _setup() != true: return "setup"
+	var id := 22
+	winstub.ensure_quad(id, "Player", "app", Vector2(640, 360))
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(id, true)
+	focus.enter_focus(id)
+	# En fullscreen : pas de barre (déjà confirmé par test_entree_avec_demande)
+	var r = Runner.assert_true(not _has_bar(id), "fullscreen = pas de barre")
+	if _fail(r): return r
+	# Annulation en cours de session
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(id, false)
+	if focus.has_method("_process"):
+		focus._process(0.016)
+	r = Runner.assert_eq(focus.focus_fullscreen_id, -1,
+		"le fullscreen doit être levé")
+	if _fail(r): return r
+	r = Runner.assert_true(not _has_bar(id),
+		"après annulation, la fenêtre ACTIVE ne doit toujours pas avoir de barre")
+	if _fail(r): return r
+	_teardown()
+	return true
+
+## Le cycle complet : fenêtre de pile derrière, active sans barre, et chaque
+## bascule de fullscreen préserve l'invariant (active sans barre, pile avec).
+func test_invariant_barre_preserve_pendant_bascule_fullscreen() -> Variant:
+	if _setup() != true: return "setup"
+	var a := 30
+	var b := 31
+	winstub.ensure_quad(a, "Arriere", "app", Vector2(640, 360))
+	winstub.ensure_quad(b, "Avant", "app", Vector2(640, 360))
+	focus.enter_focus(a)
+	focus.enter_focus(b)
+	# b active sans barre, a en pile avec barre
+	var r = Runner.assert_true(not _has_bar(b), "b active sans barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(a), "a en pile garde sa barre")
+	if _fail(r): return r
+	# b demande le fullscreen
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(b, true)
+	if focus.has_method("_process"):
+		focus._process(0.016)
+	r = Runner.assert_eq(focus.focus_fullscreen_id, b, "b fullscreen")
+	if _fail(r): return r
+	r = Runner.assert_true(not _has_bar(b), "b fullscreen sans barre")
+	if _fail(r): return r
+	# b annule
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(b, false)
+	if focus.has_method("_process"):
+		focus._process(0.016)
+	r = Runner.assert_eq(focus.focus_fullscreen_id, -1, "b plus fullscreen")
+	if _fail(r): return r
+	r = Runner.assert_true(not _has_bar(b), "b active toujours sans barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(a), "a en pile toujours avec barre")
+	if _fail(r): return r
+	_teardown()
+	return true
+
 func test_reaction_directe_annulation_pendant_session() -> Variant:
 	if _setup() != true: return "setup"
 	var id := 21

@@ -533,7 +533,12 @@ func _apply_fullscreen_request(id: int, requested: bool) -> void:
 		_remove_title_bar(id)
 		var st := _state(id)
 		compositor.set_window_size(id, int(st["original_size"].x), int(st["original_size"].y))
-		_ensure_title_bar(id)
+		# Fenêtre ACTIVE : pas de barre (invariant _activate_window). Fenêtre
+		# de pile : elle redevient une fenêtre de titre normale.
+		if id == _active_id():
+			_remove_title_bar(id)
+		else:
+			_ensure_title_bar(id)
 	# Recalcule la géométrie de TOUTE la pile : une bascule plein écran change
 	# la taille de l'overlay concerné et le cadrage des fenêtres au premier plan.
 	for wid in focus_stack:
@@ -951,11 +956,11 @@ func _refresh_rect_layout(id: int) -> void:
 		rect.position += Vector2(
 			(viewport_size.x - base_content.size.x) * 0.5 - base_content.position.x,
 			(viewport_size.y - base_content.size.y) * 0.5 - base_content.position.y)
-	# Le visuel complet = barre de titre AU-DESSUS du contenu : décaler d'une
-	# demi-hauteur de barre vers le haut pour centrer l'ENSEMBLE et non le
-	# seul contenu (sinon l'assemblage paraît descendu de H/2).
+	# Décalage d'une demi-hauteur de barre pour tenir compte de la barre de
+	# titre au-dessus du contenu et centrer l'ENSEMBLE (barre+contenu) plutôt
+	# que le seul contenu.
 	# Conditionné à la présence effective d'une barre : la fenêtre ACTIVE n'en
-	# a pas, et sans cette garde elle serait recentrée d'une demi-barre trop bas.
+	# a pas, et sans cette garde elle serait décalée d'une demi-barre.
 	if focus_title_bars.has(id):
 		rect.position.y += titlebar_h() * 0.5
 	# ui_offset = décalage accumulé par le drag barre de titre / Super+clic ;
