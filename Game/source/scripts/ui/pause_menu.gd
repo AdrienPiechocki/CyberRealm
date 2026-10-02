@@ -844,9 +844,9 @@ func _show_keyboard_layout() -> void:
 			opt.selected = i
 	container.add_child(opt)
 
-	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_keyboard_layout.bind(opt))
-	container.add_child(apply_btn)
+	opt.item_selected.connect(func(_idx: int):
+		_apply_keyboard_layout(opt)
+	)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
@@ -897,21 +897,21 @@ func _show_polkit() -> void:
 	line_edit.text_submitted.connect(func(_t: String):
 		_apply_polkit_agent(line_edit)
 	)
+	line_edit.focus_exited.connect(func():
+		_apply_polkit_agent(line_edit)
+	)
 	container.add_child(line_edit)
-
-	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_polkit_agent.bind(line_edit))
-	container.add_child(apply_btn)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
 func _apply_polkit_agent(line_edit: LineEdit) -> void:
 	var cmd := line_edit.text.strip_edges()
+	if cmd == get_polkit_agent():
+		return
 	_settings["polkit_agent"] = cmd
 	_save_settings()
 	polkit_agent_changed.emit(cmd)
-	_go_back()
 
 # ── Screenshot folder ───────────────────────────────────────────────
 
@@ -951,19 +951,20 @@ func _show_screenshots() -> void:
 	line_edit.text_submitted.connect(func(_t: String):
 		_apply_screenshot_folder(line_edit)
 	)
+	line_edit.focus_exited.connect(func():
+		_apply_screenshot_folder(line_edit)
+	)
 	container.add_child(line_edit)
-
-	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_screenshot_folder.bind(line_edit))
-	container.add_child(apply_btn)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
 func _apply_screenshot_folder(line_edit: LineEdit) -> void:
-	_settings["screenshot_folder"] = line_edit.text.strip_edges()
+	var folder := line_edit.text.strip_edges()
+	if folder == get_screenshot_folder():
+		return
+	_settings["screenshot_folder"] = folder
 	_save_settings()
-	_go_back()
 
 # ── Pinned windows layer ─────────────────────────────────────────────
 
@@ -1168,10 +1169,14 @@ func _show_pins() -> void:
 	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	container.add_child(color_btn)
 
-	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_pins_settings.bind(opt, pos_opt, slider,
-		size_slider, color_btn))
-	container.add_child(apply_btn)
+	# Auto-apply : chaque changement est sauvegardé et émis immédiatement.
+	var auto_apply := func(_v = null) -> void:
+		_apply_pins_settings(opt, pos_opt, slider, size_slider, color_btn)
+	opt.item_selected.connect(auto_apply)
+	pos_opt.item_selected.connect(auto_apply)
+	slider.value_changed.connect(auto_apply)
+	size_slider.value_changed.connect(auto_apply)
+	color_btn.color_changed.connect(auto_apply)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
@@ -1186,18 +1191,28 @@ func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSli
 	var divisor := clampf(snappedf(size_slider.value, PIN_SIZE_DIVISOR_STEP),
 		PIN_SIZE_DIVISOR_MIN, PIN_SIZE_DIVISOR_MAX)
 	var color: Color = color_btn.color
+	var old_above := get_pins_above_focus()
+	var old_percent := get_pins_opacity()
+	var old_pos := get_pins_position()
+	var old_divisor := get_pins_size_divisor()
+	var old_color_hex := get_pins_border_color().to_html(true)
 	_settings["pins_above_focus"] = above
 	_settings["pins_opacity"] = percent
 	_settings["pins_position"] = pos
 	_settings["pins_size_divisor"] = divisor
 	_settings["pins_border_color"] = color.to_html(true)
 	_save_settings()
-	pins_layer_changed.emit(above)
-	pins_opacity_changed.emit(percent)
-	pins_position_changed.emit(pos)
-	pins_size_divisor_changed.emit(divisor)
-	pins_border_color_changed.emit(color)
-	_go_back()
+	# N'émet que ce qui a réellement changé (les curseurs appellent ceci à chaque cran).
+	if above != old_above:
+		pins_layer_changed.emit(above)
+	if percent != old_percent:
+		pins_opacity_changed.emit(percent)
+	if pos != old_pos:
+		pins_position_changed.emit(pos)
+	if not is_equal_approx(divisor, old_divisor):
+		pins_size_divisor_changed.emit(divisor)
+	if color.to_html(true) != old_color_hex:
+		pins_border_color_changed.emit(color)
 
 # ── LAN multiplayer ──────────────────────────────────────────────────
 
@@ -1312,13 +1327,17 @@ func _show_graphics_general() -> void:
 	var contrast_s := _make_env_slider("Contrast", "adjustment_contrast")
 	var saturation_s := _make_env_slider("Saturation", "adjustment_saturation")
 
-	# ── Apply ──
+	# ── Auto-apply ──
+	var auto_apply := func(_v = null) -> void:
+		_apply_graphics(aa_opt, env_btns, brightness_s, contrast_s, saturation_s)
+	aa_opt.item_selected.connect(auto_apply)
+	for key in env_btns:
+		(env_btns[key] as CheckButton).toggled.connect(auto_apply)
+	brightness_s.value_changed.connect(auto_apply)
+	contrast_s.value_changed.connect(auto_apply)
+	saturation_s.value_changed.connect(auto_apply)
+
 	container.add_child(_make_spacer())
-
-	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_graphics.bind(aa_opt, env_btns, brightness_s, contrast_s, saturation_s))
-	container.add_child(apply_btn)
-
 	container.add_child(_make_back_btn())
 
 func _show_controls_general() -> void:
@@ -1445,13 +1464,16 @@ func _show_controls_general() -> void:
 		focus_val.text = "%.1fx" % v
 	)
 
-	# ── Apply ──
+	# ── Auto-apply ──
+	var auto_apply := func(_v = null) -> void:
+		_apply_controls(mouse_slider, pad_slider, focus_slider, gyro_check, gyro_slider)
+	mouse_slider.value_changed.connect(auto_apply)
+	pad_slider.value_changed.connect(auto_apply)
+	focus_slider.value_changed.connect(auto_apply)
+	gyro_check.toggled.connect(auto_apply)
+	gyro_slider.value_changed.connect(auto_apply)
+
 	container.add_child(_make_spacer())
-
-	var apply_btn := _make_btn("Apply")
-	apply_btn.pressed.connect(_apply_controls.bind(mouse_slider, pad_slider, focus_slider, gyro_check, gyro_slider))
-	container.add_child(apply_btn)
-
 	container.add_child(_make_back_btn())
 
 const AA_MODES := ["off", "fxaa", "msaa_2x", "msaa_4x", "msaa_8x"]
@@ -1498,7 +1520,6 @@ func _apply_graphics(aa_opt: OptionButton, env_btns: Dictionary, brightness_s: H
 	_settings["environment"] = env
 	_save_settings()
 	environment_settings_changed.emit(env)
-	_go_back()
 
 func _apply_controls(mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, gyro_btn: CheckButton, gyro_s: HSlider) -> void:
 	var mouse_mult: float = mouse_s.value
@@ -1507,6 +1528,12 @@ func _apply_controls(mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, gyro_bt
 	var gyro_enabled: bool = gyro_btn.button_pressed
 	var gyro_mult: float = gyro_s.value
 
+	var old_mouse := get_mouse_sens_mult()
+	var old_pad := get_pad_look_sens_mult()
+	var old_focus := get_focus_stick_sens_mult()
+	var old_gyro_on := is_gyro_aim_enabled()
+	var old_gyro := get_gyro_sens_mult()
+
 	_settings["mouse_sens_mult"] = mouse_mult
 	_settings["pad_look_sens_mult"] = pad_mult
 	_settings["focus_stick_sens_mult"] = focus_mult
@@ -1514,12 +1541,17 @@ func _apply_controls(mouse_s: HSlider, pad_s: HSlider, focus_s: HSlider, gyro_bt
 	_settings["gyro_sens_mult"] = gyro_mult
 	_save_settings()
 
-	mouse_sens_changed.emit(mouse_mult)
-	pad_look_sens_changed.emit(pad_mult)
-	focus_stick_sens_changed.emit(focus_mult)
-	gyro_aim_changed.emit(gyro_enabled)
-	gyro_sens_changed.emit(gyro_mult)
-	_go_back()
+	# N'émet que ce qui a réellement changé (appelé à chaque cran de curseur).
+	if not is_equal_approx(mouse_mult, old_mouse):
+		mouse_sens_changed.emit(mouse_mult)
+	if not is_equal_approx(pad_mult, old_pad):
+		pad_look_sens_changed.emit(pad_mult)
+	if not is_equal_approx(focus_mult, old_focus):
+		focus_stick_sens_changed.emit(focus_mult)
+	if gyro_enabled != old_gyro_on:
+		gyro_aim_changed.emit(gyro_enabled)
+	if not is_equal_approx(gyro_mult, old_gyro):
+		gyro_sens_changed.emit(gyro_mult)
 
 # ── Environment (réglages WorldEnvironment) ───────────────────────────
 
@@ -1604,7 +1636,7 @@ func _show_lan() -> void:
 
 	var hint := Label.new()
 	if _lan_connected:
-		hint.text = "Connected — click Apply to broadcast changes to other players."
+		hint.text = "Connected — changes are broadcast to other players automatically."
 	else:
 		hint.text = "Multiplayer on your local network (2-4 players).\nEach player keeps their own desktop; you see each other's avatar."
 	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1625,6 +1657,10 @@ func _show_lan() -> void:
 	name_edit.text_submitted.connect(func(_t: String):
 		_save_lan_name(name_edit)
 	)
+	name_edit.focus_exited.connect(func():
+		if name_edit.text.strip_edges() != get_lan_player_name():
+			_save_lan_name(name_edit)
+	)
 	container.add_child(name_edit)
 
 	var color_row := HBoxContainer.new()
@@ -1641,12 +1677,19 @@ func _show_lan() -> void:
 	color_btn.custom_minimum_size = Vector2(64, 30)
 	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	color_row.add_child(color_btn)
-	if not _lan_connected:
-		color_btn.color_changed.connect(func(c: Color):
-			_settings["lan_player_color"] = c.to_html(true)
-			_save_settings()
-			lan_color_changed.emit(c)
+	var apply_color := func(c: Color) -> void:
+		_settings["lan_player_color"] = c.to_html(true)
+		_save_settings()
+		lan_color_changed.emit(c)
+	if _lan_connected:
+		# Connecté : on n'envoie qu'à la fermeture du sélecteur, pour ne pas
+		# inonder le réseau pendant le glissé.
+		color_btn.popup_closed.connect(func():
+			if color_btn.color.to_html(true) != get_lan_player_color().to_html(true):
+				apply_color.call(color_btn.color)
 		)
+	else:
+		color_btn.color_changed.connect(apply_color)
 	container.add_child(color_row)
 
 	# Choix de l'avatar incarné : tous les avatar.tscn trouvés dans le
@@ -1671,36 +1714,17 @@ func _show_lan() -> void:
 		avatar_opt.set_item_metadata(avatar_opt.item_count - 1, path)
 	if avatar_opt.item_count > 0:
 		avatar_opt.select(maxi(sel_idx, 0))
-		if not _lan_connected:
-			avatar_opt.item_selected.connect(func(idx: int):
-				var p := String(avatar_opt.get_item_metadata(idx))
-				_settings["lan_avatar_path"] = p
-				_save_settings()
-				lan_avatar_changed.emit(p)
-			)
+		avatar_opt.item_selected.connect(func(idx: int):
+			var p := String(avatar_opt.get_item_metadata(idx))
+			_settings["lan_avatar_path"] = p
+			_save_settings()
+			lan_avatar_changed.emit(p)
+		)
 		avatar_row.add_child(avatar_opt)
 	else:
 		avatar_label.queue_free()
 		avatar_row.queue_free()
 	container.add_child(avatar_row)
-
-	# Bouton Apply unifié : sauvegarde nom/couleur/avatar et émet les signaux
-	if _lan_connected:
-		var apply_btn := _make_btn("Apply", "success-button")
-		apply_btn.custom_minimum_size = Vector2(0, 36)
-		apply_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		apply_btn.pressed.connect(func():
-			_save_lan_name(name_edit)
-			_settings["lan_player_color"] = color_btn.color.to_html(true)
-			var idx := avatar_opt.selected
-			if idx >= 0:
-				_settings["lan_avatar_path"] = String(avatar_opt.get_item_metadata(idx))
-			_save_settings()
-			lan_color_changed.emit(color_btn.color)
-			if idx >= 0:
-				lan_avatar_changed.emit(String(avatar_opt.get_item_metadata(idx)))
-		)
-		container.add_child(apply_btn)
 
 	var host_btn := _make_btn("Host Game")
 	host_btn.pressed.connect(func():
@@ -1841,16 +1865,16 @@ func _show_lan() -> void:
 	fps_row.add_child(fps_spin)
 	container.add_child(fps_row)
 
-	var apply_video_btn := _make_btn("Apply video settings")
-	apply_video_btn.pressed.connect(func():
+	var emit_video := func() -> void:
 		var codec := "auto"
 		if codec_opt.selected == 1:
 			codec = "h264"
 		elif codec_opt.selected == 2:
 			codec = "av1"
 		lan_video_settings_changed.emit(int(bitrate_spin.value) * 1_000_000, codec, int(fps_spin.value))
-	)
-	container.add_child(apply_video_btn)
+	codec_opt.item_selected.connect(func(_i: int): emit_video.call())
+	bitrate_spin.value_changed.connect(func(_v: float): emit_video.call())
+	fps_spin.value_changed.connect(func(_v: float): emit_video.call())
 
 	container.add_child(_make_spacer())
 	
