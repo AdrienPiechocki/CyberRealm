@@ -210,6 +210,10 @@ var resize_start_pos := Vector3.ZERO
 var pre_fullscreen_mesh_sizes: Dictionary = {} # wid (int) -> Vector2
 var pre_fullscreen_surface_sizes: Dictionary = {} # wid (int) -> Vector2
 
+var _group_grab := false
+var _grab_action := "grab"
+var _group_rel: Dictionary = {} # wid -> Transform3D relatif à la fenêtre saisie
+
 func setup(compositor_ref: WlrCompositor, player_ref: Node3D) -> void:
 	compositor = compositor_ref
 	player = player_ref
@@ -395,6 +399,7 @@ func release_window_grab(wid: int) -> void:
 		return
 	is_moving = false
 	active_window_id = -1
+	_end_group_grab()
 	_set_window_occluder_active(wid, true)
 	windows_state_changed.emit()
 
@@ -939,7 +944,7 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	# qu'on rallume et qu'on éteint la surveillance des zones de collage, sans
 	# avoir à toucher aux six sites de prise et de relâchement. L'appel est
 	# idempotent, celui des frames de déplacement ne fait que l'anticiper.
-	_sync_snap_monitoring(active_window_id if is_moving else -1)
+	_sync_snap_monitoring(active_window_id if is_moving and not _group_grab else -1)
 	# Efface le pointeur wayland de toutes les fenêtres : il n'est re-posé
 	# que si le raycast atteint une fenêtre ci-dessous. Les branches de
 	# retour (drag, raycast dans le vide) laissent ainsi les captures de
@@ -974,12 +979,22 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 				move_depth -= 0.25
 			elif Input.is_action_pressed("scroll_down", false):
 				move_depth -= 0.05
-		_update_move(ray_origin, ray_dir, delta)
+		if _group_grab:
+			_update_group_move(ray_origin, ray_dir, delta)
+		else:
+			_update_move(ray_origin, ray_dir, delta)
 		if Input.is_action_just_released("grab", true):
 			_set_window_occluder_active(active_window_id, true)
 			is_moving = false
 			active_window_id = -1
 			windows_state_changed.emit()
+		if Input.is_action_just_released(_grab_action, true):
+			_end_group_grab()
+			_set_window_occluder_active(active_window_id, true)
+			is_moving = false
+			active_window_id = -1
+			windows_state_changed.emit()
+			return
 		return
 	if is_resizing:
 		_update_resize(ray_origin, ray_dir)
@@ -1094,6 +1109,8 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 		active_window_id = wid
 		is_moving = false
 		move_depth = 0.0
+	if Input.is_action_just_pressed("grab_group", true) and not interact_active:
+		_start_group_grab(wid, quad)
 	if Input.is_action_just_pressed("left_click", false):
 		focused_window_id = wid
 		# Le haut du contenu n'est PAS une zone de drag : le clic y part vers
@@ -1834,7 +1851,7 @@ func _adopt_neighbour_basis(wid: int, snap: Dictionary) -> void:
 # Le scroll ne pivote QUE si la fenêtre est collée : sinon il garde son sens
 # de push/pull (move_depth), qui n'a pas le droit de disparaître.
 func _scroll_rotates() -> bool:
-	return active_window_id != -1 and snapped_to.has(active_window_id)
+	return active_window_id != -1 and snapped_to.has(active_window_id) and not _group_grab
 
 # ── Redimensionnement synchronisé du groupe collé ────────────────────────
 #
@@ -2514,3 +2531,41 @@ func _update_resize(ray_origin: Vector3, ray_dir: Vector3) -> void:
 	_update_group_resize(active_window_id)
 	_update_shared_edge(new_mesh_w - window_start_mesh_size.x,
 		new_mesh_h - window_start_mesh_size.y)
+
+
+func _start_group_grab(wid: int, quad: MeshInstance3D) -> void:
+	active_window_id = wid
+	is_moving = true
+	move_depth = _camera().global_position.distance_to(quad.global_position)
+	_group_rel.clear()
+	var inv := quad.global_transform.affine_inverse()
+	for m in _collect_group(wid, {}):
+		var q: MeshInstance3D = quads.get(m, null)
+		if q == null or not is_instance_valid(q):
+			continue
+		_set_window_occluder_active(m, false)
+		if m != wid:
+			_group_rel[m] = inv * q.global_transform
+	# Groupe de 1 => grab normal (billboard + snap)
+	_group_grab = not _group_rel.is_empty()
+	_grab_action = "grab_group"
+	windows_state_changed.emit()
+
+func _update_group_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
+	var quad: MeshInstance3D = quads.get(active_window_id, null)
+	if quad == null or not is_instance_valid(quad):
+		return
+	var target := ray_origin + ray_dir * move_depth
+	quad.global_position = quad.global_position.lerp(target, 10.0 * delta)
+	var t := quad.global_transform
+	for m in _group_rel:
+		var q: MeshInstance3D = quads.get(m, null)
+		if q != null and is_instance_valid(q):
+			q.global_transform = t * (_group_rel[m] as Transform3D)
+
+func _end_group_grab() -> void:
+	for m in _group_rel:
+		_set_window_occluder_active(int(m), true)
+	_group_rel.clear()
+	_group_grab = false
+	_grab_action = "grab"
