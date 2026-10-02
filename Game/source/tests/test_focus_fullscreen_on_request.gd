@@ -6,11 +6,13 @@ const Runner := preload("res://tests/runner.gd")
 const FocusScript := preload("res://scripts/windows/focus_mode.gd")
 const WindowsStub := preload("res://tests/fixtures/windows_stub.gd")
 const CompStub := preload("res://tests/fixtures/focus_compositor_stub.gd")
+const PlayerStub := preload("res://tests/fixtures/player_stub.gd")
 
 var focus
 var comp: Node
 var winstub: Node3D
 var ui: CanvasLayer
+var player
 
 func _setup() -> Variant:
 	focus = Node3D.new()
@@ -23,7 +25,12 @@ func _setup() -> Variant:
 	# fullscreen (et les tests passeraient pour la mauvaise raison).
 	ui = CanvasLayer.new()
 	get_tree().root.add_child(ui)
-	focus.setup(comp, null, ui, winstub, null)
+	# enter_focus écrit player.focus_mode_active à la première entrée : sans
+	# player réel, la fonction s'interrompt AVANT _activate_window et les tests
+	# passent pour la mauvaise raison.
+	player = PlayerStub.new()
+	get_tree().root.add_child(player)
+	focus.setup(comp, player, ui, winstub, null)
 	return true
 
 func _teardown() -> void:
@@ -39,6 +46,9 @@ func _teardown() -> void:
 	if ui != null and is_instance_valid(ui):
 		ui.free()
 	ui = null
+	if player != null and is_instance_valid(player):
+		player.free()
+	player = null
 
 func _fail(r) -> bool:
 	if r is String: return true
@@ -177,6 +187,104 @@ func test_idempotence_apres_bascale_live() -> Variant:
 			focus._process(0.016)
 	r = Runner.assert_eq(comp.fullscreen_calls.size(), calls_after_bascule,
 		"dix frames stables après bascule : aucun appel supplémentaire")
+	if _fail(r): return r
+	_teardown()
+	return true
+
+func _has_bar(id: int) -> bool:
+	return focus.focus_title_bars.has(id) \
+		and is_instance_valid(focus.focus_title_bars[id])
+
+## La fenêtre ACTIVE n'affiche aucune barre de titre : elle est au premier
+## plan, l'utilisateur interagit avec elle, une barre serait un leurre. Les
+## fenêtres DERRIÈRE elle dans la pile gardent la leur.
+func test_fenetre_active_sans_barre() -> Variant:
+	if _setup() != true: return "setup"
+	var id := 60
+	winstub.ensure_quad(id, "Active", "app", Vector2(800, 600))
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(id, false)
+	focus.enter_focus(id)
+	var r = Runner.assert_true(not _has_bar(id),
+		"la fenêtre active ne doit avoir aucune barre de titre")
+	if _fail(r): return r
+	_teardown()
+	return true
+
+## Une fenêtre qui n'est PAS active conserve sa barre : elle fait partie de
+## la pile et doit rester identifiable/déplaçable.
+func test_fenetre_de_pile_garde_sa_barre() -> Variant:
+	if _setup() != true: return "setup"
+	var a := 61
+	var b := 62
+	winstub.ensure_quad(a, "Arriere", "app", Vector2(800, 600))
+	winstub.ensure_quad(b, "Active", "app", Vector2(800, 600))
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(a, false)
+		comp.request_fullscreen(b, false)
+	focus.enter_focus(a)
+	focus.enter_focus(b)
+	var r = Runner.assert_true(not _has_bar(b),
+		"la fenêtre active (b) n'a pas de barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(a),
+		"la fenêtre de pile (a) doit garder sa barre")
+	if _fail(r): return r
+	_teardown()
+	return true
+
+## Quand la fenêtre active quitte la pile, la suivante devient active et perd
+## sa barre à son tour : il ne doit pas rester une barre orpheline sur
+## l'ancienne active-now-inactive.
+func test_pile_reste_sans_barre_apres_fermeture_active() -> Variant:
+	if _setup() != true: return "setup"
+	var a := 63
+	var b := 64
+	winstub.ensure_quad(a, "Arriere", "app", Vector2(800, 600))
+	winstub.ensure_quad(b, "Active", "app", Vector2(800, 600))
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(a, false)
+		comp.request_fullscreen(b, false)
+	focus.enter_focus(a)
+	focus.enter_focus(b)
+	await focus.on_window_unmapped(b)
+	var r = Runner.assert_true(not _has_bar(a),
+		"la nouvelle active (a) doit avoir perdu sa barre")
+	if _fail(r): return r
+	_teardown()
+	return true
+
+## Le centrage compense d'une demi-hauteur de barre pour centrer barre+contenu.
+## Sans barre (fenêtre active), ce décalage LA RENDRAIT trop basse. On mesure
+## l'écart réel de position AVEC puis SANS barre sur la même fenêtre : il doit
+## valoir exactement une demi-hauteur de barre. Si la garde était absente,
+## le « sans barre » serait identique au « avec barre ».
+func test_centrage_compense_seulement_si_barre() -> Variant:
+	if _setup() != true: return "setup"
+	var id := 65
+	winstub.ensure_quad(id, "Active", "app", Vector2(800, 600))
+	if comp.has_method("request_fullscreen"):
+		comp.request_fullscreen(id, false)
+	focus.enter_focus(id)
+	# Position de la fenêtre ACTIVE (sans barre, centrée sur son contenu seul)
+	focus._refresh_rect_layout(id)
+	var y_sans_barre: float = focus.focus_rects[id].position.y
+	# On lui donne une barre et on relayout : le compensation doit la remonter
+	# d'exactement une demi-hauteur de barre.
+	focus._ensure_title_bar(id)
+	focus._refresh_rect_layout(id)
+	var y_avec_barre: float = focus.focus_rects[id].position.y
+	# Le code ajoute la demi-hauteur (rect.position.y += titlebar_h * 0.5).
+	var expected := y_sans_barre + FocusScript.titlebar_h() * 0.5
+	var r = Runner.assert_approx(y_avec_barre, expected, 0.001,
+		"avec barre, le contenu doit être remonté d'une demi-hauteur exacte")
+	if _fail(r): return r
+	# Et l'inverse : retirer la barre doit supprimer le décalage, pas le garder.
+	focus._remove_title_bar(id)
+	focus._refresh_rect_layout(id)
+	var y_retour: float = focus.focus_rects[id].position.y
+	r = Runner.assert_approx(y_retour, y_sans_barre, 0.001,
+		"sans barre, le décalage doit disparaître (pas de fenêtre trop basse)")
 	if _fail(r): return r
 	_teardown()
 	return true

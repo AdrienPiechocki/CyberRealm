@@ -877,7 +877,14 @@ func on_window_unmapped(id: int) -> void:
 		_reset_focus_ui()
 	elif was_active:
 		# La fenêtre active s'est fermée : retomber sur la précédente
-		_activate_window(_active_id())
+		var next_active := _active_id()
+		# Elle perd sa barre en devenant active (_activate_window), mais elle
+		# est maintenant la fenêtre DE PILE du nouveau focus : si elle reste
+		# seule derrière la nouvelle active, elle doit garder son titre.
+		# Une fenêtre fullscreen n'en a pas (non déplaçable).
+		if focus_fullscreen_id != next_active:
+			_ensure_title_bar(next_active)
+		_activate_window(next_active)
 
 func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
 	# Un jeu a demandé le pointer lock (zwp_pointer_constraints_v1::lock_pointer)
@@ -947,7 +954,10 @@ func _refresh_rect_layout(id: int) -> void:
 	# Le visuel complet = barre de titre AU-DESSUS du contenu : décaler d'une
 	# demi-hauteur de barre vers le haut pour centrer l'ENSEMBLE et non le
 	# seul contenu (sinon l'assemblage paraît descendu de H/2).
-	rect.position.y += titlebar_h() * 0.5
+	# Conditionné à la présence effective d'une barre : la fenêtre ACTIVE n'en
+	# a pas, et sans cette garde elle serait recentrée d'une demi-barre trop bas.
+	if focus_title_bars.has(id):
+		rect.position.y += titlebar_h() * 0.5
 	# ui_offset = décalage accumulé par le drag barre de titre / Super+clic ;
 	# appliqué APRÈS le centrage sinon chaque rafraîchissement (texture,
 	# frames du drag) recentrerait la fenêtre et annulerait le déplacement.
@@ -1152,7 +1162,18 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 # clavier 3D, l'état de la souris et les popups overlayés (seuls ceux de la
 # fenêtre active sont affichés).
 func _activate_window(id: int) -> void:
+	var previous_active: int = windows.focused_window_id
 	windows.focused_window_id = id
+	# L'ancienne active redevient une fenêtre de PILE ordinaire : elle doit
+	# reprendre sa barre de titre (elle l'avait perdue en devenant active).
+	# Elle est exclue si elle est la fenêtre fullscreen (non déplaçable).
+	if previous_active >= 0 and previous_active != id \
+			and previous_active != focus_fullscreen_id:
+		_ensure_title_bar(previous_active)
+	# La fenêtre ACTIVE n'affiche pas de barre de titre : elle est au premier
+	# plan et l'utilisateur interagit directement avec elle, une barre y serait
+	# un leurre. Les fenêtres DERRIÈRE dans la pile gardent la leur.
+	_remove_title_bar(id)
 	# Donner le focus clavier du seat à la fenêtre : les touches forwardées
 	# par forward_keyboard_key partent vers la surface qui détient le focus
 	# clavier (pas vers un window_id). Sans ça, une nouvelle fenêtre active de

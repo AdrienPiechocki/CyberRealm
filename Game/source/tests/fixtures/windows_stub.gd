@@ -5,6 +5,9 @@ extends Node3D
 var window_titles: Dictionary = {}
 var window_server_side: Dictionary = {}
 var quads: Dictionary = {}
+# _activate_window écrit focused_window_id AVANT de retirer la barre de titre :
+# si cette propriété manque, l'écriture échoue et interrompt la fonction.
+var focused_window_id: int = -1
 
 func ensure_quad(id: int, title: String, app_id: String, size: Vector2) -> void:
 	window_titles[id] = title
