@@ -19,7 +19,17 @@ const ASSETS := ["border", "minimize", "maximize", "restore", "close"]
 const FALLBACK_PX_SCALE := 0.005
 
 static var _metrics: Dictionary = {}
+static var _textures: Dictionary = {}
+static var _atlas: Dictionary = {}
+static var _mtimes: Dictionary = {}
 static var _loaded := false
+static var _watch := 0.0
+## Chemins réellement chargés par le dernier `reload_from`. Le loader se souvient
+## de ce qu'il a lu : le poll surveille et recharge ces chemins-là, pas les
+## constantes. C'est ce qui permet aux tests d'injecter leurs propres JSON sans
+## écrire dans le fichier du joueur.
+static var _res_path := RES_JSON
+static var _user_path := USER_JSON
 
 static func default_metrics() -> Dictionary:
 	return {
@@ -250,15 +260,121 @@ static func world(m: Dictionary, s: float) -> Dictionary:
 		"alignment": str(m.get("button_alignment", "right")),
 	}
 
-## Ne charge que les MÉTRIQUES. Le plan d'origine appelait ici `current_mtimes()`
-## et `_load_asset()`, introduits plus tard : GDScript rejette l'appel d'une
-## statique inconnue à la compilation, donc le fichier ne se chargeait pas du
-## tout et aucun test ne pouvait passer. `reload()` est élargi ensuite aux
-## textures et aux mtimes.
+## Rechargement complet : métriques, textures, cache d'atlas et mtime.
 static func reload() -> void:
+	reload_from(RES_JSON, USER_JSON)
+
+## Même chose avec des chemins de JSON injectables : les tests s'en servent pour
+## exercer la surcharge `user://` sans toucher au fichier réel de l'utilisateur.
+static func load_config(res_path: String = RES_JSON, user_path: String = USER_JSON) -> void:
+	reload_from(res_path, user_path)
+
+static func reload_from(res_path: String, user_path: String) -> void:
 	_metrics = default_metrics()
-	parse_config(FileAccess.get_file_as_string(RES_JSON), _metrics, RES_JSON)
-	# Le fichier utilisateur est fusionné APRÈS : il gagne clé par clé, et un
-	# fichier cassé laisse le défaut du jeu intact au lieu de tout effacer.
-	parse_config(FileAccess.get_file_as_string(USER_JSON), _metrics, USER_JSON)
+	parse_config(FileAccess.get_file_as_string(res_path), _metrics, res_path)
+	# Fusionné APRÈS le défaut : le user gagne clé par clé, et le défaut survit
+	# à un fichier utilisateur illisible.
+	parse_config(FileAccess.get_file_as_string(user_path), _metrics, user_path)
+	_textures.clear()
+	for asset: String in ASSETS:
+		var tex := _load_asset(asset)
+		if tex != null:
+			_textures[asset] = tex
+		else:
+			push_warning("WindowDecorations: %s.svg introuvable (%s ni %s)" % [asset, RES_DIR, USER_DIR])
+	_atlas.clear()
+	_res_path = res_path
+	_user_path = user_path
+	_mtimes = current_mtimes()
+	_watch = POLL_SECONDS
 	_loaded = true
+
+## Poll du mtime comme `ui_theme.gd`. Renvoie true si un rechargement a eu lieu,
+## pour que l'appelant resynchronise ses fenêtres.
+static func tick(delta: float) -> bool:
+	if not _loaded:
+		reload()
+		return true
+	_watch -= delta
+	if _watch > 0.0:
+		return false
+	_watch = POLL_SECONDS
+	if _mtimes != current_mtimes():
+		reload_from(_res_path, _user_path)
+		return true
+	return false
+
+## mtime de chaque fichier surveillé : les deux JSON réellement chargés et le
+## SVG retenu pour chaque asset (user:// en priorité). Comparé par égalité de
+## Dictionary.
+static func current_mtimes() -> Dictionary:
+	var out: Dictionary = {}
+	for path: String in [_res_path, _user_path]:
+		out[path] = FileAccess.get_modified_time(path)
+	for asset: String in ASSETS:
+		var chosen := asset_path(asset)
+		if chosen != "":
+			out[chosen] = FileAccess.get_modified_time(chosen)
+	return out
+
+## `user://` d'abord : c'est le principe de `style.css`, la personnalisation
+## locale écrase le fichier livré.
+static func asset_path(asset: String) -> String:
+	for dir: String in [USER_DIR, RES_DIR]:
+		var path := "%s/%s.svg" % [dir, asset]
+		if ResourceLoader.exists(path):
+			return path
+	return ""
+
+static func texture(asset: String) -> Texture2D:
+	if not _loaded:
+		reload()
+	return _textures.get(asset, null)
+
+static func _load_asset(asset: String) -> Texture2D:
+	var path := asset_path(asset)
+	if path == "":
+		return null
+	# CACHE_MODE_REPLACE : sans lui un SVG réédité resterait l'ancienne version
+	# en cache, et le rechargement automatique ne se verrait pas à l'écran.
+	var res := ResourceLoader.load(path, "Texture2D", ResourceLoader.CACHE_MODE_REPLACE)
+	return res as Texture2D
+
+static func border_piece(piece: String) -> AtlasTexture:
+	if not _loaded:
+		reload()
+	var src := texture("border")
+	if src == null:
+		return null
+	var key := "border:" + piece
+	if _atlas.has(key):
+		return _atlas[key]
+	var rect: Rect2 = border_source_rects(src.get_size(), metrics()).get(piece, Rect2())
+	if rect.size.x <= 0.0 or rect.size.y <= 0.0:
+		return null
+	var at := AtlasTexture.new()
+	at.atlas = src
+	at.region = rect
+	at.filter_clip = true
+	_atlas[key] = at
+	return at
+
+static func button_atlas(action: String, state: int) -> AtlasTexture:
+	if not _loaded:
+		reload()
+	var src := texture(action)
+	if src == null:
+		return null
+	var key := "%s:%d" % [action, state]
+	if _atlas.has(key):
+		return _atlas[key]
+	var rects := button_state_rects(src.get_size(),
+		float(metrics().get("button_states", 3.0)))
+	if rects.is_empty():
+		return null
+	var at := AtlasTexture.new()
+	at.atlas = src
+	at.region = rects[clampi(state, 0, rects.size() - 1)]
+	at.filter_clip = true
+	_atlas[key] = at
+	return at

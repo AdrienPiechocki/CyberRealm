@@ -5,6 +5,24 @@ extends Node
 const Runner := preload("res://tests/runner.gd")
 const Decorations := preload("res://scripts/ui/window_decorations.gd")
 
+const RES_TEST_JSON := "user://deco_test_res.json"
+const USER_TEST_JSON := "user://deco_test_user.json"
+
+## Repart d'un état propre : l'état statique du loader est partagé par TOUS les
+## fichiers de test du runner (un seul process), donc chaque test qui touche aux
+## metrics restaure le défaut du jeu et efface ses fichiers temporaires.
+func _reset_deco() -> void:
+	for p: String in [RES_TEST_JSON, USER_TEST_JSON]:
+		if FileAccess.file_exists(p):
+			DirAccess.remove_absolute(ProjectSettings.globalize_path(p))
+	Decorations.load_config()
+	Decorations.tick(10.0)
+
+func _write(path: String, body: String) -> void:
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_string(body)
+	f.close()
+
 func _fail(res: Variant) -> bool:
 	return res is String and res != ""
 
@@ -179,3 +197,90 @@ func test_world_metrics_scale_px() -> Variant:
 	if _fail(r):
 		return r
 	return Runner.assert_true(w["button"] < w["titlebar"], "un bouton tient dans la barre")
+func test_bundled_json_is_readable() -> Variant:
+	_reset_deco()
+	var m: Dictionary = Decorations.metrics()
+	var r = Runner.assert_eq(m["titlebar_height"], 20.0, "défaut res://ui/decorations/decorations.json")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(m["button_alignment"], "right", "alignement du fichier livré")
+	if _fail(r):
+		return r
+	return Runner.assert_eq(m["border_size"], 10.0, "épaisseur du cadre")
+
+func test_user_file_overrides_res_key_by_key() -> Variant:
+	_reset_deco()
+	_write(RES_TEST_JSON, '{"titlebar_height": 24, "button_gap": 9}')
+	_write(USER_TEST_JSON, '{"titlebar_height": 30}')
+	Decorations.load_config(RES_TEST_JSON, USER_TEST_JSON)
+	var m: Dictionary = Decorations.metrics()
+	var r = Runner.assert_eq(m["titlebar_height"], 30.0, "user:// gagne sur res://")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(m["button_gap"], 9.0, "une clé absente du user reste celle du res://")
+	if _fail(r):
+		return r
+	_reset_deco()
+	return Runner.assert_eq(Decorations.metrics()["titlebar_height"], 20.0, "retour au défaut après reset")
+
+func test_broken_user_file_keeps_the_bundled_values() -> Variant:
+	_reset_deco()
+	_write(USER_TEST_JSON, '{ "titlebar_height": ')
+	Decorations.load_config(USER_TEST_JSON, USER_TEST_JSON)
+	var r = Runner.assert_eq(Decorations.metrics()["titlebar_height"], 20.0,
+		"un user:// cassé ne doit pas vider la configuration")
+	if _fail(r):
+		return r
+	_reset_deco()
+	return true
+
+func test_tick_reloads_after_a_write() -> Variant:
+	_reset_deco()
+	# Le tick est cadencé à POLL_SECONDS : un tick dans la fenêtre de garde ne
+	# regarde rien, même si un fichier vient d'être écrit.
+	if Decorations.tick(0.1):
+		return "un tick dans la fenêtre de garde ne doit rien faire"
+	# `_reset_deco()` vient de supprimer le fichier et `load_config` mémorise le
+	# mtime à 0 (absent). Le poll recharge les chemins qu'il a réellement chargés :
+	# écrire ensuite change ce mtime pour de bon, sans dépendre de la résolution
+	# en secondes de `get_modified_time`.
+	Decorations.load_config(RES_TEST_JSON, USER_TEST_JSON)
+	if Decorations.tick(0.1):
+		return "un tick dans la fenêtre de garde ne doit rien faire"
+	_write(USER_TEST_JSON, '{"border_size": 14}')
+	if not Decorations.tick(10.0):
+		return "un fichier surveillé doit déclencher un rechargement"
+	var r = Runner.assert_eq(Decorations.metrics()["border_size"], 14.0,
+		"la nouvelle valeur doit être appliquée")
+	if _fail(r):
+		return r
+	if Decorations.tick(10.0):
+		return "sans changement, pas de rechargement"
+	_reset_deco()
+	return true
+
+func test_border_pieces_and_button_atlas() -> Variant:
+	_reset_deco()
+	var piece: AtlasTexture = Decorations.border_piece("topleft")
+	if piece == null:
+		return "border.svg absent ou pièce dégénérée"
+	# La région doit venir des MÉTRIQUES (10×20 px), pas de la taille du fichier :
+	# le test reste donc indépendant du ré-export de l'asset tant que celui-ci
+	# reste un vrai 9-patch, assez grand pour être découpé.
+	var tex_size: Vector2 = Decorations.texture("border").get_size()
+	if tex_size.x < 20.0 or tex_size.y < 40.0:
+		return "border.svg trop petit pour être un 9-patch: " + str(tex_size)
+	var r = Runner.assert_eq(piece.region.size, Vector2(10.0, 20.0), "région du coin")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(piece.atlas, Decorations.texture("border"), "atlas = border.svg")
+	if _fail(r):
+		return r
+	# Deux appels doivent renvoyer le MÊME AtlasTexture (cache), sinon chaque
+	# resync réalloue une texture.
+	if Decorations.border_piece("topleft") != piece:
+		return "le cache d'AtlasTexture ne fonctionne pas"
+	var btn: AtlasTexture = Decorations.button_atlas("close", 0)
+	if btn == null:
+		return "close.svg absent"
+	return Runner.assert_true(btn.region.size.x > 0.0, "région d'état non vide")
