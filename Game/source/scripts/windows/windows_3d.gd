@@ -1374,7 +1374,9 @@ func _start_resize(wid: int, quad: MeshInstance3D, ray_origin: Vector3,
 	# coin dont le côté latéral est partagé reste en lacet ; un coin partagé par
 	# le haut ou le bas seulement passe en tangage ; sans voisin, le resize est
 	# plan, barre de titre comprise (le regard vertical y est la hauteur).
-	resize_hinge_mode = hinge_mode_for(edge, _shared_sides())
+	# Charnière désactivée (RESIZE_HINGE_ENABLED) : un bord partagé ne se déplace
+	# que sur l'axe des fenêtres liées, jamais en profondeur ni en pivotant.
+	resize_hinge_mode = hinge_mode_for(edge, _shared_sides()) if RESIZE_HINGE_ENABLED else ""
 
 # La fenêtre suit le viseur le long du rayon caméra, à profondeur figée
 # (distance capturée au moment du grab) - fonctionne même si la souris ne
@@ -2305,6 +2307,11 @@ static func resized_surface_size(start: Vector2, edge: String, d: Vector2,
 ## Rien n'est lu pendant un drag de coin : le regard le long de l'axe du pivot
 ## y règle déjà l'autre dimension.
 const RESIZE_DEPTH_GAIN := 1.0
+
+## Autorise le pivot (lacet/tangage) d'un bord partagé tiré. Désactivé : le bord
+## partagé reste dans le plan et ne glisse que le long de l'axe de collage
+## (horizontal pour un collage latéral, vertical pour un collage haut/bas).
+const RESIZE_HINGE_ENABLED := false
 
 ## Charnière d'un drag : "" (plan), "yaw" (bord latéral tiré) ou "pitch" (bord
 ## haut/bas tiré).
