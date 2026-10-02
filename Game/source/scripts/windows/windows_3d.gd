@@ -162,6 +162,9 @@ var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1
 
 var resizing_edge := "" # "left", "right", "top", "bottom", etc.
 var is_resizing := false
+# Bouton de barre survolé : évite d'écrire une texture par frame quand rien
+# n'a changé.
+var _hover_btn: StaticBody3D = null
 var is_moving := false
 var active_window_id := -1
 var is_in_window := false
@@ -562,6 +565,18 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	quad.global_basis = camera.global_transform.basis
 
 	window_created.emit(id, quad)
+
+func _process(delta: float) -> void:
+	# Le décor est rechargé depuis un fichier, comme le thème CSS : le tick
+	# renvoie true quand un mtime a changé.
+	if Decorations.tick(delta):
+		_sync_all_decorations()
+
+func _sync_all_decorations() -> void:
+	for id: int in quads.keys():
+		var quad: MeshInstance3D = quads[id]
+		if is_instance_valid(quad):
+			_sync_decorations(quad)
 	windows_state_changed.emit()
 
 # Le client peut changer son titre à tout moment (xdg-shell set_title) :
@@ -868,6 +883,9 @@ func on_popup_texture_updated(id: int, texture: Texture2D, width: int, height: i
 # Gère hover/clic/scroll vers les fenêtres et popups, ainsi que les grabs
 # de déplacement (G) et de redimensionnement (bords/coins).
 func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, interact_active: bool) -> void:
+	# Un bouton ne reste allumé que le temps où le rayon le vise vraiment : les
+	# branches de grab, de resize et de rayon dans le vide reviennent toutes ici.
+	_set_hover(null)
 	# Seule entrée appelée TOUTES les frames, grabs ou non : c'est donc ici
 	# qu'on rallume et qu'on éteint la surveillance des zones de collage, sans
 	# avoir à toucher aux six sites de prise et de relâchement. L'appel est
@@ -956,6 +974,13 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	if body.has_meta("popup_id"):
 		is_in_window = true
 		_handle_popup_pointer(body, hit, ray_origin, ray_dir)
+		return
+
+	if body.has_meta("decoration_edge"):
+		# Clic sur le cadre : il EST la bordure de la fenêtre, donc la poignée
+		# de redimensionnement. Rien n'est forwardé vers l'app.
+		is_in_window = true
+		_handle_decoration_edge(body, ray_origin, ray_dir)
 		return
 
 	if body.has_meta("titlebar_button"):
@@ -1199,6 +1224,41 @@ func toggle_window_fullscreen(id: int, fullscreen: bool) -> void:
 # fenêtre : on tire la hauteur, bord bas et largeur restent en place. Même
 # mécanique que le drag d'un bord (helper _start_resize), le seul écart est
 # que la barre n'est pas un bord de l'écran : on la vise directement.
+# Clic sur le cadre de la fenêtre : même mécanique que le drag d'un bord, le
+# cadre en étant la bordure. `edge` vient de la meta de la pièce.
+func _handle_decoration_edge(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3) -> void:
+	var quad := body.get_parent().get_parent() as MeshInstance3D
+	if quad == null:
+		return
+	var wid: int = int(body.get_meta("window_of", -1))
+	if Input.is_action_just_pressed("left_click", false):
+		focused_window_id = wid
+		_start_resize(wid, quad, ray_origin, ray_dir, str(body.get_meta("decoration_edge", "")))
+	if Input.is_action_just_released("left_click", false):
+		_release_resize_gesture(wid)
+
+# Allume le bouton visé et éteint le précédent. L'état n'est écrit que s'il
+# change : la meta `button_state` sert de garde.
+func _set_hover(body: StaticBody3D) -> void:
+	if _hover_btn != body:
+		if is_instance_valid(_hover_btn):
+			_apply_button_state(_hover_btn, 0)
+		_hover_btn = body
+	if is_instance_valid(_hover_btn):
+		_apply_button_state(_hover_btn,
+			2 if Input.is_action_pressed("left_click", false) else 1)
+
+func _apply_button_state(body: StaticBody3D, state: int) -> void:
+	if int(body.get_meta("button_state", -1)) == state:
+		return
+	body.set_meta("button_state", state)
+	var info: Dictionary = body.get_meta("titlebar_button", {})
+	if info.is_empty():
+		return
+	var wid: int = int(info["wid"])
+	WindowDecoration.set_button_state(body, str(info["action"]), state,
+		fullscreen_windows.get(wid, false))
+
 func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3) -> void:
 	var titlebar: MeshInstance3D = body.get_parent()
 	var quad: MeshInstance3D = titlebar.get_parent()
@@ -1210,11 +1270,14 @@ func _handle_titlebar(body: StaticBody3D, ray_origin: Vector3, ray_dir: Vector3)
 		# Press + release sur la MÊME frame (clic rapide) : le relâchement
 		# inter-frame passe par la branche is_resizing de process_raycast, pas
 		# ici — réattacher ici garantit l'équilibre détachement/reliure.
-		_set_window_occluder_active(wid, true)
-		is_resizing = false
-		_end_group_resize()
-		resizing_edge = ""
-		active_window_id = -1
+		_release_resize_gesture(wid)
+
+func _release_resize_gesture(wid: int) -> void:
+	_set_window_occluder_active(wid, true)
+	is_resizing = false
+	_end_group_resize()
+	resizing_edge = ""
+	active_window_id = -1
 
 # UV exact sur le plan visuel du quad : le point renvoyé par le raycast est
 # sur la face avant du boîtier de collision (épais), donc décalé du plan

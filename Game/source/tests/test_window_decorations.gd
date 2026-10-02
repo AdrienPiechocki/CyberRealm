@@ -573,4 +573,104 @@ func test_snap_zones_follow_the_frame() -> Variant:
 	var r = Runner.assert_approx(zone.position.x, -expected_x, 0.001, "zone Recentrée sur le bord du cadre")
 	if _fail(r):
 		return r
+	_teardown()
 	return Runner.assert_approx(box.size.z, 0.3, 0.001, "épaisseur de capture inchangée")
+
+func test_frame_edge_starts_a_resize() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var frame := _quad().get_node_or_null("Decoration/FrameLeft") as StaticBody3D
+	if frame == null:
+		return "FrameLeft manquant"
+	var cam: Camera3D = player.get_node("Camera3D")
+	var quad := _quad()
+	var dir := (quad.global_position - cam.global_position).normalized()
+	# Séquence d'appui sondée et validée dans ce runner : `action_release` +
+	# `physics_frame` font vieillir le faux « relâchement » laissé par le test
+	# précédent, puis `action_press` + `physics_frame` rend `just_pressed` vrai
+	# ET `just_released` faux. Avec `process_frame` les deux restent faux ; avec
+	# un simple `action_press` les deux sont vrais et le handler annule son propre
+	# resize dans la même frame.
+	Input.action_release("left_click")
+	await get_tree().physics_frame
+	Input.action_press("left_click")
+	await get_tree().physics_frame
+	win3d._handle_decoration_edge(frame, cam.global_position, dir)
+	var r = Runner.assert_true(win3d.is_resizing, "un clic sur le cadre doit démarrer un resize")
+	if _fail(r):
+		return r
+	r = Runner.assert_eq(win3d.resizing_edge, "left", "le bord gauche du cadre tire la gauche")
+	if _fail(r):
+		return r
+	Input.action_release("left_click")
+	_teardown()
+	return true
+
+func test_hidden_frame_is_not_a_resize_handle() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	# CSD : le client dessine son propre cadre, nos poignées doivent être mortes,
+	# sinon on resize la fenêtre sur une bordure qui n'est pas à l'écran.
+	win3d.on_window_decorations_changed(3, false)
+	var frame := _quad().get_node_or_null("Decoration/FrameLeft") as StaticBody3D
+	var col := frame.get_child(0) as CollisionShape3D
+	var r = Runner.assert_true(col.disabled, "poignée de cadre désactivée en CSD")
+	if _fail(r):
+		return r
+	_teardown()
+	return true
+
+func test_button_state_atlas_swaps_to_restore() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	var btn := _quad().get_node_or_null("Titlebar/BtnMaximize") as StaticBody3D
+	var visual := btn.get_child(1) as MeshInstance3D
+	var mat := visual.material_override as StandardMaterial3D
+	# Comparaison d'IDENTITÉ d'AtlasTexture, pas de région : les SVG actuels
+	# n'ont qu'une seule cellule visible, et le test ne doit pas dépendre du
+	# ré-export des assets.
+	Decoration.set_button_state(btn, "maximize", 0, false)
+	var normal := mat.albedo_texture as AtlasTexture
+	Decoration.set_button_state(btn, "maximize", 1, false)
+	var hover := mat.albedo_texture as AtlasTexture
+	if normal == null or hover == null or hover == normal:
+		return "l'état survolé doit être une autre région de la bande"
+	Decoration.set_button_state(btn, "maximize", 0, true)
+	var restore := mat.albedo_texture as AtlasTexture
+	if restore == null or restore == normal:
+		return "le plein écran doit remplacer l'icône par restore.svg"
+	_teardown()
+	return true
+
+func test_reload_resyncs_every_window() -> Variant:
+	var build: Variant = _build_world()
+	if _fail(build):
+		return build
+	# Le tick ne recharge que sur changement de mtime : on écrit le JSON
+	# utilisateur, on force la fenêtre de garde, puis on déclenche le resync
+	# comme le fait `_process` (qu'un test synchrone ne fait pas tourner).
+	# Les chemins de test sont armés d'abord : `_reset_deco()` a laissé le loader
+	# surveiller les chemins DE PRODUCTION, où notre écriture serait invisible.
+	Decorations.load_config(RES_TEST_JSON, USER_TEST_JSON)
+	_write(USER_TEST_JSON, '{"titlebar_height": 30}')
+	if not Decorations.tick(10.0):
+		return "le tick doit voir le JSON modifié"
+	win3d._sync_all_decorations()
+	var quad := _quad()
+	var mesh: QuadMesh = quad.mesh
+	var s: float = Decorations.px_scale(Vector2(1000.0, 500.0), mesh.size)
+	var bar := quad.get_node_or_null("Titlebar") as MeshInstance3D
+	var r = Runner.assert_approx((bar.mesh as QuadMesh).size.y, 30.0 * s, 0.001,
+		"la barre doit suivre la nouvelle métrique")
+	if _fail(r):
+		return r
+	r = Runner.assert_approx(bar.position.y, mesh.size.y * 0.5 + 15.0 * s, 0.001,
+		"et rester collée au bord haut du contenu")
+	if _fail(r):
+		return r
+	_teardown()
+	_reset_deco()
+	return true
