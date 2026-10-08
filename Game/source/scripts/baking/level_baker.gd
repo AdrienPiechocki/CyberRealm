@@ -66,6 +66,9 @@ static func bake(root: Node3D) -> Dictionary:
 	if ResourceSaver.save(scene, BAKE_TMP_PATH) != OK:
 		push_error("LevelBaker: saving the level failed")
 		return {}
+	for dep in ResourceLoader.get_dependencies(BAKE_TMP_PATH):
+		if not String(dep).contains("lan_mirror"):
+			push_warning("LevelBaker: EXTERNAL DEP — " + String(dep))
 	var f := FileAccess.open(BAKE_TMP_PATH, FileAccess.READ)
 	if f == null:
 		push_error("LevelBaker: failed to read the temporary bake")
@@ -244,11 +247,33 @@ static func _relink(orig: Node, exclude: Node, cache: Dictionary) -> void:
 	for c in orig.get_children():
 		_relink(c, exclude, cache)
 
+static var _inc_re: RegEx = null
+
+static func _inline_includes(code: String, depth := 0) -> String:
+	if _inc_re == null:
+		_inc_re = RegEx.create_from_string("(?m)^[ \\t]*#include[ \\t]+\"(res://user/[^\"]+)\"[ \\t]*$")
+	if depth > 8:
+		return code
+	var out := ""
+	var last := 0
+	for m in _inc_re.search_all(code):
+		out += code.substr(last, m.get_start() - last)
+		out += _inline_includes(FileAccess.get_file_as_string(m.get_string(1)), depth + 1)
+		last = m.get_end()
+	return out + code.substr(last)
+
 static func _embed(r: Resource, cache: Dictionary) -> Resource:
 	if r is Script:
 		# Scripts cités comme ressources (var exportée typée, etc.) : même
 		# remappage que les scripts de nœuds.
 		return _script_remap.get(r, r)
+	if r is Shader and not r is VisualShader:
+		if cache.has(r):
+			return cache[r]
+		var s := Shader.new()
+		s.code = _inline_includes((r as Shader).code)
+		cache[r] = s
+		return s
 	if cache.has(r):
 		return cache[r]
 	if r is Mesh:
