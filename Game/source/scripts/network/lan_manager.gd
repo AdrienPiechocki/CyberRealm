@@ -1250,13 +1250,15 @@ func _prepare_level_send_cache() -> bool:
 		_lan_log("level bake in %d ms — %d KB raw" % [Time.get_ticks_msec() - t0,
 			int((_level_baked_cache["bytes"] as PackedByteArray).size()) / 1024])
 	if _level_compressed_cache.is_empty():
-		var bytes: PackedByteArray = _level_baked_cache["bytes"]
+		var scn: PackedByteArray = _level_baked_cache["bytes"]
+		var payload := LevelBaker.pack_payload(_level_baked_cache.get("assets", {}), scn)
+		_level_baked_cache["payload_size"] = payload.size()
 		var tc := Time.get_ticks_msec()
-		_level_compressed_cache = bytes.compress(FileAccess.COMPRESSION_ZSTD)
+		_level_compressed_cache = payload.compress(FileAccess.COMPRESSION_ZSTD)
 		if _level_compressed_cache.is_empty():
-			_level_compressed_cache = bytes   # repli identique à l'actuel : on envoie brut
+			_level_compressed_cache = payload
 		_lan_log("level compress in %d ms — %d KB → %d KB" % [Time.get_ticks_msec() - tc,
-			bytes.size() / 1024, _level_compressed_cache.size() / 1024])
+			payload.size() / 1024, _level_compressed_cache.size() / 1024])
 	return true
 
 # Vide les deux caches (bake + compressé) : le niveau a changé ou la session
@@ -1300,7 +1302,7 @@ func _send_level_to(id: int) -> void:
 		"spawn": data.get("spawn", Vector3.ZERO),
 		"rotation": data.get("spawn_rotation", Vector3.ZERO),
 		"scale": data.get("spawn_scale", Vector3.ONE),
-		"size": int(data.get("bytes", PackedByteArray()).size()),
+		"size": int(data.get("payload_size", 0)),
 		"total": chunks.size(),
 		"sent": 0,
 		# Dernier palier 10 % loggé (T6) : la progression hôte se lit dans
@@ -1497,14 +1499,28 @@ func _level_decode_worker(spec: Dictionary) -> void:
 	if bytes.is_empty() or bytes.size() != int(spec["size"]):
 		res["err"] = "decompress failed (%d ≠ %d)" % [bytes.size(), int(spec["size"])]
 	else:
-		var f := FileAccess.open(String(spec["path"]), FileAccess.WRITE)
-		if f == null:
-			res["err"] = "could not write %s" % String(spec["path"])
-		else:
-			f.store_buffer(bytes)
-			f.close()
-			res["ok"] = true
-			res["kb"] = bytes.size() / 1024
+		var scn := bytes
+		var ok := true
+		if LevelBaker.is_packed(bytes):
+			var parsed := LevelBaker.unpack_payload(bytes)
+			if not bool(parsed.get("ok", false)):
+				ok = false
+				res["err"] = "invalid asset container"
+			else:
+				var assets: Dictionary = parsed["assets"]
+				for p in assets:
+					if not UserScriptMirror.write_bytes(String(p), assets[p]):
+						push_warning("LAN: cannot write asset %s" % p)
+				scn = bytes.slice(int(parsed["offset"]))
+		if ok:
+			var f := FileAccess.open(String(spec["path"]), FileAccess.WRITE)
+			if f == null:
+				res["err"] = "could not write %s" % String(spec["path"])
+			else:
+				f.store_buffer(scn)
+				f.close()
+				res["ok"] = true
+				res["kb"] = scn.size() / 1024
 	res["ms"] = Time.get_ticks_msec() - t0
 	_level_decode_mutex.lock()
 	_level_decode_results.append(res)

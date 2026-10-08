@@ -16,6 +16,11 @@ extends RefCounted
 ## transmis à part via un manifeste {chemin → source} que les pairs écrivent
 ## sur disque avant de charger le blob (UserScriptMirror).
 
+const ASSET_EXTS := ["json", "txt", "csv", "tres", "gdshader", "gdshaderinc", "bin", "dat", "raw"]
+const REWRITE_EXTS := ["tres", "gdshader", "gdshaderinc"]  # texte contenant des res://user/
+const MAX_ASSET_BYTES := 96 * 1024 * 1024
+const PACK_MAGIC := "CRPK"
+
 const BAKE_TMP_PATH := "user://lan_bake.scn"
 
 # Taille max des textures embarquées (0 = pas de limite). Positionné par
@@ -34,6 +39,10 @@ static var keep_surface_format := false
 # (fichiers que UserScriptMirror.install() recrée chez les pairs).
 static var _script_remap: Dictionary = {}
 static var _ref_regex: RegEx = null
+
+static var _asset_files: Dictionary = {}  # res://… -> true
+static var _batch := ""
+static var _asset_ref_re: RegEx = null
 
 static func bake(root: Node3D) -> Dictionary:
 	if root == null:
@@ -79,8 +88,60 @@ static func bake(root: Node3D) -> Dictionary:
 		push_error("LevelBaker: empty blob after reading")
 		return {}
 	_relink(root, player, cache)
+	var assets := _collect_assets()
 	push_warning("LevelBaker: bake OK — %d KB (%d user scripts)" % [bytes.size() / 1024, manifest.size()])
-	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale, "scripts": manifest}
+	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale, "scripts": manifest, "assets": assets}
+
+
+static func _put_u32(a: PackedByteArray, v: int) -> void:
+	var o := a.size()
+	a.resize(o + 4)
+	a.encode_u32(o, v)
+
+static func pack_payload(assets: Dictionary, scn: PackedByteArray) -> PackedByteArray:
+	if assets.is_empty():
+		return scn  # format historique, aucune copie
+	var out := PACK_MAGIC.to_ascii_buffer()
+	_put_u32(out, assets.size())
+	for p in assets:
+		var pb := String(p).to_utf8_buffer()
+		var d: PackedByteArray = assets[p]
+		_put_u32(out, pb.size())
+		out.append_array(pb)
+		_put_u32(out, d.size())
+		out.append_array(d)
+	out.append_array(scn)
+	return out
+
+static func is_packed(payload: PackedByteArray) -> bool:
+	return payload.size() > 8 and payload.slice(0, 4).get_string_from_ascii() == PACK_MAGIC
+
+static func unpack_payload(payload: PackedByteArray) -> Dictionary:
+	var pos := 4
+	var n := payload.decode_u32(pos)
+	pos += 4
+	var assets := {}
+	var total := 0
+	if n > 4096:
+		return {"ok": false}
+	for i in n:
+		if pos + 4 > payload.size():
+			return {"ok": false}
+		var pl := payload.decode_u32(pos)
+		pos += 4
+		if pl == 0 or pl > 1024 or pos + pl + 4 > payload.size():
+			return {"ok": false}
+		var path := payload.slice(pos, pos + pl).get_string_from_utf8()
+		pos += pl
+		var dl := payload.decode_u32(pos)
+		pos += 4
+		total += dl
+		if total > MAX_ASSET_BYTES or pos + dl > payload.size() \
+				or not path.begins_with(UserScriptMirror.MIRROR_ROOT + "/") or ".." in path:
+			return {"ok": false}
+		assets[path] = payload.slice(pos, pos + dl)
+		pos += dl
+	return {"ok": true, "assets": assets, "offset": pos}
 
 # ── Scripts utilisateur pour le LAN ──────────────────────────────────
 
@@ -97,6 +158,8 @@ static func bake(root: Node3D) -> Dictionary:
 ## aucun script utilisateur (rien à transmettre, comportement inchangé).
 static func prepare_user_scripts(root: Node) -> Dictionary:
 	_script_remap.clear()
+	_asset_files.clear()
+	_batch = UserScriptMirror.new_batch()
 	var classes := UserScriptMirror.scan_classes()
 	var found := {} # res://chemin -> Script attaché à un nœud de l'arbre
 	_collect_scripts(root, found)
@@ -118,9 +181,12 @@ static func prepare_user_scripts(root: Node) -> Dictionary:
 		if String(sources[p]).is_empty():
 			push_warning("LevelBaker: empty source for %s — exported build with compiled scripts? " % p
 				+ "script_export_mode must be 0 (Text) for LAN sharing.")
+	for p in sources:
+		for a in _scan_asset_refs(sources[p]):
+			_register_asset(a)
 	if sources.is_empty():
 		return {}
-	var batch := UserScriptMirror.new_batch()
+	var batch := _batch
 	var manifest := {}
 	for p in sources:
 		manifest[UserScriptMirror.mirror_path(p, batch)] = \
@@ -133,6 +199,74 @@ static func prepare_user_scripts(root: Node) -> Dictionary:
 			continue
 		_script_remap[found[p]] = copy
 	return manifest
+
+static func _scan_asset_refs(text: String) -> Array:
+	if _asset_ref_re == null:
+		_asset_ref_re = RegEx.create_from_string("[\"'](res://user/[^\"'\\n]*)[\"']")
+	var out: Array = []
+	for m in _asset_ref_re.search_all(text):
+		out.append(m.get_string(1))
+	return out
+
+## true si `path` (fichier ou dossier « …/ ») sera transmis → à remapper.
+static func _register_asset(path: String) -> bool:
+	if not path.begins_with(UserScriptMirror.RES_PREFIX):
+		return false
+	if path.ends_with("/"):
+		_add_asset_dir(path)
+		return true
+	if path.get_extension().to_lower() not in ASSET_EXTS or not FileAccess.file_exists(path):
+		return false
+	_asset_files[path] = true
+	return true
+
+static func _add_asset_dir(dir: String) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var f := d.get_next()
+	while f != "":
+		if not f.begins_with("."):
+			var p := dir.path_join(f)
+			if d.current_is_dir():
+				_add_asset_dir(p + "/")
+			else:
+				_register_asset(p)
+		f = d.get_next()
+	d.list_dir_end()
+
+## {chemin_miroir -> octets} : fermeture transitive via les fichiers texte.
+static func _collect_assets() -> Dictionary:
+	var out := {}
+	var seen := {}
+	var total := 0
+	while true:
+		var todo: Array = []
+		for p in _asset_files:
+			if not seen.has(p):
+				todo.append(p)
+		if todo.is_empty():
+			break
+		for p: String in todo:
+			seen[p] = true
+			var data := FileAccess.get_file_as_bytes(p)
+			if data.is_empty():
+				push_warning("LevelBaker: asset unreadable/empty — %s (export filter?)" % p)
+				continue
+			total += data.size()
+			if total > MAX_ASSET_BYTES:
+				push_warning("LevelBaker: assets cap reached (%d MB) — %s skipped" % [MAX_ASSET_BYTES >> 20, p])
+				return out
+			var ext := p.get_extension().to_lower()
+			if ext in REWRITE_EXTS:
+				var text := data.get_string_from_utf8()
+				for r in _scan_asset_refs(text):
+					_register_asset(r)
+				data = UserScriptMirror.rewrite_paths(text, _batch, ext).to_utf8_buffer()
+			out[UserScriptMirror.mirror_path(p, _batch)] = data
+	push_warning("LevelBaker: %d asset files, %d KB" % [out.size(), total / 1024])
+	return out
 
 static func _collect_scripts(n: Node, out: Dictionary) -> void:
 	var s := n.get_script() as Script
@@ -211,6 +345,12 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 				if dict[k] is Resource:
 					dict[k] = _embed(dict[k], cache)
 			node.set(pname, dict)
+		elif v is String or v is StringName:
+			var s := String(v)
+			if s.begins_with(UserScriptMirror.RES_PREFIX) and _register_asset(s):
+				node.set(pname, UserScriptMirror.mirror_path(s, _batch))
+			else:
+				node.set(pname, v)
 		else:
 			node.set(pname, v)
 	for c in orig.get_children():

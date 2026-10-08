@@ -98,7 +98,7 @@ static func valid(manifest: Dictionary) -> bool:
 	var total := 0
 	for k in manifest:
 		var p := String(k)
-		if not p.begins_with(MIRROR_ROOT + "/"):
+		if not p.begins_with(MIRROR_ROOT + "/") or ".." in p:
 			return false
 		total += String(manifest[k]).length()
 	if total > MAX_MANIFEST_BYTES:
@@ -149,3 +149,20 @@ static func _remove_dir_recursive(path: String) -> void:
 		f = d.get_next()
 	d.list_dir_end()
 	DirAccess.remove_absolute(path)
+
+static func rewrite_paths(text: String, batch: String, ext: String) -> String:
+	var out := text.replace(RES_PREFIX, batch_prefix(batch))
+	if ext == "tres":  # uid inconnu côté pair : forcer la résolution par chemin
+		out = RegEx.create_from_string(" uid=\"uid://[^\"]*\"").sub(out, "", true)
+	return out
+
+static func write_bytes(path: String, data: PackedByteArray) -> bool:
+	if not path.begins_with(MIRROR_ROOT + "/") or ".." in path:
+		return false
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_buffer(data)
+	f.close()
+	return true
