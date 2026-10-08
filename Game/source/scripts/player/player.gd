@@ -3,11 +3,12 @@ extends CharacterBody3D
 @export var MaxDepth := 50
 @export var StepHeight := 0.5 # hauteur max d'UNE marche
 @export var StepSmoothSpeed := 12.0
+@export var gravity:float = 9.8
+
 var _cam_rest_y := 0.0
 var _body_radius := 0.3
 var _floor_grace := 0.0
 
-var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 var speed = 5
 var jump_speed = 3
 var mouse_sensitivity = 0.002
