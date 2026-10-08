@@ -100,6 +100,12 @@ func setup(id: int, pname: String, color: Color) -> void:
 	#_make_label_no_depth_test(_label)
 	_label.text = pname
 	_label.no_depth_test = true
+	# L'eau est transparente (ALPHA = edge) et recopie screen_texture : tout ce
+	# qui est dessiné avant elle dans la passe transparente est écrasé. Le tri
+	# par distance place l'eau (énorme) après le label ; render_priority force
+	# le label à passer en dernier (outline juste en dessous).
+	_label.render_priority = 100
+	_label.outline_render_priority = 99
 
 	# AnimationPlayer — uniquement si au moins une animation est configurée.
 	if anim_idle != &"" or anim_walk != &"" or anim_jump != &"":
