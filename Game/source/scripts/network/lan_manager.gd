@@ -1881,6 +1881,7 @@ func _bake_avatar() -> Dictionary:
 		return {}
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
+	LevelBaker._relink(root, null, cache)
 	push_warning("LAN: avatar baked — %d KB (%d scripts user)" % [bytes.size() / 1024, manifest.size()])
 	LevelBaker.max_texture_size = 0
 	LevelBaker.keep_surface_format = false

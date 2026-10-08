@@ -75,6 +75,7 @@ static func bake(root: Node3D) -> Dictionary:
 	if bytes.is_empty():
 		push_error("LevelBaker: empty blob after reading")
 		return {}
+	_relink(root, player, cache)
 	push_warning("LevelBaker: bake OK — %d KB (%d user scripts)" % [bytes.size() / 1024, manifest.size()])
 	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale, "scripts": manifest}
 
@@ -168,6 +169,9 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	if node == null:
 		return null
 	node.name = orig.name
+	cache[orig] = node   # table orig -> clone
+	if orig.is_in_group("lan_skip_children"):
+		return node
 	var script: Script = orig.get_script()
 	if script != null:
 		# Script utilisateur remappé : attacher la copie miroir (sinon le pack
@@ -183,6 +187,8 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 		if pname == "script" or pname == "owner":
 			continue
 		var v = orig.get(pname)
+		if v is Node:
+			continue
 		if v is Resource:
 			node.set(pname, _embed(v, cache))
 		elif v is Array:
@@ -211,6 +217,32 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 		if sub != null:
 			node.add_child(sub)
 	return node
+
+static func _relink(orig: Node, exclude: Node, cache: Dictionary) -> void:
+	if orig == exclude or not cache.has(orig):
+		return
+	var clone: Node = cache[orig]
+	if orig.get_script() != null:
+		for p in orig.get_property_list():
+			if int(p.get("usage", 0)) & PROPERTY_USAGE_STORAGE == 0:
+				continue
+			var pname := String(p.get("name"))
+			if pname == "script" or pname == "owner":
+				continue
+			var v = orig.get(pname)
+			if v is Node:
+				clone.set(pname, cache.get(v, null))   # null si exclu (Player)
+			elif v is Array:
+				var arr: Array = v.duplicate()
+				var has_node := false
+				for i in arr.size():
+					if arr[i] is Node:
+						arr[i] = cache.get(arr[i], null)
+						has_node = true
+				if has_node:
+					clone.set(pname, arr)
+	for c in orig.get_children():
+		_relink(c, exclude, cache)
 
 static func _embed(r: Resource, cache: Dictionary) -> Resource:
 	if r is Script:
@@ -348,14 +380,17 @@ static func _embed_material(r: Material, cache: Dictionary) -> Material:
 static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 	if cache.has(tex):
 		return cache[tex]
+	# Créée par compute au runtime : le script la recrée chez le pair.
+	if tex.get_class() == "Texture2DRD":
+		cache[tex] = null
+		return null
 	var img: Image = null
-	if tex is CompressedTexture2D:
+	# NoiseTexture2D : on la garde procédurale (quelques Ko, régénérée au load).
+	if not tex is NoiseTexture2D:
 		img = tex.get_image()
-	elif tex is ImageTexture:
-		img = tex.get_image()
-	if img == null and not tex.resource_path.is_empty():
-		img = Image.load_from_file(tex.resource_path)
-	if img != null:
+		if img == null and tex.resource_path.get_extension() in ["png", "jpg", "jpeg", "webp", "exr", "hdr", "tga", "bmp"]:
+			img = Image.load_from_file(tex.resource_path)
+	if img != null and not img.is_empty():
 		if max_texture_size > 0:
 			var w := img.get_width()
 			var h := img.get_height()
@@ -366,10 +401,15 @@ static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 		emb.resource_path = ""
 		cache[tex] = emb
 		return emb
-	# Fallback : retourner la texture originale (risque d'erreur côté client).
-	push_warning("LevelBaker: fallback texture not converted — %s (%s)" % [tex.resource_path, tex.get_class()])
-	cache[tex] = tex
-	return tex
+	# Fallback embarqué : duplicata sans chemin + ressources imbriquées (noise…).
+	var dup := tex.duplicate(true) as Texture2D
+	if dup == null:
+		cache[tex] = null
+		return null
+	dup.resource_path = ""
+	cache[tex] = dup
+	_embed_nested(dup, cache)
+	return dup
 
 static func _own_all(n: Node, root: Node) -> void:
 	n.owner = root if n != root else null
