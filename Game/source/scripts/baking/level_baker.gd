@@ -93,16 +93,16 @@ static func bake(root: Node3D) -> Dictionary:
 ## aucun script utilisateur (rien à transmettre, comportement inchangé).
 static func prepare_user_scripts(root: Node) -> Dictionary:
 	_script_remap.clear()
+	var classes := UserScriptMirror.scan_classes()
 	var found := {} # res://chemin -> Script attaché à un nœud de l'arbre
 	_collect_scripts(root, found)
-	# Sources complètes : objets attachés + dépendances transitives.
 	var sources := {} # res://chemin -> source originale
 	var scan_queue: Array = []
 	for p in found:
 		sources[p] = _script_source(found[p])
 		scan_queue.append(p)
 	while not scan_queue.is_empty():
-		for r in _scan_refs(sources[scan_queue.pop_front()]):
+		for r in _scan_refs(sources[scan_queue.pop_front()], classes):
 			if sources.has(r):
 				continue
 			if not FileAccess.file_exists(r):
@@ -119,11 +119,9 @@ static func prepare_user_scripts(root: Node) -> Dictionary:
 	var batch := UserScriptMirror.new_batch()
 	var manifest := {}
 	for p in sources:
-		manifest[UserScriptMirror.mirror_path(p, batch)] = UserScriptMirror.rewritten_source(sources[p], batch)
+		manifest[UserScriptMirror.mirror_path(p, batch)] = \
+			UserScriptMirror.rewritten_source(sources[p], batch, p, classes)
 	UserScriptMirror.install(manifest)
-	# Copies chargées depuis le miroir (une définition par chemin, même si le
-	# script est attaché à plusieurs nœuds) : resource_path = miroir → pack()
-	# enregistre une ext_resource que les pairs résolvent après install().
 	for p in found:
 		var copy := load(UserScriptMirror.mirror_path(p, batch)) as Script
 		if copy == null:
@@ -149,7 +147,7 @@ static func _script_source(s: Script) -> String:
 ## Références res://user/**.gd présentes dans une source : preload()/load()
 ## avec littéral, et extends "chemin". Les chemins construits dynamiquement ne
 ## sont pas détectés (limite documentée côté utilisateur).
-static func _scan_refs(source: String) -> Array:
+static func _scan_refs(source: String, classes := {}) -> Array:
 	if source.is_empty():
 		return []
 	if _ref_regex == null:
@@ -160,6 +158,9 @@ static func _scan_refs(source: String) -> Array:
 		var p := m.get_string(1)
 		if UserScriptMirror.is_user_script_path(p):
 			out.append(p)
+	for n in classes:
+		if UserScriptMirror.uses_class(source, n):
+			out.append(classes[n])
 	return out
 
 static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:

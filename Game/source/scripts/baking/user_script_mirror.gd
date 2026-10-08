@@ -51,9 +51,47 @@ static func mirror_path(res_path: String, batch: String) -> String:
 static func is_user_script_path(res_path: String) -> bool:
 	return res_path.begins_with(RES_PREFIX) and res_path.ends_with(".gd")
 
-## Réécrit les occurrences de res://user/ d'une source vers le lot.
-static func rewritten_source(source: String, batch: String) -> String:
-	return source.replace(RES_PREFIX, batch_prefix(batch))
+static var _strip_re: RegEx = null
+
+## nom de classe -> chemin res://user/**.gd qui la déclare
+static func scan_classes() -> Dictionary:
+	var out := {}
+	var re := RegEx.create_from_string("(?m)^[ \\t]*class_name[ \\t]+(\\w+)")
+	_scan_dir("res://user", re, out)
+	return out
+
+static func _scan_dir(dir: String, re: RegEx, out: Dictionary) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.list_dir_begin()
+	var f := d.get_next()
+	while f != "":
+		if not f.begins_with("."):
+			var p := dir.path_join(f)
+			if d.current_is_dir():
+				_scan_dir(p, re, out)
+			elif f.ends_with(".gd"):
+				var m := re.search(FileAccess.get_file_as_string(p))
+				if m != null:
+					out[m.get_string(1)] = p
+		f = d.get_next()
+	d.list_dir_end()
+
+static func uses_class(source: String, cname: String) -> bool:
+	return RegEx.create_from_string("\\b%s\\b" % cname).search(source) != null
+
+static func rewritten_source(source: String, batch: String, own_path := "", classes := {}) -> String:
+	var src := source.replace(RES_PREFIX, batch_prefix(batch))
+	if _strip_re == null:
+		_strip_re = RegEx.create_from_string("(?m)^[ \\t]*class_name[ \\t]+\\w+[ \\t]*(?:,[ \\t]*\"[^\"]*\")?")
+	src = _strip_re.sub(src, "", true)
+	var aliases := ""
+	for n in classes:
+		if classes[n] == own_path or not uses_class(source, n):
+			continue
+		aliases += "\nconst %s = preload(\"%s\")" % [n, mirror_path(classes[n], batch)]
+	return src + "\n" + aliases + "\n"
 
 ## Manifeste recevable ? Clés confinées au miroir, taille cumulée bornée.
 static func valid(manifest: Dictionary) -> bool:
