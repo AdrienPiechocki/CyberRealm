@@ -101,7 +101,13 @@ static func heartbeat_is_stale(last_hb: int, now: int, timeout: int) -> bool:
 ## = pas en _pending_join). Pendant le transfert niveau + avatar le thread
 ## principal reste occupé (décode/load) et les heartbeats ne sont pas traités
 ## — les déclarer perdus là serait un faux positif qui arrache la session.
-static func heartbeat_reconnect_should_arm(session_joined: bool, last_hb: int, now: int, timeout: int) -> bool:
+## Ensuite, même après le join : si un chunk de niveau est arrivé dans les
+## `progress_window` ms (`last_progress`), le transfert est vivant → on
+## n'arme pas (un gel bref résiduel ne doit pas arracher la session).
+static func heartbeat_reconnect_should_arm(session_joined: bool, last_hb: int, now: int,
+		timeout: int, last_progress: int = -1, progress_window: int = 5000) -> bool:
+	if session_joined and last_progress >= 0 and now - last_progress < progress_window:
+		return false   # transfert de niveau vivant → un gel bref n'arrache pas la session
 	return session_joined and heartbeat_is_stale(last_hb, now, timeout)
 
 ## Annulation d'un reconnect déjà programmé (backoff en cours) : si le heartbeat
@@ -220,6 +226,16 @@ var _level_send_queue: Dictionary = {}
 var _level_bake_receive: Dictionary = {}
 # Cache (host) du blob baked : re-baké uniquement quand le niveau change.
 var _level_baked_cache: Dictionary = {}
+# Cachés ensemble : le blob bake ET sa compression ZSTD, préparés AU DÉMARRAGE
+# de l'hébergement (host_game), jamais dans le handler RPC _register_player —
+# compresser 379 Mo dans le RPC gelait _process pendant ~10 s, les heartbeats
+# cessaient, le watchdog client expirait au garde-fou de 10 s → boucle de
+# rejoin. Une seule compression par session : chaque join la refaisait aussi.
+var _level_compressed_cache := PackedByteArray()
+# Peers en attente du niveau alors que le cache n'est pas prêt (miss de
+# _send_level_to) : reprise en tête de _drain_level_send, hors RPC.
+var _defer_level_send: Array = []
+var _level_send_deferred := false
 
 # Avatar chunked transfer (même pattern que les niveaux).
 var _avatar_send_queue: Dictionary = {} # peer_id -> {bytes, total, sent}
@@ -697,6 +713,11 @@ func host_game() -> bool:
 	# préchauffables.
 	_level_stable = true
 	_session_start_msec = Time.get_ticks_msec()
+	# Compteur d'émission heartbeat remis à zéro pour cette session : sans
+	# ça, une 2e session d'hébergement dans la même exécution hériterait du
+	# dernier horodatage et le 1er « heartbeat late » serait un faux positif
+	# (garde > 0 côté _process traite le 0 comme une première émission).
+	_last_heartbeat_sent_msec = 0
 	_host_spawn_transform.clear()
 	_players.clear()
 	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
@@ -708,6 +729,13 @@ func host_game() -> bool:
 	_avatar_send_cache = PackedByteArray()
 	_avatar_send_cache_raw_size = 0
 	_avatar_send_scripts_cache = {}
+	# Bake + compression ZSTD préparés ICI, au clic Héberger : jamais dans le
+	# handler RPC _register_player (voir _prepare_level_send_cache). Un host
+	# sans cache reste joignable — le miss de _send_level_to le préparera de
+	# façon différée.
+	_set_status("Preparing host level…")
+	if not _prepare_level_send_cache():
+		_lan_log("level cache prepare failed")
 	_lan_log("host_game — waiting for clients", true)
 	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect%s" % [_local_ip(), PORT, PORT, DISCOVERY_PORT, " (TLS ON)" if session_encrypted else ""])
 	_emit_players()
@@ -759,7 +787,17 @@ func disconnect_session() -> void:
 func _host_heartbeat() -> void:
 	if is_host:
 		return
-	_last_heartbeat_msec = Time.get_ticks_msec()
+	var now := Time.get_ticks_msec()
+	# Retard > 2× l'intervalle : un heartbeat a été perdu ou arrivé très
+	# tard (T6). Ce handler ne s'exécute qu'une fois par heartbeat reçu et la
+	# mise à jour juste après réinitialise l'écart → un log par
+	# franchissement, jamais de martèlement par frame. Garde > 0 : avant toute
+	# connexion le membre vaut 0 et l'écart depuis le démarrage de
+	# l'application serait un faux positif.
+	var gap := now - _last_heartbeat_msec
+	if _last_heartbeat_msec > 0 and gap > 2 * HEARTBEAT_INTERVAL_MSEC:
+		_lan_log("heartbeat gap %d ms from host" % gap)
+	_last_heartbeat_msec = now
 
 ## L'hôte ferme proprement la session : les clients abandonnent la reconnexion.
 @rpc("authority", "reliable")
@@ -1175,50 +1213,116 @@ func _on_peer_connected(id: int) -> void:
 		# socket avec des mégaoctets de chunks, ils sont perdus dès le burst
 		# initial et ne se récupèrent que par retransmissions ENet (~5-8 s).
 
+## Découpe le blob compressé EN UNE passe. Le résultat est stocké dans la
+## file d'envoi : _drain_level_send ne lit qu'un élément de 24 Ko par tick
+## (progression lisible via chunks.size()), sans dépendre des sémantiques de
+## partage/copy du gros buffer Variant (ambiguïté relevée par T0).
+static func build_level_chunks(compressed: PackedByteArray, chunk_size: int) -> Array[PackedByteArray]:
+	var out: Array[PackedByteArray] = []
+	if compressed.is_empty() or chunk_size < 1:
+		return out
+	var count := ceili(float(compressed.size()) / float(chunk_size))
+	out.resize(count)
+	for i in count:
+		var start := i * chunk_size
+		out[i] = compressed.slice(start, mini(start + chunk_size, compressed.size()))
+	return out
+
+func _level_send_cache_ready() -> bool:
+	return not _level_baked_cache.is_empty() and not _level_compressed_cache.is_empty()
+
+# Prépare bake + compression UNE fois, au clic Héberger (host_game) — jamais
+# appelé depuis un handler RPC. Journalise les durées (T6) pour mesurer le
+# gel évité sur le chemin RPC. Renvoie false si indisponible : jamais fatal,
+# le miss de _send_level_to ratera de façon différée et dégradera proprement.
+func _prepare_level_send_cache() -> bool:
+	var t0 := Time.get_ticks_msec()
+	if _level_baked_cache.is_empty():
+		if not level_bake_provider.is_valid():
+			push_warning("LAN: level_bake_provider invalid — cannot prepare level cache")
+			return false
+		_level_baked_cache = level_bake_provider.call()
+		if _level_baked_cache.is_empty() \
+				or int(_level_baked_cache.get("bytes", PackedByteArray()).size()) == 0:
+			push_warning("LAN: empty level bake — nothing to send")
+			_level_baked_cache = {}
+			return false
+		_lan_log("level bake in %d ms — %d KB raw" % [Time.get_ticks_msec() - t0,
+			int((_level_baked_cache["bytes"] as PackedByteArray).size()) / 1024])
+	if _level_compressed_cache.is_empty():
+		var bytes: PackedByteArray = _level_baked_cache["bytes"]
+		var tc := Time.get_ticks_msec()
+		_level_compressed_cache = bytes.compress(FileAccess.COMPRESSION_ZSTD)
+		if _level_compressed_cache.is_empty():
+			_level_compressed_cache = bytes   # repli identique à l'actuel : on envoie brut
+		_lan_log("level compress in %d ms — %d KB → %d KB" % [Time.get_ticks_msec() - tc,
+			bytes.size() / 1024, _level_compressed_cache.size() / 1024])
+	return true
+
+# Vide les deux caches (bake + compressé) : le niveau a changé ou la session
+# se termine, tout doit être re-prêté au prochain hébergement.
+func _invalidate_level_send_cache() -> void:
+	_level_baked_cache.clear()
+	_level_compressed_cache = PackedByteArray()
+
 # L'hôte transmet son niveau (celui que tous doivent voir) au joueur qui
 # rejoint : le blob binaire auto-suffisant produit par LevelBaker (meshes/
 # matériaux/textures embarqués → jouable même avec des builds différents),
 # compressé en ZSTD puis envoyé en chunks fiables. Le blob est mis en cache :
 # re-baké seulement si le niveau change (on_level_swapped).
 func _send_level_to(id: int) -> void:
-	if not level_bake_provider.is_valid():
-		push_warning("LAN: level_bake_provider invalid")
+	# JAMAIS de bake/compress ici : cette fonction tourne dans le handler RPC
+	# _register_player, et le thread principal doit rester libre (heartbeats,
+	# ACK ENet). Miss de cache → préparation DIFFÉRÉE, l'envoi repart au tick
+	# suivant, le pair patiente sur le manifeste qui partira alors.
+	if not _level_send_cache_ready():
+		push_warning("LAN: level cache not ready — deferring bake for peer %d" % id)
+		_set_status("Preparing host level…")
+		if id not in _defer_level_send:
+			_defer_level_send.append(id)
+		# (Re)programme la préparation à CHAQUE peer en miss, sans garde : le
+		# taux est par peer qui s'enregistre (jamais par tick) donc pas de
+		# martèlement, l'appel est sans effet si le cache est déjà chaud, et
+		# un bake échoué est retenté au join suivant au lieu de rester bloqué.
+		_level_send_deferred = true
+		_prepare_level_send_cache.call_deferred()
 		return
-	if _level_baked_cache.is_empty():
-		_level_baked_cache = level_bake_provider.call()
 	var data: Dictionary = _level_baked_cache
-	if data.is_empty():
-		push_warning("LAN: empty level bake — nothing to send")
-		return
-	var bytes: PackedByteArray = data.get("bytes", PackedByteArray())
-	if bytes.is_empty():
-		push_warning("LAN: empty level blob")
-		return
-	var compressed := bytes.compress(FileAccess.COMPRESSION_ZSTD)
-	if compressed.is_empty():
-		compressed = bytes
 	# Manifeste des scripts utilisateur : envoyé AVANT les chunks (même canal
 	# fiable → ordre garanti). À l'arrivée du dernier chunk le pair écrit déjà
 	# ses fichiers miroir et load(blob) résout les ext_resource des scripts.
 	var manifest: Dictionary = data.get("scripts", {})
 	if not manifest.is_empty():
 		_receive_level_scripts.rpc_id(id, manifest)
+	var chunks := build_level_chunks(_level_compressed_cache, LEVEL_CHUNK_SIZE)
 	_level_send_queue[id] = {
-		"bytes": compressed,
+		"chunks": chunks,
 		"spawn": data.get("spawn", Vector3.ZERO),
 		"rotation": data.get("spawn_rotation", Vector3.ZERO),
 		"scale": data.get("spawn_scale", Vector3.ONE),
-		"size": bytes.size(),
-		"total": ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE)),
+		"size": int(data.get("bytes", PackedByteArray()).size()),
+		"total": chunks.size(),
 		"sent": 0,
+		# Dernier palier 10 % loggé (T6) : la progression hôte se lit dans
+		# _drain_level_send, un log par palier franchi et non par chunk.
+		"tx_tier": -1,
 	}
-	push_warning("LAN: sending level to peer %d — raw %d KB, compressed %d KB, %d chunks" % [id, bytes.size() / 1024, compressed.size() / 1024, ceili(float(compressed.size()) / float(LEVEL_CHUNK_SIZE))])
-	_set_status("Sending host level to %d (%d KB)…" % [id, compressed.size() / 1024])
+	push_warning("LAN: sending level to peer %d — raw %d KB, compressed %d KB, %d chunks" % [id,
+		int(data.get("bytes", PackedByteArray()).size()) / 1024,
+		_level_compressed_cache.size() / 1024, chunks.size()])
+	_set_status("Sending host level to %d (%d KB)…" % [id, _level_compressed_cache.size() / 1024])
 
 # Pousse quelques chunks du niveau vers les peers qui viennent de se connecter,
 # étalé sur plusieurs ticks (pas de flood ENet d'un seul coup). Chaque chunk
 # reste dans une vague fiable ENet (~24 Ko) ; le canal fiable garantit l'ordre.
 func _drain_level_send() -> void:
+	# Reprise du niveau différé : le cache est prêt, on envoie aux peers en
+	# attente. Ici (tick _physics_process), hors handler RPC.
+	if _level_send_deferred and _level_send_cache_ready():
+		_level_send_deferred = false
+		for id in _defer_level_send:
+			_send_level_to(id)
+		_defer_level_send.clear()
 	if _level_send_queue.is_empty():
 		return
 	for id in _level_send_queue.keys():
@@ -1229,11 +1333,16 @@ func _drain_level_send() -> void:
 			if sent >= total:
 				_level_send_queue.erase(id)
 				break
-			var bytes: PackedByteArray = entry["bytes"]
-			var start := sent * LEVEL_CHUNK_SIZE
-			var end := mini(start + LEVEL_CHUNK_SIZE, bytes.size())
-			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], entry.get("rotation", Vector3.ZERO), entry.get("scale", Vector3.ONE), bytes.slice(start, end))
+			var chunks: Array = entry["chunks"]
+			var chunk: PackedByteArray = chunks[sent]
+			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], entry.get("rotation", Vector3.ZERO), entry.get("scale", Vector3.ONE), chunk)
 			entry["sent"] = sent + 1
+			# Progression 10 % côté hôte (T6) : palier mémorisé dans l'entrée
+			# de file (tx_tier) → un log par palier franchi, pas par chunk.
+			var tx_tier := int((sent + 1) * 10.0 / total)
+			if tx_tier > int(entry.get("tx_tier", -1)):
+				entry["tx_tier"] = tx_tier
+				_lan_log("level tx %d%% (%d/%d chunks)" % [tx_tier * 10, sent + 1, total])
 
 # Manifeste des scripts utilisateur de l'hôte (UserScriptMirror) : reçu une
 # fois par session, AVANT les chunks du niveau. Installé immédiatement dans le
@@ -1251,6 +1360,61 @@ func _receive_level_scripts(manifest: Dictionary) -> void:
 	push_warning("LAN: host-level user scripts installed (%d files)" % count)
 	_lan_log("host-level scripts — batch installed (%d files)" % count)
 
+## État de réception du blob de niveau — buffer membre brut. T0 a prouvé que
+## l'append en place sur variable typée est O(chunk) (partage, pas de copie) :
+## on accumule donc directement dans `state["buf"]`, sans tableau de chunks ni
+## concaténation finale. INTERDIT : `(state["buf"] as PackedByteArray)` — le
+## cast détache/copierait les 136 Mo accumulés (piège T0).
+static func bake_recv_init(state: Dictionary, total: int, uncompressed_size: int,
+		spawn: Vector3, rot: Vector3, scl: Vector3) -> void:
+	state.clear()
+	state["buf"] = PackedByteArray()
+	state["next"] = 0
+	state["bytes"] = 0
+	state["total"] = total
+	state["size"] = uncompressed_size
+	state["spawn"] = spawn
+	state["rotation"] = rot
+	state["scale"] = scl
+
+## Accepte le chunk d'indice `index` s'il est exactement le suivant (le canal
+## fiable ENet garantit l'ordre ; tout écart = on ignore, comme avant).
+## Renvoie "more" / "complete" / "reject".
+static func bake_recv_append(state: Dictionary, index: int, chunk: PackedByteArray) -> String:
+	var total := int(state.get("total", -1))
+	var next := int(state.get("next", 0))
+	if total < 1 or chunk.is_empty() or index < 0 or index >= total:
+		return "reject"
+	if index != next:
+		return "reject"
+	var buf: PackedByteArray = state["buf"]
+	buf.append_array(chunk)
+	state["buf"] = buf
+	state["next"] = index + 1
+	state["bytes"] = int(state.get("bytes", 0)) + chunk.size()
+	return "complete" if index + 1 >= total else "more"
+
+## Buffer assemblé — à lire uniquement après "complete". Variable typée (partage
+## sans copie), jamais de cast.
+static func bake_recv_payload(state: Dictionary) -> PackedByteArray:
+	var out: PackedByteArray = state["buf"]
+	return out
+
+## Garde de (ré)initialisation de l'état de réception (revue finale, Issue 1) :
+## un `total` identique ne prouve PAS la continuité — l'hôte peut relancer le
+## même blob à l'identique (double _register_player en cours de transfert).
+## Sur le canal fiable ENet (ordonné, aucun réordonnancement intra-transfert),
+## un `index == 0` alors que `next > 0` ne peut alors être qu'un redémarrage :
+## sans ré-init, les chunks 0..next-1 de la nouvelle série seraient rejetés
+## puis le chunk 0 APPENDÉ au vieux buffer partiel — corruption silencieuse si
+## le contenu diffère jamais (décompression en échec → « kept local level »,
+## mais la machine à état doit rester cohérente). Les cas « pas de total » et
+## « total différent » gardent un comportement identique à l'ancienne condition.
+static func bake_recv_needs_init(state: Dictionary, total: int, index: int) -> bool:
+	if not state.has("total") or int(state.get("total", -1)) != total:
+		return true
+	return index == 0 and int(state.get("next", 0)) > 0
+
 # Canal ENet dédié (6) : les milliers de chunks du niveau ne doivent PAS
 # bloquer (ordre fiable) les RPC de contrôle sur le canal 0 — sinon le
 # broadcast de spawn et le roster n'arrivent qu'après tout le niveau.
@@ -1260,55 +1424,123 @@ func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn:
 		return
 	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
 		return
-	# Nouveau transfert (le blob baked diffère d'une session à l'autre) : on
-	# repart de zéro. Le canal fiable garantit l'ordre intra-transfert.
-	if not _level_bake_receive.has("total") or int(_level_bake_receive.get("total", -1)) != total:
-		_level_bake_receive = {"data": PackedByteArray(), "spawn": spawn, "rotation": spawn_rotation, "scale": spawn_scale, "size": uncompressed_size, "total": total, "next": 0}
-	if index < int(_level_bake_receive.get("next", 0)):
-		return
-	# Passer par une variable locale : l'append_array sur un accès direct
-	# `(dict["data"] as PackedByteArray)` travaille sur une copie détachée et
-	# l'assemblage ne grossit jamais (→ decompress sur un buffer vide).
-	var data: PackedByteArray = _level_bake_receive["data"]
-	data.append_array(chunk)
-	_level_bake_receive["data"] = data
-	_level_bake_receive["next"] = index + 1
-	_last_level_chunk_msec = Time.get_ticks_msec()
-	if index + 1 < total:
-		# Progression du chargement : le joueur est gelé jusqu'au join final.
-		_set_status("Loading host map… %d%%" % int((index + 1) * 100.0 / total))
-		return
-	var raw: PackedByteArray = _level_bake_receive["data"]
-	var recv_spawn: Vector3 = _level_bake_receive["spawn"]
-	var recv_rotation: Vector3 = _level_bake_receive["rotation"]
-	var recv_scale: Vector3 = _level_bake_receive["scale"]
-	var recv_size: int = int(_level_bake_receive["size"])
-	_level_bake_receive.clear()
-	var bytes := raw.decompress(recv_size, FileAccess.COMPRESSION_ZSTD)
-	if bytes.is_empty() or bytes.size() != recv_size:
-		push_warning("LAN: decompress failed — received %d bytes, expected %d" % [bytes.size(), recv_size])
-		_set_status("Host level corrupted (decompress failed) — kept local level")
-		# Transfert mort : ne pas rester bloqué en attente de join.
-		_finalize_join()
-		return
-	push_warning("LAN: level received — %d KB decompressed" % [bytes.size() / 1024])
-	var tmp := "user://lan_level.scn"
-	var f := FileAccess.open(tmp, FileAccess.WRITE)
-	if f == null:
-		_set_status("Could not write the host's level")
-		_finalize_join()
-		return
-	f.store_buffer(bytes)
-	f.close()
-	# Décodage threadé : on ne bloque PAS le thread principal ici (c'était la
-	# cause de la coupure ~5 s de l'hôte pendant réception niveau+avatars).
-	push_warning("LAN: level received — %d KB decompressed, queued threaded load" % [bytes.size() / 1024])
-	_queue_level_scene_load(tmp, recv_spawn, recv_rotation, recv_scale, bytes.size() / 1024)
+	# Nouveau transfert (le blob baked diffère d'une session à l'autre, ou
+	# l'hôte relance le même blob — double _register_player) : reset complet
+	# de l'état (buf/next/bytes + spawn…) par bake_recv_init. Le canal fiable
+	# ENet garantit l'ordre intra-transfert — d'où bake_recv_needs_init, qui
+	# traite aussi le redémarrage à total identique (index 0 alors que next > 0).
+	if bake_recv_needs_init(_level_bake_receive, total, index):
+		bake_recv_init(_level_bake_receive, total, uncompressed_size, spawn, spawn_rotation, spawn_scale)
+	match bake_recv_append(_level_bake_receive, index, chunk):
+		"reject":
+			# Index hors suite (doublon, trou, chunk vide) : on ignore, comme avant.
+			return
+		"more":
+			_last_level_chunk_msec = Time.get_ticks_msec()
+			# Progression du chargement : le joueur est gelé jusqu'au join final.
+			_set_status("Loading host map… %d%%" % int((index + 1) * 100.0 / total))
+			# Log seulement au palier de 10 % suivant (prépare T6) : palier
+			# mémorisé dans le state, remis à zéro par bake_recv_init.
+			var tier := int((index + 1) * 10.0 / total)
+			if tier > int(_level_bake_receive.get("rx_tier", -1)):
+				_level_bake_receive["rx_tier"] = tier
+				_lan_log("level rx %d%%" % (tier * 10))
+		"complete":
+			_last_level_chunk_msec = Time.get_ticks_msec()
+			# Buffer membre brut lu via variable typée (partage sans copie) :
+			# INTERDIT `(… as PackedByteArray)` — le cast détacherait/copierait
+			# les ~136 Mo accumulés (piège T0).
+			var raw := bake_recv_payload(_level_bake_receive)
+			var recv_spawn: Vector3 = _level_bake_receive["spawn"]
+			var recv_rotation: Vector3 = _level_bake_receive["rotation"]
+			var recv_scale: Vector3 = _level_bake_receive["scale"]
+			var recv_size: int = int(_level_bake_receive["size"])
+			_level_bake_receive.clear()
+			# Décompression (136→379 Mo) + écriture du fichier : confiées au pool
+			# de threads (cf. _begin_level_decode) — synchrone ici, ce bloc
+			# gelait le thread principal pendant plusieurs secondes.
+			if not _begin_level_decode(raw, recv_size, recv_spawn, recv_rotation, recv_scale):
+				_lan_log("level decode already in flight — dropped")
 
 
 # Décodage des blobs scènes par ResourceLoader threadé (voir les commentaires
 # sur _pending_level_load) : le handler RPC ne fait que mettre en file, le
 # thread principal reste libre pour les ACK/heartbeats ENet.
+
+## Décompression (136→379 Mo) + écriture du fichier : synchrone dans le
+## handler RPC du dernier chunk, ce bloc gelait le thread principal plusieurs
+## secondes → ACK/heartbeats ENet servis trop tard → session coupée (même
+## classe de bug que le load() sync historique, cf. test_lan_threaded.gd).
+## Retour main = _poll_level_decode(), qui enchaîne sur le chargement
+## threadé existant (_queue_level_scene_load).
+var _level_decode_task := -1
+var _level_decode_results: Array = []
+var _level_decode_mutex := Mutex.new()
+
+func _begin_level_decode(raw: PackedByteArray, uncompressed_size: int,
+		spawn: Vector3, rot: Vector3, scl: Vector3) -> bool:
+	if _level_decode_task >= 0:
+		return false
+	var spec := {"raw": raw, "size": uncompressed_size, "path": "user://lan_level.scn",
+		"spawn": spawn, "rotation": rot, "scale": scl}
+	_level_decode_task = WorkerThreadPool.add_task(_level_decode_worker.bind(spec))
+	return true
+
+## Tâche du WORKER THREAD : ni arbre de scène, ni état du LanManager — uniquement
+## le payload + un résultat poussé dans une file sous mutex (un seul décodage
+## de niveau à la fois, mais le mutex ne coûte rien et documente le contrat).
+func _level_decode_worker(spec: Dictionary) -> void:
+	var t0 := Time.get_ticks_msec()
+	var res := {"ok": false, "err": "", "kb": 0, "ms": 0, "spec": spec}
+	var raw: PackedByteArray = spec["raw"]
+	var bytes := raw.decompress(int(spec["size"]), FileAccess.COMPRESSION_ZSTD)
+	if bytes.is_empty() or bytes.size() != int(spec["size"]):
+		res["err"] = "decompress failed (%d ≠ %d)" % [bytes.size(), int(spec["size"])]
+	else:
+		var f := FileAccess.open(String(spec["path"]), FileAccess.WRITE)
+		if f == null:
+			res["err"] = "could not write %s" % String(spec["path"])
+		else:
+			f.store_buffer(bytes)
+			f.close()
+			res["ok"] = true
+			res["kb"] = bytes.size() / 1024
+	res["ms"] = Time.get_ticks_msec() - t0
+	_level_decode_mutex.lock()
+	_level_decode_results.append(res)
+	_level_decode_mutex.unlock()
+
+func _poll_level_decode() -> void:
+	if _level_decode_task < 0:
+		return
+	if not WorkerThreadPool.is_task_completed(_level_decode_task):
+		return
+	WorkerThreadPool.wait_for_task_completion(_level_decode_task)
+	_level_decode_task = -1
+	_level_decode_mutex.lock()
+	var res: Dictionary = _level_decode_results.pop_front() if not _level_decode_results.is_empty() else {}
+	_level_decode_mutex.unlock()
+	if res.is_empty():
+		return
+	var spec: Dictionary = res["spec"]
+	_lan_log("level decode+write in %d ms — %d KB" % [int(res["ms"]), int(res["kb"])])
+	if not bool(res["ok"]):
+		push_warning("LAN: level decode failed — " + str(res["err"]))
+		_set_status("Host level corrupted — kept local level")
+		_finalize_join()
+		return
+	# Revue finale, Issue 2 : le message « queued » ne doit sortir QUE si la
+	# file a réellement été peuplée — _queue_level_scene_load refuse (sans
+	# effet de bord) quand un chargement est déjà en attente, auquel cas le
+	# résultat du décodage est déposé (comportement volontaire) et le log doit
+	# le dire honnêtement. Fichier manquant : _queue_level_scene_load a déjà
+	# son propre push_warning → pas de doublon ici.
+	if _queue_level_scene_load(String(spec["path"]), spec["spawn"], spec["rotation"],
+			spec["scale"], int(res["kb"])):
+		push_warning("LAN: level received — %d KB decompressed, queued threaded load" % int(res["kb"]))
+	elif not _pending_level_load.is_empty():
+		_lan_log("level decode ready but scene load already pending — result dropped")
+
 func _queue_level_scene_load(path: String, pos: Vector3, rot: Vector3, scl: Vector3, kb: int) -> bool:
 	if not _pending_level_load.is_empty():
 		return false
@@ -1327,6 +1559,9 @@ func _queue_avatar_scene_load(path: String, peer_id: int) -> bool:
 	return true
 
 func _poll_pending_scene_loads() -> void:
+	# Résultat du décodage/écriture du niveau (worker thread) : en tête pour
+	# que le chainement sur _queue_level_scene_load parte le plus tôt possible.
+	_poll_level_decode()
 	if not _pending_level_load.is_empty():
 		var spec: Dictionary = _pending_level_load
 		var status := ResourceLoader.load_threaded_get_status(String(spec["path"]))
@@ -1459,7 +1694,7 @@ func _maybe_flush_deferred_level() -> void:
 # et déplace les avatars distants vers un nouveau conteneur (l'ancien niveau
 # est sur le point d'être libéré).
 func on_level_swapped(new_level_root: Node3D) -> void:
-	_level_baked_cache.clear()
+	_invalidate_level_send_cache()
 	_level_root = new_level_root
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
@@ -3441,9 +3676,19 @@ func _process(_delta: float) -> void:
 		var now := Time.get_ticks_msec()
 		if is_host:
 			if now - _last_heartbeat_sent_msec >= HEARTBEAT_INTERVAL_MSEC:
+				# Émission en retard > 2× l'intervalle (T6). Ce bloc ne
+				# s'exécute qu'une fois par intervalle (pas toutes les
+				# frames) et la mise à jour juste après réinitialise
+				# l'écart → un log par franchissement. Garde > 0 : la 1re
+				# émission d'une session part de 0 (remis à zéro dans
+				# host_game) et l'écart depuis le démarrage de
+				# l'application serait un faux positif.
+				var late := now - _last_heartbeat_sent_msec
+				if _last_heartbeat_sent_msec > 0 and late > 2 * HEARTBEAT_INTERVAL_MSEC:
+					_lan_log("heartbeat late by %d ms" % late)
 				_last_heartbeat_sent_msec = now
 				_host_heartbeat.rpc()
-		elif not is_host and heartbeat_reconnect_should_arm(not _pending_join, _last_heartbeat_msec, now, HOST_HEARTBEAT_TIMEOUT_MSEC):
+		elif not is_host and heartbeat_reconnect_should_arm(not _pending_join, _last_heartbeat_msec, now, HOST_HEARTBEAT_TIMEOUT_MSEC, _last_level_chunk_msec):
 			_on_host_heartbeat_timeout()
 
 # Diffuse le curseur du propriétaire pour chaque fenêtre partagée visible :
@@ -3639,8 +3884,22 @@ func _disconnect_session(keep_context := false) -> void:
 	_auth_request_sent_msec = 0
 	_pin = ""
 	_level_send_queue.clear()
+	# Différé de niveau : état borné à la session — sans ça, la reprise en
+	# tête de _drain_level_send ré-enverrait des ids morts/recyclés au
+	# prochain hébergement.
+	_defer_level_send.clear()
+	_level_send_deferred = false
 	_level_bake_receive.clear()
-	_level_baked_cache.clear()
+	# Décodage du niveau encore en vol (déconnexion pendant la décompression) :
+	# attendre la fin de la tâche, puis vider la file des résultats — un
+	# résultat orphelin ne doit jamais arriver dans la session suivante.
+	if _level_decode_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_level_decode_task)
+		_level_decode_task = -1
+	_level_decode_mutex.lock()
+	_level_decode_results.clear()
+	_level_decode_mutex.unlock()
+	_invalidate_level_send_cache()
 	_host_spawn_transform.clear()
 	_avatar_send_queue.clear()
 	_avatar_receive_slots.clear()
@@ -3704,6 +3963,16 @@ func _disconnect_session(keep_context := false) -> void:
 func _exit_tree() -> void:
 	_stop_encode_thread()
 	_stop_decode_thread()
+	# Décodage du niveau encore en vol à la fermeture : aucun chemin (ni le
+	# disconnect, ni la fermeture du peer) n'atteint l'attente de
+	# _disconnect_session ici → sans cette jointure, la destruction de l'objet
+	# libérerait le mutex/la file pendant que le worker les écrit (UAF).
+	if _level_decode_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(_level_decode_task)
+	_level_decode_task = -1
+	_level_decode_mutex.lock()
+	_level_decode_results.clear()
+	_level_decode_mutex.unlock()
 	_stop_audio_share()
 	_stop_video_share()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):

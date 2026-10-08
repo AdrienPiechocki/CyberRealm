@@ -70,3 +70,14 @@ func test_no_cancel_while_joining():
 		false,
 		"while joining (physical drop), queued heartbeat must not cancel the reconnect")
 	return r
+
+func test_watchdog_ignored_while_level_transfer_progresses() -> Variant:
+	var r: Variant = Runner.assert_eq(
+		LANManager.heartbeat_reconnect_should_arm(true, 0, 10000, 4000, 9000, 5000),
+		false,
+		"chunk reçu il y a 1 s malgré heartbeat périmé = transfert vivant, pas de reconnect")
+	if r is String: return r
+	return Runner.assert_eq(
+		LANManager.heartbeat_reconnect_should_arm(true, 0, 10000, 4000, 3000, 5000),
+		true,
+		"chunk ancien (> 5 s) = watchdog armé comme avant")

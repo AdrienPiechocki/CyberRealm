@@ -15,6 +15,15 @@ const Runner = preload("res://tests/runner.gd")
 const LANManager = preload("res://scripts/network/lan_manager.gd")
 const FIXTURE = "res://tests/fixtures/fixture_stub.tscn"
 
+## Espion de _lan_log (revue finale, Issue 2) : seuls les appels à _lan_log
+## sont capturés — les push_warning de production restent intacts, et aucun
+## code de production n'est touché pour le test.
+class LogSpyLanManager:
+	extends LANManager
+	var lan_logs: Array = []
+	func _lan_log(msg: String, reset := false) -> void:
+		lan_logs.append(msg)
+
 func _spin_until_loaded(inst, var_name: String) -> bool:
 	for i in 2000:
 		inst._poll_pending_scene_loads()
@@ -96,3 +105,146 @@ func test_avatar_queued_then_cached_by_poll():
 		"la file avatar doit être vidée après décodage")
 	inst.free()
 	return true
+
+func test_level_decode_is_not_synchronous() -> Variant:
+	var inst = LANManager.new()
+	# Payload réellement compressé ZSTD (T0 : decompress d'octets bruts
+	# échouerait → chemin d'échec → le test ne pourrait jamais voir la file).
+	# On compresse un minuscule PackedScene RÉEL (sauvegardé puis relu) : le
+	# worker réécrit donc un fichier valide et le chargement threadé mis en
+	# file par le poll passe sans erreur asynchrone — des octets factices
+	# déclenchaient « Unrecognized binary resource file » dans la sortie.
+	var tmp_node := Node3D.new()
+	tmp_node.name = "T4Fixture"
+	var tmp_scene := PackedScene.new()
+	tmp_scene.pack(tmp_node)
+	tmp_node.free()
+	var save_err := ResourceSaver.save(tmp_scene, "user://t4_fixture.scn")
+	var plain := FileAccess.get_file_as_bytes("user://t4_fixture.scn")
+	# Nettoyage best-effort du fixture temporaire (non asserté) : ses octets
+	# sont déjà en mémoire, plus besoin du fichier sur disque.
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://t4_fixture.scn"))
+	var r: Variant = Runner.assert_true(save_err == OK and not plain.is_empty(),
+		"fixture de scène temporaire écrite (prérequis)")
+	if r is String:
+		inst.free()
+		return r
+	var raw := plain.compress(FileAccess.COMPRESSION_ZSTD)
+	r = Runner.assert_true(
+		inst._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
+		"décodage soumis au pool de threads")
+	if r is String:
+		inst.free()
+		return r
+	r = Runner.assert_true(inst._pending_level_load.is_empty(),
+		"le handler de chunk ne doit RIEN mettre en file de façon synchrone")
+	if r is String:
+		inst.free()
+		return r
+	# Spin : le thread finit, _poll_level_decode met la file en place.
+	for i in 2000:
+		inst._poll_level_decode()
+		if not inst._pending_level_load.is_empty():
+			break
+		OS.delay_msec(5)
+	r = Runner.assert_true(not inst._pending_level_load.is_empty(),
+		"la file de chargement est peuplée par le poll, pas par le handler")
+	inst.free()
+	return r
+
+func test_level_decode_failure_finalizes_join() -> Variant:
+	var inst = LANManager.new()
+	inst._pending_join = true
+	# Arrangement de test uniquement (aucun changement production) :
+	# _finalize_join → _announce_self émettrait un RPC depuis cette instance
+	# nue hors arbre → « !is_inside_tree() » en sortie de suite. Annoncé d'ores
+	# et déjà : l'annonce est sautée, l'assertion reste identique.
+	inst._announced = true
+	# Taille déclarée fausse mais modeste → decompress échoue sans grosse allocation.
+	var raw := PackedByteArray([1, 2, 3])
+	var r: Variant = Runner.assert_true(
+		inst._begin_level_decode(raw, raw.size() + 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE),
+		"tâche soumise")
+	if r is String:
+		inst.free()
+		return r
+	for i in 2000:
+		inst._poll_level_decode()
+		if not inst._pending_join:
+			break
+		OS.delay_msec(5)
+	r = Runner.assert_true(not inst._pending_join,
+		"échec de décodage = _finalize_join (jamais de join bloqué)")
+	inst.free()
+	return r
+
+func test_level_decode_drop_when_load_already_pending() -> Variant:
+	# Revue finale, Issue 2 : quand un chargement de niveau est DÉJÀ en file,
+	# le résultat du décodage est déposé (comportement volontaire, maintenu) —
+	# mais le log ne doit plus prétendre « queued threaded load » : un
+	# diagnostic honnête doit dire que le résultat est dropped, et la file
+	# déjà en attente ne doit surtout pas être écrasée.
+	var inst = LogSpyLanManager.new()
+	# Même montage que test_level_decode_is_not_synchronous : payload ZSTD
+	# d'une minuscule scène RÉELLE (sauvegardée puis relue), pour que le
+	# worker réussisse (ok = true) et que le chemin testé soit bien le DROP,
+	# pas l'échec de décompression.
+	var tmp_node := Node3D.new()
+	tmp_node.name = "F2Fixture"
+	var tmp_scene := PackedScene.new()
+	tmp_scene.pack(tmp_node)
+	tmp_node.free()
+	var save_err := ResourceSaver.save(tmp_scene, "user://f2_fixture.scn")
+	var plain := FileAccess.get_file_as_bytes("user://f2_fixture.scn")
+	# Nettoyage best-effort du fixture temporaire (non asserté) : ses octets
+	# sont déjà en mémoire, plus besoin du fichier sur disque.
+	DirAccess.remove_absolute(ProjectSettings.globalize_path("user://f2_fixture.scn"))
+	var r: Variant = Runner.assert_true(save_err == OK and not plain.is_empty(),
+		"fixture de scène temporaire écrite (prérequis)")
+	if r is String:
+		inst.free()
+		return r
+	# File déjà peuplée : marqueur que le poll ne doit JAMAIS écraser.
+	var marker := {"path": "user://already_pending.scn", "pos": Vector3(9, 9, 9),
+		"rot": Vector3.ZERO, "scale": Vector3.ONE, "kb": 1}
+	inst._pending_level_load = marker
+	var raw := plain.compress(FileAccess.COMPRESSION_ZSTD)
+	r = Runner.assert_true(
+		inst._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
+		"décodage soumis au pool de threads")
+	if r is String:
+		inst.free()
+		return r
+	# Spin : le thread fini, _poll_level_decode doit solder la tâche.
+	for i in 2000:
+		inst._poll_level_decode()
+		if inst._level_decode_task < 0:
+			break
+		OS.delay_msec(5)
+	r = Runner.assert_eq(inst._level_decode_task, -1,
+		"la tâche de décodage est soldée par le poll")
+	if r is String:
+		inst.free()
+		return r
+	r = Runner.assert_eq(inst._pending_level_load, marker,
+		"résultat DROPPÉ : la file déjà en attente n'est pas écrasée")
+	if r is String:
+		inst.free()
+		return r
+	# Aspect log : aucun « queued » mensonger, et un diagnostic de drop
+	# honnête doit être passé par _lan_log (le push_warning de succès ne
+	# doit sortir que si la file a réellement été peuplée).
+	var saw_drop_log := false
+	for msg in inst.lan_logs:
+		var m := String(msg)
+		r = Runner.assert_true(not m.contains("queued"),
+			"le log ne doit jamais dire « queued » quand la file est déjà pleine : " + m)
+		if r is String:
+			inst.free()
+			return r
+		if m.contains("already pending") and m.contains("dropped"):
+			saw_drop_log = true
+	r = Runner.assert_true(saw_drop_log,
+		"un diagnostic de drop honnête doit être loggé (« already pending … dropped »)")
+	inst.free()
+	return r
