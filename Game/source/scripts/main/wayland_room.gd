@@ -236,9 +236,22 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	_apply_environment_settings(pause_menu.get_environment_settings())
 	return true
 
-# Applique les réglages environnement persistés (dictionnaire de la page
-# GRAPHICS → General) au WorldEnvironment du niveau courant. No-op sans noise
-# si aucun dictionnaire enregistré, si le niveau n'a pas de WorldEnvironment.
+# Réglages environnement : le niveau est PRIORITAIRE sur les settings.
+# - toggles : si la scène du niveau active l'effet, il reste actif quoi qu'en
+#   disent les settings ; sinon le setting s'applique.
+# - ajustements : si la scène du niveau active adjustment_*, ses valeurs sont
+#   conservées ; sinon les settings s'appliquent.
+# Les valeurs d'origine du niveau sont capturées une seule fois (meta sur
+# l'Environment), sinon un 2e appel lirait nos propres valeurs écrasées.
+const ENV_TOGGLE_KEYS := [
+	"ssr_enabled", "ssao_enabled", "ssil_enabled", "sdfgi_enabled",
+	"glow_enabled", "fog_enabled", "volumetric_fog_enabled",
+]
+const ENV_ADJUST_KEYS := [
+	"adjustment_brightness", "adjustment_contrast", "adjustment_saturation",
+]
+const ENV_LEVEL_META := "level_env_values"
+
 func _apply_environment_settings(settings: Dictionary) -> void:
 	if settings.is_empty():
 		return
@@ -246,14 +259,29 @@ func _apply_environment_settings(settings: Dictionary) -> void:
 	if we == null or we.environment == null:
 		return
 	var env := we.environment
-	for key in [
-		"ssr_enabled", "ssao_enabled", "ssil_enabled", "sdfgi_enabled",
-		"glow_enabled", "fog_enabled", "volumetric_fog_enabled",
-		"adjustment_enabled", "adjustment_brightness", "adjustment_contrast",
-		"adjustment_saturation",
-	]:
-		if settings.has(key):
+	if not env.has_meta(ENV_LEVEL_META):
+		var base := {"adjustment_enabled": env.adjustment_enabled}
+		for key in ENV_TOGGLE_KEYS + ENV_ADJUST_KEYS:
+			base[key] = env.get(key)
+		env.set_meta(ENV_LEVEL_META, base)
+	var level_vals: Dictionary = env.get_meta(ENV_LEVEL_META)
+
+	for key in ENV_TOGGLE_KEYS:
+		if level_vals[key]:
+			env.set(key, true)
+		elif settings.has(key):
 			env.set(key, settings[key])
+
+	if level_vals["adjustment_enabled"]:
+		env.adjustment_enabled = true
+		for key in ENV_ADJUST_KEYS:
+			env.set(key, level_vals[key])
+	else:
+		if settings.has("adjustment_enabled"):
+			env.adjustment_enabled = settings["adjustment_enabled"]
+		for key in ENV_ADJUST_KEYS:
+			if settings.has(key):
+				env.set(key, settings[key])
 
 func _level_world_environment() -> WorldEnvironment:
 	var level := get_node_or_null("Level")
