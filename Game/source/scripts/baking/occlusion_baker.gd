@@ -57,6 +57,15 @@ static func bake(root: Node3D) -> int:
 			continue
 		if exclude != null and exclude.is_ancestor_of(mi):
 			continue
+		var a: Node = mi
+		var moving := false
+		while a != null and a != root:
+			if a.has_meta("lan_sync"):
+				moving = true
+				break
+			a = a.get_parent()
+		if moving:
+			continue
 		# Préfiltre rapide sur l'AABB monde avant lecture des triangles.
 		var world_aabb: AABB = mi.global_transform * mi.get_aabb()
 		var size := world_aabb.size

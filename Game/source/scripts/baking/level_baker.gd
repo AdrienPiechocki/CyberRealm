@@ -307,8 +307,10 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	if node == null:
 		return null
 	node.name = orig.name
+	for m in orig.get_meta_list():
+		node.set_meta(m, orig.get_meta(m))
 	cache[orig] = node   # table orig -> clone
-	if orig.is_in_group("lan_skip_children"):
+	if orig.get_meta("lan_skip_children"):
 		return node
 	var script: Script = orig.get_script()
 	if script != null:

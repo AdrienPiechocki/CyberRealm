@@ -32,7 +32,6 @@ display/display_server/driver="wayland"
 [global_group]
 
 player=""
-lan_skip_children=""
 
 [gui]
 

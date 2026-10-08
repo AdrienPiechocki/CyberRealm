@@ -445,7 +445,7 @@ func setup(level_root: Node3D, name: String, color: Color) -> void:
 		_avatar_scene = load(DEFAULT_AVATAR_PATH)
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
-	_level_root.add_child(_players_container)
+	_players_parent(_level_root).add_child(_players_container)
 	# Quads noirs des fenêtres des autres joueurs : dans l'espace monde, à
 	# l'identité sous ce node (le LAN est enfant de la room), PAS sous le
 	# niveau (dont la racine est rotée/décalée) — cohérent avec les fenêtres
@@ -703,6 +703,7 @@ func host_game() -> bool:
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
+	_refresh_level_sync()
 	_pin = _generate_pin()
 	pin_changed.emit(_pin)
 	_lan_log("host PIN: " + _pin)
@@ -1637,7 +1638,7 @@ func _finish_avatar_decode(peer_id: int) -> void:
 		var old: Node = _remote_players[peer_id]
 		if old is Node3D:
 			_respawn_positions[peer_id] = {
-				"pos": (old as Node3D).global_position,
+				"pos": (old as Node3D).position, 
 				"rot": (old as Node3D).rotation,
 			}
 		old.queue_free()
@@ -1714,7 +1715,7 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 	_level_root = new_level_root
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
-	_level_root.add_child(_players_container)
+	_players_parent(new_level_root).add_child(_players_container)
 	for id in _remote_players:
 		var av: Node = _remote_players[id]
 		if not is_instance_valid(av):
@@ -1732,6 +1733,7 @@ func on_level_swapped(new_level_root: Node3D) -> void:
 		if not _host_spawn_transform.is_empty():
 			av.rotation = _spawn_rotation()
 			av.scale = _spawn_scale()
+	_refresh_level_sync()
 
 # ── Transfert des avatars custom ─────────────────────────────────────
 # Chaque joueur envoie sa scène avatar (custom ou défaut) aux autres
@@ -2031,7 +2033,7 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 		# recréé, on ne veut pas le repositionner au spawn.
 		if av is Node3D:
 			_respawn_positions[recv_from] = {
-				"pos": (av as Node3D).global_position,
+				"pos": (av as Node3D).position,
 				"rot": (av as Node3D).rotation,
 			}
 		av.queue_free()
@@ -2195,6 +2197,7 @@ func _physics_process(delta: float) -> void:
 	# le joueur local n'est pas encore entré dans la session.
 	if _pending_join:
 		return
+	_sync_level_state(delta)
 	var player := _find_local_player() as Node3D
 	if player == null:
 		return
@@ -4003,9 +4006,70 @@ func _exit_tree() -> void:
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
 
+const LEVEL_SYNC_GAP := 0.05
+var _level_sync_by_path: Dictionary = {}  # chemin relatif -> Node3D
+var _level_sync_target: Dictionary = {}   # chemin -> Transform3D (client)
+var _level_sync_snapped: Dictionary = {}
+var _level_sync_timer := 0.0
+
 func _find_local_player() -> Node3D:
 	if is_instance_valid(local_player):
 		return local_player
 	if _level_root == null:
 		return null
 	return _level_root.find_child("Player", true, false) as Node3D
+
+func _players_parent(level_root: Node) -> Node:
+	var p := _find_local_player()
+	return p.get_parent() if p != null and p.get_parent() != null else level_root
+
+func _refresh_level_sync() -> void:
+	_level_sync_by_path.clear()
+	_level_sync_target.clear()
+	_level_sync_snapped.clear()
+	if _level_root != null:
+		_scan_sync(_level_root)
+
+func _scan_sync(n: Node) -> void:
+	if n is Node3D and n.has_meta("lan_sync"):
+		_level_sync_by_path[str(_level_root.get_path_to(n))] = n
+	if session_active and not is_host and n.has_meta("lan_host_only"):
+		n.process_mode = Node.PROCESS_MODE_DISABLED
+	for c in n.get_children():
+		_scan_sync(c)
+
+# Hôte : émet. Client : applique en lissé.
+func _sync_level_state(delta: float) -> void:
+	if is_host:
+		_level_sync_timer += delta
+		if _level_sync_timer < LEVEL_SYNC_GAP or _level_sync_by_path.is_empty():
+			return
+		_level_sync_timer = 0.0
+		var state: Array = []
+		for path in _level_sync_by_path:
+			var n: Node3D = _level_sync_by_path[path]
+			if is_instance_valid(n):
+				state.append([path, n.transform])
+		_level_sync.rpc(state)
+		return
+	if _level_sync_target.is_empty():
+		return
+	var t := 1.0 - exp(-delta * 12.0)
+	for path in _level_sync_target:
+		var n := _level_sync_by_path.get(path) as Node3D
+		if n == null or not is_instance_valid(n):
+			continue
+		var target: Transform3D = _level_sync_target[path]
+		if not _level_sync_snapped.has(path) or n.position.distance_to(target.origin) > 20.0:
+			n.transform = target
+			_level_sync_snapped[path] = true
+		else:
+			n.transform = n.transform.interpolate_with(target, t)
+
+@rpc("authority", "unreliable_ordered", "call_remote", 7)
+func _level_sync(state: Array) -> void:
+	if is_host or multiplayer.get_remote_sender_id() != 1:
+		return
+	for e in state:
+		if e is Array and e.size() == 2 and e[1] is Transform3D:
+			_level_sync_target[String(e[0])] = e[1]
