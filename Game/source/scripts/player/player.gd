@@ -1,11 +1,11 @@
 extends CharacterBody3D
 
 @export var MaxDepth := 50
-@export var MaxClimbDistance := 5.0
-@export var MaxClimbTime := 0.2
-@export var ClimbSpeed := 2.5
-var climbed_distance := 0.0
-var climb_time := 0.0
+@export var StepHeight := 0.5 # hauteur max d'UNE marche
+@export var StepSmoothSpeed := 12.0
+var _cam_rest_y := 0.0
+var _body_radius := 0.3
+var _floor_grace := 0.0
 
 var gravity = ProjectSettings.get_setting("physics/3d/default_gravity")
 var speed = 5
@@ -71,6 +71,12 @@ func _ready():
 	spawn_pos = position
 	spawn_rotation = rotation
 	spawn_scale = scale
+	_cam_rest_y = $Camera3D.position.y
+	for c in get_children():
+		if c is CollisionShape3D and c.shape != null and "radius" in c.shape:
+			_body_radius = c.shape.radius
+			break
+	floor_snap_length = StepHeight # colle au sol en descendant les escaliers
 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
@@ -153,13 +159,8 @@ func _physics_process(delta):
 				_apply_gyro_aim(raw_gyro, gyro_speed, delta)
 
 	if not interact_mode_active:
+		_step_up(delta)
 		move_and_slide()
-		if not is_on_floor():
-			climb_time += delta
-		else:
-			climb_time = 0.0
-		if is_on_wall() and climb_time < MaxClimbTime and absf(Vector2(movement_dir.x, movement_dir.z).length()) > 0.0:
-			climb(delta)
 		if is_on_floor() and Input.is_action_just_pressed("jump", true) and not _menu_just_closed:
 			velocity.y = jump_speed
 		$UI/Cursor.label_settings.font_color = UITheme.get_color("hud", "cursor-color", Color(1, 1, 1))
@@ -192,13 +193,66 @@ func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
 	$Camera3D.rotate_x(gyro.x * scaled * delta)
 	$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
 
-func climb(delta):
-	if climbed_distance < MaxClimbDistance:
-		climbed_distance += (gravity * delta) * ClimbSpeed
-		velocity.y += (gravity * delta) * ClimbSpeed
+# Lissage caméra au rendu (pas au tick physique) : supprime le tremblement.
+func _process(delta: float) -> void:
+	$Camera3D.position.y = lerpf($Camera3D.position.y, _cam_rest_y, 1.0 - exp(-StepSmoothSpeed * delta))
+
+func _ground_y(from: Vector3, length: float) -> float:
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * length, collision_mask, [get_rid()])
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty() or hit.normal.y < cos(floor_max_angle):
+		return NAN
+	return hit.position.y
+
+func _step_up(delta: float) -> void:
+	# Petite tolérance : is_on_floor() clignote en montant
+	if is_on_floor():
+		_floor_grace = 0.1
 	else:
-		velocity.y = 0.0
-		climbed_distance = 0.0
+		_floor_grace -= delta
+	if _floor_grace <= 0.0 or velocity.y > 0.0:
+		return
+	var h := Vector3(velocity.x, 0.0, velocity.z)
+	if h.is_zero_approx():
+		return
+	var dir := h.normalized()
+	var xf := global_transform
+
+	# Rien devant : pas de marche
+	var fwd := KinematicCollision3D.new()
+	if not test_move(xf, dir * (h.length() * delta + 0.05), fwd):
+		return
+	# Pente praticable : move_and_slide la monte déjà, pas de step-up
+	if fwd.get_normal().y >= cos(floor_max_angle) - 0.01:
+		return
+
+	# Hauteur de montée limitée par le dégagement au-dessus de la tête
+	var up := Vector3.UP * StepHeight
+	var col := KinematicCollision3D.new()
+	if test_move(xf, up, col):
+		up = col.get_travel()
+	if up.y < 0.05:
+		return
+
+	# Corps relevé : doit pouvoir avancer un peu
+	if test_move(xf.translated(up), dir * 0.05):
+		return
+
+	# Hauteur du sol actuel, puis du dessus de la marche juste devant le bord
+	# de la capsule (indépendant de la profondeur des marches)
+	var base := _ground_y(xf.origin + Vector3.UP * 0.05, 4.0)
+	if is_nan(base):
+		return
+	var ahead := xf.origin + dir * (_body_radius + 0.03)
+	ahead.y = base + up.y + 0.02
+	var top := _ground_y(ahead, up.y + 0.04)
+	if is_nan(top):
+		return
+
+	var gained := top - base
+	if gained > 0.03 and gained <= up.y:
+		global_position.y += gained
+		$Camera3D.position.y -= gained # rattrapé par le lerp dans _process
 
 func _on_menu_visibility_changed() -> void:
 	if not $WindowMenuLayer/WindowMenu.visible \

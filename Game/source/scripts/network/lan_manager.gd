@@ -1078,7 +1078,7 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 ## joueur local ne voit jamais son propre corps d'habitude. Réalise le prewarm
 ## GPU (celui-ci anticipe le TDR) puis force _arrived pour rendre l'avatar
 ## visible. Retourne le nœud ou null (scène indisponible).
-func spawn_freecam_avatar(world_root: Node, player: Node3D) -> Node:
+func spawn_freecam_avatar(player: Node3D) -> Node:
 	# La sélection du menu LAN n'alimente PAS _avatar_scene (qui reste le
 	# défaut/custom) : c'est _selected_avatar_path que _bake_avatar consomme.
 	var scene := _avatar_scene
@@ -1090,15 +1090,9 @@ func spawn_freecam_avatar(world_root: Node, player: Node3D) -> Node:
 		return null
 	var av := scene.instantiate()
 	av.name = "FreeCamAvatar"
-	# La transform du corps est posée AVANT setup() : setup() initialise les
-	# cibles d'interpolation (_target_pos/_target_yaw) avec position/rotation,
-	# sans quoi l'avatar dériverait vers le monde d'origine. Position/rotation
-	# du joueur = sa dernière position/rotation avant le gel de la vue libre.
-	av.position = player.position
-	av.rotation = player.rotation
 	av.scale = _spawn_scale()
 	av.setup(0, player_name, player_color)
-	world_root.add_child(av)
+	player.add_child(av)
 	av.start_prewarm()
 	av.set_arrived(true)
 	return av

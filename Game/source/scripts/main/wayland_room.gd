@@ -11,14 +11,14 @@ extends Node3D
 ##   Effects        -> X-RAY + flash d'ouverture
 
 @onready var compositor: WlrCompositor = $WlrCompositor
-@onready var player = $Level/Player
-@onready var ui: CanvasLayer = $Level/Player/UI
-@onready var window_menu = $Level/Player/WindowMenuLayer/WindowMenu
-@onready var capture_selector = $Level/Player/CaptureSelectorLayer/CaptureSelector
-@onready var pause_menu = $Level/Player/PauseMenuLayer/PauseMenu
-@onready var radial_menu = $Level/Player/RadialMenuLayer/RadialMenu
-@onready var keyboard: VirtualKeyboard = $Level/Player/KeyboardLayer/VirtualKeyboard
-@onready var tutorial = $Level/Player/TutorialLayer/Tutorial
+@onready var player = get_tree().get_first_node_in_group("player")
+@onready var ui: CanvasLayer = player.get_node("UI")
+@onready var window_menu = player.get_node("WindowMenuLayer/WindowMenu")
+@onready var capture_selector = player.get_node("CaptureSelectorLayer/CaptureSelector")
+@onready var pause_menu = player.get_node("PauseMenuLayer/PauseMenu")
+@onready var radial_menu = player.get_node("RadialMenuLayer/RadialMenu")
+@onready var keyboard: VirtualKeyboard = player.get_node("KeyboardLayer/VirtualKeyboard")
+@onready var tutorial = player.get_node("TutorialLayer/Tutorial")
 
 var win3d: Node3D
 var focus: Node3D
@@ -509,7 +509,7 @@ func _ready() -> void:
 	lan.name = "LAN"
 	lan.set_script(preload("res://scripts/network/lan_manager.gd"))
 	add_child(lan)
-	lan.setup($Level, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
+	lan.setup(player.get_parent(), pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
 	lan.level_bake_provider = _bake_level_for_lan
 	lan.level_apply_requested.connect(apply_host_level)
 	lan.local_level_restore_requested.connect(restore_local_level)
@@ -1267,7 +1267,7 @@ func _open_freecam() -> void:
 	player.freecam_active = true
 	# Avatar personnel planté à la position du joueur (visible même en solo).
 	if lan != null and is_instance_valid(lan):
-		_freecam_avatar = lan.spawn_freecam_avatar($Level, player)
+		_freecam_avatar = lan.spawn_freecam_avatar(player)
 
 
 func _close_freecam() -> void:

@@ -29,6 +29,10 @@ window/stretch/aspect="expand"
 display_server/driver.linuxbsd="wayland"
 display/display_server/driver="wayland"
 
+[global_group]
+
+player=""
+
 [gui]
 
 theme/default_font_hinting=2
@@ -230,6 +234,7 @@ pin_zoom={
 [physics]
 
 3d/physics_engine="Jolt Physics"
+common/physics_interpolation=true
 
 [rendering]
 
