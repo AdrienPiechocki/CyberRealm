@@ -68,14 +68,18 @@ static func bake(root: Node3D) -> Dictionary:
 	clone.name = "Level"
 	clone.owner = null
 	_own_all(clone, clone)
+	_relink(root, player, cache)
 	_scrub_node(clone, "Level", cache, {})
 	var scene := PackedScene.new()
 	if scene.pack(clone) != OK:
 		push_error("LevelBaker: packing the level failed")
+		clone.free()
 		return {}
 	if ResourceSaver.save(scene, BAKE_TMP_PATH) != OK:
 		push_error("LevelBaker: saving the level failed")
+		clone.free()
 		return {}
+	clone.free()
 	for dep in ResourceLoader.get_dependencies(BAKE_TMP_PATH):
 		if not String(dep).contains("lan_mirror"):
 			push_warning("LevelBaker: EXTERNAL DEP — " + String(dep))
@@ -88,7 +92,6 @@ static func bake(root: Node3D) -> Dictionary:
 	if bytes.is_empty():
 		push_error("LevelBaker: empty blob after reading")
 		return {}
-	_relink(root, player, cache)
 	var assets := _collect_assets()
 	push_warning("LevelBaker: bake OK — %d KB (%d user scripts)" % [bytes.size() / 1024, manifest.size()])
 	return {"bytes": bytes, "spawn": spawn, "spawn_rotation": spawn_rotation, "spawn_scale": spawn_scale, "scripts": manifest, "assets": assets}
@@ -310,8 +313,7 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 	for m in orig.get_meta_list():
 		node.set_meta(m, orig.get_meta(m))
 	cache[orig] = node   # table orig -> clone
-	if orig.get_meta("lan_skip_children"):
-		return node
+	var skip_runtime: bool = orig.get_meta("lan_skip_children", false)
 	var script: Script = orig.get_script()
 	if script != null:
 		# Script utilisateur remappé : attacher la copie miroir (sinon le pack
@@ -357,6 +359,8 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 		else:
 			node.set(pname, v)
 	for c in orig.get_children():
+		if skip_runtime and c.owner == null:
+			continue
 		if c == exclude:
 			# Placeholder au même endroit : même classe + même script (exports
 			# typés valides), jamais ses enfants. Remplacé par le Player local.

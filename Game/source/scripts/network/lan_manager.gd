@@ -1876,6 +1876,7 @@ func _bake_avatar() -> Dictionary:
 	baked.name = "Avatar"
 	baked.owner = null
 	LevelBaker._own_all(baked, baked)
+	LevelBaker._relink(root, null, cache)
 	LevelBaker._scrub_node(baked, "Avatar", cache, {})
 	# Diagnostic : compter meshes / matériaux / textures dans le bake.
 	var diag := {"meshes": 0, "mats": 0, "textures": 0, "verts": 0}
@@ -1900,7 +1901,6 @@ func _bake_avatar() -> Dictionary:
 		return {}
 	var bytes := f.get_buffer(f.get_length())
 	f.close()
-	LevelBaker._relink(root, null, cache)
 	push_warning("LAN: avatar baked — %d KB (%d scripts user)" % [bytes.size() / 1024, manifest.size()])
 	LevelBaker.max_texture_size = 0
 	LevelBaker.keep_surface_format = false
