@@ -16,9 +16,10 @@ extends RefCounted
 ## transmis à part via un manifeste {chemin → source} que les pairs écrivent
 ## sur disque avant de charger le blob (UserScriptMirror).
 
-const ASSET_EXTS := ["json", "txt", "csv", "tres", "gdshader", "gdshaderinc", "bin", "dat", "raw"]
+const ASSET_EXTS := ["json", "txt", "csv", "tres", "gdshader", "gdshaderinc", "bin", "dat", "raw",
+	"glb", "gltf", "png", "jpg", "jpeg", "webp"]
 const REWRITE_EXTS := ["tres", "gdshader", "gdshaderinc"]  # texte contenant des res://user/
-const MAX_ASSET_BYTES := 96 * 1024 * 1024
+const MAX_ASSET_BYTES := 256 * 1024 * 1024
 const PACK_MAGIC := "CRPK"
 
 const BAKE_TMP_PATH := "user://lan_bake.scn"
@@ -216,8 +217,8 @@ static func _scan_asset_refs(text: String) -> Array:
 static func _register_asset(path: String) -> bool:
 	if not path.begins_with(UserScriptMirror.RES_PREFIX):
 		return false
-	if path.ends_with("/"):
-		_add_asset_dir(path)
+	if path.ends_with("/") or (path.get_extension().is_empty() and DirAccess.open(path) != null):
+		_add_asset_dir(path.trim_suffix("/") + "/")
 		return true
 	if path.get_extension().to_lower() not in ASSET_EXTS or not FileAccess.file_exists(path):
 		return false
