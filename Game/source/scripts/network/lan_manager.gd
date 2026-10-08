@@ -1874,6 +1874,7 @@ func _bake_avatar() -> Dictionary:
 	baked.name = "Avatar"
 	baked.owner = null
 	LevelBaker._own_all(baked, baked)
+	LevelBaker._scrub_node(baked, "Avatar", cache, {})
 	# Diagnostic : compter meshes / matériaux / textures dans le bake.
 	var diag := {"meshes": 0, "mats": 0, "textures": 0, "verts": 0}
 	_diag_count_res(baked, diag)

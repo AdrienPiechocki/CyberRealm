@@ -68,6 +68,7 @@ static func bake(root: Node3D) -> Dictionary:
 	clone.name = "Level"
 	clone.owner = null
 	_own_all(clone, clone)
+	_scrub_node(clone, "Level", cache, {})
 	var scene := PackedScene.new()
 	if scene.pack(clone) != OK:
 		push_error("LevelBaker: packing the level failed")
@@ -580,3 +581,59 @@ static func _own_all(n: Node, root: Node) -> void:
 	n.owner = root if n != root else null
 	for c in n.get_children():
 		_own_all(c, root)
+
+static func _is_ext(r: Resource) -> bool:
+	return not r.resource_path.is_empty() and not "::" in r.resource_path
+
+static func _scrub_node(n: Node, path: String, cache: Dictionary, seen: Dictionary) -> void:
+	_scrub_obj(n, path, cache, seen)
+	for c in n.get_children():
+		_scrub_node(c, path + "/" + String(c.name), cache, seen)
+
+static func _scrub_obj(o: Object, trail: String, cache: Dictionary, seen: Dictionary) -> void:
+	for p in o.get_property_list():
+		if int(p.get("usage", 0)) & PROPERTY_USAGE_STORAGE == 0:
+			continue
+		var pname := String(p.get("name"))
+		if pname == "script" or pname == "owner":
+			continue
+		var v = o.get(pname)
+		if not (v is Resource or v is Array or v is Dictionary):
+			continue
+		var nv = _fix_value(v, trail + "." + pname, cache, seen)
+		if not is_same(nv, v):
+			o.set(pname, nv)
+
+static func _fix_value(v: Variant, trail: String, cache: Dictionary, seen: Dictionary) -> Variant:
+	if v is Resource:
+		var r := v as Resource
+		if r is Script:
+			return r
+		if _is_ext(r):
+			push_warning("LevelBaker: EXTERNAL REF %s (%s) @ %s" % [r.resource_path, r.get_class(), trail])
+			return _embed(r, cache)
+		if not (r is Mesh or r is Texture or r is Image) and not seen.has(r):
+			seen[r] = true
+			_scrub_obj(r, trail, cache, seen)
+		return r
+	if v is Array:
+		var arr: Array = v.duplicate()
+		var changed := false
+		for i in arr.size():
+			if arr[i] is Resource:
+				var nv = _fix_value(arr[i], trail + "[%d]" % i, cache, seen)
+				if not is_same(nv, arr[i]):
+					arr[i] = nv
+					changed = true
+		return arr if changed else v
+	if v is Dictionary:
+		var dict: Dictionary = v.duplicate()
+		var changed := false
+		for k in dict:
+			if dict[k] is Resource:
+				var nv = _fix_value(dict[k], trail + "[%s]" % str(k), cache, seen)
+				if not is_same(nv, dict[k]):
+					dict[k] = nv
+					changed = true
+		return dict if changed else v
+	return v
