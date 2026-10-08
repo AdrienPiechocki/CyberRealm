@@ -44,7 +44,7 @@ static func bake(root: Node3D) -> int:
 		_debug("existing occluders detected — auto generation skipped")
 		return 0
 	# Le joueur ne doit JAMAIS devenir un occludeur figé.
-	var exclude := root.get_node_or_null("Player")
+	var exclude := root.find_child("Player", true, false)
 	var to_level := root.global_transform.affine_inverse()
 	var candidates: Array[Dictionary] = []
 	for mi: MeshInstance3D in root.find_children("*", "MeshInstance3D", true, false):

@@ -180,21 +180,27 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	var new_level := scene.instantiate()
 	if new_level == null:
 		return false
-	var old_player := old_level.get_node_or_null("Player")
-	var scene_player := new_level.get_node_or_null("Player")
-	if use_scene_player_spawn and scene_player is Node3D and spawn_pos == Vector3.ZERO:
-		spawn_pos = (scene_player as Node3D).position
-		spawn_rotation = (scene_player as Node3D).rotation
-		spawn_scale = (scene_player as Node3D).scale
+	var old_player := old_level.find_child("Player", true, false) as Node3D
+	var scene_player := new_level.find_child("Player", true, false) as Node3D
+	if use_scene_player_spawn and scene_player != null and spawn_pos == Vector3.ZERO:
+		spawn_pos = scene_player.position
+		spawn_rotation = scene_player.rotation
+		spawn_scale = scene_player.scale
 	if old_player != null:
+		var new_parent: Node = new_level
+		var idx := -1
 		if scene_player != null:
-			new_level.remove_child(scene_player)
+			new_parent = scene_player.get_parent()
+			idx = scene_player.get_index()
+			new_parent.remove_child(scene_player)
+			# Les exports des scripts du niveau (Boat.player…) visent le
+			# placeholder : les rediriger vers le vrai Player avant _ready.
+			_rebind_refs(new_level, scene_player, old_player)
 			scene_player.queue_free()
 		old_player.get_parent().remove_child(old_player)
-		new_level.add_child(old_player)
-		# Le _ready() du Player se re-déclenche au re-parenting et ré-écrase
-		# spawn_pos avec la position COURANTE : on re-pose explicitement le
-		# spawn du niveau appliqué pour que les respawns l'utilisent.
+		new_parent.add_child(old_player)
+		if idx >= 0:
+			new_parent.move_child(old_player, idx)
 		old_player.position = spawn_pos
 		old_player.rotation = spawn_rotation
 		old_player.scale = spawn_scale
@@ -1734,3 +1740,14 @@ func _flash_screenshot() -> void:
 	_flash_rect.color = Color(1, 1, 1, 0.45)
 	_flash_tween = create_tween()
 	_flash_tween.tween_property(_flash_rect, "color:a", 0.0, 0.12)
+
+func _rebind_refs(n: Node, from: Object, to: Object) -> void:
+	if n.get_script() != null:
+		for p in n.get_property_list():
+			if int(p.get("usage", 0)) & PROPERTY_USAGE_STORAGE == 0:
+				continue
+			var pname := String(p.get("name"))
+			if pname != "script" and is_same(n.get(pname), from):
+				n.set(pname, to)
+	for c in n.get_children():
+		_rebind_refs(c, from, to)

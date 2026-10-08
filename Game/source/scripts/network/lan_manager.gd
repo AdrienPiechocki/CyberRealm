@@ -2126,19 +2126,19 @@ func _has_streaming_window() -> bool:
 func _spawn_position() -> Vector3:
 	if not _host_spawn_transform.is_empty():
 		return _host_spawn_transform.get("pos", Vector3.ZERO)
-	var player := _level_root.get_node_or_null("Player") as Node3D
+	var player := _find_local_player() as Node3D
 	return player.position if player != null else Vector3.ZERO
 
 func _spawn_rotation() -> Vector3:
 	if not _host_spawn_transform.is_empty():
 		return _host_spawn_transform.get("rot", Vector3.ZERO)
-	var player := _level_root.get_node_or_null("Player") as Node3D
+	var player := _find_local_player() as Node3D
 	return player.rotation if player != null else Vector3.ZERO
 
 func _spawn_scale() -> Vector3:
 	if not _host_spawn_transform.is_empty():
 		return _host_spawn_transform.get("scale", Vector3.ONE)
-	var player := _level_root.get_node_or_null("Player") as Node3D
+	var player := _find_local_player() as Node3D
 	return player.scale if player != null else Vector3.ONE
 
 # ── Sync des transformations ─────────────────────────────────────────
@@ -2195,7 +2195,7 @@ func _physics_process(delta: float) -> void:
 	# le joueur local n'est pas encore entré dans la session.
 	if _pending_join:
 		return
-	var player := _level_root.get_node_or_null("Player") as Node3D
+	var player := _find_local_player() as Node3D
 	if player == null:
 		return
 	var camera := player.get_node_or_null("Camera3D") as Camera3D
@@ -4002,3 +4002,10 @@ func _exit_tree() -> void:
 	_clear_all_remote_windows()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
+
+func _find_local_player() -> Node3D:
+	if is_instance_valid(local_player):
+		return local_player
+	if _level_root == null:
+		return null
+	return _level_root.find_child("Player", true, false) as Node3D

@@ -47,7 +47,7 @@ static var _asset_ref_re: RegEx = null
 static func bake(root: Node3D) -> Dictionary:
 	if root == null:
 		return {}
-	var player := root.get_node_or_null("Player") as Node3D
+	var player := root.find_child("Player", true, false) as Node3D
 	var spawn := Vector3.ZERO
 	var spawn_rotation := Vector3.ZERO
 	var spawn_scale := Vector3.ONE
@@ -356,6 +356,17 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 			node.set(pname, v)
 	for c in orig.get_children():
 		if c == exclude:
+			# Placeholder au même endroit : même classe + même script (exports
+			# typés valides), jamais ses enfants. Remplacé par le Player local.
+			var ph := ClassDB.instantiate(c.get_class()) as Node
+			ph.name = c.name
+			var ps: Script = c.get_script()
+			if ps != null:
+				ph.set_script(_script_remap.get(ps, ps))
+			if c is Node3D:
+				(ph as Node3D).transform = (c as Node3D).transform
+			node.add_child(ph)
+			cache[c] = ph
 			continue
 		var sub := _clone(c, exclude, cache)
 		if sub != null:
