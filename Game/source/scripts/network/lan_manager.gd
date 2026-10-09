@@ -1,3 +1,4 @@
+class_name LanManager
 extends Node
 ## Multijoueur LAN : l'hôte est le serveur (autorité pour le spawn/despawn
 ## des avatars), chaque joueur diffuse sa propre transformation par RPC
@@ -173,7 +174,7 @@ var _avatar_send_scripts_cache: Dictionary = {}
 # user/avatar.tscn si présent, sinon l'avatar par défaut.
 var _selected_avatar_path := ""
 
-var session_active := false
+static var session_active := false
 var is_host := false
 var session_encrypted := false
 var player_name := ""
@@ -195,7 +196,7 @@ var local_player: CharacterBody3D = null
 var _level_root: Node3D = null
 var _players_container: Node3D = null
 var _players: Dictionary = {}       # peer_id -> nom
-var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
+static var _remote_players: Dictionary = {} # peer_id -> Node (avatar)
 # peer_id -> {pos, rot} : position à préserver lors du respawn d'un avatar
 # (changement de couleur/avatar en cours de partie).
 var _respawn_positions: Dictionary = {}
@@ -466,7 +467,7 @@ func _generate_pin() -> String:
 func get_pin() -> String:
 	return _pin
 
-func is_session_active() -> bool:
+static func is_session_active() -> bool:
 	return session_active
 
 # Client : vrai pendant le chargement de la map de l'hôte (avant le join
@@ -592,7 +593,7 @@ func get_players_container() -> Node3D:
 ## Carte peer_id → nœud avatar (résolution par identité : les noms de nœuds
 ## ne sont pas fiables — Godot les renomme en cas de collision, et un nom
 ## auto-généré « @Node3D@N » casserait toute analyse par int(name)).
-func get_remote_players() -> Dictionary:
+static func get_remote_players() -> Dictionary:
 	return _remote_players
 
 # ── DTLS (chiffrement de session) & anti brute-force PIN ─────────────
