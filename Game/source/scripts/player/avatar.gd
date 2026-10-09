@@ -41,6 +41,8 @@ var _arrived := false
 var _last_ground_collider: Node3D = null
 var _last_ground_transform := Transform3D.IDENTITY
 
+func _ready() -> void:
+	process_physics_priority = 0
 
 func setup(id: int, pname: String, color: Color) -> void:
 	peer_id = id
@@ -123,10 +125,10 @@ func _physics_process(delta: float) -> void:
 	if not _has_received_first_transform:
 		return
 
-	# Entraînement physique par le sol sous l'avatar (ex: le pont du bateau)
+	# 1. Entraînement par le sol (bateau)
 	_apply_ground_carry()
 
-	# Lissage de la position globale vers la cible réseau
+	# 2. Lissage de la position vers la cible réseau
 	var t := 1.0 - exp(-delta * lerp_speed)
 	global_position = global_position.lerp(_target_pos, t)
 
@@ -155,16 +157,24 @@ func _apply_ground_carry() -> void:
 	if world_space == null:
 		return
 
-	# Raycast vers le bas. On filtre les colliders internes de l'avatar.
-	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3(0, 0.8, 0),
-		global_position + Vector3(0, -1.5, 0)
-	)
+	# Raycast vertical de 0.5m au-dessus des pieds à 1.5m en dessous
+	var from_pos := global_position + Vector3(0, 0.5, 0)
+	var to_pos := global_position + Vector3(0, -1.5, 0)
 
-	# Exclure le DropTarget de l'avatar si présent
+	var query := PhysicsRayQueryParameters3D.create(from_pos, to_pos)
+	
+	# MASQUE : On ne cible QUE la couche 1 (le decor / bateau).
+	# On ignore la couche 2 (les joueurs et leurs DropTargets).
+	query.collision_mask = 1
+
+	# Exclure aussi tous les corps enfants de cet avatar (ex: DropTarget)
 	var drop_target := get_node_or_null("DropTarget") as CollisionObject3D
 	if drop_target != null:
 		query.exclude = [drop_target.get_rid()]
+
+	# Exclure le joueur local s'il est proche
+	if is_instance_valid(local_player):
+		query.exclude.append(local_player.get_rid())
 
 	var result := world_space.intersect_ray(query)
 
@@ -173,8 +183,10 @@ func _apply_ground_carry() -> void:
 		var current_transform := current_ground.global_transform
 
 		if current_ground == _last_ground_collider and is_instance_valid(_last_ground_collider):
+			# Calcul du déplacement exact du pont cette frame
 			var ground_motion := current_transform * _last_ground_transform.affine_inverse()
-			# On déplace instantanément la position physique ET la cible réseau
+			
+			# On applique la transformation du pont à l'avatar ET à sa cible réseau
 			global_position = ground_motion * global_position
 			_target_pos = ground_motion * _target_pos
 
