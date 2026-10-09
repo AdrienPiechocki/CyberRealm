@@ -119,51 +119,62 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 		pitch_node.rotation.x = pitch
 
 
+func _physics_process(delta: float) -> void:
+	if not _has_received_first_transform:
+		return
+
+	# Entraînement physique par le sol sous l'avatar (ex: le pont du bateau)
+	_apply_ground_carry()
+
+	# Lissage de la position globale vers la cible réseau
+	var t := 1.0 - exp(-delta * lerp_speed)
+	global_position = global_position.lerp(_target_pos, t)
+
+
 func _process(delta: float) -> void:
 	if not _has_received_first_transform:
 		return
 
-	# 1. Détecter génériquement le sol sous l'avatar (Raycast physique)
-	_apply_ground_carry()
-
-	# 2. Lissage visuel vers la cible réseau
 	var t := 1.0 - exp(-delta * lerp_speed)
-	global_position = global_position.lerp(_target_pos, t)
 
-	# 3. Lissage de la rotation du corps (Yaw)
+	# Lissage des rotations (Yaw / Pitch)
 	rotation.y = lerp_angle(rotation.y, _target_yaw, t)
 
-	# 4. Lissage de la rotation de la tête (Pitch)
 	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
 	pitch_node.rotation.x = lerp_angle(pitch_node.rotation.x, _target_pitch, t)
 
-	# 5. Mises à jour des animations et de la transparence
+	# Mises à jour visuelles
 	_update_animation(delta)
 	_update_transparency()
 	_prev_pos = global_position
 
 
-## Détecte si l'avatar est posé sur un objet 3D en mouvement et applique son déplacement.
+## Détecte le sol sous l'avatar et applique son mouvement (houle / plateformes)
 func _apply_ground_carry() -> void:
 	var world_space := get_world_3d().direct_space_state
 	if world_space == null:
 		return
 
-	# Raycast de 1.5m vers le bas depuis la position actuelle
+	# Raycast vers le bas. On filtre les colliders internes de l'avatar.
 	var query := PhysicsRayQueryParameters3D.create(
-		global_position + Vector3(0, 0.5, 0),
-		global_position + Vector3(0, -1.0, 0)
+		global_position + Vector3(0, 0.8, 0),
+		global_position + Vector3(0, -1.5, 0)
 	)
+
+	# Exclure le DropTarget de l'avatar si présent
+	var drop_target := get_node_or_null("DropTarget") as CollisionObject3D
+	if drop_target != null:
+		query.exclude = [drop_target.get_rid()]
+
 	var result := world_space.intersect_ray(query)
 
 	if result.size() > 0 and result.collider is Node3D:
 		var current_ground: Node3D = result.collider
 		var current_transform := current_ground.global_transform
 
-		# Si on est toujours sur le même sol qu'à la frame précédente
 		if current_ground == _last_ground_collider and is_instance_valid(_last_ground_collider):
 			var ground_motion := current_transform * _last_ground_transform.affine_inverse()
-			# Entraîner la position actuelle ET la position cible réseau
+			# On déplace instantanément la position physique ET la cible réseau
 			global_position = ground_motion * global_position
 			_target_pos = ground_motion * _target_pos
 
