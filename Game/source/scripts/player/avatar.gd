@@ -110,7 +110,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	_target_pos = pos
 	_target_yaw = yaw
-	_target_pitch = pitch
+	_target_pitch = -pitch
 
 	if not _has_received_first_transform:
 		_has_received_first_transform = true
@@ -118,7 +118,7 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 		_prev_pos = _target_pos
 		rotation.y = _target_yaw
 		var pitch_node := _pitch_pivot if _pitch_pivot != null else self
-		pitch_node.rotation.x = pitch
+		pitch_node.rotation.x = -pitch
 
 
 func _process(delta: float) -> void:
