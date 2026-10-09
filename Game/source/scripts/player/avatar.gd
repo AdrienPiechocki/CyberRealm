@@ -121,18 +121,6 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 		pitch_node.rotation.x = pitch
 
 
-func _physics_process(delta: float) -> void:
-	if not _has_received_first_transform:
-		return
-
-	# 1. Entraînement par le sol (bateau)
-	_apply_ground_carry()
-
-	# 2. Lissage de la position vers la cible réseau
-	var t := 1.0 - exp(-delta * lerp_speed)
-	global_position = global_position.lerp(_target_pos, t)
-
-
 func _process(delta: float) -> void:
 	if not _has_received_first_transform:
 		return
@@ -148,8 +136,34 @@ func _process(delta: float) -> void:
 	# Mises à jour visuelles
 	_update_animation(delta)
 	_update_transparency()
-	_prev_pos = global_position
 
+
+func _physics_process(delta: float) -> void:
+	if not _has_received_first_transform:
+		return
+
+	# 1. Entraînement par le sol (bateau)
+	_apply_ground_carry()
+
+	# 2. On retient la position APRÈS le mouvement du bateau, 
+	# mais AVANT le déplacement propre du joueur
+	var pos_after_ground_carry := global_position
+
+	# 3. Lissage de la position vers la cible réseau
+	var t := 1.0 - exp(-delta * lerp_speed)
+	global_position = global_position.lerp(_target_pos, t)
+
+	# 4. Calcul de la vitesse RELATIVE (uniquement le déplacement du joueur sur le pont)
+	_calculate_relative_velocity(pos_after_ground_carry, delta)
+
+var _relative_speed_h := 0.0
+var _relative_speed_v := 0.0
+
+func _calculate_relative_velocity(pos_before_player_move: Vector3, delta: float) -> void:
+	# On mesure uniquement la distance parcourue par le joueur sur le navire
+	var vel := global_position - pos_before_player_move
+	_relative_speed_h = Vector2(vel.x, vel.z).length() / maxf(delta, 0.001)
+	_relative_speed_v = vel.y / maxf(delta, 0.001)
 
 ## Détecte le sol sous l'avatar et applique son mouvement (houle / plateformes)
 func _apply_ground_carry() -> void:
@@ -196,18 +210,17 @@ func _apply_ground_carry() -> void:
 		_last_ground_collider = null
 
 
-func _update_animation(delta: float) -> void:
+func _update_animation(_delta: float) -> void:
 	if _anim_player == null:
 		return
-	var vel := global_position - _prev_pos
-	var speed_h = Vector2(vel.x, vel.z).length() / maxf(delta, 0.001)
-	var speed_v = vel.y / maxf(delta, 0.001)
-	_is_grounded = absf(speed_v) < 1.0
+
+	# On utilise la vitesse relative calculée dans _physics_process
+	_is_grounded = absf(_relative_speed_v) < 1.0
 	
 	var target: StringName = &""
 	if not _is_grounded and anim_jump != &"":
 		target = anim_jump
-	elif speed_h > walk_speed_threshold and anim_walk != &"":
+	elif _relative_speed_h > walk_speed_threshold and anim_walk != &"":
 		target = anim_walk
 	elif anim_idle != &"":
 		target = anim_idle
