@@ -2689,3 +2689,39 @@ func _end_group_grab() -> void:
 	_group_rel.clear()
 	_group_grab = false
 	_grab_action = "grab"
+
+func apply_motion_to_resize(motion: Transform3D) -> void:
+	if not is_resizing or active_window_id == -1 or not quads.has(active_window_id):
+		return
+	var quad: MeshInstance3D = quads[active_window_id]
+	if not is_instance_valid(quad):
+		return
+	var parent := quad.get_parent() as Node3D
+	var parent_trans := parent.global_transform if parent else Transform3D.IDENTITY
+	var pinv := parent_trans.affine_inverse()
+	var local_motion := pinv * motion * parent_trans
+
+	resize_start_world = local_motion * resize_start_world
+	resize_right_dir = (local_motion.basis * resize_right_dir).normalized()
+	resize_up_dir = (local_motion.basis * resize_up_dir).normalized()
+	window_start_local_pos = local_motion * window_start_local_pos
+	resize_start_basis = local_motion.basis * resize_start_basis
+	resize_start_pos = local_motion * resize_start_pos
+
+	for r in _resize_shared:
+		if r.has("far"):
+			r["far"] = local_motion * Vector3(r["far"])
+		if r.has("basis"):
+			r["basis"] = local_motion.basis * (r["basis"] as Basis)
+		if r.has("pos"):
+			r["pos"] = local_motion * Vector3(r["pos"])
+		if r.has("near_delta"):
+			r["near_delta"] = motion.basis * Vector3(r["near_delta"])
+
+	for link in _resize_links:
+		if link.has("zone_start"):
+			link["zone_start"] = local_motion * link["zone_start"]
+		if link.has("members"):
+			for m in link["members"]:
+				if m.has("pos"):
+					m["pos"] = local_motion * Vector3(m["pos"])
