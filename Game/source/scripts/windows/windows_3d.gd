@@ -553,6 +553,7 @@ func on_window_mapped(id: int, title: String, _app_id: String) -> void:
 	window_titles[id] = title
 	WindowDecoration.build(quad, id, title)
 
+	quad.add_to_group("window")
 	add_child(quad)
 	quads[id] = quad
 	window_shared[id] = false
