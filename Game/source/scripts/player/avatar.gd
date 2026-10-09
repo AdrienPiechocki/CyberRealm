@@ -6,7 +6,7 @@ extends Node3D
 @export var pitch_treshold: float = 2.0
 @export var pitch_pivot_path: NodePath = ^""
 
-@export var lerp_speed := 15.0  ## Vitesse de lissage (10 à 20 pour un bon compromis réactivité/fluidité)
+@export var lerp_speed := 15.0  ## Vitesse de lissage (10 à 20)
 
 @export_group("Animations")
 @export var anim_idle: StringName = &""
@@ -36,6 +36,10 @@ var _current_anim: StringName = &""
 var _prewarm_ready := false
 var _prewarming := false
 var _arrived := false
+
+# Suivi du sol mobile (plateforme / bateau)
+var _last_ground_collider: Node3D = null
+var _last_ground_transform := Transform3D.IDENTITY
 
 
 func setup(id: int, pname: String, color: Color) -> void:
@@ -106,7 +110,6 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	_target_yaw = yaw
 	_target_pitch = pitch
 
-	# Téléportation immédiate au premier paquet
 	if not _has_received_first_transform:
 		_has_received_first_transform = true
 		global_position = _target_pos
@@ -120,21 +123,54 @@ func _process(delta: float) -> void:
 	if not _has_received_first_transform:
 		return
 
-	# 1. Lissage visuel de la position globale
+	# 1. Détecter génériquement le sol sous l'avatar (Raycast physique)
+	_apply_ground_carry()
+
+	# 2. Lissage visuel vers la cible réseau
 	var t := 1.0 - exp(-delta * lerp_speed)
 	global_position = global_position.lerp(_target_pos, t)
 
-	# 2. Lissage de la rotation du corps (Yaw / Lacet)
+	# 3. Lissage de la rotation du corps (Yaw)
 	rotation.y = lerp_angle(rotation.y, _target_yaw, t)
 
-	# 3. Lissage de la rotation de la tête (Pitch / Tangage)
+	# 4. Lissage de la rotation de la tête (Pitch)
 	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
 	pitch_node.rotation.x = lerp_angle(pitch_node.rotation.x, _target_pitch, t)
 
-	# 4. Mises à jour des animations et de la transparence
+	# 5. Mises à jour des animations et de la transparence
 	_update_animation(delta)
 	_update_transparency()
 	_prev_pos = global_position
+
+
+## Détecte si l'avatar est posé sur un objet 3D en mouvement et applique son déplacement.
+func _apply_ground_carry() -> void:
+	var world_space := get_world_3d().direct_space_state
+	if world_space == null:
+		return
+
+	# Raycast de 1.5m vers le bas depuis la position actuelle
+	var query := PhysicsRayQueryParameters3D.create(
+		global_position + Vector3(0, 0.5, 0),
+		global_position + Vector3(0, -1.0, 0)
+	)
+	var result := world_space.intersect_ray(query)
+
+	if result.size() > 0 and result.collider is Node3D:
+		var current_ground: Node3D = result.collider
+		var current_transform := current_ground.global_transform
+
+		# Si on est toujours sur le même sol qu'à la frame précédente
+		if current_ground == _last_ground_collider and is_instance_valid(_last_ground_collider):
+			var ground_motion := current_transform * _last_ground_transform.affine_inverse()
+			# Entraîner la position actuelle ET la position cible réseau
+			global_position = ground_motion * global_position
+			_target_pos = ground_motion * _target_pos
+
+		_last_ground_collider = current_ground
+		_last_ground_transform = current_transform
+	else:
+		_last_ground_collider = null
 
 
 func _update_animation(delta: float) -> void:
