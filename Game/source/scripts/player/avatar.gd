@@ -2,39 +2,27 @@ extends Node3D
 ## Avatar d'un autre joueur en LAN : représentation visuelle synchronisée
 ## en position/rotation par le lan_manager. Pas de collision.
 ## Transparence progressive sous 1 m du joueur local.
-##
-## Personnalisation : remplacez `res://scenes/avatar.tscn` par votre
-## propre scène (ou créez `res://user/avatar.tscn`). La scène doit attacher
-## ce script et contenir un nœud Label3D nommé "NameLabel".
 
 @export var pitch_treshold: float = 2.0
-## Nœud utilisé comme pivot du pitch (Node3D). Vide : la racine de l'avatar.
-## Permet à chaque scène avatar de désigner un os/articulation (tête,
-## torse…) sur lequel appliquer la rotation verticale.
 @export var pitch_pivot_path: NodePath = ^""
 
+@export var lerp_speed := 15.0  ## Vitesse de lissage (10 à 20 pour un bon compromis réactivité/fluidité)
+
 @export_group("Animations")
-## Nom de la jouée quand l'avatar est immobile.
 @export var anim_idle: StringName = &""
-## Nom de l'animation jouée quand l'avatar se déplace au sol.
 @export var anim_walk: StringName = &""
-## Nom de l'animation jouée quand l'avatar est en l'air (chute / saut).
 @export var anim_jump: StringName = &""
-## Seuil de vitesse (m/s) en dessous duquel on est considéré immobile.
 @export var walk_speed_threshold := 0.1
 
 var peer_id := 0
 var player_name := ""
 var local_player: CharacterBody3D = null
 
-var _interp_pos := Vector3.ZERO
-var _interp_yaw := 0.0
-var _interp_pitch := 0.0
 var _target_pos := Vector3.ZERO
 var _target_yaw := 0.0
 var _target_pitch := 0.0
+var _has_received_first_transform := false
 
-const LERP_SPEED := 20.0
 const FADE_DISTANCE := 2.0
 
 var _mesh_mats: Array[StandardMaterial3D] = []
@@ -47,11 +35,6 @@ var _is_grounded := true
 var _current_anim: StringName = &""
 var _prewarm_ready := false
 var _prewarming := false
-## Vrai quand le pair a prouvé sa présence : le lan_manager reçoit sa 1re
-## synchro de transform (il en émet une par frame physique dès qu'il est en
-## session, AUCUNE tant qu'il charge encore le niveau). Tant que faux,
-## l'avatar reste invisible même après prewarm — pas de corps fantôme planté
-## au spawn côté des autres pendant que le joueur n'est pas encore arrivé.
 var _arrived := false
 
 
@@ -66,8 +49,6 @@ func setup(id: int, pname: String, color: Color) -> void:
 	for mi in meshes:
 		if not mi.visible:
 			continue
-		# Appel subséquent (changement de couleur) : le material_override existe
-		# déjà (tint couleur precedent). Mettre à jour sa couleur.
 		if mi.material_override is StandardMaterial3D \
 				and mi.material_override in _color_tint_mats:
 			(mi.material_override as StandardMaterial3D).albedo_color = color
@@ -87,7 +68,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 			mi.material_override = mat
 			_color_tint_mats.append(mat)
 
-	# Label du nom.
+	# Label du nom
 	_label = _find_label(self)
 	if _label == null:
 		_label = Label3D.new()
@@ -97,17 +78,12 @@ func setup(id: int, pname: String, color: Color) -> void:
 		_label.outline_size = 6
 		_label.position = Vector3(0, 1.8, 0)
 		add_child(_label)
-	#_make_label_no_depth_test(_label)
 	_label.text = pname
 	_label.no_depth_test = true
-	# L'eau est transparente (ALPHA = edge) et recopie screen_texture : tout ce
-	# qui est dessiné avant elle dans la passe transparente est écrasé. Le tri
-	# par distance place l'eau (énorme) après le label ; render_priority force
-	# le label à passer en dernier (outline juste en dessous).
 	_label.render_priority = 100
 	_label.outline_render_priority = 99
 
-	# AnimationPlayer — uniquement si au moins une animation est configurée.
+	# AnimationPlayer
 	if anim_idle != &"" or anim_walk != &"" or anim_jump != &"":
 		_anim_player = _find_anim_player(self)
 		if _anim_player == null:
@@ -115,33 +91,86 @@ func setup(id: int, pname: String, color: Color) -> void:
 			_anim_player.name = "AnimationPlayer"
 			add_child(_anim_player)
 
-	# Pivot du pitch : nœud désigné par la scène avatar, sinon la racine.
+	# Pivot du pitch
 	_pitch_pivot = null
 	if not pitch_pivot_path.is_empty():
 		_pitch_pivot = get_node_or_null(pitch_pivot_path) as Node3D
-		if _pitch_pivot == null:
-			push_warning("Avatar %s: pitch_pivot_path '%s' not found or not a Node3D." %
-					[name, pitch_pivot_path])
 
-	_interp_pos = position
 	_target_pos = position
 	_target_yaw = rotation.y
 	_prev_pos = position
 
 
-func _ready() -> void:
-	# Le prewarm N'est PAS déclenché ici : _ready() se re-déclenche quand le
-	# lan_manager re-parente l'avatar (on_level_swapped), pendant le chargement
-	# du niveau — un prewarm à ce moment-là s'ajouterait à la compilation des
-	# shaders du niveau et provoquerait le TDR. Le lan_manager appelle
-	# start_prewarm() une fois le niveau stable.
-	pass
+func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
+	_target_pos = pos
+	_target_yaw = yaw
+	_target_pitch = pitch
+
+	# Téléportation immédiate au premier paquet
+	if not _has_received_first_transform:
+		_has_received_first_transform = true
+		global_position = _target_pos
+		_prev_pos = _target_pos
+		rotation.y = _target_yaw
+		var pitch_node := _pitch_pivot if _pitch_pivot != null else self
+		pitch_node.rotation.x = pitch
 
 
-# Déclenche le prewarm GPU une seule fois, quand le niveau est stable. Tant
-# que les variants de shaders ne sont pas compilés dans le SubViewport
-# hors-écran, l'avatar reste invisible. Idempotent : le 2e appel (avatar qui
-# spawn après coup, ou re-parenting) ne relance pas le prewarm.
+func _process(delta: float) -> void:
+	if not _has_received_first_transform:
+		return
+
+	# 1. Lissage visuel de la position globale
+	var t := 1.0 - exp(-delta * lerp_speed)
+	global_position = global_position.lerp(_target_pos, t)
+
+	# 2. Lissage de la rotation du corps (Yaw / Lacet)
+	rotation.y = lerp_angle(rotation.y, _target_yaw, t)
+
+	# 3. Lissage de la rotation de la tête (Pitch / Tangage)
+	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
+	pitch_node.rotation.x = lerp_angle(pitch_node.rotation.x, _target_pitch, t)
+
+	# 4. Mises à jour des animations et de la transparence
+	_update_animation(delta)
+	_update_transparency()
+	_prev_pos = global_position
+
+
+func _update_animation(delta: float) -> void:
+	if _anim_player == null:
+		return
+	var vel := global_position - _prev_pos
+	var speed_h = Vector2(vel.x, vel.z).length() / maxf(delta, 0.001)
+	var speed_v = vel.y / maxf(delta, 0.001)
+	_is_grounded = absf(speed_v) < 1.0
+	
+	var target: StringName = &""
+	if not _is_grounded and anim_jump != &"":
+		target = anim_jump
+	elif speed_h > walk_speed_threshold and anim_walk != &"":
+		target = anim_walk
+	elif anim_idle != &"":
+		target = anim_idle
+
+	if target != &"" and target != _current_anim:
+		_anim_player.play(target)
+		_current_anim = target
+
+
+func _update_transparency() -> void:
+	if local_player == null or not is_instance_valid(local_player):
+		return
+	var dist := global_position.distance_to(local_player.global_position) - 1.0
+	var alpha := clampf(dist / FADE_DISTANCE, 0.0, 1.0)
+	for mat in _mesh_mats:
+		if mat != null and is_instance_valid(mat):
+			mat.albedo_color.a = alpha
+	for mat in _color_tint_mats:
+		if mat != null and is_instance_valid(mat):
+			mat.albedo_color.a = alpha
+
+
 func start_prewarm() -> void:
 	if _prewarm_ready:
 		_update_visible()
@@ -155,9 +184,6 @@ func start_prewarm() -> void:
 	_update_visible()
 
 
-## La visibilité de l'avatar obéit à DEUX conditions cumulées : shaders
-## préchauffés (pas de TDR au moment de l'apparition) ET pair réellement
-## arrivé (1re synchro reçue).
 func set_arrived(arrived: bool) -> void:
 	_arrived = arrived
 	_update_visible()
@@ -167,15 +193,6 @@ func _update_visible() -> void:
 	visible = _prewarm_ready and _arrived
 
 
-# Compile les shaders et uploade les meshes de l'avatar dans un SubViewport
-# hors-écran, le temps de quelques frames, pendant que le GPU est encore
-# disponible. Le prewarm doit reproduire les conditions de rendu du viewport
-# principal (squelette de skinning, environnement sky/SSAO/SSR, lumière avec
-# ombres) : sans cela le premier rendu réel (ex: la caméra se tourne vers
-# l'avatar d'un coup) compile tous les variants de shaders manquants d'un coup
-# et provoque un TDR (crash Vulkan) combiné aux captures Wayland.
-# L'avatar reste invisible dans le viewport principal tant que le prewarm n'a
-# pas fini : le viewport principal ne le rend jamais avant que tout soit prêt.
 func _prewarm_gpu() -> void:
 	var meshes: Array[MeshInstance3D] = []
 	_collect_meshes(self, meshes)
@@ -191,22 +208,16 @@ func _prewarm_gpu() -> void:
 	cam.current = true
 	cam.look_at_from_position(Vector3(0.0, 1.0, 5.0), Vector3(0.0, 1.0, 0.0))
 	vp.add_child(cam)
-	# Même environnement que le viewport principal (sky, SSAO, SSR) pour
-	# compiler les variants ambient/reflection au prewarm, pas au 1er rendu.
 	var we := _find_world_environment()
 	if we != null:
 		var env_node := WorldEnvironment.new()
 		env_node.name = "PrewarmEnvironment"
 		env_node.environment = we.environment.duplicate(true)
 		vp.add_child(env_node)
-	# Lumière directionnelle avec ombres — mêmes variants shadow que le level.
 	var light := DirectionalLight3D.new()
 	light.shadow_enabled = true
 	light.look_at_from_position(Vector3(2.0, 5.0, 3.0), Vector3(0.0, 1.0, 0.0))
 	vp.add_child(light)
-	# Squelette cloné : les meshes skin (FBX custom) ont besoin d'un
-	# Skeleton3D pour compiler les variants de skinning. De simples holders
-	# sans squelette ne compilaient pas ces variants → recompilés au 1er rendu.
 	var skel := _find_skeleton(self)
 	var skel_holder: Skeleton3D = null
 	if skel != null:
@@ -234,16 +245,11 @@ func _prewarm_gpu() -> void:
 		vp.add_child(h)
 		if skel_holder != null:
 			h.skeleton = h.get_path_to(skel_holder)
-	# Masquer l'avatar réel tant que les variants ne sont pas compilés. On
-	# attend plusieurs frames (process_frame, toujours émis — pas de dépendance
-	# au rendu) : le SubViewport UPDATE_ALWAYS rend à chaque frame et compile
-	# les variants pendant ce délai.
 	visible = false
 	for _f in 3:
 		await get_tree().process_frame
 	if is_instance_valid(vp):
 		vp.queue_free()
-	# La visibilité est restaurée par start_prewarm() une fois tout prêt.
 
 
 func _find_skeleton(node: Node) -> Skeleton3D:
@@ -296,11 +302,6 @@ func _find_anim_player(node: Node) -> AnimationPlayer:
 func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
 	if mi.mesh == null or mi.material_override != null:
 		return
-	# Avatar custom (FBX) : chaque surface a son propre matériau. On le duplique
-	# en transparent et on l'accroche en override de surface pour pouvoir le
-	# fondre à la proximité du joueur local (comme la capsule par défaut).
-	# Les variantes transparentes sont compilées par le prewarm hors viewport
-	# principal avant tout rendu réel : pas de TDR au 1er affichage.
 	for s in mi.mesh.get_surface_count():
 		var mat: Material = mi.get_surface_override_material(s)
 		if mat == null:
@@ -312,65 +313,6 @@ func _duplicate_material_for_fade(mi: MeshInstance3D) -> void:
 			dup.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA_DEPTH_PRE_PASS
 		mi.set_surface_override_material(s, dup)
 		_mesh_mats.append(dup)
-
-
-func _make_label_no_depth_test(label: Label3D) -> void:
-	var mat := StandardMaterial3D.new()
-	mat.no_depth_test = true
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	label.material_override = mat
-
-
-# Dans avatar.gd
-func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
-	global_position = pos
-	rotation.y = yaw
-	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
-	pitch_node.rotation.x = pitch
-
-
-func _physics_process(delta: float) -> void:
-	var k := minf(1.0, delta * LERP_SPEED)
-	_interp_pos = _interp_pos.lerp(_target_pos, k)
-	_interp_yaw = lerp_angle(_interp_yaw, _target_yaw, k)
-	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
-	_update_transparency()
-	_update_animation(delta)
-	_prev_pos = _interp_pos
-
-
-func _update_animation(_delta: float) -> void:
-	if _anim_player == null:
-		return
-	var vel := _interp_pos - _prev_pos
-	var speed_h = Vector2(vel.x, vel.z).length() / maxf(_delta, 0.001)
-	var speed_v = vel.y / maxf(_delta, 0.001)
-	_is_grounded = absf(speed_v) < 1.0
-	
-	var target: StringName = &""
-	if not _is_grounded and anim_jump != &"":
-		target = anim_jump
-	elif speed_h > walk_speed_threshold and anim_walk != &"":
-		target = anim_walk
-	elif anim_idle != &"":
-		target = anim_idle
-
-	if target != &"" and target != _current_anim:
-		_anim_player.play(target)
-		_current_anim = target
-
-
-func _update_transparency() -> void:
-	if local_player == null or not is_instance_valid(local_player):
-		return
-	var dist := global_position.distance_to(local_player.global_position) - 1
-	var alpha := clampf(dist / FADE_DISTANCE, 0.0, 1.0)
-	for mat in _mesh_mats:
-		if mat != null and is_instance_valid(mat):
-			mat.albedo_color.a = alpha
-	for mat in _color_tint_mats:
-		if mat != null and is_instance_valid(mat):
-			mat.albedo_color.a = alpha
 
 
 func _collect_meshes(node: Node, result: Array[MeshInstance3D]) -> void:
