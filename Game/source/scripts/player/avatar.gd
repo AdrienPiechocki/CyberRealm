@@ -321,10 +321,12 @@ func _make_label_no_depth_test(label: Label3D) -> void:
 	label.material_override = mat
 
 
+# Dans avatar.gd
 func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
-	_target_pos = pos
-	_target_yaw = yaw
-	_target_pitch = pitch
+	global_position = pos
+	rotation.y = yaw
+	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
+	pitch_node.rotation.x = pitch
 
 
 func _physics_process(delta: float) -> void:
@@ -332,10 +334,6 @@ func _physics_process(delta: float) -> void:
 	_interp_pos = _interp_pos.lerp(_target_pos, k)
 	_interp_yaw = lerp_angle(_interp_yaw, _target_yaw, k)
 	_interp_pitch = lerp_angle(_interp_pitch, _target_pitch, k)
-	position = _interp_pos
-	rotation.y = _interp_yaw
-	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
-	pitch_node.rotation.x = _interp_pitch / pitch_treshold
 	_update_transparency()
 	_update_animation(delta)
 	_prev_pos = _interp_pos
