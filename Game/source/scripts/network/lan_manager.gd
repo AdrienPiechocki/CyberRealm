@@ -4040,6 +4040,7 @@ func _scan_sync(n: Node) -> void:
 
 # Hôte : émet. Client : applique en lissé.
 func _sync_level_state(delta: float) -> void:
+	_dbg_sync(delta)
 	if is_host:
 		_level_sync_timer += delta
 		if _level_sync_timer < LEVEL_SYNC_GAP or _level_sync_by_path.is_empty():
@@ -4073,3 +4074,13 @@ func _level_sync(state: Array) -> void:
 	for e in state:
 		if e is Array and e.size() == 2 and e[1] is Transform3D:
 			_level_sync_target[String(e[0])] = e[1]
+
+var _dbg_t := 0.0
+func _dbg_sync(delta: float) -> void:
+	_dbg_t += delta
+	if _dbg_t < 2.0:
+		return
+	_dbg_t = 0.0
+	for path in _level_sync_by_path:
+		var n: Node3D = _level_sync_by_path[path]
+		print("[sync %s] %s pos=%s | targets=%d" % ["host" if is_host else "client", path, n.position.snappedf(0.1), _level_sync_target.size()])
