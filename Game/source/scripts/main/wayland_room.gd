@@ -543,7 +543,7 @@ func _ready() -> void:
 	lan.name = "LAN"
 	lan.set_script(preload("res://scripts/network/lan_manager.gd"))
 	add_child(lan)
-	lan.setup(player.get_parent(), pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
+	lan.setup(get_node("Level") as Node3D, pause_menu.get_lan_player_name(), pause_menu.get_lan_player_color())
 	lan.level_bake_provider = _bake_level_for_lan
 	lan.level_apply_requested.connect(apply_host_level)
 	lan.local_level_restore_requested.connect(restore_local_level)
