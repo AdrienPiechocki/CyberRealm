@@ -528,10 +528,11 @@ fi
 
 # --- Firewall ---------------------------------------------------------------
 if [[ "$DO_FIREWALL" -eq 1 ]] \
-    && confirm "install: open UDP 7777/9999 and TCP 22 in the firewall? (required for multiplayer)"; then
+    && confirm "install: open UDP 7777/9999 and TCP 22/7778 in the firewall? (required for multiplayer)"; then
     firewall_open udp 7777
     firewall_open udp 9999
     firewall_open tcp 22
+    firewall_open tcp 7778
     echo "install: firewalld/nft/iptables rules are session-scoped and may not survive a reboot;"
     echo "          for persistence prefer ufw or the firewalld config."
 else

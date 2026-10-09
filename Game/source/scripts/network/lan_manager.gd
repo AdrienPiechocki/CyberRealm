@@ -37,6 +37,10 @@ const DTLS_CREDS_NAME := "cyberrealm-lan"
 # (assets embarqués → pas besoin de builds identiques), le compresse en ZSTD
 # puis l'envoie en chunks fiables (canal 0). Un chunk ≤ 24 Ko reste dans une
 # vague ENet (32 fragments ≈ 44 KB) sans retomber en 2-3 vagues d'ACK.
+# Port TCP du canal dédié au niveau (voir level_tcp.gd) : le blob ne passe plus
+# par ENet, seul le jeton d'accès transite par le RPC (chiffré en DTLS).
+const LEVEL_TCP_PORT := 7778
+# LEVEL_CHUNK_SIZE / LEVEL_CHUNKS_PER_TICK restent utilisés par le transfert d'avatars.
 const LEVEL_CHUNK_SIZE := 24000
 const LEVEL_CHUNKS_PER_TICK := 24
 
@@ -219,11 +223,13 @@ var _last_level_chunk_msec := 0 # dernier chunk de niveau reçu (client)
 # le Player en est exclu). Une fois connu, _spawn_* l'utilise à la place du
 # Player de la scène locale d'origine. Vidé au début de chaque session.
 var _host_spawn_transform: Dictionary = {}
-# peer_id -> {bytes, spawn, total, sent} : blob baked du niveau en cours
-# d'envoi vers un client qui vient de se connecter.
-var _level_send_queue: Dictionary = {}
-# Réception (client) du blob de l'hôte : {data, spawn, total, next}.
-var _level_bake_receive: Dictionary = {}
+# Canal TCP dédié au niveau. Hôte : serveur (thread dédié) qui lit les jetons
+# et écrit le blob. Client : récepteur (thread dédié) qui lit le blob.
+var _level_tcp_server: LevelTcp.Server = null
+var _level_tcp_rx: LevelTcp.Receiver = null
+var _level_tcp_rx_meta: Dictionary = {} # {size, spawn, rotation, scale} de l'offre
+var _level_tcp_rx_bytes := 0
+var _level_tcp_rx_pct := -1
 # Cache (host) du blob baked : re-baké uniquement quand le niveau change.
 var _level_baked_cache: Dictionary = {}
 # Cachés ensemble : le blob bake ET sa compression ZSTD, préparés AU DÉMARRAGE
@@ -738,7 +744,7 @@ func host_game() -> bool:
 	if not _prepare_level_send_cache():
 		_lan_log("level cache prepare failed")
 	_lan_log("host_game — waiting for clients", true)
-	_set_status("Hosting on %s:%d — open UDP port %d (and %d) in the firewall if a client can't connect%s" % [_local_ip(), PORT, PORT, DISCOVERY_PORT, " (TLS ON)" if session_encrypted else ""])
+	_set_status("Hosting on %s:%d — open UDP port %d (and %d) and TCP port %d in the firewall if a client can't connect%s" % [_local_ip(), PORT, PORT, DISCOVERY_PORT, LEVEL_TCP_PORT, " (TLS ON)" if session_encrypted else ""])
 	_emit_players()
 	return true
 
@@ -1297,55 +1303,65 @@ func _send_level_to(id: int) -> void:
 	var manifest: Dictionary = data.get("scripts", {})
 	if not manifest.is_empty():
 		_receive_level_scripts.rpc_id(id, manifest)
-	var chunks := build_level_chunks(_level_compressed_cache, LEVEL_CHUNK_SIZE)
-	_level_send_queue[id] = {
-		"chunks": chunks,
-		"spawn": data.get("spawn", Vector3.ZERO),
-		"rotation": data.get("spawn_rotation", Vector3.ZERO),
-		"scale": data.get("spawn_scale", Vector3.ONE),
-		"size": int(data.get("payload_size", 0)),
-		"total": chunks.size(),
-		"sent": 0,
-		# Dernier palier 10 % loggé (T6) : la progression hôte se lit dans
-		# _drain_level_send, un log par palier franchi et non par chunk.
-		"tx_tier": -1,
-	}
-	push_warning("LAN: sending level to peer %d — raw %d KB, compressed %d KB, %d chunks" % [id,
+	# Canal TCP dédié : jeton à usage unique, lié à l'IP du pair ENet, transmis
+	# par le RPC (chiffré si la session l'est). Jamais de bake/compress ici.
+	var ip := _remote_ip(id)
+	if ip == "":
+		_lan_log("level tcp: no remote address for peer %d — level not sent" % id)
+		return
+	if not _ensure_level_tcp_server():
+		_set_status("Level TCP channel unavailable (port %d busy?)" % LEVEL_TCP_PORT)
+		return
+	_level_tcp_server.set_payload(_level_compressed_cache)
+	var token := LevelTcp.new_token()
+	_level_tcp_server.add_token(id, ip, token)
+	_receive_level_baked.rpc_id(id, LEVEL_TCP_PORT, token, _level_compressed_cache.size(),
+			int(data.get("payload_size", 0)), data.get("spawn", Vector3.ZERO),
+			data.get("spawn_rotation", Vector3.ZERO), data.get("spawn_scale", Vector3.ONE))
+	push_warning("LAN: level offered to peer %d — raw %d KB, compressed %d KB (TCP %d)" % [id,
 		int(data.get("bytes", PackedByteArray()).size()) / 1024,
-		_level_compressed_cache.size() / 1024, chunks.size()])
+		_level_compressed_cache.size() / 1024, LEVEL_TCP_PORT])
 	_set_status("Sending host level to %d (%d KB)…" % [id, _level_compressed_cache.size() / 1024])
 
-# Pousse quelques chunks du niveau vers les peers qui viennent de se connecter,
-# étalé sur plusieurs ticks (pas de flood ENet d'un seul coup). Chaque chunk
-# reste dans une vague fiable ENet (~24 Ko) ; le canal fiable garantit l'ordre.
+func _ensure_level_tcp_server() -> bool:
+	if _level_tcp_server != null and _level_tcp_server.is_running():
+		return true
+	var srv := LevelTcp.Server.new()
+	var err := srv.start(LEVEL_TCP_PORT)
+	if err != OK:
+		_lan_log("level tcp: listen on %d failed (%s)" % [LEVEL_TCP_PORT, error_string(err)])
+		return false
+	_level_tcp_server = srv
+	_lan_log("level tcp: listening on %d" % LEVEL_TCP_PORT)
+	return true
+
+func _stop_level_tcp_rx() -> void:
+	if _level_tcp_rx != null:
+		_level_tcp_rx.stop()
+		_level_tcp_rx = null
+	_level_tcp_rx_meta = {}
+	_level_tcp_rx_bytes = 0
+	_level_tcp_rx_pct = -1
+
+## Arrête les deux extrémités du canal (jointure des threads). Appelé à la
+## déconnexion et à la fermeture : jamais de thread qui survit à la session.
+func _stop_level_tcp() -> void:
+	if _level_tcp_server != null:
+		_level_tcp_server.stop()
+		_level_tcp_server = null
+	_stop_level_tcp_rx()
+
+# Reprise du niveau différé (cache pas prêt au join) + journalisation des
+# évènements du thread TCP hôte. Tick _physics_process, hors handler RPC.
 func _drain_level_send() -> void:
-	# Reprise du niveau différé : le cache est prêt, on envoie aux peers en
-	# attente. Ici (tick _physics_process), hors handler RPC.
 	if _level_send_deferred and _level_send_cache_ready():
 		_level_send_deferred = false
 		for id in _defer_level_send:
 			_send_level_to(id)
 		_defer_level_send.clear()
-	if _level_send_queue.is_empty():
-		return
-	for id in _level_send_queue.keys():
-		var entry: Dictionary = _level_send_queue[id]
-		for i in LEVEL_CHUNKS_PER_TICK:
-			var sent: int = int(entry["sent"])
-			var total: int = int(entry["total"])
-			if sent >= total:
-				_level_send_queue.erase(id)
-				break
-			var chunks: Array = entry["chunks"]
-			var chunk: PackedByteArray = chunks[sent]
-			_receive_level_baked.rpc_id(id, sent, total, entry["size"], entry["spawn"], entry.get("rotation", Vector3.ZERO), entry.get("scale", Vector3.ONE), chunk)
-			entry["sent"] = sent + 1
-			# Progression 10 % côté hôte (T6) : palier mémorisé dans l'entrée
-			# de file (tx_tier) → un log par palier franchi, pas par chunk.
-			var tx_tier := int((sent + 1) * 10.0 / total)
-			if tx_tier > int(entry.get("tx_tier", -1)):
-				entry["tx_tier"] = tx_tier
-				_lan_log("level tx %d%% (%d/%d chunks)" % [tx_tier * 10, sent + 1, total])
+	if _level_tcp_server != null:
+		for e in _level_tcp_server.take_events():
+			_lan_log(String(e))
 
 # Manifeste des scripts utilisateur de l'hôte (UserScriptMirror) : reçu une
 # fois par session, AVANT les chunks du niveau. Installé immédiatement dans le
@@ -1363,6 +1379,8 @@ func _receive_level_scripts(manifest: Dictionary) -> void:
 	push_warning("LAN: host-level user scripts installed (%d files)" % count)
 	_lan_log("host-level scripts — batch installed (%d files)" % count)
 
+# ── Anciens helpers du transfert par chunks ENet : plus appelés à l'exécution
+# (le blob passe par LevelTcp). Conservés tant que des tests y font référence.
 ## État de réception du blob de niveau — buffer membre brut. T0 a prouvé que
 ## l'append en place sur variable typée est O(chunk) (partage, pas de copie) :
 ## on accumule donc directement dans `state["buf"]`, sans tableau de chunks ni
@@ -1418,52 +1436,68 @@ static func bake_recv_needs_init(state: Dictionary, total: int, index: int) -> b
 		return true
 	return index == 0 and int(state.get("next", 0)) > 0
 
-# Canal ENet dédié (6) : les milliers de chunks du niveau ne doivent PAS
-# bloquer (ordre fiable) les RPC de contrôle sur le canal 0 — sinon le
-# broadcast de spawn et le roster n'arrivent qu'après tout le niveau.
+# Offre de transfert du niveau — canal ENet 6, donc APRÈS le manifeste des
+# scripts (même canal fiable, ordre garanti). Le RPC ne porte plus le blob :
+# seulement le jeton d'accès au canal TCP dédié (chiffré avec la session DTLS).
+# L'adresse TCP est celle du pair ENet de l'hôte, jamais une valeur du RPC.
 @rpc("any_peer", "call_remote", "reliable", 6)
-func _receive_level_baked(index: int, total: int, uncompressed_size: int, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3, chunk: PackedByteArray) -> void:
+func _receive_level_baked(port: int, token: PackedByteArray, wire_size: int, uncompressed_size: int, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3) -> void:
 	if is_host or multiplayer.get_remote_sender_id() != 1:
 		return
-	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
+	if port < 1 or port > 65535 or token.size() != LevelTcp.TOKEN_SIZE \
+			or wire_size < 1 or wire_size > LevelTcp.MAX_PAYLOAD or uncompressed_size < 1:
 		return
-	# Nouveau transfert (le blob baked diffère d'une session à l'autre, ou
-	# l'hôte relance le même blob — double _register_player) : reset complet
-	# de l'état (buf/next/bytes + spawn…) par bake_recv_init. Le canal fiable
-	# ENet garantit l'ordre intra-transfert — d'où bake_recv_needs_init, qui
-	# traite aussi le redémarrage à total identique (index 0 alors que next > 0).
-	if bake_recv_needs_init(_level_bake_receive, total, index):
-		bake_recv_init(_level_bake_receive, total, uncompressed_size, spawn, spawn_rotation, spawn_scale)
-	match bake_recv_append(_level_bake_receive, index, chunk):
-		"reject":
-			# Index hors suite (doublon, trou, chunk vide) : on ignore, comme avant.
-			return
-		"more":
-			_last_level_chunk_msec = Time.get_ticks_msec()
-			# Progression du chargement : le joueur est gelé jusqu'au join final.
-			_set_status("Loading host map… %d%%" % int((index + 1) * 100.0 / total))
-			# Log seulement au palier de 10 % suivant (prépare T6) : palier
-			# mémorisé dans le state, remis à zéro par bake_recv_init.
-			var tier := int((index + 1) * 10.0 / total)
-			if tier > int(_level_bake_receive.get("rx_tier", -1)):
-				_level_bake_receive["rx_tier"] = tier
-				_lan_log("level rx %d%%" % (tier * 10))
-		"complete":
-			_last_level_chunk_msec = Time.get_ticks_msec()
-			# Buffer membre brut lu via variable typée (partage sans copie) :
-			# INTERDIT `(… as PackedByteArray)` — le cast détacherait/copierait
-			# les ~136 Mo accumulés (piège T0).
-			var raw := bake_recv_payload(_level_bake_receive)
-			var recv_spawn: Vector3 = _level_bake_receive["spawn"]
-			var recv_rotation: Vector3 = _level_bake_receive["rotation"]
-			var recv_scale: Vector3 = _level_bake_receive["scale"]
-			var recv_size: int = int(_level_bake_receive["size"])
-			_level_bake_receive.clear()
-			# Décompression (136→379 Mo) + écriture du fichier : confiées au pool
-			# de threads (cf. _begin_level_decode) — synchrone ici, ce bloc
-			# gelait le thread principal pendant plusieurs secondes.
-			if not _begin_level_decode(raw, recv_size, recv_spawn, recv_rotation, recv_scale):
-				_lan_log("level decode already in flight — dropped")
+	var host_ip := _remote_ip(1)
+	if host_ip == "":
+		host_ip = _reconnect_ip
+	if host_ip == "":
+		_lan_log("level tcp: host address unknown — offer dropped")
+		return
+	# Nouvelle offre (ex. double _register_player) : l'ancien récepteur est coupé.
+	_stop_level_tcp_rx()
+	_level_tcp_rx_meta = {"size": uncompressed_size, "spawn": spawn,
+			"rotation": spawn_rotation, "scale": spawn_scale}
+	_last_level_chunk_msec = Time.get_ticks_msec()
+	var rx := LevelTcp.Receiver.new()
+	var err := rx.start(host_ip, port, token, wire_size)
+	if err != OK:
+		_lan_log("level tcp: receiver start failed (%s)" % error_string(err))
+		_level_tcp_rx_meta = {}
+		return
+	_level_tcp_rx = rx
+	_lan_log("level tcp: connecting to %s:%d (%d KB)" % [host_ip, port, wire_size / 1024])
+
+## Thread principal : progression + passage du blob reçu au décodage threadé.
+## `_last_level_chunk_msec` est alimenté ici (watchdog heartbeat / fallback du
+## join) tant que des octets arrivent.
+func _poll_level_tcp_rx() -> void:
+	if _level_tcp_rx == null:
+		return
+	var pr := _level_tcp_rx.progress()
+	if pr.x > _level_tcp_rx_bytes:
+		_level_tcp_rx_bytes = pr.x
+		_last_level_chunk_msec = Time.get_ticks_msec()
+		var pct := int(pr.x * 100.0 / maxf(float(pr.y), 1.0))
+		if pct != _level_tcp_rx_pct:
+			_level_tcp_rx_pct = pct
+			_set_status("Loading host map… %d%%" % pct)
+			if pct % 10 == 0:
+				_lan_log("level rx %d%%" % pct)
+	if not _level_tcp_rx.is_finished():
+		return
+	var res := _level_tcp_rx.take_result()
+	var meta := _level_tcp_rx_meta
+	_level_tcp_rx = null
+	_level_tcp_rx_meta = {}
+	if not bool(res.get("ok", false)):
+		_lan_log("level tcp: transfer failed — %s" % String(res.get("err", "?")))
+		_set_status("Host level transfer failed — kept local level")
+		_finalize_join()
+		return
+	_last_level_chunk_msec = Time.get_ticks_msec()
+	if not _begin_level_decode(res["raw"], int(meta["size"]), meta["spawn"],
+			meta["rotation"], meta["scale"]):
+		_lan_log("level decode already in flight — dropped")
 
 
 # Décodage des blobs scènes par ResourceLoader threadé (voir les commentaires
@@ -1576,6 +1610,8 @@ func _queue_avatar_scene_load(path: String, peer_id: int) -> bool:
 	return true
 
 func _poll_pending_scene_loads() -> void:
+	# Blob reçu par le canal TCP → décodage threadé (même tick, en tête).
+	_poll_level_tcp_rx()
 	# Résultat du décodage/écriture du niveau (worker thread) : en tête pour
 	# que le chainement sur _queue_level_scene_load parte le plus tôt possible.
 	_poll_level_decode()
@@ -2083,11 +2119,12 @@ func _on_peer_disconnected(id: int) -> void:
 	if is_host:
 		_players.erase(id)
 		_remove_player.rpc(id)
-		_level_send_queue.erase(id)
+		if _level_tcp_server != null:
+			_level_tcp_server.revoke(id)
 	else:
 		_remove_player(id)
 		if id == 1:
-			_level_bake_receive.clear()
+			_stop_level_tcp_rx()
 	_last_texture_versions.erase(id)
 	_last_applied_version.erase(id)
 	_last_acked_version.erase(id)
@@ -3904,13 +3941,13 @@ func _disconnect_session(keep_context := false) -> void:
 	_pending_auth.clear()
 	_auth_request_sent_msec = 0
 	_pin = ""
-	_level_send_queue.clear()
+	# Canal TCP du niveau : threads joints AVANT de lâcher le cache/le peer.
+	_stop_level_tcp()
 	# Différé de niveau : état borné à la session — sans ça, la reprise en
 	# tête de _drain_level_send ré-enverrait des ids morts/recyclés au
 	# prochain hébergement.
 	_defer_level_send.clear()
 	_level_send_deferred = false
-	_level_bake_receive.clear()
 	# Décodage du niveau encore en vol (déconnexion pendant la décompression) :
 	# attendre la fin de la tâche, puis vider la file des résultats — un
 	# résultat orphelin ne doit jamais arriver dans la session suivante.
@@ -3982,6 +4019,7 @@ func _disconnect_session(keep_context := false) -> void:
 		local_level_restore_requested.emit()
 
 func _exit_tree() -> void:
+	_stop_level_tcp()
 	_stop_encode_thread()
 	_stop_decode_thread()
 	# Décodage du niveau encore en vol à la fermeture : aucun chemin (ni le
