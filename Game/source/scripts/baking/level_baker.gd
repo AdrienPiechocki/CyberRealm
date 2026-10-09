@@ -220,7 +220,13 @@ static func _register_asset(path: String) -> bool:
 	if path.ends_with("/") or (path.get_extension().is_empty() and DirAccess.open(path) != null):
 		_add_asset_dir(path.trim_suffix("/") + "/")
 		return true
-	if path.get_extension().to_lower() not in ASSET_EXTS or not FileAccess.file_exists(path):
+	if path.get_extension().to_lower() == "bin" and ResourceLoader.exists(path.get_basename() + ".gltf"):
+		return false   # buffer glTF : déjà contenu dans le .gltf.scn
+	var ext := path.get_extension().to_lower()
+	if _is_imported_ext(ext):
+		if not ResourceLoader.exists(path):
+			return false
+	elif ext not in ASSET_EXTS or not FileAccess.file_exists(path):
 		return false
 	_asset_files[path] = true
 	return true
@@ -237,7 +243,7 @@ static func _add_asset_dir(dir: String) -> void:
 			if d.current_is_dir():
 				_add_asset_dir(p + "/")
 			else:
-				_register_asset(p)
+				_register_asset(p.trim_suffix(".import") if f.ends_with(".import") else p)
 		f = d.get_next()
 	d.list_dir_end()
 
@@ -255,6 +261,20 @@ static func _collect_assets() -> Dictionary:
 			break
 		for p: String in todo:
 			seen[p] = true
+			var ext0 := p.get_extension().to_lower()
+			if _is_imported_ext(ext0):
+				var conv := _export_imported(p, ext0)
+				if conv.is_empty():
+					push_warning("LevelBaker: import non exportable — %s" % p)
+					continue
+				var cb: PackedByteArray = conv["bytes"]
+				total += cb.size()
+				if total > MAX_ASSET_BYTES:
+					push_warning("LevelBaker: assets cap reached (%d MB) — %s skipped" % [MAX_ASSET_BYTES >> 20, p])
+					total -= cb.size()
+					continue
+				out[UserScriptMirror.mirror_path(p, _batch) + String(conv["suffix"])] = cb
+				continue
 			var data := FileAccess.get_file_as_bytes(p)
 			if data.is_empty():
 				push_warning("LevelBaker: asset unreadable/empty — %s (export filter?)" % p)
@@ -655,3 +675,54 @@ static func _fix_value(v: Variant, trail: String, cache: Dictionary, seen: Dicti
 					changed = true
 		return dict if changed else v
 	return v
+
+const IMPORTED_TEXTURE_EXTS := ["png", "jpg", "jpeg", "webp"]
+const IMPORTED_SCENE_EXTS := ["glb", "gltf"]
+const ASSET_TMP_PATH := "user://lan_asset_tmp.scn"
+static var _imported_cache: Dictionary = {}   # chemin res:// -> {suffix, bytes} (conserve entre deux bakes)
+
+static func _is_imported_ext(ext: String) -> bool:
+	return ext in IMPORTED_TEXTURE_EXTS or ext in IMPORTED_SCENE_EXTS
+
+const LEVEL_MAX_TEXTURE := 4096
+
+static func _export_imported(p: String, ext: String) -> Dictionary:
+	if _imported_cache.has(p):
+		return _imported_cache[p]
+	var result := {}
+	if ext in IMPORTED_TEXTURE_EXTS:
+		var tex := load(p) as Texture2D
+		var img: Image = tex.get_image() if tex != null else null
+		if img != null and not img.is_empty():
+			if img.is_compressed():
+				img.decompress()
+			if max_texture_size > 0 and (img.get_width() > max_texture_size or img.get_height() > max_texture_size):
+				var r := minf(float(max_texture_size) / img.get_width(), float(max_texture_size) / img.get_height())
+				img.resize(int(img.get_width() * r), int(img.get_height() * r), Image.INTERPOLATE_BILINEAR)
+			var png := img.save_png_to_buffer()
+			if not png.is_empty():
+				result = {"suffix": ".png", "bytes": png}
+	else:
+		var ps := load(p) as PackedScene
+		if ps != null:
+			var root := ps.instantiate()
+			var prev_max := max_texture_size
+			max_texture_size = LEVEL_MAX_TEXTURE
+			_embed_scene_meshes(root, {})
+			max_texture_size = prev_max
+			_own_all(root, root)
+			var out := PackedScene.new()
+			if out.pack(root) == OK and ResourceSaver.save(out, ASSET_TMP_PATH, ResourceSaver.FLAG_COMPRESS) == OK:
+				result = {"suffix": ".scn", "bytes": FileAccess.get_file_as_bytes(ASSET_TMP_PATH)}
+			root.free()
+	if not result.is_empty() and (result["bytes"] as PackedByteArray).size() > 1048576:
+		push_warning("LevelBaker: import %s → %d KB" % [p, (result["bytes"] as PackedByteArray).size() / 1024])
+	if not result.is_empty():
+		_imported_cache[p] = result
+	return result
+
+static func _embed_scene_meshes(n: Node, cache: Dictionary) -> void:
+	if n is MeshInstance3D and (n as MeshInstance3D).mesh != null:
+		(n as MeshInstance3D).mesh = _embed_mesh((n as MeshInstance3D).mesh, cache)
+	for c in n.get_children():
+		_embed_scene_meshes(c, cache)
