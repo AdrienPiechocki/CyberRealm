@@ -143,8 +143,8 @@ func _physics_process(delta):
 		if look != Vector2.ZERO:
 			var look_amt: Vector2 = look * look.length()
 			rotate_y(-look_amt.x * pad_look_speed * delta)
-			$Camera3D.rotate_x(-look_amt.y * pad_look_speed * delta)
-			$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
+			$Camera3D.rotation.x = clampf($Camera3D.rotation.x - look_amt.y * pad_look_speed * delta, -deg_to_rad(80), deg_to_rad(80))
+			$Camera3D.rotation.z = 0.0 # Empêche l'accumulation de roulis parasite
 		if gyro_aim_enabled:
 			if _gyro_device >= 0 and not Input.get_connected_joypads().has(_gyro_device):
 				_gyro_device = -1
@@ -191,8 +191,9 @@ func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
 	if absf(gyro.x) <= GYRO_DEADZONE and absf(gyro.y) <= GYRO_DEADZONE:
 		return
 	rotate_y(gyro.y * scaled * delta)
-	$Camera3D.rotate_x(gyro.x * scaled * delta)
-	$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
+	# Modification directe de rotation.x avec clamp
+	$Camera3D.rotation.x = clampf($Camera3D.rotation.x + gyro.x * scaled * delta, -deg_to_rad(80), deg_to_rad(80))
+	$Camera3D.rotation.z = 0.0
 
 # Lissage caméra au rendu (pas au tick physique) : supprime le tremblement.
 func _process(delta: float) -> void:
@@ -326,8 +327,9 @@ func _input(event):
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 		rotate_y(-event.relative.x * mouse_sensitivity)
-		$Camera3D.rotate_x(-event.relative.y * mouse_sensitivity)
-		$Camera3D.rotation.x = clampf($Camera3D.rotation.x, -deg_to_rad(80), deg_to_rad(80))
+		# Modification directe de rotation.x avec clamp
+		$Camera3D.rotation.x = clampf($Camera3D.rotation.x - event.relative.y * mouse_sensitivity, -deg_to_rad(80), deg_to_rad(80))
+		$Camera3D.rotation.z = 0.0
 
 ## Trace brute des événements manette (axes dédupliqués à ±0.05). La liste
 ## des pads connectés est imprimée une fois au premier événement reçu.
