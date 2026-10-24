@@ -1220,10 +1220,10 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 	# drag est actif même hors de ses bords (voir handle_focus_input).
 	var press_left := _left_press_this_frame()
 	var release_left := _left_release_this_frame()
-	var press_right := Input.is_action_just_pressed("right_click")
-	var release_right := Input.is_action_just_released("right_click")
-	var press_middle := Input.is_action_just_pressed("middle_click")
-	var release_middle := Input.is_action_just_released("middle_click")
+	var press_right := _click_action_just_pressed("right_click")
+	var release_right := _click_action_just_released("right_click")
+	var press_middle := _click_action_just_pressed("middle_click")
+	var release_middle := _click_action_just_released("middle_click")
 	if press_left or press_right or press_middle:
 		popup_buttons_down += 1
 		popup_drag_id = popup_id
@@ -1507,10 +1507,10 @@ func _raise_window(id: int) -> void:
 # brut (source primaire, insensible aux modificateurs), complété par l'action
 # Godot et les événements bruts au cas où le sondage passerait à côté.
 func _poll_left_button() -> void:
-	# Bind manette (X = clic gauche) ignoré quand la fenêtre active est un jeu :
-	# la manette appartient alors au jeu.
+	# Bind manette (X = clic gauche) ignoré quand la fenêtre active est un jeu
+	# ET que la souris est capturée : la manette appartient alors au jeu.
 	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) \
-		or (not in_game() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED and Input.is_joy_button_pressed(0, JOY_BUTTON_X))
+		or (not _gamepad_binds_disabled() and Input.is_joy_button_pressed(0, JOY_BUTTON_X))
 	_left_press_edge = now and not _left_raw_prev
 	_left_release_edge = (not now) and _left_raw_prev
 	if _left_press_edge or _left_release_edge:
@@ -1521,11 +1521,11 @@ func _poll_left_button() -> void:
 
 func _left_press_this_frame() -> bool:
 	return _left_press_edge \
-		or Input.is_action_just_pressed("left_click") \
+		or _click_action_just_pressed("left_click") \
 		or (_left_event_pressed and _left_event_frame == Engine.get_process_frames())
 
 func _left_release_this_frame() -> bool:
-	if _left_release_edge or Input.is_action_just_released("left_click"):
+	if _left_release_edge or _click_action_just_released("left_click"):
 		return true
 	return (not _left_down and _left_event_frame == Engine.get_process_frames())
 
@@ -1569,8 +1569,8 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	# (cooldown 80ms). Utilise l'état tracké manuellement (_scroll_up/down_held)
 	# car set_input_as_handled() dans _input empêche Input.is_action_pressed()
 	# de fonctionner correctement pour les boutons gamepad.
-	# Fenêtre active = jeu : les binds manette sont désactivés (scroll compris).
-	var game := in_game() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+	# Fenêtre active = jeu ET souris capturée : binds manette désactivés (scroll compris).
+	var game := _gamepad_binds_disabled()
 	if game:
 		_scroll_up_held = false
 		_scroll_down_held = false
@@ -1590,15 +1590,15 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	if _left_release_this_frame():
 		compositor.forward_pointer_button(id, 0x110, false)
 
-	if Input.is_action_just_pressed("right_click"):
+	if _click_action_just_pressed("right_click"):
 		compositor.forward_pointer_button(id, 0x111, true)
-	if Input.is_action_just_released("right_click"):
+	if _click_action_just_released("right_click"):
 		compositor.forward_pointer_button(id, 0x111, false)
 
 	# Clic molette (BTN_MIDDLE) : forwardé comme les clics gauche/droit.
-	if Input.is_action_just_pressed("middle_click"):
+	if _click_action_just_pressed("middle_click"):
 		compositor.forward_pointer_button(id, 0x112, true)
-	if Input.is_action_just_released("middle_click"):
+	if _click_action_just_released("middle_click"):
 		compositor.forward_pointer_button(id, 0x112, false)
 
 	if in_game():
@@ -1874,9 +1874,9 @@ func handle_focus_input(delta: float) -> void:
 		_forward_window_buttons(active_id, delta)
 		return
 	
-	# Stick gauche = curseur : désactivé quand la fenêtre active est un jeu.
+	# Stick gauche = curseur : désactivé en jeu ET souris capturée.
 	var v := Vector2.ZERO
-	if not in_game() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+	if not _gamepad_binds_disabled():
 		v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
 	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		mouse_pos += v * v.length() * SPEED * delta
@@ -1893,10 +1893,10 @@ func handle_focus_input(delta: float) -> void:
 
 	var press_left := _left_press_this_frame()
 	var release_left := _left_release_this_frame()
-	var press_right := Input.is_action_just_pressed("right_click")
-	var release_right := Input.is_action_just_released("right_click")
-	var press_middle := Input.is_action_just_pressed("middle_click")
-	var release_middle := Input.is_action_just_released("middle_click")
+	var press_right := _click_action_just_pressed("right_click")
+	var release_right := _click_action_just_released("right_click")
+	var press_middle := _click_action_just_pressed("middle_click")
+	var release_middle := _click_action_just_released("middle_click")
 
 	# MAIS dès qu'un drag est ACTIF au niveau wlroots (wl_data_device), les
 	# grabs implicites n'existent plus : wlroots route tout par la surface
@@ -2308,6 +2308,33 @@ func _is_compositor_shortcut(event: InputEventKey) -> bool:
 			return true
 	return false
 
+## True quand les binds manette du mode focus doivent être ignorés : la
+## fenêtre active est un jeu ET la souris est capturée (pointer lock).
+func _gamepad_binds_disabled() -> bool:
+	return in_game() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
+
+const CLICK_ACTIONS := ["left_click", "right_click", "middle_click"]
+# action -> true si l'appui en cours vient d'un bouton manette reçu alors que
+# les binds manette étaient désactivés : l'appui ET son relâchement sont ignorés.
+var _joy_click_blocked: Dictionary = {}
+# action -> frame du relâchement manette d'un appui bloqué.
+var _joy_click_release_frame: Dictionary = {}
+
+func _click_action_just_pressed(action: String) -> bool:
+	if not Input.is_action_just_pressed(action):
+		return false
+	if _joy_click_blocked.get(action, false):
+		return false
+	# Appui + relâchement manette dans la même frame : toujours bloqué.
+	return _joy_click_release_frame.get(action, -1) != Engine.get_process_frames()
+
+func _click_action_just_released(action: String) -> bool:
+	if not Input.is_action_just_released(action):
+		return false
+	if _joy_click_blocked.get(action, false):
+		return false
+	return _joy_click_release_frame.get(action, -1) != Engine.get_process_frames()
+
 func in_game() -> bool:
 	var st := _state(_active_id())
 	if st["is_game"]:
@@ -2350,9 +2377,20 @@ func _input(event: InputEvent) -> void:
 			if jpb.button_index == JOY_BUTTON_LEFT_SHOULDER or jpb.button_index == JOY_BUTTON_RIGHT_SHOULDER:
 				print("scroll_input: btn=%d pressed=%s in_game=%s" % [
 					jpb.button_index, jpb.pressed, in_game()])
-		# Fenêtre active = jeu : binds manette désactivés (pas de tracking du
-		# scroll, l'événement est consommé).
-		if in_game() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		# Actions de clic déclenchées par un bouton manette (ex. Y = right_click) :
+		# Input.is_action_* ne distingue pas le périphérique, on mémorise donc
+		# ici l'origine manette pour pouvoir les ignorer (voir
+		# _click_action_just_pressed / _click_action_just_released).
+		for a in CLICK_ACTIONS:
+			if jpb.is_action(a):
+				if jpb.pressed:
+					_joy_click_blocked[a] = _gamepad_binds_disabled()
+				elif _joy_click_blocked.get(a, false):
+					_joy_click_blocked[a] = false
+					_joy_click_release_frame[a] = Engine.get_process_frames()
+		# Fenêtre active = jeu ET souris capturée : binds manette désactivés (pas
+		# de tracking du scroll, l'événement est consommé).
+		if _gamepad_binds_disabled():
 			_scroll_up_held = false
 			_scroll_down_held = false
 			if jpb.pressed:
