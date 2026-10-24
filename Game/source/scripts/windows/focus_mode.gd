@@ -1510,7 +1510,7 @@ func _poll_left_button() -> void:
 	# Bind manette (X = clic gauche) ignoré quand la fenêtre active est un jeu :
 	# la manette appartient alors au jeu.
 	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) \
-		or (not in_game() and Input.is_joy_button_pressed(0, JOY_BUTTON_X))
+		or (not in_game() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED and Input.is_joy_button_pressed(0, JOY_BUTTON_X))
 	_left_press_edge = now and not _left_raw_prev
 	_left_release_edge = (not now) and _left_raw_prev
 	if _left_press_edge or _left_release_edge:
@@ -1570,7 +1570,7 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 	# car set_input_as_handled() dans _input empêche Input.is_action_pressed()
 	# de fonctionner correctement pour les boutons gamepad.
 	# Fenêtre active = jeu : les binds manette sont désactivés (scroll compris).
-	var game := in_game()
+	var game := in_game() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED
 	if game:
 		_scroll_up_held = false
 		_scroll_down_held = false
@@ -1876,7 +1876,7 @@ func handle_focus_input(delta: float) -> void:
 	
 	# Stick gauche = curseur : désactivé quand la fenêtre active est un jeu.
 	var v := Vector2.ZERO
-	if not in_game():
+	if not in_game() and Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
 	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		mouse_pos += v * v.length() * SPEED * delta
@@ -2352,7 +2352,7 @@ func _input(event: InputEvent) -> void:
 					jpb.button_index, jpb.pressed, in_game()])
 		# Fenêtre active = jeu : binds manette désactivés (pas de tracking du
 		# scroll, l'événement est consommé).
-		if in_game():
+		if in_game() and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
 			_scroll_up_held = false
 			_scroll_down_held = false
 			if jpb.pressed:
