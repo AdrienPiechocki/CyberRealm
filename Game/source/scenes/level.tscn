@@ -27,7 +27,7 @@ background_mode = 2
 background_energy_multiplier = 2.0
 sky = SubResource("Sky_0eyvr")
 sky_rotation = Vector3(0, -0.34906584, -0.7853982)
-ssr_enabled = true
+ssr_enabled = false
 ssao_enabled = true
 adjustment_enabled = true
 

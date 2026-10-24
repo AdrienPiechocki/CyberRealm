@@ -7,7 +7,7 @@
     "label_color": "#dbe1f0",
     // Cadre : épaisseur des bandes gauche / droite / bas, en px.
 	// C'est aussi la marge du 9-patch.
-	"border_size": 10,
+	"border_size": 3.33,
 	// Boutons : carrés, alignés à droite par défaut.
 	"button_size": 11,
 	"button_gap": 4,

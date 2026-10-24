@@ -27,7 +27,18 @@ rt="${XDG_RUNTIME_DIR:-}"
 
 if [ -n "$rt" ] && [ -e "$rt/cyberrealm-0" ]; then
     export WAYLAND_DISPLAY=cyberrealm-0
-    export DISPLAY=:1
+    # Display X11 dynamique du jeu, écrit au démarrage dans
+    # $XDG_RUNTIME_DIR/cyberrealm-x11-display. KWin 6.8+ héberge :0 et :1
+    # (--xwayland-init-display) : un ":1" codé en dur enverrait les apps
+    # X11 sur le bureau KDE. Fallback :2 si le fichier est absent.
+    display=":2"
+    if [ -r "$rt/cyberrealm-x11-display" ]; then
+        stored="$(cat "$rt/cyberrealm-x11-display" 2>/dev/null || true)"
+        if [ -n "$stored" ]; then
+            display="$stored"
+        fi
+    fi
+    export DISPLAY="$display"
     export GDK_BACKEND=wayland
     export QT_QPA_PLATFORM=wayland
     export MOZ_ENABLE_WAYLAND=1

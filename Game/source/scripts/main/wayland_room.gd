@@ -438,9 +438,21 @@ func _ready() -> void:
 	if polkit_agent != "":
 		_stop_host_polkit_agent()
 	compositor.set_polkit_agent(polkit_agent)
-	compositor.launch_app("xwayland-satellite :1")
-	await get_tree().create_timer(0.2).timeout
-	compositor.set_x11_display(":1")
+	# Display X11 du jeu : KWin 6.8+ (MAJ d'octobre 2026) héberge déjà :0 et
+	# :1 (--xwayland-init-display :1) — un satellite fixé sur :1 échouait
+	# ("server already running") et les apps X11 atterrissaient sur le bureau
+	# KDE via l'XAUTHORITY hérité de la session Plasma. On choisit donc un
+	# display libre et on le publie tout de suite pour cyberrealm-launch
+	# (aucun laps de temps avant la publication, cyberrealm-0 existe déjà).
+	var x11_display := ":%d" % X11Display.pick_free_display()
+	if x11_display == ":-1":
+		push_error("wayland_room: aucun display X11 libre — XWayland non démarré")
+	else:
+		if not X11Display.write_runtime_file(OS.get_environment("XDG_RUNTIME_DIR"), x11_display):
+			push_error("wayland_room: publication du display %s impossible (cyberrealm-x11-display)" % x11_display)
+		compositor.launch_app("xwayland-satellite %s" % x11_display)
+		await get_tree().create_timer(0.2).timeout
+		compositor.set_x11_display(x11_display)
 	# Apps à lancer automatiquement au démarrage (configurées depuis le menu pause)
 	for cmd in pause_menu.get_startup_apps():
 		compositor.launch_app(cmd)
