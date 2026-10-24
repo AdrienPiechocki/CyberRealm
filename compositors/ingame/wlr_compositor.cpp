@@ -2020,7 +2020,14 @@ void WlrCompositor::launch_secrets_daemon() {
     std::string dir = std::string(rt) + "/cyberrealm-keyring";
     mkdir(dir.c_str(), 0700);
     chmod(dir.c_str(), 0700);
-    std::string cmd = std::string(daemon) + " --foreground --components=secrets --control-directory=" + dir;
+    // Données isolées : sans ça, le daemon lit ~/.local/share/keyrings (trousseau
+    // "login" de l'hôte, chiffré) et demande son mot de passe.
+    std::string data = dir + "/data";
+    mkdir(data.c_str(), 0700);
+    // --unlock + stdin vide : crée/déverrouille un trousseau "login" sans mot de passe.
+    std::string cmd = "XDG_DATA_HOME='" + data + "' exec " + daemon +
+        " --foreground --components=secrets --control-directory='" + dir +
+        "' --unlock < /dev/null";
     pid_t pid = fork_launch(String(cmd.c_str()), String());
     if (pid > 0) {
         child_pids.push_back(pid);
