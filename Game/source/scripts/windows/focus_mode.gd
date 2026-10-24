@@ -1507,7 +1507,10 @@ func _raise_window(id: int) -> void:
 # brut (source primaire, insensible aux modificateurs), complété par l'action
 # Godot et les événements bruts au cas où le sondage passerait à côté.
 func _poll_left_button() -> void:
-	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or Input.is_joy_button_pressed(0, JOY_BUTTON_X)
+	# Bind manette (X = clic gauche) ignoré quand la fenêtre active est un jeu :
+	# la manette appartient alors au jeu.
+	var now := Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) \
+		or (not in_game() and Input.is_joy_button_pressed(0, JOY_BUTTON_X))
 	_left_press_edge = now and not _left_raw_prev
 	_left_release_edge = (not now) and _left_raw_prev
 	if _left_press_edge or _left_release_edge:
@@ -1561,14 +1564,18 @@ func _update_window_move(mouse_pos: Vector2) -> void:
 # Forward les boutons souris vers une fenêtre (chemin commun aux modes
 # souris visible et capturée).
 func _forward_window_buttons(id: int, delta: float) -> void:
-	# Scroll (gamepad stick + buttons) : forward AVANT le garde-fou in_game().
-	# Les boutons gamepad n'ont pas d'auto-repeat ; le polling maintient le
-	# scroll continu quand le bouton est maintenu (cooldown 80ms).
-	# Utilise l'état tracké manuellement (_scroll_up/down_held) car
-	# set_input_as_handled() dans _input empêche Input.is_action_pressed()
+	# Scroll (gamepad buttons). Les boutons gamepad n'ont pas d'auto-repeat ;
+	# le polling maintient le scroll continu quand le bouton est maintenu
+	# (cooldown 80ms). Utilise l'état tracké manuellement (_scroll_up/down_held)
+	# car set_input_as_handled() dans _input empêche Input.is_action_pressed()
 	# de fonctionner correctement pour les boutons gamepad.
-	var scroll_active := _scroll_up_held or _scroll_down_held \
-		or Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down")
+	# Fenêtre active = jeu : les binds manette sont désactivés (scroll compris).
+	var game := in_game()
+	if game:
+		_scroll_up_held = false
+		_scroll_down_held = false
+	var scroll_active := (not game) and (_scroll_up_held or _scroll_down_held \
+		or Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down"))
 	if scroll_active:
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
@@ -1867,7 +1874,10 @@ func handle_focus_input(delta: float) -> void:
 		_forward_window_buttons(active_id, delta)
 		return
 	
-	var v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
+	# Stick gauche = curseur : désactivé quand la fenêtre active est un jeu.
+	var v := Vector2.ZERO
+	if not in_game():
+		v = Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
 	if v != Vector2.ZERO and not virtual_keyboard.visible:
 		mouse_pos += v * v.length() * SPEED * delta
 		var vs := get_viewport().get_visible_rect().size
@@ -2340,12 +2350,18 @@ func _input(event: InputEvent) -> void:
 			if jpb.button_index == JOY_BUTTON_LEFT_SHOULDER or jpb.button_index == JOY_BUTTON_RIGHT_SHOULDER:
 				print("scroll_input: btn=%d pressed=%s in_game=%s" % [
 					jpb.button_index, jpb.pressed, in_game()])
+		# Fenêtre active = jeu : binds manette désactivés (pas de tracking du
+		# scroll, l'événement est consommé).
+		if in_game():
+			_scroll_up_held = false
+			_scroll_down_held = false
+			if jpb.pressed:
+				get_viewport().set_input_as_handled()
+			return
 		if jpb.button_index == JOY_BUTTON_LEFT_SHOULDER:
 			_scroll_up_held = jpb.pressed
 		elif jpb.button_index == JOY_BUTTON_RIGHT_SHOULDER:
 			_scroll_down_held = jpb.pressed
-		if in_game() and jpb.pressed:
-			get_viewport().set_input_as_handled()
 
 # Fenêtre de FOND de pile : celle qui a ouvert le mode focus (plein écran xdg
 # ou maximisée). Elle ne passe jamais au-dessus des fenêtres ouvertes PENDANT
