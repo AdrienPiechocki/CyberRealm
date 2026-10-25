@@ -391,11 +391,16 @@ GODOT_KSI_XML="/usr/share/wayland-protocols/unstable/keyboard-shortcuts-inhibit/
 GODOT_KSI_DEST="thirdparty/wayland-protocols/unstable/keyboard-shortcuts-inhibit/keyboard-shortcuts-inhibit-unstable-v1.xml"
 GODOT_PATCH_STAMP="$TEMPLATES_DIR/linux_release.x86_64.shortcuts-inhibit"
 
+SHM_FIX="$SCRIPT_DIR/compositors/godot-patches/fix-wayland-shm-fd-leak.sh"
+SHM_FIX_STAMP="$TEMPLATES_DIR/linux_release.x86_64.shm-fd-fix"
+
 REBUILD_TEMPLATE=0
 if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
     REBUILD_TEMPLATE=1
 elif [[ "$GNOME_INSTALL" -eq 1 ]] \
     && ( [[ ! -f "$GODOT_PATCH_STAMP" ]] || ! cmp -s "$GODOT_PATCH" "$GODOT_PATCH_STAMP" ); then
+    REBUILD_TEMPLATE=1
+elif [[ ! -f "$SHM_FIX_STAMP" ]] || ! cmp -s "$SHM_FIX" "$SHM_FIX_STAMP"; then
     REBUILD_TEMPLATE=1
 fi
 
@@ -433,11 +438,12 @@ if [[ "$REBUILD_TEMPLATE" -eq 1 ]]; then
             exit 1
         fi
     fi
-
+    "$SHM_FIX" "$GODOT_SRC"
     (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release)
     mkdir -p "$TEMPLATES_DIR"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_release.x86_64"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_debug.x86_64"
+    cp "$SHM_FIX" "$SHM_FIX_STAMP"
     if [[ "$PATCH_OK" -eq 1 ]]; then
         cp "$GODOT_PATCH" "$GODOT_PATCH_STAMP"
     fi

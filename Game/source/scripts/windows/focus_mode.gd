@@ -222,7 +222,11 @@ var _left_release_edge := false
 var cursor_overlay: TextureRect
 var cursor_overlay_tex: ImageTexture
 var cursor_overlay_serial := -1
-var _hw_cursor_serial := -1
+# Dédup par contenu : beaucoup d'applis rappellent set_cursor avec la même
+# image (nouveau serial à chaque fois). Chaque set_custom_mouse_cursor alloue un
+# shm côté Wayland ; on ne le rappelle donc que si l'image ou le hotspot change.
+var _cursor_img_hash := 0
+var _hw_cursor_key := 0 # 0 = aucun curseur matériel appliqué
 
 # Curseur du propriétaire affiché par-dessus le focus DISTANT (vue seule) :
 # réplique la position et l'apparence du curseur du joueur qui possède la
@@ -1750,6 +1754,7 @@ func _reset_focus_ui() -> void:
 	# ne doit pas survivre à la sortie du mode focus).
 	_hide_cursor_overlay()
 	Input.set_custom_mouse_cursor(null)
+	_hw_cursor_key = 0
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	player.focus_mode_active = false
 
@@ -1779,8 +1784,11 @@ func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: V
 		if not img or img.is_empty():
 			_show_system_cursor()
 			return
-		cursor_overlay_tex = ImageTexture.create_from_image(img)
-		cursor_overlay.texture = cursor_overlay_tex
+		var h: int = hash([img.get_width(), img.get_height(), hash(img.get_data())])
+		if cursor_overlay_tex == null or h != _cursor_img_hash:
+			cursor_overlay_tex = ImageTexture.create_from_image(img)
+			cursor_overlay.texture = cursor_overlay_tex
+			_cursor_img_hash = h
 		cursor_overlay_serial = serial
 	var hotspot := Vector2(cursor_info["hotspot_x"], cursor_info["hotspot_y"])
 	var img_size := cursor_overlay_tex.get_size()
@@ -1789,22 +1797,22 @@ func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: V
 		return
 	if absf(display_scale.x - 1.0) < 0.05 and absf(display_scale.y - 1.0) < 0.05 \
 			and img_size.x <= 256.0 and img_size.y <= 256.0:
-		if _hw_cursor_serial != cursor_overlay_serial:
+		var hw_key: int = hash([_cursor_img_hash, hotspot])
+		if _hw_cursor_key != hw_key:
 			Input.set_custom_mouse_cursor(cursor_overlay_tex, Input.CURSOR_ARROW, hotspot)
-			_hw_cursor_serial = cursor_overlay_serial
+			_hw_cursor_key = hw_key
 		cursor_overlay.visible = false
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 		return
-	_hw_cursor_serial = -1
 	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
 	cursor_overlay.size = img_size * display_scale
 	cursor_overlay.position = mouse_pos - hotspot * display_scale
 	cursor_overlay.visible = true
 
 func _show_system_cursor() -> void:
-	if _hw_cursor_serial != -1:
+	if _hw_cursor_key != 0:
 		Input.set_custom_mouse_cursor(null)
-		_hw_cursor_serial = -1
+		_hw_cursor_key = 0
 	if cursor_overlay and cursor_overlay.visible:
 		cursor_overlay.visible = false
 		cursor_overlay_serial = -1
