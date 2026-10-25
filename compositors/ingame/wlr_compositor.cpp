@@ -2024,6 +2024,21 @@ void WlrCompositor::launch_secrets_daemon() {
     // "login" de l'hôte, chiffré) et demande son mot de passe.
     std::string data = dir + "/data";
     mkdir(data.c_str(), 0700);
+    std::string kr = data + "/keyrings";
+    mkdir(kr.c_str(), 0700);
+    std::string lk = kr + "/login.keyring";
+    if (access(lk.c_str(), F_OK) != 0) {
+        FILE *f = fopen(lk.c_str(), "w");
+        if (f) {
+            fputs("[keyring]\ndisplay-name=Login\nctime=0\nmtime=0\n"
+                "lock-on-idle=false\nlock-after=false\n", f);
+            fclose(f);
+            chmod(lk.c_str(), 0600);
+        }
+        std::string def = kr + "/default";
+        f = fopen(def.c_str(), "w");
+        if (f) { fputs("login", f); fclose(f); }
+    }
     // --unlock + stdin vide : crée/déverrouille un trousseau "login" sans mot de passe.
     std::string cmd = "XDG_DATA_HOME='" + data + "' exec " + daemon +
         " --foreground --components=secrets --control-directory='" + dir +
