@@ -1107,7 +1107,7 @@ func _input(event: InputEvent) -> void:
 	# capture) sont synthétiques : générés par notre propre gestion de souris
 	# (ex. l'overlay fade-to-lock). Ils ne représentent pas une activité
 	# utilisateur réelle et annuleraient le lock d'inactivité.
-	if not OS.has_feature("editor") and not (event is InputEventMouseMotion and event.warped):
+	if not OS.has_feature("editor") and not (event is InputEventMouseMotion and event.get("warped") == true):
 		compositor.notify_activity()
 	if event is InputEventKey and OS.get_environment("CYBERREALM_INPUT_DEBUG") == "1":
 		print("key _input: code=", event.physical_keycode, " unicode=", event.unicode,
