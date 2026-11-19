@@ -92,10 +92,18 @@ firewall_close tcp 22
 echo "uninstall: removing helpers and desktop launcher ..."
 rm -f "$HOME/.local/bin/cyberrealm-run" \
       "$HOME/.local/bin/cyberrealm-launch" \
-      "$HOME/.local/bin/cyberrealm-exec"
+      "$HOME/.local/bin/cyberrealm-exec" \
+      "$HOME/.local/bin/cyberrealm-kms-session"
 rmdir "$HOME/.local/bin" 2>/dev/null || true
 rm -f "$HOME/.local/share/applications/cyberrealm.desktop"
 rmdir "$HOME/.local/share/applications" 2>/dev/null || true
+
+# --- KMS session entry --------------------------------------------------------
+KMS_SESSION_FILE="/usr/share/wayland-sessions/cyberrealm-kms.desktop"
+if [[ -f "$KMS_SESSION_FILE" ]]; then
+    echo "uninstall: removing the KMS session entry ($KMS_SESSION_FILE) ..."
+    as_root rm -f "$KMS_SESSION_FILE"
+fi
 
 # --- KWin integration ---------------------------------------------------------
 echo "uninstall: removing the KWin script ..."

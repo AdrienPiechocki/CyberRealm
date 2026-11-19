@@ -1,0 +1,1708 @@
+diff --git a/drivers/vulkan/rendering_context_driver_vulkan.cpp b/drivers/vulkan/rendering_context_driver_vulkan.cpp
+index fdb6b4a..a6e1349 100644
+--- a/drivers/vulkan/rendering_context_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_context_driver_vulkan.cpp
+@@ -432,6 +432,7 @@ Error RenderingContextDriverVulkan::_initialize_instance_extensions() {
+ 	if (_get_platform_surface_extension()) {
+ 		_register_requested_instance_extension(_get_platform_surface_extension(), true);
+ 	}
++	_register_platform_instance_extensions();
+ 
+ 	if (_use_validation_layers()) {
+ 		_register_requested_instance_extension(VK_EXT_DEBUG_REPORT_EXTENSION_NAME, false);
+diff --git a/drivers/vulkan/rendering_context_driver_vulkan.h b/drivers/vulkan/rendering_context_driver_vulkan.h
+index 5de12a2..9d7b125 100644
+--- a/drivers/vulkan/rendering_context_driver_vulkan.h
++++ b/drivers/vulkan/rendering_context_driver_vulkan.h
+@@ -109,7 +109,6 @@ private:
+ 	Functions functions;
+ 
+ 	Error _initialize_vulkan_version();
+-	void _register_requested_instance_extension(const CharString &p_extension_name, bool p_required);
+ 	Error _initialize_instance_extensions();
+ 	Error _initialize_instance();
+ 	Error _initialize_devices();
+@@ -125,6 +124,8 @@ protected:
+ 
+ 	// Can be overridden by platform-specific drivers.
+ 	virtual const char *_get_platform_surface_extension() const { return nullptr; }
++	virtual void _register_platform_instance_extensions() {}
++	void _register_requested_instance_extension(const CharString &p_extension_name, bool p_required);
+ 	virtual bool _use_validation_layers() const;
+ 	virtual Error _create_vulkan_instance(const VkInstanceCreateInfo *p_create_info, VkInstance *r_instance);
+ 
+diff --git a/platform/linuxbsd/SCsub b/platform/linuxbsd/SCsub
+index 87586c5..055530b 100644
+--- a/platform/linuxbsd/SCsub
++++ b/platform/linuxbsd/SCsub
+@@ -27,6 +27,9 @@ if env["x11"]:
+ if env["wayland"]:
+     common_linuxbsd += SConscript("wayland/SCsub")
+ 
++if env["kms"]:
++    common_linuxbsd += SConscript("kms/SCsub")
++
+ if env["speechd"]:
+     common_linuxbsd.append("tts_linux.cpp")
+     if env["use_sowrap"]:
+diff --git a/platform/linuxbsd/detect.py b/platform/linuxbsd/detect.py
+index cb86815..a728082 100644
+--- a/platform/linuxbsd/detect.py
++++ b/platform/linuxbsd/detect.py
+@@ -64,6 +64,7 @@ def get_opts():
+         BoolVariable("udev", "Use udev for gamepad connection callbacks", True),
+         BoolVariable("x11", "Enable X11 display", True),
+         BoolVariable("wayland", "Enable Wayland display", True),
++        BoolVariable("kms", "Enable KMS/DRM display (libseat + Vulkan VK_KHR_display)", False),
+         BoolVariable("libdecor", "Enable libdecor support", True),
+         BoolVariable("touch", "Enable touch events", True),
+         BoolVariable("execinfo", "Use libexecinfo on systems where glibc is not available", False),
+@@ -449,6 +450,17 @@ def configure(env: "SConsEnvironment"):
+         ]
+     )
+ 
++    if env["kms"]:
++        for lib in ("libseat", "libdrm", "libinput", "libudev"):
++            if os.system(f"pkg-config --exists {lib}"):
++                print_error(f"{lib} development libraries required by the KMS display driver not found. Aborting.")
++                sys.exit(255)
++            env.ParseConfig(f"pkg-config {lib} --cflags --libs")
++        if not env["vulkan"]:
++            print_error("The KMS display driver requires Vulkan (vulkan=yes). Aborting.")
++            sys.exit(255)
++        env.Append(CPPDEFINES=["KMS_ENABLED"])
++
+     if env["x11"]:
+         if not env["use_sowrap"]:
+             if os.system("pkg-config --exists x11"):
+diff --git a/platform/linuxbsd/kms/SCsub b/platform/linuxbsd/kms/SCsub
+new file mode 100644
+index 0000000..35d9015
+--- /dev/null
++++ b/platform/linuxbsd/kms/SCsub
+@@ -0,0 +1,16 @@
++#!/usr/bin/env python
++from misc.utility.scons_hints import *
++
++Import("env")
++
++File = env.File
++
++source_files = [File("kms_seat.cpp"), File("display_server_kms.cpp"), File("kms_input.cpp")]
++
++# key_mapping_xkb.cpp est déjà compilé par wayland/SCsub quand Wayland est actif.
++if not env["wayland"]:
++    source_files.append(File("../wayland/key_mapping_xkb.cpp"))
++if env["vulkan"]:
++    source_files.append(File("rendering_context_driver_vulkan_kms.cpp"))
++
++Return("source_files")
+diff --git a/platform/linuxbsd/kms/display_server_kms.cpp b/platform/linuxbsd/kms/display_server_kms.cpp
+new file mode 100644
+index 0000000..5df250f
+--- /dev/null
++++ b/platform/linuxbsd/kms/display_server_kms.cpp
+@@ -0,0 +1,407 @@
++#ifdef KMS_ENABLED
++
++#include "display_server_kms.h"
++
++#include "core/config/project_settings.h"
++#include "core/input/input.h"
++#include "core/input/input_event.h"
++#include "core/os/os.h"
++#include "servers/display/native_menu.h"
++#include "servers/rendering/dummy/rasterizer_dummy.h"
++
++#if defined(RD_ENABLED)
++#include "servers/rendering/renderer_rd/renderer_compositor_rd.h"
++#include "servers/rendering/rendering_device.h"
++#if defined(VULKAN_ENABLED)
++#include "rendering_context_driver_vulkan_kms.h"
++#endif
++#endif
++
++#include <xf86drm.h>
++#include <xf86drmMode.h>
++#include <dirent.h>
++
++#include <algorithm>
++
++Vector<String> DisplayServerKMS::get_rendering_drivers_func() {
++	Vector<String> drivers;
++#ifdef VULKAN_ENABLED
++	drivers.push_back("vulkan");
++#endif
++	drivers.push_back("dummy");
++	return drivers;
++}
++
++DisplayServer *DisplayServerKMS::create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error) {
++	DisplayServer *ds = memnew(DisplayServerKMS(p_rendering_driver, p_vsync_mode, r_error));
++	if (r_error != OK) {
++		if (p_rendering_driver == "vulkan") {
++			OS::get_singleton()->alert(
++					"The KMS display driver takes over the screen directly, so it must be started from a text console "
++					"(TTY, e.g. Ctrl+Alt+F3) and not from inside a graphical session (KDE, GNOME...).\n\n"
++					"If you are already on a TTY, check the log: the video driver may lack "
++					"VK_KHR_display / VK_EXT_acquire_drm_display.",
++					"Unable to initialize the KMS display driver");
++		}
++		memdelete(ds);
++		return nullptr;
++	}
++	return ds;
++}
++
++void DisplayServerKMS::register_kms_driver() {
++	register_create_function("kms", create_func, get_rendering_drivers_func);
++}
++
++void DisplayServerKMS::_dispatch_input_events(const Ref<InputEvent> &p_event) {
++	static_cast<DisplayServerKMS *>(get_singleton())->_dispatch_input_event(p_event);
++}
++
++void DisplayServerKMS::_dispatch_input_event(const Ref<InputEvent> &p_event) {
++	if (input_event_callback.is_valid()) {
++		input_event_callback.call(p_event);
++	}
++}
++
++void DisplayServerKMS::_send_window_event(DisplayServerEnums::WindowEvent p_event) {
++	if (window_event_callback.is_valid()) {
++		Variant event = int(p_event);
++		window_event_callback.call(event);
++	}
++}
++
++bool DisplayServerKMS::has_feature(DisplayServerEnums::Feature p_feature) const {
++	switch (p_feature) {
++		case DisplayServerEnums::FEATURE_MOUSE:
++		case DisplayServerEnums::FEATURE_CURSOR_SHAPE:
++		case DisplayServerEnums::FEATURE_HIDPI:
++			return true;
++		default:
++			return false;
++	}
++}
++
++Vector<DisplayServerEnums::WindowID> DisplayServerKMS::get_window_list() const {
++	Vector<DisplayServerEnums::WindowID> list;
++	list.push_back(DisplayServerEnums::MAIN_WINDOW_ID);
++	return list;
++}
++
++void DisplayServerKMS::window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window) {
++#if defined(RD_ENABLED)
++	if (rendering_context) {
++		rendering_context->window_set_vsync_mode(p_window, p_vsync_mode);
++	}
++#endif
++}
++
++DisplayServerEnums::VSyncMode DisplayServerKMS::window_get_vsync_mode(DisplayServerEnums::WindowID p_window) const {
++#if defined(RD_ENABLED)
++	if (rendering_context) {
++		return rendering_context->window_get_vsync_mode(p_window);
++	}
++#endif
++	return DisplayServerEnums::VSYNC_ENABLED;
++}
++
++void DisplayServerKMS::_apply_mouse_mode() {
++	DisplayServerEnums::MouseMode m = mouse_mode_override_enabled ? mouse_mode_override : mouse_mode;
++	input.set_pointer_mode(m == DisplayServerEnums::MOUSE_MODE_CAPTURED ? KMSInput::POINTER_CAPTURED : KMSInput::POINTER_VISIBLE);
++}
++
++void DisplayServerKMS::mouse_set_mode(DisplayServerEnums::MouseMode p_mode) {
++	mouse_mode = p_mode;
++	_apply_mouse_mode();
++}
++
++void DisplayServerKMS::mouse_set_mode_override(DisplayServerEnums::MouseMode p_mode) {
++	mouse_mode_override = p_mode;
++	_apply_mouse_mode();
++}
++
++void DisplayServerKMS::mouse_set_mode_override_enabled(bool p_override_enabled) {
++	mouse_mode_override_enabled = p_override_enabled;
++	_apply_mouse_mode();
++}
++
++void DisplayServerKMS::process_events() {
++	// Changements de VT : libseat appelle _seat_enable/_seat_disable.
++	if (seat.is_open()) {
++		seat.dispatch(0);
++	}
++	if (seat.is_active()) {
++		input.process();
++	}
++	Input::get_singleton()->flush_buffered_events();
++}
++
++// --- Session / VT -----------------------------------------------------------
++
++void DisplayServerKMS::_seat_disable(void *p_user) {
++	DisplayServerKMS *self = static_cast<DisplayServerKMS *>(p_user);
++	print_line("KMS: session désactivée (changement de VT)");
++	self->input.suspend();
++	// On perd le DRM master : plus aucun accès GPU/écran tant qu'on n'est pas
++	// de retour. window_can_draw() renvoie false (seat inactif) dès maintenant.
++#if defined(VULKAN_ENABLED) && defined(RD_ENABLED)
++	if (self->rendering_context) {
++		static_cast<RenderingContextDriverVulkanKMS *>(self->rendering_context)->release_display();
++	}
++#endif
++}
++
++void DisplayServerKMS::_seat_enable(void *p_user) {
++	DisplayServerKMS *self = static_cast<DisplayServerKMS *>(p_user);
++	if (!self->rendering_context && self->drm_path.is_empty()) {
++		return; // Premier enable (pendant seat.open()) ou driver dummy.
++	}
++	print_line("KMS: session réactivée");
++	self->input.resume();
++#if defined(VULKAN_ENABLED) && defined(RD_ENABLED)
++	if (self->rendering_context && self->drm_device_id >= 0) {
++		// libseat : les fds d'avant la désactivation sont à rouvrir.
++		self->seat.close_device(self->drm_device_id);
++		self->drm_device_id = self->seat.open_device(self->drm_path, self->drm_fd);
++		if (self->drm_device_id < 0) {
++			ERR_PRINT("KMS: impossible de rouvrir le GPU au retour de VT.");
++			return;
++		}
++		RenderingContextDriverVulkanKMS *ctx = static_cast<RenderingContextDriverVulkanKMS *>(self->rendering_context);
++		bool reacquired = ctx->reacquire_display(self->drm_fd);
++		print_line(vformat("KMS: ré-acquisition de l'écran : %s", reacquired ? "OK" : "ÉCHEC"));
++		if (reacquired) {
++			// Force la recréation de la swapchain au prochain present.
++			self->rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, self->display_size.x, self->display_size.y);
++		}
++	}
++#endif
++}
++
++static String _connector_name(drmModeConnector *p_connector) {
++	return vformat("%s-%d", String::utf8(drmModeGetConnectorTypeName(p_connector->connector_type)), (int)p_connector->connector_type_id);
++}
++
++static bool _connector_is_internal(drmModeConnector *p_connector) {
++	return p_connector->connector_type == DRM_MODE_CONNECTOR_eDP ||
++			p_connector->connector_type == DRM_MODE_CONNECTOR_LVDS ||
++			p_connector->connector_type == DRM_MODE_CONNECTOR_DSI;
++}
++
++Error DisplayServerKMS::_open_drm() {
++	// Choix de la sortie, par ordre de priorité :
++	//  1. CYBERREALM_KMS_OUTPUT (ex. "DP-1", "eDP-2") ;
++	//  2. la dalle interne (eDP/LVDS/DSI), supposée être l'écran principal ;
++	//  3. le premier connecteur connecté, toutes cartes confondues.
++	String wanted = OS::get_singleton()->get_environment("CYBERREALM_KMS_OUTPUT");
++
++	Vector<String> cards;
++	DIR *dir = opendir("/dev/dri");
++	ERR_FAIL_NULL_V_MSG(dir, ERR_FILE_NOT_FOUND, "KMS: /dev/dri introuvable.");
++	while (dirent *e = readdir(dir)) {
++		String n = String::utf8(e->d_name);
++		if (n.begins_with("card")) {
++			cards.push_back("/dev/dri/" + n);
++		}
++	}
++	closedir(dir);
++	cards.sort();
++
++	constexpr int RANK_NONE = 99;
++	int best_rank = RANK_NONE;
++	String best_name;
++	String available;
++
++	for (const String &path : cards) {
++		int fd = -1;
++		int id = seat.open_device(path, fd);
++		if (id < 0) {
++			continue;
++		}
++		int card_rank = RANK_NONE;
++		uint32_t card_connector = 0;
++		String card_name;
++		if (drmModeRes *res = drmModeGetResources(fd)) {
++			for (int i = 0; i < res->count_connectors; i++) {
++				drmModeConnector *c = drmModeGetConnector(fd, res->connectors[i]);
++				if (!c) {
++					continue;
++				}
++				if (c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) {
++					String name = _connector_name(c);
++					available += vformat(" %s(%s)", name, path.get_file());
++					int rank = (!wanted.is_empty() && wanted == name) ? 0 : (wanted.is_empty() && _connector_is_internal(c) ? 1 : 2);
++					if (!wanted.is_empty() && rank != 0) {
++						rank = RANK_NONE; // une sortie précise est demandée : les autres sont exclues.
++					}
++					if (rank < card_rank) {
++						card_rank = rank;
++						card_connector = c->connector_id;
++						card_name = name;
++					}
++				}
++				drmModeFreeConnector(c);
++			}
++			drmModeFreeResources(res);
++		}
++		if (card_connector && card_rank < best_rank) {
++			// Meilleure sortie jusqu'ici : on garde cette carte, on lâche la précédente.
++			if (drm_device_id >= 0) {
++				seat.close_device(drm_device_id);
++			}
++			drm_device_id = id;
++			drm_fd = fd;
++			drm_path = path;
++			drm_connector_id = card_connector;
++			best_rank = card_rank;
++			best_name = card_name;
++		} else {
++			seat.close_device(id);
++		}
++		if (best_rank == 0) {
++			break;
++		}
++	}
++	if (drm_device_id >= 0) {
++		print_line(vformat("KMS: sortie %s sur %s (connectées :%s)", best_name, drm_path, available));
++		return OK;
++	}
++	ERR_FAIL_V_MSG(ERR_CANT_OPEN, vformat("KMS: aucune sortie%s. Sorties connectées :%s", wanted.is_empty() ? String() : vformat(" '%s'", wanted), available.is_empty() ? String(" aucune") : available));
++}
++
++// Le greeter/compositeur précédent (plasmalogin, kwin...) laisse souvent son plan
++// curseur matériel actif : la swapchain Vulkan n'utilise que le plan principal,
++// donc l'ancien curseur resterait affiché en fantôme. On le désactive (le jeu
++// dessine son propre curseur, voir kms_cursor.gd). Nécessite d'être DRM master.
++static void _disable_hardware_cursors(int p_fd) {
++	drmModeRes *res = drmModeGetResources(p_fd);
++	if (!res) {
++		return;
++	}
++	for (int i = 0; i < res->count_crtcs; i++) {
++		drmModeSetCursor(p_fd, res->crtcs[i], 0, 0, 0);
++	}
++	drmModeFreeResources(res);
++}
++
++// --- Construction -----------------------------------------------------------
++
++DisplayServerKMS::DisplayServerKMS(const String &p_rendering_driver, DisplayServerEnums::VSyncMode p_vsync_mode, Error &r_error) {
++	rendering_driver = p_rendering_driver;
++	r_error = ERR_UNAVAILABLE;
++
++	native_menu = memnew(NativeMenu);
++	Input::get_singleton()->set_event_dispatch_function(_dispatch_input_events);
++
++	seat.on_enable = _seat_enable;
++	seat.on_disable = _seat_disable;
++	seat.callback_user = this;
++	if (seat.open() != OK) {
++		return;
++	}
++
++	if (rendering_driver == "dummy") {
++		RasterizerDummy::make_current();
++		r_error = OK;
++		return;
++	}
++
++#if defined(RD_ENABLED) && defined(VULKAN_ENABLED)
++	if (rendering_driver != "vulkan") {
++		r_error = ERR_UNAVAILABLE;
++		return;
++	}
++	if (_open_drm() != OK) {
++		return;
++	}
++	_disable_hardware_cursors(drm_fd);
++
++	rendering_context = memnew(RenderingContextDriverVulkanKMS);
++	if (rendering_context->initialize() != OK) {
++		memdelete(rendering_context);
++		rendering_context = nullptr;
++		r_error = ERR_CANT_CREATE;
++		return;
++	}
++
++	RenderingContextDriverVulkanKMS::WindowPlatformData wpd;
++	wpd.drm_fd = drm_fd;
++	wpd.connector_id = drm_connector_id;
++	// Mode forcé : CYBERREALM_KMS_MODE="1920x1080" ou "1920x1080@60". Sans cela, le plus grand
++	// mode de l'écran est pris (les fenêtres clientes ne sont pas rééchelonnées : sur un écran
++	// plus dense que d'habitude le texte des fenêtres paraît plus flou).
++	String mode_env = OS::get_singleton()->get_environment("CYBERREALM_KMS_MODE");
++	if (!mode_env.is_empty()) {
++		Vector<String> hz_split = mode_env.split("@");
++		Vector<String> wh = hz_split[0].split("x");
++		if (wh.size() == 2 && wh[0].is_valid_int() && wh[1].is_valid_int()) {
++			wpd.width = wh[0].to_int();
++			wpd.height = wh[1].to_int();
++			if (hz_split.size() > 1 && hz_split[1].is_valid_float()) {
++				wpd.refresh_mhz = uint32_t(hz_split[1].to_float() * 1000.0);
++			}
++		} else {
++			WARN_PRINT(vformat("KMS: CYBERREALM_KMS_MODE='%s' invalide (attendu WxH ou WxH@Hz).", mode_env));
++		}
++	}
++	if (rendering_context->window_create(DisplayServerEnums::MAIN_WINDOW_ID, &wpd) != OK) {
++		memdelete(rendering_context);
++		rendering_context = nullptr;
++		r_error = ERR_CANT_CREATE;
++		return;
++	}
++	RenderingContextDriverVulkanKMS *kms_context = static_cast<RenderingContextDriverVulkanKMS *>(rendering_context);
++	display_size = kms_context->get_display_size();
++	if (kms_context->get_display_refresh_mhz() > 0) {
++		refresh_rate = kms_context->get_display_refresh_mhz() / 1000.0f;
++	}
++	rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, display_size.x, display_size.y);
++	rendering_context->window_set_vsync_mode(DisplayServerEnums::MAIN_WINDOW_ID, p_vsync_mode);
++
++	rendering_device = memnew(RenderingDevice);
++	if (rendering_device->initialize(rendering_context, DisplayServerEnums::MAIN_WINDOW_ID) != OK) {
++		memdelete(rendering_device);
++		rendering_device = nullptr;
++		memdelete(rendering_context);
++		rendering_context = nullptr;
++		r_error = ERR_UNAVAILABLE;
++		return;
++	}
++	rendering_device->screen_create(DisplayServerEnums::MAIN_WINDOW_ID);
++	RendererCompositorRD::make_current();
++
++	if (input.initialize(&seat, display_size) != OK) {
++		WARN_PRINT("KMS: entrées indisponibles (libinput/xkbcommon) — le jeu ne recevra ni clavier ni souris.");
++	}
++
++	print_line(vformat("KMS: %dx%d@%.2f Hz", display_size.x, display_size.y, refresh_rate));
++	r_error = OK;
++#else
++	r_error = ERR_UNAVAILABLE;
++#endif
++}
++
++DisplayServerKMS::~DisplayServerKMS() {
++	if (native_menu) {
++		memdelete(native_menu);
++		native_menu = nullptr;
++	}
++#if defined(RD_ENABLED)
++	if (rendering_device) {
++		rendering_device->screen_free(DisplayServerEnums::MAIN_WINDOW_ID);
++		memdelete(rendering_device);
++		rendering_device = nullptr;
++	}
++	if (rendering_context) {
++		rendering_context->window_destroy(DisplayServerEnums::MAIN_WINDOW_ID);
++		memdelete(rendering_context);
++		rendering_context = nullptr;
++	}
++#endif
++	input.finalize();
++	if (drm_device_id >= 0) {
++		seat.close_device(drm_device_id);
++	}
++	seat.close();
++}
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/display_server_kms.h b/platform/linuxbsd/kms/display_server_kms.h
+new file mode 100644
+index 0000000..f4951ad
+--- /dev/null
++++ b/platform/linuxbsd/kms/display_server_kms.h
+@@ -0,0 +1,226 @@
++/**************************************************************************/
++/*  display_server_kms.h                                             */
++/**************************************************************************/
++/*                         This file is part of:                          */
++/*                             GODOT ENGINE                               */
++/*                        https://godotengine.org                         */
++/**************************************************************************/
++/* Copyright (c) 2014-present Godot Engine contributors (see AUTHORS.md). */
++/* Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur.                  */
++/*                                                                        */
++/* Permission is hereby granted, free of charge, to any person obtaining  */
++/* a copy of this software and associated documentation files (the        */
++/* "Software"), to deal in the Software without restriction, including    */
++/* without limitation the rights to use, copy, modify, merge, publish,    */
++/* distribute, sublicense, and/or sell copies of the Software, and to     */
++/* permit persons to whom the Software is furnished to do so, subject to  */
++/* the following conditions:                                              */
++/*                                                                        */
++/* The above copyright notice and this permission notice shall be         */
++/* included in all copies or substantial portions of the Software.        */
++/*                                                                        */
++/* THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,        */
++/* EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF     */
++/* MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. */
++/* IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY   */
++/* CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,   */
++/* TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE      */
++/* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
++/**************************************************************************/
++
++#pragma once
++
++#ifdef KMS_ENABLED
++
++#include "kms_input.h"
++#include "kms_seat.h"
++
++#include "servers/display/display_server.h"
++
++class InputEvent;
++class NativeMenu;
++
++#if defined(RD_ENABLED)
++class RenderingContextDriver;
++class RenderingDevice;
++#endif
++
++class DisplayServerKMS : public DisplayServer {
++	GDSOFTCLASS(DisplayServerKMS, DisplayServer);
++
++private:
++	friend class DisplayServer;
++
++	static Vector<String> get_rendering_drivers_func();
++	static DisplayServer *create_func(const String &p_rendering_driver, DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Vector2i *p_position, const Vector2i &p_resolution, int p_screen, DisplayServerEnums::Context p_context, int64_t p_parent_window, Error &r_error);
++
++	static void _dispatch_input_events(const Ref<InputEvent> &p_event);
++	void _dispatch_input_event(const Ref<InputEvent> &p_event);
++
++	static void _seat_enable(void *p_user);
++	static void _seat_disable(void *p_user);
++
++	NativeMenu *native_menu = nullptr;
++	Callable input_event_callback;
++	Callable window_event_callback;
++
++	KMSSeat seat;
++	KMSInput input;
++	DisplayServerEnums::MouseMode mouse_mode = DisplayServerEnums::MOUSE_MODE_VISIBLE;
++	DisplayServerEnums::MouseMode mouse_mode_override = DisplayServerEnums::MOUSE_MODE_VISIBLE;
++	bool mouse_mode_override_enabled = false;
++	void _apply_mouse_mode();
++	int drm_device_id = -1;
++	int drm_fd = -1;
++	String drm_path;
++	uint32_t drm_connector_id = 0;
++	Size2i display_size;
++	float refresh_rate = SCREEN_REFRESH_RATE_FALLBACK;
++	String rendering_driver;
++
++#if defined(RD_ENABLED)
++	RenderingContextDriver *rendering_context = nullptr;
++	RenderingDevice *rendering_device = nullptr;
++#endif
++
++	Error _open_drm();
++	void _send_window_event(DisplayServerEnums::WindowEvent p_event);
++
++public:
++	bool has_feature(DisplayServerEnums::Feature p_feature) const override;
++	String get_name() const override { return "kms"; }
++
++	// Stub implementations to prevent warnings from being printed for methods
++	// that don't affect the project's behavior in headless mode.
++
++	int get_screen_count() const override { return 1; }
++	int get_primary_screen() const override { return 0; }
++	Point2i screen_get_position(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override { return Point2i(); }
++	Size2i screen_get_size(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override { return display_size; }
++	Rect2i screen_get_usable_rect(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override { return Rect2i(Point2i(), display_size); }
++	int screen_get_dpi(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override { return 96; /* 0 might cause issues */ }
++	float screen_get_scale(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override { return 1; }
++	float screen_get_max_scale() const override { return 1; }
++	float screen_get_refresh_rate(int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) const override { return refresh_rate; }
++	void screen_set_orientation(DisplayServerEnums::ScreenOrientation p_orientation, int p_screen = DisplayServerEnums::SCREEN_OF_MAIN_WINDOW) override {}
++	void screen_set_keep_on(bool p_enable) override {}
++
++	Vector<DisplayServerEnums::WindowID> get_window_list() const override;
++
++	DisplayServerEnums::WindowID create_sub_window(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::VSyncMode p_vsync_mode, uint32_t p_flags, const Rect2i &p_rect = Rect2i(), bool p_exclusive = false, DisplayServerEnums::WindowID p_transient_parent = DisplayServerEnums::INVALID_WINDOW_ID) override { return 0; }
++	void show_window(DisplayServerEnums::WindowID p_id) override {}
++	void delete_sub_window(DisplayServerEnums::WindowID p_id) override {}
++
++	DisplayServerEnums::WindowID get_window_at_screen_position(const Point2i &p_position) const override { return 0; }
++
++	void window_attach_instance_id(ObjectID p_instance, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	ObjectID window_get_attached_instance_id(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return ObjectID(); }
++
++	void window_set_rect_changed_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	void window_set_window_event_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override { window_event_callback = p_callable; }
++
++	void window_set_input_event_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override { input_event_callback = p_callable; }
++
++	void window_set_input_text_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	void window_set_drop_files_callback(const Callable &p_callable, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	void window_set_title(const String &p_title, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	void window_set_mouse_passthrough(const Vector<Vector2> &p_region, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	int window_get_current_screen(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return 0; }
++	void window_set_current_screen(int p_screen, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	Point2i window_get_position(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return Point2i(); }
++	Point2i window_get_position_with_decorations(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return Point2i(); }
++	void window_set_position(const Point2i &p_position, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	void window_set_transient(DisplayServerEnums::WindowID p_window, DisplayServerEnums::WindowID p_parent) override {}
++
++	void window_set_max_size(const Size2i p_size, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	Size2i window_get_max_size(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return Size2i(); }
++
++	void window_set_min_size(const Size2i p_size, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	Size2i window_get_min_size(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return Size2i(); }
++
++	void window_set_size(const Size2i p_size, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	Size2i window_get_size(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return display_size; }
++	Size2i window_get_size_with_decorations(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return display_size; }
++
++	void window_set_mode(DisplayServerEnums::WindowMode p_mode, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	DisplayServerEnums::WindowMode window_get_mode(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return DisplayServerEnums::WINDOW_MODE_FULLSCREEN; }
++
++	void window_set_vsync_mode(DisplayServerEnums::VSyncMode p_vsync_mode, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override;
++	DisplayServerEnums::VSyncMode window_get_vsync_mode(DisplayServerEnums::WindowID p_window) const override;
++
++	bool window_is_maximize_allowed(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return false; }
++
++	void window_set_flag(DisplayServerEnums::WindowFlags p_flag, bool p_enabled, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	bool window_get_flag(DisplayServerEnums::WindowFlags p_flag, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return p_flag == DisplayServerEnums::WINDOW_FLAG_BORDERLESS; }
++
++	void window_request_attention(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	void window_set_taskbar_progress_value(float p_value, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	void window_set_taskbar_progress_state(DisplayServerEnums::ProgressState p_state, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	void window_move_to_foreground(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	bool window_is_focused(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return true; }
++
++	bool window_can_draw(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return seat.is_active(); }
++
++	bool can_any_window_draw() const override { return seat.is_active(); }
++
++	void window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++	void window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
++
++	int64_t window_get_native_handle(DisplayServerEnums::HandleType p_handle_type, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return 0; }
++
++	void process_events() override;
++
++	void set_native_icon(const String &p_filename) override {}
++	void set_icon(const Ref<Image> &p_icon) override {}
++
++	void help_set_search_callbacks(const Callable &p_search_callback = Callable(), const Callable &p_action_callback = Callable()) override {}
++
++	bool tts_is_speaking() const override { return false; }
++	bool tts_is_paused() const override { return false; }
++	TypedArray<Dictionary> tts_get_voices() const override { return TypedArray<Dictionary>(); }
++	void tts_speak(const String &p_text, const String &p_voice, int p_volume = 50, float p_pitch = 1.0f, float p_rate = 1.0f, int64_t p_utterance_id = 0, bool p_interrupt = false) override {}
++	void tts_pause() override {}
++	void tts_resume() override {}
++	void tts_stop() override {}
++
++	void mouse_set_mode(DisplayServerEnums::MouseMode p_mode) override;
++	DisplayServerEnums::MouseMode mouse_get_mode() const override { return mouse_mode; }
++	void mouse_set_mode_override(DisplayServerEnums::MouseMode p_mode) override;
++	void mouse_set_mode_override_enabled(bool p_override_enabled) override;
++	Point2i mouse_get_position() const override { return input.get_pointer_position(); }
++	void clipboard_set(const String &p_text) override {}
++	void clipboard_set_primary(const String &p_text) override {}
++
++	void virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect = Rect2(), DisplayServerEnums::VirtualKeyboardType p_type = DisplayServerEnums::KEYBOARD_TYPE_DEFAULT, int p_max_length = -1, int p_cursor_start = -1, int p_cursor_end = -1) override {}
++	void virtual_keyboard_hide() override {}
++
++	void cursor_set_shape(DisplayServerEnums::CursorShape p_shape) override {}
++	void cursor_set_custom_image(const Ref<Resource> &p_cursor, DisplayServerEnums::CursorShape p_shape = DisplayServerEnums::CURSOR_ARROW, const Vector2 &p_hotspot = Vector2()) override {}
++
++	Error dialog_show(String p_title, String p_description, Vector<String> p_buttons, const Callable &p_callback) override { return ERR_UNAVAILABLE; }
++	Error dialog_input_text(String p_title, String p_description, String p_partial, const Callable &p_callback) override { return ERR_UNAVAILABLE; }
++	Error file_dialog_show(const String &p_title, const String &p_current_directory, const String &p_filename, bool p_show_hidden, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const Callable &p_callback, DisplayServerEnums::WindowID p_window_id) override { return ERR_UNAVAILABLE; }
++	Error file_dialog_with_options_show(const String &p_title, const String &p_current_directory, const String &p_root, const String &p_filename, bool p_show_hidden, DisplayServerEnums::FileDialogMode p_mode, const Vector<String> &p_filters, const TypedArray<Dictionary> &p_options, const Callable &p_callback, DisplayServerEnums::WindowID p_window_id) override { return ERR_UNAVAILABLE; }
++
++	void release_rendering_thread() override {}
++	void swap_buffers() override {}
++
++	DisplayServerEnums::IndicatorID create_status_indicator(const Ref<Texture2D> &p_icon, const String &p_tooltip, const Callable &p_callback) override { return DisplayServerEnums::INVALID_INDICATOR_ID; }
++	void status_indicator_set_icon(DisplayServerEnums::IndicatorID p_id, const Ref<Texture2D> &p_icon) override {}
++	void status_indicator_set_tooltip(DisplayServerEnums::IndicatorID p_id, const String &p_tooltip) override {}
++	void status_indicator_set_callback(DisplayServerEnums::IndicatorID p_id, const Callable &p_callback) override {}
++	void delete_status_indicator(DisplayServerEnums::IndicatorID p_id) override {}
++
++	static void register_kms_driver();
++
++	DisplayServerKMS(const String &p_rendering_driver, DisplayServerEnums::VSyncMode p_vsync_mode, Error &r_error);
++	~DisplayServerKMS();
++};
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
+new file mode 100644
+index 0000000..f910131
+--- /dev/null
++++ b/platform/linuxbsd/kms/kms_input.cpp
+@@ -0,0 +1,379 @@
++#ifdef KMS_ENABLED
++
++#include "kms_input.h"
++
++#include "kms_seat.h"
++
++#include "core/input/input.h"
++#include "core/input/input_event.h"
++#include "core/io/file_access.h"
++#include "core/os/os.h"
++#include "servers/display/display_server_enums.h"
++#include "platform/linuxbsd/wayland/key_mapping_xkb.h"
++
++#ifdef SOWRAP_ENABLED
++#include "xkbcommon-so_wrap.h"
++#else
++#include <xkbcommon/xkbcommon.h>
++#endif
++
++#include <libinput.h>
++#include <libudev.h>
++#include <linux/input-event-codes.h>
++#include <fcntl.h>
++#include <cerrno>
++
++int KMSInput::_open_restricted(const char *p_path, int p_flags, void *p_user) {
++	KMSSeat *seat = static_cast<KMSInput *>(p_user)->seat;
++	int fd = -1;
++	if (seat->open_device(String::utf8(p_path), fd) < 0) {
++		return -EACCES;
++	}
++	return fd;
++}
++
++void KMSInput::_close_restricted(int p_fd, void *p_user) {
++	static_cast<KMSInput *>(p_user)->seat->close_device_by_fd(p_fd);
++}
++
++Error KMSInput::initialize(KMSSeat *p_seat, const Vector2i &p_bounds) {
++	seat = p_seat;
++	bounds = p_bounds;
++	pointer_pos = Vector2(p_bounds) / 2.0;
++
++#ifdef SOWRAP_ENABLED
++	ERR_FAIL_COND_V_MSG(initialize_xkbcommon(0) != 0, ERR_CANT_CREATE, "KMS: libxkbcommon introuvable.");
++#endif
++	KeyMappingXKB::initialize();
++
++	xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
++	ERR_FAIL_NULL_V(xkb_ctx, ERR_CANT_CREATE);
++	// Disposition : variables XKB_DEFAULT_* si présentes, sinon la configuration
++	// système (/etc/vconsole.conf : XKBLAYOUT, XKBVARIANT, XKBMODEL, XKBOPTIONS,
++	// écrite par localectl), sinon "us". Sans cela une session lancée par le
++	// gestionnaire de connexion (aucune variable d'environnement) tape en QWERTY.
++	HashMap<String, String> vconsole;
++	if (Ref<FileAccess> f = FileAccess::open("/etc/vconsole.conf", FileAccess::READ); f.is_valid()) {
++		while (!f->eof_reached()) {
++			String line = f->get_line().strip_edges();
++			int eq = line.find_char('=');
++			if (line.begins_with("#") || eq <= 0) {
++				continue;
++			}
++			vconsole[line.substr(0, eq).strip_edges()] = line.substr(eq + 1).strip_edges().trim_prefix("\"").trim_suffix("\"");
++		}
++	}
++	auto pick = [&](const char *p_env, const char *p_vconsole) -> CharString {
++		if (!OS::get_singleton()->get_environment(p_env).is_empty()) {
++			return CharString(); // xkbcommon lit lui-même la variable d'environnement.
++		}
++		return vconsole.has(p_vconsole) ? vconsole[p_vconsole].utf8() : CharString();
++	};
++	CharString c_model = pick("XKB_DEFAULT_MODEL", "XKBMODEL");
++	CharString c_layout = pick("XKB_DEFAULT_LAYOUT", "XKBLAYOUT");
++	CharString c_variant = pick("XKB_DEFAULT_VARIANT", "XKBVARIANT");
++	CharString c_options = pick("XKB_DEFAULT_OPTIONS", "XKBOPTIONS");
++	xkb_rule_names names = {};
++	names.model = c_model.is_empty() ? nullptr : c_model.get_data();
++	names.layout = c_layout.is_empty() ? nullptr : c_layout.get_data();
++	names.variant = c_variant.is_empty() ? nullptr : c_variant.get_data();
++	names.options = c_options.is_empty() ? nullptr : c_options.get_data();
++	print_line(vformat("KMS: clavier layout=%s variant=%s",
++			names.layout ? String::utf8(names.layout) : OS::get_singleton()->get_environment("XKB_DEFAULT_LAYOUT"),
++			names.variant ? String::utf8(names.variant) : OS::get_singleton()->get_environment("XKB_DEFAULT_VARIANT")));
++	xkb_map = xkb_keymap_new_from_names(xkb_ctx, &names, XKB_KEYMAP_COMPILE_NO_FLAGS);
++	ERR_FAIL_NULL_V_MSG(xkb_map, ERR_CANT_CREATE, "KMS: keymap XKB invalide.");
++	xkb_st = xkb_state_new(xkb_map);
++	ERR_FAIL_NULL_V(xkb_st, ERR_CANT_CREATE);
++
++	static const libinput_interface iface = {
++		&KMSInput::_open_restricted,
++		&KMSInput::_close_restricted,
++	};
++	udev_ctx = udev_new();
++	ERR_FAIL_NULL_V(udev_ctx, ERR_CANT_CREATE);
++	li = libinput_udev_create_context(&iface, this, udev_ctx);
++	ERR_FAIL_NULL_V_MSG(li, ERR_CANT_CREATE, "KMS: libinput_udev_create_context a échoué.");
++	ERR_FAIL_COND_V_MSG(libinput_udev_assign_seat(li, seat->get_seat_name().utf8().get_data()) != 0, ERR_CANT_OPEN, "KMS: libinput_udev_assign_seat a échoué.");
++	return OK;
++}
++
++void KMSInput::finalize() {
++	if (li) {
++		libinput_unref(li);
++		li = nullptr;
++	}
++	if (udev_ctx) {
++		udev_unref(udev_ctx);
++		udev_ctx = nullptr;
++	}
++	if (xkb_st) {
++		xkb_state_unref(xkb_st);
++		xkb_st = nullptr;
++	}
++	if (xkb_map) {
++		xkb_keymap_unref(xkb_map);
++		xkb_map = nullptr;
++	}
++	if (xkb_ctx) {
++		xkb_context_unref(xkb_ctx);
++		xkb_ctx = nullptr;
++	}
++}
++
++int KMSInput::get_fd() const {
++	return li ? libinput_get_fd(li) : -1;
++}
++
++void KMSInput::suspend() {
++	if (li) {
++		libinput_suspend(li);
++	}
++	repeat_keycode = 0;
++}
++
++void KMSInput::resume() {
++	if (li) {
++		libinput_resume(li);
++	}
++}
++
++void KMSInput::_update_modifiers() {
++	shift = xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_SHIFT, XKB_STATE_MODS_EFFECTIVE) > 0;
++	ctrl = xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE) > 0;
++	alt = xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_ALT, XKB_STATE_MODS_EFFECTIVE) > 0;
++	meta = xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0;
++}
++
++void KMSInput::_emit_key(uint32_t p_xkb_keycode, bool p_pressed, bool p_echo) {
++	// Même logique que WaylandThread::_seat_state_get_key_event().
++	Key shifted_key = KeyMappingXKB::get_keycode(xkb_state_key_get_one_sym(xkb_st, p_xkb_keycode));
++
++	Key plain_key = Key::NONE;
++	const xkb_keysym_t *syms = nullptr;
++	int n = xkb_keymap_key_get_syms_by_level(xkb_map, p_xkb_keycode, xkb_state_key_get_layout(xkb_st, p_xkb_keycode), 0, &syms);
++	if (n > 0 && syms) {
++		plain_key = KeyMappingXKB::get_keycode(syms[0]);
++	}
++
++	Key physical_keycode = KeyMappingXKB::get_scancode(p_xkb_keycode);
++	KeyLocation location = KeyMappingXKB::get_location(p_xkb_keycode);
++	uint32_t unicode = xkb_state_key_get_utf32(xkb_st, p_xkb_keycode);
++
++	Key keycode = Key::NONE;
++	if ((shifted_key & Key::SPECIAL) != Key::NONE || (plain_key & Key::SPECIAL) != Key::NONE) {
++		keycode = shifted_key;
++	}
++	if (keycode == Key::NONE) {
++		keycode = plain_key;
++	}
++	if (keycode == Key::NONE) {
++		keycode = physical_keycode;
++	}
++	if (keycode >= Key::A + 32 && keycode <= Key::Z + 32) {
++		keycode -= 'a' - 'A';
++	}
++	if (physical_keycode == Key::NONE && keycode == Key::NONE && unicode == 0) {
++		return;
++	}
++
++	Ref<InputEventKey> k;
++	k.instantiate();
++	k->set_window_id(DisplayServerEnums::MAIN_WINDOW_ID);
++	k->set_shift_pressed(shift);
++	k->set_ctrl_pressed(ctrl);
++	k->set_alt_pressed(alt);
++	k->set_meta_pressed(meta);
++	k->set_pressed(p_pressed);
++	k->set_echo(p_echo);
++	k->set_keycode(keycode);
++	k->set_physical_keycode(physical_keycode);
++	k->set_location(location);
++	k->set_key_label(unicode != 0 ? fix_key_label(unicode, keycode) : keycode);
++	if (p_pressed) {
++		k->set_unicode(fix_unicode(unicode));
++	}
++	if (k->get_keycode() == Key::BACKTAB) {
++		k->set_keycode(Key::TAB);
++		k->set_physical_keycode(Key::TAB);
++		k->set_shift_pressed(true);
++	}
++	Input::get_singleton()->parse_input_event(k);
++}
++
++void KMSInput::_handle_key(uint32_t p_evdev_key, bool p_pressed, bool p_echo) {
++	uint32_t xkb_keycode = p_evdev_key + 8;
++	xkb_state_update_key(xkb_st, xkb_keycode, p_pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
++	_update_modifiers();
++
++	// Pas de raccourci de changement de VT : le retour de VT gelait l'écran
++	// (voir kms-display-driver.md). On ne transmet donc pas Ctrl+Alt+Fn.
++	_emit_key(xkb_keycode, p_pressed, p_echo);
++
++	if (p_pressed && !p_echo && xkb_keymap_key_repeats(xkb_map, xkb_keycode)) {
++		repeat_keycode = xkb_keycode;
++		repeat_next_usec = OS::get_singleton()->get_ticks_usec() + REPEAT_DELAY_USEC;
++	} else if (!p_pressed && repeat_keycode == xkb_keycode) {
++		repeat_keycode = 0;
++	}
++}
++
++void KMSInput::_handle_motion(const Vector2 &p_delta) {
++	Vector2 old = pointer_pos;
++	pointer_pos += p_delta;
++	if (pointer_mode == POINTER_VISIBLE) {
++		pointer_pos = pointer_pos.clamp(Vector2(), Vector2(bounds) - Vector2(1, 1));
++	}
++	Ref<InputEventMouseMotion> mm;
++	mm.instantiate();
++	mm->set_window_id(DisplayServerEnums::MAIN_WINDOW_ID);
++	mm->set_shift_pressed(shift);
++	mm->set_ctrl_pressed(ctrl);
++	mm->set_alt_pressed(alt);
++	mm->set_meta_pressed(meta);
++	mm->set_position(pointer_pos);
++	mm->set_global_position(pointer_pos);
++	mm->set_button_mask(button_mask);
++	// En mode capturé le delta brut doit passer même si la position est figée.
++	Vector2 rel = (pointer_mode == POINTER_CAPTURED) ? p_delta : pointer_pos - old;
++	mm->set_relative(rel);
++	mm->set_relative_screen_position(rel);
++	mm->set_velocity(Input::get_singleton()->get_last_mouse_velocity());
++	Input::get_singleton()->parse_input_event(mm);
++}
++
++void KMSInput::_handle_button(uint32_t p_evdev_button, bool p_pressed) {
++	MouseButton b = MouseButton::NONE;
++	switch (p_evdev_button) {
++		case BTN_LEFT:
++			b = MouseButton::LEFT;
++			break;
++		case BTN_RIGHT:
++			b = MouseButton::RIGHT;
++			break;
++		case BTN_MIDDLE:
++			b = MouseButton::MIDDLE;
++			break;
++		case BTN_SIDE:
++			b = MouseButton::MB_XBUTTON1;
++			break;
++		case BTN_EXTRA:
++			b = MouseButton::MB_XBUTTON2;
++			break;
++		default:
++			return;
++	}
++	if (p_pressed) {
++		button_mask.set_flag(mouse_button_to_mask(b));
++	} else {
++		button_mask.clear_flag(mouse_button_to_mask(b));
++	}
++	Ref<InputEventMouseButton> mb;
++	mb.instantiate();
++	mb->set_window_id(DisplayServerEnums::MAIN_WINDOW_ID);
++	mb->set_shift_pressed(shift);
++	mb->set_ctrl_pressed(ctrl);
++	mb->set_alt_pressed(alt);
++	mb->set_meta_pressed(meta);
++	mb->set_position(pointer_pos);
++	mb->set_global_position(pointer_pos);
++	mb->set_button_index(b);
++	mb->set_button_mask(button_mask);
++	mb->set_pressed(p_pressed);
++	Input::get_singleton()->parse_input_event(mb);
++}
++
++void KMSInput::_emit_wheel(MouseButton p_button, float p_factor) {
++	for (int pressed = 1; pressed >= 0; pressed--) {
++		Ref<InputEventMouseButton> mb;
++		mb.instantiate();
++		mb->set_window_id(DisplayServerEnums::MAIN_WINDOW_ID);
++		mb->set_shift_pressed(shift);
++		mb->set_ctrl_pressed(ctrl);
++		mb->set_alt_pressed(alt);
++		mb->set_meta_pressed(meta);
++		mb->set_position(pointer_pos);
++		mb->set_global_position(pointer_pos);
++		mb->set_button_index(p_button);
++		mb->set_factor(p_factor);
++		mb->set_pressed(pressed);
++		BitField<MouseButtonMask> mask = button_mask;
++		if (pressed) {
++			mask.set_flag(mouse_button_to_mask(p_button));
++		}
++		mb->set_button_mask(mask);
++		Input::get_singleton()->parse_input_event(mb);
++	}
++}
++
++void KMSInput::process() {
++	if (!li) {
++		return;
++	}
++	if (libinput_dispatch(li) < 0) {
++		return;
++	}
++	while (libinput_event *ev = libinput_get_event(li)) {
++		switch (libinput_event_get_type(ev)) {
++			case LIBINPUT_EVENT_KEYBOARD_KEY: {
++				libinput_event_keyboard *kb = libinput_event_get_keyboard_event(ev);
++				_handle_key(libinput_event_keyboard_get_key(kb), libinput_event_keyboard_get_key_state(kb) == LIBINPUT_KEY_STATE_PRESSED);
++			} break;
++			case LIBINPUT_EVENT_POINTER_MOTION: {
++				libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
++				_handle_motion(Vector2(libinput_event_pointer_get_dx(p), libinput_event_pointer_get_dy(p)));
++			} break;
++			case LIBINPUT_EVENT_POINTER_BUTTON: {
++				libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
++				_handle_button(libinput_event_pointer_get_button(p), libinput_event_pointer_get_button_state(p) == LIBINPUT_BUTTON_STATE_PRESSED);
++			} break;
++			case LIBINPUT_EVENT_POINTER_SCROLL_WHEEL: {
++				libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
++				if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL)) {
++					double v = libinput_event_pointer_get_scroll_value_v120(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL);
++					if (v != 0) {
++						_emit_wheel(v < 0 ? MouseButton::WHEEL_UP : MouseButton::WHEEL_DOWN, Math::abs(v) / 120.0);
++					}
++				}
++				if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL)) {
++					double h = libinput_event_pointer_get_scroll_value_v120(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL);
++					if (h != 0) {
++						_emit_wheel(h < 0 ? MouseButton::WHEEL_LEFT : MouseButton::WHEEL_RIGHT, Math::abs(h) / 120.0);
++					}
++				}
++			} break;
++			case LIBINPUT_EVENT_POINTER_SCROLL_FINGER:
++			case LIBINPUT_EVENT_POINTER_SCROLL_CONTINUOUS: {
++				libinput_event_pointer *p = libinput_event_get_pointer_event(ev);
++				Vector2 d;
++				if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL)) {
++					d.x = libinput_event_pointer_get_scroll_value(p, LIBINPUT_POINTER_AXIS_SCROLL_HORIZONTAL);
++				}
++				if (libinput_event_pointer_has_axis(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL)) {
++					d.y = libinput_event_pointer_get_scroll_value(p, LIBINPUT_POINTER_AXIS_SCROLL_VERTICAL);
++				}
++				if (d != Vector2()) {
++					Ref<InputEventPanGesture> pg;
++					pg.instantiate();
++					pg->set_window_id(DisplayServerEnums::MAIN_WINDOW_ID);
++					pg->set_position(pointer_pos);
++					pg->set_delta(d / 10.0);
++					Input::get_singleton()->parse_input_event(pg);
++				}
++			} break;
++			default:
++				break;
++		}
++		libinput_event_destroy(ev);
++	}
++
++	if (repeat_keycode) {
++		uint64_t now = OS::get_singleton()->get_ticks_usec();
++		while (repeat_keycode && now >= repeat_next_usec) {
++			_emit_key(repeat_keycode, true, true);
++			repeat_next_usec += REPEAT_INTERVAL_USEC;
++		}
++	}
++}
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/kms_input.h b/platform/linuxbsd/kms/kms_input.h
+new file mode 100644
+index 0000000..991054c
+--- /dev/null
++++ b/platform/linuxbsd/kms/kms_input.h
+@@ -0,0 +1,76 @@
++#pragma once
++
++#ifdef KMS_ENABLED
++
++#include "core/input/input_enums.h"
++#include "core/math/vector2.h"
++#include "core/math/vector2i.h"
++#include "core/templates/bit_field.h"
++#include "core/os/keyboard.h"
++
++class KMSSeat;
++
++struct libinput;
++struct udev;
++struct xkb_context;
++struct xkb_keymap;
++struct xkb_state;
++
++// Clavier / souris via libinput (udev) + xkbcommon. Les périphériques sont
++// ouverts par libseat. Les événements sont injectés dans Input.
++class KMSInput {
++public:
++	enum PointerMode {
++		POINTER_VISIBLE,
++		POINTER_CAPTURED, // position non bornée, mouvements relatifs seulement
++	};
++
++private:
++	KMSSeat *seat = nullptr;
++	libinput *li = nullptr;
++	udev *udev_ctx = nullptr;
++	xkb_context *xkb_ctx = nullptr;
++	xkb_keymap *xkb_map = nullptr;
++	xkb_state *xkb_st = nullptr;
++
++	Vector2i bounds;
++	Vector2 pointer_pos;
++	PointerMode pointer_mode = POINTER_VISIBLE;
++	BitField<MouseButtonMask> button_mask;
++	bool shift = false, ctrl = false, alt = false, meta = false;
++
++	// Répétition de touches (libinput n'en fait pas).
++	uint32_t repeat_keycode = 0;
++	uint64_t repeat_next_usec = 0;
++	static constexpr uint64_t REPEAT_DELAY_USEC = 400000;
++	static constexpr uint64_t REPEAT_INTERVAL_USEC = 40000;
++
++	static int _open_restricted(const char *p_path, int p_flags, void *p_user);
++	static void _close_restricted(int p_fd, void *p_user);
++
++	void _update_modifiers();
++	void _handle_key(uint32_t p_evdev_key, bool p_pressed, bool p_echo = false);
++	void _emit_key(uint32_t p_xkb_keycode, bool p_pressed, bool p_echo);
++	void _handle_motion(const Vector2 &p_delta);
++	void _handle_button(uint32_t p_evdev_button, bool p_pressed);
++	void _emit_wheel(MouseButton p_button, float p_factor);
++
++public:
++	Error initialize(KMSSeat *p_seat, const Vector2i &p_bounds);
++	void finalize();
++
++	// Traite tout ce que libinput a en attente + les répétitions de touches.
++	void process();
++
++	// Suspension/reprise sur changement de VT.
++	void suspend();
++	void resume();
++
++	void set_pointer_mode(PointerMode p_mode) { pointer_mode = p_mode; }
++	Point2i get_pointer_position() const { return Point2i(pointer_pos); }
++	int get_fd() const;
++
++	~KMSInput() { finalize(); }
++};
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/kms_seat.cpp b/platform/linuxbsd/kms/kms_seat.cpp
+new file mode 100644
+index 0000000..00226ac
+--- /dev/null
++++ b/platform/linuxbsd/kms/kms_seat.cpp
+@@ -0,0 +1,126 @@
++#ifdef KMS_ENABLED
++
++#include "kms_seat.h"
++
++#include "core/os/os.h"
++
++// libseat.h n'a pas de garde extern "C".
++extern "C" {
++#include <libseat.h>
++}
++#include <cerrno>
++#include <cstring>
++
++void KMSSeat::_enable_cb(libseat *p_seat, void *p_user) {
++	KMSSeat *self = static_cast<KMSSeat *>(p_user);
++	self->active = true;
++	if (self->on_enable) {
++		self->on_enable(self->callback_user);
++	}
++}
++
++void KMSSeat::_disable_cb(libseat *p_seat, void *p_user) {
++	KMSSeat *self = static_cast<KMSSeat *>(p_user);
++	self->active = false;
++	// Les callbacks doivent cesser tout accès DRM/input ; l'acquittement
++	// (libseat_disable_seat) est fait ici, après eux.
++	if (self->on_disable) {
++		self->on_disable(self->callback_user);
++	}
++	self->acknowledge_disable();
++}
++
++Error KMSSeat::open() {
++	ERR_FAIL_COND_V(seat != nullptr, ERR_ALREADY_IN_USE);
++
++	static const libseat_seat_listener listener = {
++		&KMSSeat::_enable_cb,
++		&KMSSeat::_disable_cb,
++	};
++	seat = libseat_open_seat(&listener, this);
++	ERR_FAIL_NULL_V_MSG(seat, ERR_CANT_OPEN, vformat("KMS: libseat_open_seat a échoué (%s). Session logind/seatd requise.", strerror(errno)));
++
++	// Le callback enable_seat arrive pendant le premier dispatch.
++	for (int i = 0; i < 50 && !active; i++) {
++		if (libseat_dispatch(seat, 100) < 0) {
++			break;
++		}
++	}
++	if (!active) {
++		close();
++		ERR_FAIL_V_MSG(ERR_UNAVAILABLE, "KMS: la session n'est pas devenue active (pas sur un VT actif ?).");
++	}
++	return OK;
++}
++
++void KMSSeat::close() {
++	if (!seat) {
++		return;
++	}
++	for (const KeyValue<int, Device> &kv : devices) {
++		libseat_close_device(seat, kv.value.id);
++	}
++	devices.clear();
++	libseat_close_seat(seat);
++	seat = nullptr;
++	active = false;
++}
++
++int KMSSeat::get_fd() const {
++	return seat ? libseat_get_fd(seat) : -1;
++}
++
++Error KMSSeat::dispatch(int p_timeout_ms) {
++	ERR_FAIL_NULL_V(seat, ERR_UNCONFIGURED);
++	int r = libseat_dispatch(seat, p_timeout_ms);
++	return r < 0 ? FAILED : OK;
++}
++
++int KMSSeat::open_device(const String &p_path, int &r_fd) {
++	ERR_FAIL_NULL_V(seat, -1);
++	ERR_FAIL_COND_V_MSG(!active, -1, "KMS: open_device alors que la session est inactive.");
++	int fd = -1;
++	int id = libseat_open_device(seat, p_path.utf8().get_data(), &fd);
++	ERR_FAIL_COND_V_MSG(id < 0, -1, vformat("KMS: ouverture de %s refusée (%s).", p_path, strerror(errno)));
++	Device d;
++	d.id = id;
++	d.fd = fd;
++	d.path = p_path;
++	devices[id] = d;
++	r_fd = fd;
++	return id;
++}
++
++void KMSSeat::close_device(int p_device_id) {
++	if (!seat || !devices.has(p_device_id)) {
++		return;
++	}
++	libseat_close_device(seat, p_device_id);
++	devices.erase(p_device_id);
++}
++
++void KMSSeat::close_device_by_fd(int p_fd) {
++	for (const KeyValue<int, Device> &kv : devices) {
++		if (kv.value.fd == p_fd) {
++			close_device(kv.key);
++			return;
++		}
++	}
++}
++
++String KMSSeat::get_seat_name() const {
++	const char *name = seat ? libseat_seat_name(seat) : nullptr;
++	return name ? String::utf8(name) : String("seat0");
++}
++
++void KMSSeat::acknowledge_disable() {
++	if (seat) {
++		libseat_disable_seat(seat);
++	}
++}
++
++bool KMSSeat::switch_session(int p_vt) {
++	return seat && libseat_switch_session(seat, p_vt) == 0;
++}
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/kms_seat.h b/platform/linuxbsd/kms/kms_seat.h
+new file mode 100644
+index 0000000..9bc3fcf
+--- /dev/null
++++ b/platform/linuxbsd/kms/kms_seat.h
+@@ -0,0 +1,62 @@
++#pragma once
++
++#ifdef KMS_ENABLED
++
++#include "core/string/ustring.h"
++#include "core/templates/hash_map.h"
++#include "core/templates/local_vector.h"
++#include "core/templates/vector.h"
++
++struct libseat;
++
++// Session logind via libseat: ouvre les périphériques DRM / input sans root et
++// suit les changements de VT (disable_seat / enable_seat).
++class KMSSeat {
++public:
++	struct Device {
++		int id = -1;
++		int fd = -1;
++		String path;
++	};
++
++private:
++	libseat *seat = nullptr;
++	bool active = false;
++	HashMap<int, Device> devices; // device_id -> Device
++
++	static void _enable_cb(libseat *p_seat, void *p_user);
++	static void _disable_cb(libseat *p_seat, void *p_user);
++
++public:
++	// Appelés depuis dispatch() (thread principal). on_disable doit cesser tout
++	// accès DRM/input ; l'acquittement libseat est fait juste après.
++	void (*on_enable)(void *p_user) = nullptr;
++	void (*on_disable)(void *p_user) = nullptr;
++	void *callback_user = nullptr;
++
++	Error open();
++	void close();
++
++	bool is_open() const { return seat != nullptr; }
++	// false tant que la session n'a pas la main (VT inactif).
++	bool is_active() const { return active; }
++	// fd pollable pour le thread principal ; -1 si indisponible.
++	int get_fd() const;
++	// Traite les événements en attente (timeout en ms, 0 = non bloquant).
++	Error dispatch(int p_timeout_ms = 0);
++
++	// Renvoie l'id du device (>= 0) ou -1. Le fd est dans r_fd.
++	int open_device(const String &p_path, int &r_fd);
++	void close_device(int p_device_id);
++	void close_device_by_fd(int p_fd);
++	// Appelé par le DisplayServer quand on perd la session : ferme/ack.
++	void acknowledge_disable();
++
++	bool switch_session(int p_vt);
++	String get_seat_name() const;
++
++	KMSSeat() {}
++	~KMSSeat() { close(); }
++};
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.cpp b/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.cpp
+new file mode 100644
+index 0000000..cd8bb22
+--- /dev/null
++++ b/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.cpp
+@@ -0,0 +1,185 @@
++#ifdef VULKAN_ENABLED
++#ifdef KMS_ENABLED
++
++#include "rendering_context_driver_vulkan_kms.h"
++
++#include <drivers/vulkan/godot_vulkan.h>
++
++#include "core/variant/variant.h"
++
++#include <xf86drm.h>
++#include <xf86drmMode.h>
++
++const char *RenderingContextDriverVulkanKMS::_get_platform_surface_extension() const {
++	return VK_KHR_DISPLAY_EXTENSION_NAME;
++}
++
++void RenderingContextDriverVulkanKMS::_register_platform_instance_extensions() {
++	_register_requested_instance_extension(VK_EXT_DIRECT_MODE_DISPLAY_EXTENSION_NAME, true);
++	_register_requested_instance_extension(VK_EXT_ACQUIRE_DRM_DISPLAY_EXTENSION_NAME, true);
++	// Requis par VK_EXT_direct_mode_display.
++	_register_requested_instance_extension(VK_KHR_GET_DISPLAY_PROPERTIES_2_EXTENSION_NAME, false);
++}
++
++static uint32_t _find_connected_connector(int p_fd) {
++	drmModeRes *res = drmModeGetResources(p_fd);
++	if (!res) {
++		return 0;
++	}
++	uint32_t found = 0;
++	for (int i = 0; i < res->count_connectors && !found; i++) {
++		drmModeConnector *c = drmModeGetConnector(p_fd, res->connectors[i]);
++		if (c && c->connection == DRM_MODE_CONNECTED && c->count_modes > 0) {
++			found = c->connector_id;
++		}
++		if (c) {
++			drmModeFreeConnector(c);
++		}
++	}
++	drmModeFreeResources(res);
++	return found;
++}
++
++RenderingContextDriver::SurfaceID RenderingContextDriverVulkanKMS::surface_create(const void *p_platform_data) {
++	const WindowPlatformData *wpd = (const WindowPlatformData *)(p_platform_data);
++	ERR_FAIL_COND_V_MSG(wpd->drm_fd < 0, SurfaceID(), "KMS: fd DRM invalide.");
++	ERR_FAIL_COND_V_MSG(display != VK_NULL_HANDLE, SurfaceID(), "KMS: un seul écran supporté pour l'instant.");
++
++	uint32_t connector = wpd->connector_id ? wpd->connector_id : _find_connected_connector(wpd->drm_fd);
++	ERR_FAIL_COND_V_MSG(connector == 0, SurfaceID(), "KMS: aucun connecteur connecté.");
++
++	// vkGetDrmDisplayEXT ne réussit que sur le GPU qui possède ce fd DRM.
++	VkPhysicalDevice pd = VK_NULL_HANDLE;
++	uint32_t pd_index = UINT32_MAX;
++	for (uint32_t i = 0; i < device_get_count(); i++) {
++		VkDisplayKHR d = VK_NULL_HANDLE;
++		if (vkGetDrmDisplayEXT(physical_device_get(i), wpd->drm_fd, connector, &d) == VK_SUCCESS && d != VK_NULL_HANDLE) {
++			pd = physical_device_get(i);
++			pd_index = i;
++			display = d;
++			break;
++		}
++	}
++	ERR_FAIL_COND_V_MSG(display == VK_NULL_HANDLE, SurfaceID(), "KMS: aucun GPU Vulkan ne gère ce fd DRM (VK_EXT_acquire_drm_display absent du driver ?).");
++
++	VkResult err = vkAcquireDrmDisplayEXT(pd, wpd->drm_fd, display);
++	if (err != VK_SUCCESS) {
++		display = VK_NULL_HANDLE;
++		ERR_FAIL_V_MSG(SurfaceID(), vformat("KMS: vkAcquireDrmDisplayEXT a échoué (%d). Le fd est-il DRM master ?", (int)err));
++	}
++
++	// Choix du mode : demandé, sinon plus grande surface puis plus haut refresh.
++	uint32_t mode_count = 0;
++	vkGetDisplayModePropertiesKHR(pd, display, &mode_count, nullptr);
++	TightLocalVector<VkDisplayModePropertiesKHR> modes;
++	modes.resize(mode_count);
++	vkGetDisplayModePropertiesKHR(pd, display, &mode_count, modes.ptr());
++	ERR_FAIL_COND_V_MSG(mode_count == 0, SurfaceID(), "KMS: l'écran n'expose aucun mode.");
++
++	int best = -1;
++	uint64_t best_score = 0;
++	for (int pass = 0; pass < 2 && best < 0; pass++) {
++		// Passe 0 : mode demandé ; passe 1 : repli sur le meilleur mode disponible.
++		bool constrained = pass == 0 && wpd->width && wpd->height;
++		for (uint32_t i = 0; i < mode_count; i++) {
++			const VkDisplayModeParametersKHR &p = modes[i].parameters;
++			uint64_t score = (uint64_t)p.visibleRegion.width * p.visibleRegion.height * 1000000ULL + p.refreshRate;
++			if (constrained) {
++				if (p.visibleRegion.width != wpd->width || p.visibleRegion.height != wpd->height) {
++					continue;
++				}
++				score = wpd->refresh_mhz ? (uint64_t)(1ULL << 62) - (uint64_t)abs((int)p.refreshRate - (int)wpd->refresh_mhz) : p.refreshRate;
++			}
++			if (best < 0 || score > best_score) {
++				best = (int)i;
++				best_score = score;
++			}
++		}
++		if (best < 0 && constrained) {
++			WARN_PRINT(vformat("KMS: mode %dx%d introuvable, repli sur le meilleur mode.", (int)wpd->width, (int)wpd->height));
++		}
++	}
++	ERR_FAIL_COND_V_MSG(best < 0, SurfaceID(), "KMS: aucun mode utilisable.");
++	VkDisplayModeKHR mode = modes[best].displayMode;
++	VkExtent2D extent = modes[best].parameters.visibleRegion;
++
++	// Plan compatible avec cet écran.
++	uint32_t plane_count = 0;
++	vkGetPhysicalDeviceDisplayPlanePropertiesKHR(pd, &plane_count, nullptr);
++	uint32_t plane_index = UINT32_MAX;
++	for (uint32_t i = 0; i < plane_count && plane_index == UINT32_MAX; i++) {
++		uint32_t n = 0;
++		vkGetDisplayPlaneSupportedDisplaysKHR(pd, i, &n, nullptr);
++		TightLocalVector<VkDisplayKHR> supported;
++		supported.resize(n);
++		vkGetDisplayPlaneSupportedDisplaysKHR(pd, i, &n, supported.ptr());
++		for (uint32_t j = 0; j < n; j++) {
++			if (supported[j] == display) {
++				plane_index = i;
++				break;
++			}
++		}
++	}
++	ERR_FAIL_COND_V_MSG(plane_index == UINT32_MAX, SurfaceID(), "KMS: aucun plan DRM compatible.");
++
++	VkDisplaySurfaceCreateInfoKHR info = {};
++	info.sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR;
++	info.displayMode = mode;
++	info.planeIndex = plane_index;
++	info.planeStackIndex = 0;
++	info.transform = VK_SURFACE_TRANSFORM_IDENTITY_BIT_KHR;
++	info.globalAlpha = 1.0f;
++	info.alphaMode = VK_DISPLAY_PLANE_ALPHA_OPAQUE_BIT_KHR;
++	info.imageExtent = extent;
++
++	VkSurfaceKHR vk_surface = VK_NULL_HANDLE;
++	err = vkCreateDisplayPlaneSurfaceKHR(instance_get(), &info, get_allocation_callbacks(VK_OBJECT_TYPE_SURFACE_KHR), &vk_surface);
++	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, SurfaceID(), vformat("KMS: vkCreateDisplayPlaneSurfaceKHR a échoué (%d).", (int)err));
++
++	connector_id = connector;
++	display_device_index = pd_index;
++	display_size = Vector2i(extent.width, extent.height);
++	display_refresh_mhz = modes[best].parameters.refreshRate;
++
++	Surface *surface = memnew(Surface);
++	surface->vk_surface = vk_surface;
++	surface->width = extent.width;
++	surface->height = extent.height;
++	return SurfaceID(surface);
++}
++
++bool RenderingContextDriverVulkanKMS::device_supports_present(uint32_t p_device_index, SurfaceID p_surface) const {
++	// Sans ça, Godot choisit le GPU « discret » même si l'écran est sur l'iGPU,
++	// et la création de la swapchain échoue (VK_ERROR_INITIALIZATION_FAILED).
++	return p_device_index == display_device_index && RenderingContextDriverVulkan::device_supports_present(p_device_index, p_surface);
++}
++
++void RenderingContextDriverVulkanKMS::release_display() {
++	if (display != VK_NULL_HANDLE && display_device_index != UINT32_MAX) {
++		vkReleaseDisplayEXT(physical_device_get(display_device_index), display);
++		display = VK_NULL_HANDLE;
++	}
++}
++
++bool RenderingContextDriverVulkanKMS::reacquire_display(int p_drm_fd) {
++	ERR_FAIL_COND_V(display_device_index == UINT32_MAX || connector_id == 0, false);
++	VkPhysicalDevice pd = physical_device_get(display_device_index);
++	// Le handle peut avoir été invalidé par la libération : on le redemande.
++	VkDisplayKHR d = VK_NULL_HANDLE;
++	VkResult err = vkGetDrmDisplayEXT(pd, p_drm_fd, connector_id, &d);
++	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS || d == VK_NULL_HANDLE, false, vformat("KMS: vkGetDrmDisplayEXT a échoué au retour de VT (%d).", (int)err));
++	err = vkAcquireDrmDisplayEXT(pd, p_drm_fd, d);
++	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, false, vformat("KMS: vkAcquireDrmDisplayEXT a échoué au retour de VT (%d).", (int)err));
++	display = d;
++	return true;
++}
++
++RenderingContextDriverVulkanKMS::RenderingContextDriverVulkanKMS() {
++}
++
++RenderingContextDriverVulkanKMS::~RenderingContextDriverVulkanKMS() {
++	release_display();
++}
++
++#endif // KMS_ENABLED
++#endif // VULKAN_ENABLED
+diff --git a/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.h b/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.h
+new file mode 100644
+index 0000000..5d8b4b9
+--- /dev/null
++++ b/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.h
+@@ -0,0 +1,60 @@
++#pragma once
++
++#ifdef VULKAN_ENABLED
++#ifdef KMS_ENABLED
++
++#include "drivers/vulkan/rendering_context_driver_vulkan.h"
++#include "core/math/vector2i.h"
++
++// Surface Vulkan directe sur un écran DRM : VK_EXT_acquire_drm_display +
++// VK_KHR_display. Le fd DRM vient de libseat (KMSSeat) et reste propriété de
++// l'appelant.
++class RenderingContextDriverVulkanKMS : public RenderingContextDriverVulkan {
++private:
++	uint32_t display_device_index = UINT32_MAX;
++	VkDisplayKHR display = VK_NULL_HANDLE;
++	Vector2i display_size;
++	uint32_t display_refresh_mhz = 0;
++	uint32_t connector_id = 0;
++
++	virtual const char *_get_platform_surface_extension() const override final;
++	virtual void _register_platform_instance_extensions() override final;
++	virtual bool is_colorspace_externally_managed() const override final { return false; }
++
++protected:
++	SurfaceID surface_create(const void *p_platform_data) override final;
++
++public:
++	// Seul le GPU auquel l'écran DRM est branché peut y présenter.
++	virtual bool device_supports_present(uint32_t p_device_index, SurfaceID p_surface) const override;
++
++public:
++	struct WindowPlatformData {
++		int drm_fd = -1; // ouvert via libseat
++		uint32_t connector_id = 0; // 0 = premier connecteur connecté
++		uint32_t width = 0; // 0 = mode préféré / le plus grand
++		uint32_t height = 0;
++		uint32_t refresh_mhz = 0; // 0 = le plus haut
++	};
++
++	// Index (dans device_get) du GPU propriétaire du fd DRM ; valide après
++	// surface_create(). UINT32_MAX sinon.
++	uint32_t get_display_device_index() const { return display_device_index; }
++	// Taille réelle du mode choisi, pour le DisplayServer.
++	Vector2i get_display_size() const { return display_size; }
++	// Fréquence du mode choisi, en mHz (60000 = 60 Hz).
++	uint32_t get_display_refresh_mhz() const { return display_refresh_mhz; }
++
++	// Libère l'écran (vkReleaseDisplayEXT) — à appeler sur disable_seat.
++	void release_display();
++	// Reprend l'écran avec le nouveau fd DRM obtenu au retour de VT.
++	// La surface/swapchain existante est conservée (à redimensionner ensuite).
++	bool reacquire_display(int p_drm_fd);
++
++	RenderingContextDriverVulkanKMS();
++	~RenderingContextDriverVulkanKMS();
++
++};
++
++#endif // KMS_ENABLED
++#endif // VULKAN_ENABLED
+diff --git a/platform/linuxbsd/os_linuxbsd.cpp b/platform/linuxbsd/os_linuxbsd.cpp
+index 43d7129..e1b819d 100644
+--- a/platform/linuxbsd/os_linuxbsd.cpp
++++ b/platform/linuxbsd/os_linuxbsd.cpp
+@@ -53,6 +53,9 @@
+ #include "wayland/detect_prime_egl.h"
+ #include "wayland/display_server_wayland.h"
+ #endif
++#ifdef KMS_ENABLED
++#include "kms/display_server_kms.h"
++#endif
+ 
+ #include "modules/modules_enabled.gen.h" // For regex.
+ #ifdef MODULE_REGEX_ENABLED
+@@ -1233,6 +1236,14 @@ bool OS_LinuxBSD::_test_create_rendering_device(const String &p_display_driver)
+ 	Error err;
+ 	RenderingContextDriver *rcd = nullptr;
+ 
++#ifdef KMS_ENABLED
++	if (p_display_driver == "kms") {
++		// Impossible à tester sans ouvrir la session libseat ; le
++		// DisplayServer KMS échoue proprement lui-même si Vulkan manque.
++		return true;
++	}
++#endif
++
+ #if defined(VULKAN_ENABLED)
+ #ifdef X11_ENABLED
+ 	if (p_display_driver == "x11" || p_display_driver.is_empty()) {
+@@ -1312,6 +1323,10 @@ OS_LinuxBSD::OS_LinuxBSD() {
+ 	DisplayServerWayland::register_wayland_driver();
+ #endif
+ 
++#ifdef KMS_ENABLED
++	DisplayServerKMS::register_kms_driver();
++#endif
++
+ #ifdef FONTCONFIG_ENABLED
+ #ifdef SOWRAP_ENABLED
+ #ifdef DEBUG_ENABLED

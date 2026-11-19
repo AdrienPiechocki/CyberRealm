@@ -17,6 +17,7 @@ DO_FIREWALL=1
 DO_KWIN=1
 DO_GNOME_EXT=1
 DO_HYPRLAND=1
+KMS_WANTED=0
 
 usage() {
     cat <<'HELP'
@@ -26,6 +27,10 @@ Install CyberRealm on Arch, Debian/Ubuntu or Fedora/RHEL based distros.
 Without --yes you are asked before each major step (system packages, GNOME
 patch/template, KWin, firewalld ports, Hyprland config).
 
+  --with-kms          build the Godot template with the KMS display driver
+                      (kms=yes: runs without any host compositor, from a login
+                      manager session) and install the "CyberRealm (KMS)"
+                      Wayland session entry (needs sudo for /usr/share)
   --with-gnome        force the GNOME extension + patched Godot template
   --without-gnome     disable all GNOME-specific steps
   --yes               accept every default, never prompt
@@ -42,6 +47,7 @@ HELP
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --with-kms)      KMS_WANTED=1 ;;
         --with-gnome)    GNOME_WANTED="yes" ;;
         --without-gnome) GNOME_WANTED="no" ;;
         --yes)           ASSUME_YES=1 ;;
@@ -134,6 +140,13 @@ install_system_packages() {
                   mesa-libgbm-devel mesa-libEGL-devel dbus-devel)
             ;;
     esac
+    if [[ "$KMS_WANTED" -eq 1 ]]; then
+        case "$PKG_MGR" in
+            pacman) pkgs+=(seatd) ;;                      # libseat.so + libseat.pc
+            apt)    pkgs+=(libseat-dev libudev-dev) ;;
+            dnf)    pkgs+=(libseat-devel systemd-devel) ;;
+        esac
+    fi
     echo "install: installing system packages via $PKG_MGR:"
     printf '          %s\n' "${pkgs[*]}" | fold -s -w 76 | sed 's/^/          /'
     case "$PKG_MGR" in
@@ -394,6 +407,18 @@ GODOT_PATCH_STAMP="$TEMPLATES_DIR/linux_release.x86_64.shortcuts-inhibit"
 SHM_FIX="$SCRIPT_DIR/compositors/godot-patches/fix-wayland-shm-fd-leak.sh"
 SHM_FIX_STAMP="$TEMPLATES_DIR/linux_release.x86_64.shm-fd-fix"
 
+# -- Driver d'affichage KMS (compositors/godot-patches/kms-display-driver.patch)
+# Opt-in (--with-kms) : DisplayServer "kms" (libseat + VK_KHR_display + libinput).
+# Le template est alors compilé avec kms=yes (liaison dynamique avec libseat,
+# libinput, libudev, libdrm). Le stamp enregistre l'état pour reconstruire quand
+# l'option est ajoutée ou retirée.
+KMS_PATCH="$SCRIPT_DIR/compositors/godot-patches/kms-display-driver.patch"
+KMS_STAMP="$TEMPLATES_DIR/linux_release.x86_64.kms"
+KMS_SCONS_ARGS=()
+if [[ "$KMS_WANTED" -eq 1 ]]; then
+    KMS_SCONS_ARGS=(kms=yes)
+fi
+
 REBUILD_TEMPLATE=0
 if [[ ! -f "$TEMPLATES_DIR/linux_release.x86_64" ]]; then
     REBUILD_TEMPLATE=1
@@ -401,6 +426,11 @@ elif [[ "$GNOME_INSTALL" -eq 1 ]] \
     && ( [[ ! -f "$GODOT_PATCH_STAMP" ]] || ! cmp -s "$GODOT_PATCH" "$GODOT_PATCH_STAMP" ); then
     REBUILD_TEMPLATE=1
 elif [[ ! -f "$SHM_FIX_STAMP" ]] || ! cmp -s "$SHM_FIX" "$SHM_FIX_STAMP"; then
+    REBUILD_TEMPLATE=1
+elif [[ "$KMS_WANTED" -eq 1 ]] \
+    && { [[ ! -f "$KMS_STAMP" ]] || ! cmp -s "$KMS_PATCH" "$KMS_STAMP"; }; then
+    REBUILD_TEMPLATE=1
+elif [[ "$KMS_WANTED" -eq 0 && -f "$KMS_STAMP" ]]; then
     REBUILD_TEMPLATE=1
 fi
 
@@ -439,11 +469,26 @@ if [[ "$REBUILD_TEMPLATE" -eq 1 ]]; then
         fi
     fi
     "$SHM_FIX" "$GODOT_SRC"
-    (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release)
+    if [[ "$KMS_WANTED" -eq 1 ]]; then
+        if (cd "$GODOT_SRC" && git apply --check "$KMS_PATCH" 2>/dev/null); then
+            (cd "$GODOT_SRC" && git apply "$KMS_PATCH")
+        elif (cd "$GODOT_SRC" && git apply --reverse --check "$KMS_PATCH" 2>/dev/null); then
+            echo "install: patch KMS déjà appliqué dans $GODOT_SRC"
+        else
+            echo "install: conflit du patch KMS dans $GODOT_SRC (arbre localement modifié ?)" >&2
+            exit 1
+        fi
+    fi
+    (cd "$GODOT_SRC" && scons -j"$(nproc)" platform=linuxbsd target=template_release "${KMS_SCONS_ARGS[@]}")
     mkdir -p "$TEMPLATES_DIR"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_release.x86_64"
     install -m644 "$GODOT_SRC/bin/godot.linuxbsd.template_release.x86_64" "$TEMPLATES_DIR/linux_debug.x86_64"
     cp "$SHM_FIX" "$SHM_FIX_STAMP"
+    if [[ "$KMS_WANTED" -eq 1 ]]; then
+        cp "$KMS_PATCH" "$KMS_STAMP"
+    else
+        rm -f "$KMS_STAMP"
+    fi
     if [[ "$PATCH_OK" -eq 1 ]]; then
         cp "$GODOT_PATCH" "$GODOT_PATCH_STAMP"
     fi
@@ -530,6 +575,65 @@ Type=Application
 Categories=Game;
 StartupNotify=false
 EOF
+fi
+
+# --- KMS session (login manager entry) ----------------------------------------
+# "CyberRealm (KMS)" : le jeu est la session (aucun compositeur hote). Il est
+# lance via cyberrealm-run avec --display-driver kms. Sa sortie est ecrite dans
+# ~/.local/state/cyberrealm/kms-session.log (ligne par ligne). Quitter le jeu
+# (menu pause) ramene au gestionnaire de connexion. Pas de changement de VT :
+# le clavier est en K_OFF tant que le jeu tient la session.
+KMS_SESSION_INSTALLED=0
+KMS_SESSION_FILE="/usr/share/wayland-sessions/cyberrealm-kms.desktop"
+if [[ "$KMS_WANTED" -eq 1 && -x "$GAME" ]]; then
+    install -d "$HOME/.local/bin"
+    cat > "$HOME/.local/bin/cyberrealm-kms-session" <<EOF
+#!/usr/bin/env bash
+# Genere par install.sh --with-kms : session CyberRealm sans compositeur hote.
+LOG_DIR="\${XDG_STATE_HOME:-\$HOME/.local/state}/cyberrealm"
+mkdir -p "\$LOG_DIR"
+[[ -f "\$LOG_DIR/kms-session.log" ]] && mv -f "\$LOG_DIR/kms-session.log" "\$LOG_DIR/kms-session.log.old"
+exec > "\$LOG_DIR/kms-session.log" 2>&1
+# Options facultatives : CYBERREALM_KMS_OUTPUT=DP-1 (sortie), CYBERREALM_KMS_MODE=1920x1080[@60].
+[[ -f "\${XDG_CONFIG_HOME:-\$HOME/.config}/cyberrealm/kms.env" ]] && . "\${XDG_CONFIG_HOME:-\$HOME/.config}/cyberrealm/kms.env"
+export CYBERREALM_KMS_OUTPUT CYBERREALM_KMS_MODE
+RUN=("$HOME/.local/bin/cyberrealm-run" "$GAME" --display-driver kms --rendering-driver vulkan)
+if command -v stdbuf >/dev/null 2>&1; then
+    RUN=(stdbuf -oL -eL "\${RUN[@]}")
+fi
+"\${RUN[@]}"
+rc=\$?
+# Fin de partie : on ferme explicitement la session logind, sinon le gestionnaire
+# de connexion peut rester sur la derniere image du jeu. Petit delai avant : le
+# kwin_wayland du greeter (plasmalogin) plante s'il recoit un mouvement de souris
+# pendant son demarrage (InputRedirection::syncTabletWithMouse, kwin 6.8.3).
+# CYBERREALM_KMS_LOGOUT_DELAY (secondes, defaut 3) peut l'ajuster dans kms.env.
+sleep "\${CYBERREALM_KMS_LOGOUT_DELAY:-3}"
+if [[ -n "\${XDG_SESSION_ID:-}" ]]; then
+    loginctl terminate-session "\$XDG_SESSION_ID" >/dev/null 2>&1 || true
+fi
+exit "\$rc"
+EOF
+    chmod 755 "$HOME/.local/bin/cyberrealm-kms-session"
+    if confirm "install: install the \"CyberRealm (KMS)\" session entry in /usr/share/wayland-sessions (sudo)?"; then
+        tmp_desktop="$(mktemp)"
+        cat > "$tmp_desktop" <<EOF
+[Desktop Entry]
+Name=CyberRealm (KMS)
+Comment=CyberRealm as a standalone session (Godot KMS display driver)
+Exec=$HOME/.local/bin/cyberrealm-kms-session
+Type=Application
+EOF
+        as_root install -Dm644 "$tmp_desktop" "$KMS_SESSION_FILE"
+        rm -f "$tmp_desktop"
+        KMS_SESSION_INSTALLED=1
+        echo "install: KMS session installed — pick \"CyberRealm (KMS)\" in your login manager."
+        echo "          Log: ~/.local/state/cyberrealm/kms-session.log (keep an ssh open on first try)"
+    else
+        echo "install: KMS session entry skipped (declined)."
+    fi
+elif [[ "$KMS_WANTED" -eq 1 ]]; then
+    echo "install: no game binary — KMS session entry skipped." >&2
 fi
 
 # --- Firewall ---------------------------------------------------------------
@@ -627,6 +731,7 @@ gnome_extension=0
 kwin=0
 hyprland=0
 firewall=0
+kms_session=0
 EOF
 
 if [[ -f "$HOME/.local/share/kwin/scripts/cyberrealm/contents/code/main.js" ]]; then
@@ -637,6 +742,9 @@ if [[ -d "$HOME/.local/share/gnome-shell/extensions/$GNOME_UUID" ]]; then
 fi
 if [[ -f "$HYPR_DIR/cyberrealm.lua" ]]; then
     sed -i 's/^hyprland=0$/hyprland=1/' "$HOME/.local/state/cyberrealm/manifest"
+fi
+if [[ "$KMS_SESSION_INSTALLED" -eq 1 ]]; then
+    sed -i 's/^kms_session=0$/kms_session=1/' "$HOME/.local/state/cyberrealm/manifest"
 fi
 if [[ "$DO_FIREWALL" -eq 1 ]]; then
     sed -i 's/^firewall=0$/firewall=1/' "$HOME/.local/state/cyberrealm/manifest"

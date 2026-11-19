@@ -268,6 +268,19 @@ cd CyberRealm
    `9999/udp`) and for file sharing (`22/tcp`), then reminds you to enable
    `sshd` if you want to receive files by drag & drop.
 
+#### Standalone KMS session (optional, experimental)
+
+`./install.sh --with-kms` additionally applies
+`compositors/godot-patches/kms-display-driver.patch` (a `kms` DisplayServer for
+Godot: libseat + Vulkan `VK_KHR_display` + libinput/xkbcommon), builds the
+template with `kms=yes`, and installs a **CyberRealm (KMS)** entry in
+`/usr/share/wayland-sessions` (sudo). Picking it in your login manager runs the
+game as the whole session — no host compositor. The game's output goes to
+`~/.local/state/cyberrealm/kms-session.log`. Limitations: single screen, no VT
+switching (the keyboard is owned by the game; quit from the pause menu), and
+the first run should be done with an `ssh` session open as a safety net. See
+`compositors/godot-patches/kms-display-driver.md`.
+
 If you'd rather build manually, `scons target=template_debug platform=linux`
 builds the GDExtension and `godot --headless --path Game/source --export-release Linux Game/build/CyberRealm.x86_64` exports the game.
 
