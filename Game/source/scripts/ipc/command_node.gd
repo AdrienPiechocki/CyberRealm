@@ -112,6 +112,8 @@ func _dispatch(cmd: String, args: String) -> Dictionary:
 			return _cmd_layer_interact()
 		"keyboard-layout":
 			return _cmd_keyboard_layout(args)
+		"overlay-bind":
+			return _cmd_overlay_bind(args)
 		"quit":
 			return _cmd_quit()
 		_:
@@ -140,7 +142,54 @@ func _cmd_windows() -> Dictionary:
 				w["y"] = roundi(r.position.y)
 				w["width"] = roundi(r.size.x)
 				w["height"] = roundi(r.size.y)
+	# « covered » : la fenêtre n'est pas visible à l'écran. En mode focus, elle l'est si elle n'est
+	# pas dans la pile ou si une fenêtre d'un autre processus, plus haut dans la pile, la recouvre
+	# en partie (> 2 %). Hors focus, une fenêtre 3D n'est jamais « recouverte » : l'overlay est
+	# dessiné SUR son quad (voir layer_surfaces.gd) et suit la fenêtre.
+	var in_focus: bool = focus != null and focus.has_method("is_active") and focus.is_active() \
+			and "focus_stack" in focus
+	var stack: Array = focus.focus_stack if in_focus else []
+	var vp := get_viewport().get_visible_rect().size
+	for w in windows:
+		var wid: int = int(w.get("wid", -1))
+		if not in_focus and win3d != null and win3d.has_method("get_quad_info"):
+			# Rectangle « virtuel » de l'overlay en 3D : la taille du contenu, ramenée à l'écran
+			# en gardant le ratio, en (0, 0). Le client y règle la taille de sa surface, qui est
+			# ensuite plaquée sur le quad de la fenêtre.
+			var cs: Vector2 = win3d.get_quad_info(wid).get("content_size", Vector2.ZERO)
+			if cs.x > 1.0 and cs.y > 1.0:
+				var k := minf(1.0, minf(vp.x / cs.x, vp.y / cs.y))
+				w["x"] = 0
+				w["y"] = 0
+				w["width"] = maxi(1, roundi(cs.x * k))
+				w["height"] = maxi(1, roundi(cs.y * k))
+		var idx := stack.find(wid)
+		var covered := in_focus and idx < 0
+		if not covered and in_focus and w.has("x"):
+			var mine := Rect2(w["x"], w["y"], w["width"], w["height"])
+			var area := mine.size.x * mine.size.y
+			for other in windows:
+				var oi := stack.find(int(other.get("wid", -1)))
+				if oi > idx and other.has("x") and int(other.get("pid", -1)) != int(w.get("pid", -2)) \
+						and not other.get("hidden", false):
+					var o := Rect2(other["x"], other["y"], other["width"], other["height"])
+					var inter := mine.intersection(o)
+					if inter.size.x * inter.size.y * 50.0 > area:
+						covered = true
+						break
+		w["covered"] = covered
 	return {"ok": true, "output": windows}
+
+# Fenêtre sur laquelle l'overlay de Ludodex (layer ludodex-overlay) est dessiné quand elle est
+# en mode 3D. Appelé par l'overlay lui-même, qui sait quelle fenêtre est son jeu.
+func _cmd_overlay_bind(args: String) -> Dictionary:
+	var wid := args.to_int()
+	if wid == 0 and args != "0":
+		return {"ok": false, "error": "invalid window id: " + args}
+	if layers == null or not layers.has_method("bind_overlay"):
+		return {"ok": false, "error": "layer surfaces unavailable"}
+	layers.bind_overlay(wid)
+	return {"ok": true, "output": wid}
 
 func _cmd_close(args: String) -> Dictionary:
 	var wid := args.to_int()

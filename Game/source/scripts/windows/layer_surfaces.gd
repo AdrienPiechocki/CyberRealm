@@ -27,6 +27,31 @@ const LAYER_Z_BASE := 1000
 const ABOVE_FOCUS_NAMESPACES := ["ludodex-overlay"]
 const ABOVE_FOCUS_Z := 2900
 
+# Shader de l'overlay quand il est plaqué sur le quad 3D de la fenêtre du jeu : même remap UV
+# que LAYER_SHADER_CODE, en spatial (comme le shader des fenêtres : sRGB -> linéaire).
+const OVERLAY_3D_SHADER_CODE = """
+shader_type spatial;
+render_mode unshaded, blend_mix, cull_disabled, depth_draw_never;
+
+uniform sampler2D u_tex : filter_linear;
+uniform vec2 u_content_size = vec2(0.0, 0.0);
+
+void fragment() {
+	vec2 ts = vec2(textureSize(u_tex, 0));
+	if (u_content_size.x <= 0.0 || ts.x <= 0.0) {
+		discard;
+	}
+	vec4 tex = texture(u_tex, UV * u_content_size / ts);
+	if (tex.a < 0.01) {
+		discard;
+	}
+	ALBEDO = pow(tex.rgb / max(tex.a, 0.001), vec3(2.2));
+	ALPHA = tex.a;
+}
+"""
+# Décalage (m, repère local du quad) de l'overlay devant la fenêtre : évite le z-fighting.
+const OVERLAY_3D_OFFSET := 0.01
+
 # z_index du lockscreen (ext-session-lock-v1) : au-dessus de tout — layer
 # surfaces, mode focus, PiP — car un session verrouillée ne doit montrer
 # que le lockscreen.
@@ -75,6 +100,12 @@ var window_menu: Control
 var layer_rects: Dictionary = {} # layer_id (int) -> {rect, layer, anchor}
 var layer_popup_rects: Dictionary = {} # popup_id (int) -> {rect, parent_layer_id}
 var layer_overlay: Control
+# Overlay de Ludodex en mode 3D : il est dessiné SUR le quad de la fenêtre du jeu (child_quad),
+# pas en 2D sur l'écran. `overlay_target_wid` : la fenêtre, désignée par l'overlay (overlay-bind).
+var win3d: Node
+var overlay_target_wid := -1
+var _overlay_quad: MeshInstance3D = null
+var _overlay_shader: Shader
 var layer_shader: Shader
 # Mode "interaction layer" (touche Tab): souris libérée pour interagir avec
 # les overlays non interactifs (waybar, quickshell bar). Faux quand la souris
@@ -111,6 +142,73 @@ func setup(compositor_ref: WlrCompositor, player_ref: Node3D, ui_ref: CanvasLaye
 	layer_overlay.set_anchors_preset(Control.PRESET_FULL_RECT)
 	layer_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui.add_child(layer_overlay)
+
+func bind_overlay(wid: int) -> void:
+	overlay_target_wid = wid
+
+func _process(_delta: float) -> void:
+	_sync_overlay_3d()
+
+func _free_overlay_quad() -> void:
+	if _overlay_quad != null and is_instance_valid(_overlay_quad):
+		_overlay_quad.queue_free()
+	_overlay_quad = null
+
+# Choisit, chaque frame, où l'overlay de Ludodex est montré :
+#  - fenêtre du jeu visible en 3D, overlay fermé (passif) : plaqué sur son quad, le rect 2D caché ;
+#  - overlay ouvert (il prend la souris) : rect 2D centré à l'écran, seul endroit où le pointeur
+#    peut l'atteindre ;
+#  - mode focus, ou pas de fenêtre désignée : rect 2D à la position du layout (comportement d'origine).
+func _sync_overlay_3d() -> void:
+	var entry: Dictionary = {}
+	for lid in layer_rects:
+		if layer_rects[lid].get("above_focus", false):
+			entry = layer_rects[lid]
+			break
+	if entry.is_empty():
+		_free_overlay_quad()
+		return
+	var rect: TextureRect = entry.rect
+	if not is_instance_valid(rect):
+		return
+	var quad: MeshInstance3D = null
+	var bound := false
+	if win3d != null and overlay_target_wid >= 0 and not focus.is_active():
+		var q = win3d.quads.get(overlay_target_wid)
+		if q != null and is_instance_valid(q) and q.visible:
+			quad = q
+			bound = true
+	var interactive: bool = int(entry.get("kb", 0)) != 0
+	if quad == null or interactive:
+		_free_overlay_quad()
+		rect.visible = true
+		if bound and interactive:
+			rect.position = ((get_viewport().get_visible_rect().size - rect.size) / 2.0).floor()
+		elif entry.has("layout_pos"):
+			rect.position = entry["layout_pos"]
+		return
+	rect.visible = false
+	if _overlay_quad == null or not is_instance_valid(_overlay_quad) or _overlay_quad.get_parent() != quad:
+		_free_overlay_quad()
+		if _overlay_shader == null:
+			_overlay_shader = Shader.new()
+			_overlay_shader.code = OVERLAY_3D_SHADER_CODE
+		var mat := ShaderMaterial.new()
+		mat.shader = _overlay_shader
+		mat.render_priority = 1
+		_overlay_quad = MeshInstance3D.new()
+		_overlay_quad.name = "LudodexOverlay"
+		_overlay_quad.mesh = QuadMesh.new()
+		_overlay_quad.material_override = mat
+		_overlay_quad.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		quad.add_child(_overlay_quad)
+	(_overlay_quad.mesh as QuadMesh).size = (quad.mesh as QuadMesh).size
+	_overlay_quad.position = Vector3(0.0, 0.0, OVERLAY_3D_OFFSET)
+	var src := rect.material as ShaderMaterial
+	var dst := _overlay_quad.material_override as ShaderMaterial
+	if src != null and dst != null:
+		dst.set_shader_parameter("u_tex", src.get_shader_parameter("u_tex"))
+		dst.set_shader_parameter("u_content_size", src.get_shader_parameter("u_content_size"))
 
 func is_locked() -> bool:
 	return session_locked
@@ -263,7 +361,7 @@ func on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: in
 	# _layer_at l'ignore et on saute le bloc interactif ci-dessous.
 	var no_pointer: bool = "fade-to-lock" in ns
 	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb, "no_pointer": no_pointer,
-		"above_focus": ns in ABOVE_FOCUS_NAMESPACES}
+		"above_focus": ns in ABOVE_FOCUS_NAMESPACES, "layout_pos": rect.position}
 	if kb != 0 and not no_pointer:
 		# App interactive en overlay (rofi, launcher...): libérer la souris
 		# pour qu'elle soit utilisable sur l'overlay au lieu de tourner la
@@ -307,6 +405,7 @@ func on_layer_surface_layout_changed(id: int, x: int, y: int, w: int, h: int) ->
 	if not layer_rects.has(id):
 		return
 	var entry = layer_rects[id]
+	entry["layout_pos"] = Vector2(x, y)
 	entry.rect.position = Vector2(x, y)
 	entry.rect.size = Vector2(max(w, 1), max(h, 1))
 
