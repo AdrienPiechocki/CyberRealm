@@ -1640,9 +1640,10 @@ func _host_systemctl(args: PackedStringArray) -> int:
 		var full_args := PackedStringArray(["--user"])
 		full_args.append_array(args)
 		return OS.execute("systemctl", full_args, [], true)
-	var cmd := "DBUS_SESSION_BUS_ADDRESS='%s' systemctl --user %s" \
-		% [_host_session_bus, " ".join(args)]
-	return OS.execute("sh", ["-c", cmd], [], true)
+	# Pas de shell : l'adresse du bus et les arguments restent des argv distincts.
+	var full_args := PackedStringArray(["DBUS_SESSION_BUS_ADDRESS=" + _host_session_bus, "systemctl", "--user"])
+	full_args.append_array(args)
+	return OS.execute("env", full_args, [], true)
 
 func _stop_host_polkit_agent() -> void:
 	if _host_agent_stopped:
@@ -1652,8 +1653,10 @@ func _stop_host_polkit_agent() -> void:
 	if _host_systemctl(PackedStringArray(["stop", "plasma-polkit-agent.service"])) != 0:
 		# Fallback si le service n'existe pas (GNOME, autre distribution) :
 		# tue les deux agents hôte trouvables par pkill.
-		OS.execute("pkill", ["-f", "polkit-kde-authentication-agent-1"], [], true) \
-			&& OS.execute("pkill", ["-f", "polkit-gnome-authentication-agent-1"], [], true)
+		# Motifs ancrés sur le nom de l'exécutable : un autre processus qui
+		# mentionne simplement ce nom dans ses arguments n'est pas touché.
+		OS.execute("pkill", ["-f", "^(\\S*/)?polkit-kde-authentication-agent-1(\\s|$)"], [], true) \
+			&& OS.execute("pkill", ["-f", "^(\\S*/)?polkit-gnome-authentication-agent-1(\\s|$)"], [], true)
 	_host_agent_stopped = true
 
 func _restore_host_polkit_agent() -> void:
@@ -1682,19 +1685,16 @@ func _restart_gnome_polkit_agent() -> void:
 		return
 	# Bus D-Bus du host (capturé au boot) ; display Wayland hôte si le jeu l'a
 	# pivoté. On préfixe la commande pour que l'agent s'inscrive au bon endroit.
-	var env := {}
+	# Bus D-Bus du host (capturé au boot) ; display Wayland hôte si le jeu l'a
+	# pivoté. L'agent est lancé via env(1), sans shell : aucune interpolation.
+	var argv := PackedStringArray()
 	if not _host_session_bus.is_empty():
-		env["DBUS_SESSION_BUS_ADDRESS"] = _host_session_bus
+		argv.append("DBUS_SESSION_BUS_ADDRESS=" + _host_session_bus)
 	if not _host_wayland_display.is_empty():
-		env["WAYLAND_DISPLAY"] = _host_wayland_display
-	if env.is_empty():
-		# Aucun env hôte à restaurer (Fallback X11, XDG_SESSION_TYPE, etc.) :
-		# lance avec l'env actuel en laissant faire.
-		OS.execute("sh", ["-c", "%s >/dev/null 2>&1 &" % agent_path], [], true)
-		return
-	var prefix := " ".join(env.keys().map(func(k): return "%s='%s'" % [k, env[k]]))
-	var cmd := "%s %s >/dev/null 2>&1 &" % [prefix, agent_path]
-	OS.execute("sh", ["-c", cmd], [], true)
+		argv.append("WAYLAND_DISPLAY=" + _host_wayland_display)
+	# Sinon : env actuel (Fallback X11, XDG_SESSION_TYPE, etc.).
+	argv.append(agent_path)
+	OS.create_process("env", argv)
 
 func _on_polkit_agent_changed(path: String) -> void:
 	if path.strip_edges() != "":
