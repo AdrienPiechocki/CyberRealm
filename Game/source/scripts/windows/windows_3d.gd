@@ -2133,15 +2133,18 @@ func _update_group_resize(wid: int) -> void:
 #
 # La molette garde son comportement de référence, inchangé : un cran par frame
 # pendant l'appui (une molette n'étant pas maintenable en pratique).
-func _rotate_from_scroll(delta: float) -> void:
+#
+# `connected` (manettes branchées) est injectable pour pouvoir simuler une
+# manette dans les tests headless, où le moteur n'en voit aucune.
+func _rotate_from_scroll(delta: float, connected: Array[int] = Input.get_connected_joypads()) -> void:
 	# elif, et non if : la gâchette choisit ENTRE le taux et le cran, elle ne
 	# doit pas cumuler les deux.
-	if _scroll_from_gamepad("scroll_up"):
+	if _scroll_from_gamepad("scroll_up", connected):
 		_rotate_snapped(SNAP_ROTATE_RATE * delta)
 	elif Input.is_action_just_pressed("scroll_up", false) \
 			or Input.is_action_pressed("scroll_up", false):
 		_rotate_snapped(SNAP_ROTATE_RATE * 3 * delta)
-	if _scroll_from_gamepad("scroll_down"):
+	if _scroll_from_gamepad("scroll_down", connected):
 		_rotate_snapped(-SNAP_ROTATE_RATE * delta)
 	elif Input.is_action_just_pressed("scroll_down", false) \
 			or Input.is_action_pressed("scroll_down", false):
@@ -2156,11 +2159,11 @@ func _rotate_from_scroll(delta: float) -> void:
 # fonction : remapper le scroll sur un stick ne la ferait pas basculer en mode
 # continu, ce qui est le comportement voulu — l'angle par cran reste alors la
 # seule unité.
-func _scroll_from_gamepad(action: String) -> bool:
+func _scroll_from_gamepad(action: String, connected: Array[int] = Input.get_connected_joypads()) -> bool:
 	for ev in InputMap.action_get_events(action):
 		if not (ev is InputEventJoypadButton):
 			continue
-		for device: int in _pad_devices(ev):
+		for device: int in _pad_devices(ev, connected):
 			if Input.is_joy_button_pressed(device, ev.button_index):
 				return true
 	return false

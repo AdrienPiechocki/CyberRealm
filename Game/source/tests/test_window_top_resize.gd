@@ -85,7 +85,16 @@ func test_titlebar_click_starts_a_top_resize() -> Variant:
 	if int(bar_body.get_meta("titlebar_of", -1)) != WID:
 		return "le BarBody ne porte pas le meta titlebar_of=%d" % WID
 	var aim := _aim()
+	# L'état des actions est GLOBAL à tout le runner et les tests s'enchaînent
+	# dans la même frame : le _teardown du test précédent laisse « just released »
+	# vrai, et _handle_titlebar annulerait ce clic aussitôt. Séquence validée dans
+	# test_window_decorations.gd : release + physics_frame fait vieillir ce faux
+	# relâchement, puis press + physics_frame rend just_pressed vrai ET
+	# just_released faux (process_frame ne convient pas).
+	Input.action_release("left_click")
+	await get_tree().physics_frame
 	Input.action_press("left_click")
+	await get_tree().physics_frame
 	win3d._handle_titlebar(bar_body, aim[0], aim[1])
 	var res: Variant = Runner.assert_true(win3d.is_resizing,
 		"le clic sur la barre de titre doit démarrer un redimensionnement")

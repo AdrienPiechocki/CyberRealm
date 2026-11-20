@@ -131,9 +131,7 @@ func test_activation_par_clic_preserve_invariant_pile() -> Variant:
 	winstub.ensure_quad(a, "A", "app", Vector2(640, 360))
 	winstub.ensure_quad(b, "B", "app", Vector2(640, 360))
 	winstub.ensure_quad(c, "C", "app", Vector2(640, 360))
-	focus.enter_focus(a)
-	focus.enter_focus(b)
-	focus.enter_focus(c)
+	_enter_initial_stack([a, b, c])
 	# c active, a et b en pile avec barre
 	var r = Runner.assert_true(not _has_bar(c), "c active sans barre")
 	if _fail(r): return r
@@ -192,8 +190,7 @@ func test_invariant_barre_preserve_pendant_bascule_fullscreen() -> Variant:
 	var b := 31
 	winstub.ensure_quad(a, "Arriere", "app", Vector2(640, 360))
 	winstub.ensure_quad(b, "Avant", "app", Vector2(640, 360))
-	focus.enter_focus(a)
-	focus.enter_focus(b)
+	_enter_initial_stack([a, b])
 	# b active sans barre, a en pile avec barre
 	var r = Runner.assert_true(not _has_bar(b), "b active sans barre")
 	if _fail(r): return r
@@ -297,6 +294,21 @@ func test_idempotence_apres_bascale_live() -> Variant:
 	_teardown()
 	return true
 
+## Entre en focus avec des fenêtres de la PILE INITIALE : ni « ouvertes pendant
+## le focus » ni la règle d'exception de la barre (focus_opened_during). La
+## dernière est l'active (sans barre), les autres sont en pile (avec barre).
+## Entrer plusieurs fenêtres de suite les rendrait toutes « ouvertes pendant »
+## sauf la première, et l'active garderait alors sa barre (règle voulue, testée
+## à part dans test_fenetre_ouverte_pendant_le_focus_garde_sa_barre).
+func _enter_initial_stack(ids: Array) -> void:
+	for id: int in ids:
+		focus.enter_focus(id)
+	focus.focus_opened_during.clear()
+	for id: int in ids:
+		if id != ids[-1]:
+			focus._ensure_title_bar(id)
+	focus._activate_window(ids[-1])
+
 func _has_bar(id: int) -> bool:
 	return focus.focus_title_bars.has(id) \
 		and is_instance_valid(focus.focus_title_bars[id])
@@ -328,8 +340,7 @@ func test_fenetre_de_pile_garde_sa_barre() -> Variant:
 	if comp.has_method("request_fullscreen"):
 		comp.request_fullscreen(a, false)
 		comp.request_fullscreen(b, false)
-	focus.enter_focus(a)
-	focus.enter_focus(b)
+	_enter_initial_stack([a, b])
 	var r = Runner.assert_true(not _has_bar(b),
 		"la fenêtre active (b) n'a pas de barre")
 	if _fail(r): return r
@@ -360,6 +371,28 @@ func test_pile_reste_sans_barre_apres_fermeture_active() -> Variant:
 	_teardown()
 	return true
 
+## Règle d'exception : une fenêtre OUVERTE PENDANT le focus n'est pas maximisée,
+## c'est une vraie fenêtre déplaçable : elle garde sa barre même quand elle est
+## active (focus_opened_during dans _activate_window).
+func test_fenetre_ouverte_pendant_le_focus_garde_sa_barre() -> Variant:
+	if _setup() != true: return "setup"
+	var a := 66
+	var b := 67
+	winstub.ensure_quad(a, "Premiere", "app", Vector2(800, 600))
+	winstub.ensure_quad(b, "Ouverte pendant", "app", Vector2(800, 600))
+	focus.enter_focus(a)
+	focus.enter_focus(b)
+	var r = Runner.assert_true(focus.focus_opened_during.has(b),
+		"b est ouverte pendant le focus")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(b),
+		"b, active mais ouverte pendant le focus, garde sa barre")
+	if _fail(r): return r
+	r = Runner.assert_true(_has_bar(a),
+		"a, redevenue fenêtre de pile, a sa barre")
+	_teardown()
+	return r
+
 ## Le centrage compense d'une demi-hauteur de barre pour centrer barre+contenu.
 ## Sans barre (fenêtre active), ce décalage LA RENDRAIT trop basse. On mesure
 ## l'écart réel de position AVEC puis SANS barre sur la même fenêtre : il doit
@@ -371,8 +404,17 @@ func test_centrage_compense_seulement_si_barre() -> Variant:
 	winstub.ensure_quad(id, "Active", "app", Vector2(800, 600))
 	if comp.has_method("request_fullscreen"):
 		comp.request_fullscreen(id, false)
+	# La première fenêtre d'un focus est MAXIMISÉE (pas de centrage) : on entre
+	# donc d'abord une autre fenêtre, et `id` est « ouverte pendant le focus » :
+	# affichée à sa taille, centrée, donc soumise à la compensation de barre.
+	var first := 64
+	winstub.ensure_quad(first, "Premiere", "app", Vector2(800, 600))
+	focus.enter_focus(first)
 	focus.enter_focus(id)
-	# Position de la fenêtre ACTIVE (sans barre, centrée sur son contenu seul)
+	# Position de la fenêtre ACTIVE (sans barre, centrée sur son contenu seul).
+	# Une fenêtre ouverte pendant le focus reçoit sa barre à l'activation : on
+	# l'ôte pour mesurer la référence.
+	focus._remove_title_bar(id)
 	focus._refresh_rect_layout(id)
 	var y_sans_barre: float = focus.focus_rects[id].position.y
 	# On lui donne une barre et on relayout : le compensation doit la remonter

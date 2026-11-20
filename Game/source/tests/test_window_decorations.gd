@@ -8,6 +8,11 @@ const Decorations := preload("res://scripts/ui/window_decorations.gd")
 const RES_TEST_JSON := "user://deco_test_res.json"
 const USER_TEST_JSON := "user://deco_test_user.json"
 
+## Épaisseur du cadre dans res://ui/decorations/decorations.json (fichier livré).
+## À mettre à jour si l'asset change : c'est la valeur de DESIGN, pas le défaut
+## du code (default_metrics() reste à 10).
+const SHIPPED_BORDER := 3.33
+
 ## Repart d'un état propre : l'état statique du loader est partagé par TOUS les
 ## fichiers de test du runner (un seul process), donc chaque test qui touche aux
 ## metrics restaure le défaut du jeu et efface ses fichiers temporaires.
@@ -206,7 +211,7 @@ func test_bundled_json_is_readable() -> Variant:
 	r = Runner.assert_eq(m["button_alignment"], "right", "alignement du fichier livré")
 	if _fail(r):
 		return r
-	return Runner.assert_eq(m["border_size"], 10.0, "épaisseur du cadre")
+	return Runner.assert_eq(m["border_size"], SHIPPED_BORDER, "épaisseur du cadre")
 
 func test_user_file_overrides_res_key_by_key() -> Variant:
 	_reset_deco()
@@ -264,13 +269,13 @@ func test_border_pieces_and_button_atlas() -> Variant:
 	var piece: AtlasTexture = Decorations.border_piece("topleft")
 	if piece == null:
 		return "border.svg absent ou pièce dégénérée"
-	# La région doit venir des MÉTRIQUES (10×20 px), pas de la taille du fichier :
+	# La région doit venir des MÉTRIQUES (cadre × 20 px), pas de la taille du fichier :
 	# le test reste donc indépendant du ré-export de l'asset tant que celui-ci
 	# reste un vrai 9-patch, assez grand pour être découpé.
 	var tex_size: Vector2 = Decorations.texture("border").get_size()
 	if tex_size.x < 20.0 or tex_size.y < 40.0:
 		return "border.svg trop petit pour être un 9-patch: " + str(tex_size)
-	var r = Runner.assert_eq(piece.region.size, Vector2(10.0, 20.0), "région du coin")
+	var r = Runner.assert_eq(piece.region.size, Vector2(SHIPPED_BORDER, 20.0), "région du coin")
 	if _fail(r):
 		return r
 	r = Runner.assert_eq(piece.atlas, Decorations.texture("border"), "atlas = border.svg")
@@ -376,7 +381,7 @@ func test_titlebar_metrics_from_json() -> Variant:
 	# pour que ce test ne dépende pas du fichier de test précédent.
 	_reset_deco()
 	var d: Dictionary = Decoration.titlebar_metrics(0.005)
-	var r = Runner.assert_eq(d["border"], 0.05, "cadre 10 px")
+	var r = Runner.assert_approx(d["border"], SHIPPED_BORDER * 0.005, 0.00001, "cadre (px du JSON livré × échelle)")
 	if _fail(r):
 		return r
 	r = Runner.assert_eq(d["titlebar"], 0.1, "barre 20 px")
@@ -487,19 +492,21 @@ func test_toggle_hide_disables_frame_colliders() -> Variant:
 func test_visual_half_extent_includes_frame_and_bar() -> Variant:
 	var d: Dictionary = Decoration.titlebar_metrics(0.01)
 	var r = Runner.assert_approx(
-		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).x, 1.7, 0.001,
+		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).x, 1.6 + SHIPPED_BORDER * 0.01, 0.001,
 		"demi-largeur visible = contenu + cadre")
 	if _fail(r):
 		return r
 	return Runner.assert_approx(
-		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).y, 1.15, 0.001,
+		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).y, 1.0 + (0.2 + SHIPPED_BORDER * 0.01) / 2.0, 0.001,
 		"demi-hauteur visible = contenu + barre + cadre")
 
 func test_visual_center_is_offset_by_the_frame_asymmetry() -> Variant:
 	var d: Dictionary = Decoration.titlebar_metrics(0.01)
 	var up := Vector3(0.0, 1.0, 0.0)
-	var r = Runner.assert_eq(Windows3DScript.visual_center(Vector3(2.0, 3.0, 4.0), up, d),
-		Vector3(2.0, 3.05, 4.0), "centre visuel décalé vers le haut de (barre - cadre)/2")
+	var got: Vector3 = Windows3DScript.visual_center(Vector3(2.0, 3.0, 4.0), up, d)
+	var want := Vector3(2.0, 3.0 + (0.2 - SHIPPED_BORDER * 0.01) / 2.0, 4.0)
+	var r = Runner.assert_true(got.is_equal_approx(want),
+		"centre visuel décalé vers le haut de (barre - cadre)/2 : %s != %s" % [got, want])
 	if _fail(r):
 		return r
 	# Cadre et barre de même épaisseur : plus rien à décaler.

@@ -239,19 +239,20 @@ func test_prepare_level_send_cache_compresses_once() -> Variant:
 func test_send_level_to_never_bakes_inline() -> Variant:
 	# C'est LA régression du gel : _send_level_to (appelé depuis le handler
 	# RPC _register_player) ne doit JAMAIS appeler le provider ni compresser.
+	# Le blob part désormais par le canal TCP dédié (LevelTcp) : sans pair ENet
+	# réel, _remote_ip() renvoie "" et l'envoi s'arrête là — avant tout RPC et
+	# sans démarrer de serveur TCP. Le noeud doit être dans l'arbre (multiplayer).
 	var inst = LANManager.new()
+	get_tree().root.add_child(inst)
 	inst.level_bake_provider = Callable(self, "_fake_bake")
 	_provider_calls = 0
 	var r: Variant = Runner.assert_true(inst._prepare_level_send_cache(), "cache préparé")
 	if r is String:
 		inst.free()
 		return r
-	inst._send_level_to(2)   # manifeste vide = aucun RPC → testable sans pair
+	var compressed_before: PackedByteArray = inst._level_compressed_cache
+	inst._send_level_to(2)
 	r = Runner.assert_eq(_provider_calls, 1, "toujours 1 seule passe de bake")
-	if r is String:
-		inst.free()
-		return r
-	r = Runner.assert_true(inst._level_send_queue.has(2), "file d'envoi peuplée pour le peer 2")
 	if r is String:
 		inst.free()
 		return r
@@ -260,24 +261,13 @@ func test_send_level_to_never_bakes_inline() -> Variant:
 	if r is String:
 		inst.free()
 		return r
-	var entry: Dictionary = inst._level_send_queue[2]
-	var chunks: Array[PackedByteArray] = entry["chunks"]
-	var expected := ceili(float(inst._level_compressed_cache.size()) / float(CHUNK))
-	r = Runner.assert_eq(chunks.size(), expected, "chunks pré-découpés depuis le cache")
+	r = Runner.assert_eq(inst._level_compressed_cache, compressed_before,
+		"_send_level_to ne doit pas recompresser le cache")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_eq(int(entry["total"]), chunks.size(), "total de la file == chunks")
-	if r is String:
-		inst.free()
-		return r
-	r = Runner.assert_true(chunks.size() > 1,
-		"blob quasi-incompressible → envoi multi-chunks réellement exercé")
-	if r is String:
-		inst.free()
-		return r
-	r = Runner.assert_eq(_concat(chunks), inst._level_compressed_cache,
-		"les chunks couvrent le cache compressé octet à octet")
+	r = Runner.assert_true(inst._level_tcp_server == null,
+		"sans adresse de pair, aucun serveur TCP ne doit être démarré")
 	inst.free()
 	return r
 

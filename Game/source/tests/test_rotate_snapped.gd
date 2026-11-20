@@ -8,13 +8,14 @@ extends Node
 ## À CHAQUE FRAME — un tour en quatre secondes.
 ##
 ## Ces tests verrouillent donc l'angle réellement appliqué, pas la source :
-##  - un cran de molette vaut SNAP_YAW_STEP (15°) ;
+##  - la molette / la touche de scroll tourne à 3 × SNAP_ROTATE_RATE (270°/s,
+##    soit 4.5° par frame à 60 Hz) ;
 ##  - une seconde de gâchette tenue vaut SNAP_ROTATE_RATE (90°), donc 1.5° par
-##    frame à 60 Hz, et non 15°.
+##    frame à 60 Hz, et non le taux de la molette.
 ##
-## La DÉTECTION du périphérique (_scroll_from_gamepad) n'est pas couverte ici :
-## elle lit l'état réel d'une manette, qu'aucun test headless ne peut
-## fabriquer. Elle reste vérifiée à la manette.
+## Le moteur headless ne voit aucune manette branchée : la liste des manettes
+## est donc injectée (WITH_PAD) dans _scroll_from_gamepad / _rotate_from_scroll,
+## et l'état du bouton est simulé par parse_input_event sur PAD_DEVICE.
 ##
 ## Aucune liaison n'est installée à la main : le collage vient d'un recouvrement
 ## RÉEL de zones (moteur physique), pas d'un dictionnaire écrit.
@@ -37,6 +38,15 @@ const TOL := 0.002 # rad
 ## device = -1 (« n'importe quelle manette ») : l'événement transporte le
 ## périphérique réel, c'est la détection qui doit savoir le retrouver.
 const PAD_DEVICE := 0
+
+## Manettes « branchées » injectées dans la détection.
+const WITH_PAD: Array[int] = [PAD_DEVICE]
+
+## Angle par frame de la molette (3 × le taux de la gâchette).
+const WHEEL_FRAME_ANGLE := deg_to_rad(90.0) * 3.0 * FRAME
+
+## Angle arbitraire pour vérifier que _rotate_snapped tourne de EXACTEMENT l'angle donné.
+const TEST_ANGLE := deg_to_rad(15.0)
 
 var win3d: Node3D
 var player: Node3D
@@ -119,13 +129,22 @@ func _press(action: String) -> void:
 #
 # L'état n'est visible qu'APRÈS une frame : parse_input_event met l'événement
 # en file, il est dépensé au flush d'entrée suivant.
+# Attend que le moteur ait réellement pris l'événement en compte : le flush
+# d'entrée se fait en début de frame, et l'état n'est visible qu'après 1 à 2
+# frames (mesuré : 2 en headless). On sonde au lieu de compter les frames.
+func _pad_settle(button: int, pressed: bool) -> void:
+	for i in 10:
+		await get_tree().process_frame
+		if Input.is_joy_button_pressed(PAD_DEVICE, button) == pressed:
+			return
+
 func _press_pad(button: int) -> void:
 	var ev := InputEventJoypadButton.new()
 	ev.device = PAD_DEVICE
 	ev.button_index = button
 	ev.pressed = true
 	Input.parse_input_event(ev)
-	await get_tree().physics_frame
+	await _pad_settle(button, true)
 
 func _release_pad(button: int) -> void:
 	var ev := InputEventJoypadButton.new()
@@ -133,7 +152,7 @@ func _release_pad(button: int) -> void:
 	ev.button_index = button
 	ev.pressed = false
 	Input.parse_input_event(ev)
-	await get_tree().physics_frame
+	await _pad_settle(button, false)
 
 func _release_scroll() -> void:
 	for action: String in ["scroll_up", "scroll_down"]:
@@ -151,18 +170,18 @@ func test_a_gamepad_button_is_read_as_a_gamepad_scroll() -> Variant:
 	if _fail(ctx):
 		return ctx
 	await _press_pad(JOY_BUTTON_LEFT_SHOULDER)
-	var res: Variant = Runner.assert_true(win3d._scroll_from_gamepad("scroll_up"),
+	var res: Variant = Runner.assert_true(win3d._scroll_from_gamepad("scroll_up", WITH_PAD),
 		"la gâchette haute pressée doit être reconnue comme manette")
 	if _fail(res):
 		await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
 		return _teardown(res)
-	res = Runner.assert_true(not win3d._scroll_from_gamepad("scroll_down"),
+	res = Runner.assert_true(not win3d._scroll_from_gamepad("scroll_down", WITH_PAD),
 		"et elle ne doit rien faire pour l'autre sens")
 	if _fail(res):
 		await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
 		return _teardown(res)
 	await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
-	res = Runner.assert_true(not win3d._scroll_from_gamepad("scroll_up"),
+	res = Runner.assert_true(not win3d._scroll_from_gamepad("scroll_up", WITH_PAD),
 		"le relâchement doit être vu : pas d'état collé")
 	return _teardown(res)
 
@@ -191,9 +210,9 @@ func test_pad_devices_never_query_the_device_minus_one() -> Variant:
 		"le -1 ne doit jamais être interrogé")
 	return res
 
-func test_a_wheel_step_turns_fifteen_degrees() -> Variant:
-	## Le cran de molette reste ce qu'il est : 15°, dans un sens comme dans
-	## l'autre. C'est le comportement de référence, à ne pas décaler.
+func test_rotate_snapped_turns_by_exactly_the_given_angle() -> Variant:
+	## _rotate_snapped applique EXACTEMENT l'angle demandé, dans un sens comme
+	## dans l'autre : le choix du pas est l'affaire de _rotate_from_scroll.
 	var ctx: Variant = await _build_world()
 	if _fail(ctx):
 		return ctx
@@ -202,12 +221,12 @@ func test_a_wheel_step_turns_fifteen_degrees() -> Variant:
 		"aucun cran avant le scroll")
 	if _fail(res):
 		return _teardown(res)
-	win3d._rotate_snapped(win3d.SNAP_YAW_STEP)
-	res = Runner.assert_approx(_turned(), win3d.SNAP_YAW_STEP, TOL,
-		"un cran doit tourner de exactement SNAP_YAW_STEP")
+	win3d._rotate_snapped(TEST_ANGLE)
+	res = Runner.assert_approx(_turned(), TEST_ANGLE, TOL,
+		"doit tourner de exactement l'angle demandé")
 	if _fail(res):
 		return _teardown(res)
-	win3d._rotate_snapped(-win3d.SNAP_YAW_STEP)
+	win3d._rotate_snapped(-TEST_ANGLE)
 	res = Runner.assert_approx(_turned(), 0.0, TOL,
 		"un cran inverse doit ramener à l'angle de départ")
 	return _teardown(res)
@@ -245,14 +264,14 @@ func test_a_held_gamepad_scroll_turns_at_the_rate() -> Variant:
 		return ctx
 	await _press_pad(JOY_BUTTON_LEFT_SHOULDER)
 	_mark()
-	win3d._rotate_from_scroll(FRAME)
+	win3d._rotate_from_scroll(FRAME, WITH_PAD)
 	var res: Variant = Runner.assert_approx(_turned(), deg_to_rad(1.5), TOL,
 		"une frame de gâchette vaut 1.5°, pas un cran de 15°")
 	if _fail(res):
 		await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
 		return _teardown(res)
 	for i in 59:
-		win3d._rotate_from_scroll(FRAME)
+		win3d._rotate_from_scroll(FRAME, WITH_PAD)
 	res = Runner.assert_approx(_turned(), deg_to_rad(90.0), TOL,
 		"une seconde de gâchette doit tourner d'un quart de tour")
 	if _fail(res):
@@ -261,39 +280,35 @@ func test_a_held_gamepad_scroll_turns_at_the_rate() -> Variant:
 	# Relâchée : plus rien ne doit tourner, sinon la fenêtre continuerait sa
 	# route toute seule une fois la gâchette lâchée.
 	await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
-	win3d._rotate_from_scroll(FRAME)
+	win3d._rotate_from_scroll(FRAME, WITH_PAD)
 	res = Runner.assert_approx(_turned(), deg_to_rad(90.0), TOL,
 		"une gâchette relâchée ne doit plus rien faire")
 	return _teardown(res)
 
-func test_a_wheel_event_turns_exactly_one_step() -> Variant:
+func test_a_wheel_event_turns_at_three_times_the_pad_rate() -> Variant:
 	## Le chemin souris passe par _rotate_from_scroll, qui décide du pas. Aucune
-	## manette en headless : _scroll_from_gamepad() est donc toujours faux et
-	## c'est bien la branche molette qui s'exerce — un CRAN par frame, jamais
-	## le taux continu (1.5°), qui est la régression qu'on surveille.
-	##
-	## Action maintenue = un cran par frame : c'est le comportement d'avant,
-	## inchangé, et une molette réelle n'étant pas maintenable (un événement
-	## par cran), la différence ne s'observe pas au jeu.
+	## manette injectée : _scroll_from_gamepad() est faux et c'est la branche
+	## molette qui s'exerce — 3 × le taux de la gâchette par frame (4.5° à
+	## 60 Hz), jamais le taux de la manette (1.5°).
 	var ctx: Variant = await _build_world()
 	if _fail(ctx):
 		return ctx
 	_mark()
 	_press("scroll_up")
 	win3d._rotate_from_scroll(FRAME)
-	var res: Variant = Runner.assert_approx(_turned(), win3d.SNAP_YAW_STEP, TOL,
-		"le scroll souris doit appliquer un cran")
+	var res: Variant = Runner.assert_approx(_turned(), WHEEL_FRAME_ANGLE, TOL,
+		"le scroll souris doit appliquer 3 × le taux")
 	if _fail(res):
 		return _teardown(res)
 	win3d._rotate_from_scroll(FRAME)
-	res = Runner.assert_approx(_turned(), 2.0 * win3d.SNAP_YAW_STEP, TOL,
-		"et un second cran, pas le taux de la manette")
+	res = Runner.assert_approx(_turned(), 2.0 * WHEEL_FRAME_ANGLE, TOL,
+		"et autant à la frame suivante, pas le taux de la manette")
 	if _fail(res):
 		return _teardown(res)
 	_release_scroll()
 	_mark()
 	_press("scroll_down")
 	win3d._rotate_from_scroll(FRAME)
-	res = Runner.assert_approx(_turned(), -win3d.SNAP_YAW_STEP, TOL,
+	res = Runner.assert_approx(_turned(), -WHEEL_FRAME_ANGLE, TOL,
 		"scroll_down doit tourner dans l'autre sens")
 	return _teardown(res)
