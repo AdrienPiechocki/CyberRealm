@@ -985,6 +985,11 @@ func _process(delta: float) -> void:
 		# plus du zoom.
 		if pins.zooming:
 			return
+		# Un overlay interactif (celui de Ludodex ouvert) détient le clavier : la souris est à lui
+		# aussi. La fenêtre focalisée ne reçoit plus rien tant qu'il est ouvert, sinon ses widgets
+		# ne seraient ni cliquables ni déplaçables.
+		if layers.keyboard_busy() and layers.handle_layer_pointer(delta):
+			return
 		focus.handle_focus_input(delta)
 		return
 
@@ -1152,6 +1157,10 @@ func _input(event: InputEvent) -> void:
 	# clavier reçoit ses propres touches (il referme lui-même avec la sienne).
 	if event is InputEventKey and not capture_selector.visible and global_shortcuts.try_event(event):
 		get_viewport().set_input_as_handled()
+		return
+	# Overlay interactif ouvert PAR-DESSUS une fenêtre en mode focus : la molette et les mouvements
+	# de souris ne sont pas forwardés à cette fenêtre (le pointeur est à l'overlay, voir _process).
+	if event is InputEventMouse and layers.keyboard_busy() and focus.is_active():
 		return
 	# interact_mode déclenché à la manette (bouton ou axe) : signaler au
 	# _process pour afficher le clavier virtuel en même temps que l'activation.

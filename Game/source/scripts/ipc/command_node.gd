@@ -129,14 +129,13 @@ func _cmd_windows() -> Dictionary:
 	var windows: Array = []
 	if win3d != null and win3d.has_method("get_windows_state"):
 		windows = win3d.get_windows_state()
-	# « focused » : la fenêtre qui a le focus — celle du mode focus s'il est actif, sinon celle
-	# qui reçoit le clavier après un clic. L'overlay de Ludodex ne s'affiche que pour le jeu focalisé.
+	# « focused » : la fenêtre du MODE FOCUS (plein écran 2D). Hors mode focus, aucune fenêtre
+	# n'est focalisée : l'overlay de Ludodex se cache alors (il n'a de sens que par-dessus le jeu).
 	var focus_id := -1
 	if focus != null and focus.is_active():
 		focus_id = focus.get_focus_window_id()
 	for w in windows:
-		var wid: int = w.get("wid", -1)
-		w["focused"] = (wid == focus_id) if focus_id != -1 else (win3d.focused_window_id == wid)
+		w["focused"] = focus_id != -1 and w.get("wid", -1) == focus_id
 	return {"ok": true, "output": windows}
 
 func _cmd_close(args: String) -> Dictionary:

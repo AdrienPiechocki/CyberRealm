@@ -331,7 +331,15 @@ func on_layer_surface_keyboard_interactive_changed(id: int, kb: int) -> void:
 		player.layer_pointer_active = true
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 	elif kb == 0 and prev != 0:
-		recapture_if_needed()
+		if focus.is_active():
+			# Mode focus : la souris revient à la fenêtre focalisée (capturée si le jeu a verrouillé
+			# le pointeur), pas à la caméra FPS — recapture_if_needed ne s'applique pas ici.
+			layer_interact_active = false
+			layer_interact_manual = false
+			player.layer_pointer_active = false
+			focus.restore_pointer_after_layer()
+		else:
+			recapture_if_needed()
 
 func on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, w: int, h: int) -> void:
 	if not layer_rects.has(parent_layer_id):

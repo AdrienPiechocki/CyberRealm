@@ -954,6 +954,16 @@ func on_window_unmapped(id: int) -> void:
 			_ensure_title_bar(next_active)
 		_activate_window(next_active)
 
+# Rend la souris à la fenêtre focalisée après un overlay interactif (layer) qui l'avait libérée :
+# capturée si le client a verrouillé le pointeur (pointer constraints), visible sinon.
+func restore_pointer_after_layer() -> void:
+	if not focus_mode or remote_focus or _active_id() == -1:
+		return
+	if _state(_active_id()).get("mouse_captured", false):
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	else:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
 func on_pointer_lock_changed(window_id: int, locked: bool) -> void:
 	# Un jeu a demandé le pointer lock (zwp_pointer_constraints_v1::lock_pointer)
 	if not focus_mode or window_id != _active_id():
