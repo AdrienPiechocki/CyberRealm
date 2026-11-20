@@ -751,10 +751,10 @@ index 0000000..7f27f47
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
 new file mode 100644
-index 0000000..f4ca9fc
+index 0000000..efb0854
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.cpp
-@@ -0,0 +1,460 @@
+@@ -0,0 +1,512 @@
 +#ifdef KMS_ENABLED
 +
 +#include "kms_input.h"
@@ -880,6 +880,10 @@ index 0000000..f4ca9fc
 +}
 +
 +void KMSInput::finalize() {
++	for (libinput_device *d : keyboards) {
++		libinput_device_unref(d);
++	}
++	keyboards.clear();
 +	if (li) {
 +		libinput_unref(li);
 +		li = nullptr;
@@ -927,6 +931,45 @@ index 0000000..f4ca9fc
 +void KMSInput::resume() {
 +	if (li) {
 +		libinput_resume(li);
++	}
++}
++
++void KMSInput::_device_added(libinput_device *p_device) {
++	// Pavé tactile : toucher = clic (réglage par défaut des environnements de bureau).
++	if (libinput_device_config_tap_get_finger_count(p_device) > 0) {
++		libinput_device_config_tap_set_enabled(p_device, LIBINPUT_CONFIG_TAP_ENABLED);
++	}
++	if (libinput_device_has_capability(p_device, LIBINPUT_DEVICE_CAP_KEYBOARD)) {
++		libinput_device_ref(p_device);
++		keyboards.push_back(p_device);
++		_update_leds();
++	}
++}
++
++void KMSInput::_device_removed(libinput_device *p_device) {
++	int idx = keyboards.find(p_device);
++	if (idx >= 0) {
++		keyboards.remove_at(idx);
++		libinput_device_unref(p_device);
++	}
++}
++
++void KMSInput::_update_leds() {
++	if (!xkb_st) {
++		return;
++	}
++	uint32_t leds = 0;
++	if (xkb_state_led_name_is_active(xkb_st, XKB_LED_NAME_NUM) > 0) {
++		leds |= LIBINPUT_LED_NUM_LOCK;
++	}
++	if (xkb_state_led_name_is_active(xkb_st, XKB_LED_NAME_CAPS) > 0) {
++		leds |= LIBINPUT_LED_CAPS_LOCK;
++	}
++	if (xkb_state_led_name_is_active(xkb_st, XKB_LED_NAME_SCROLL) > 0) {
++		leds |= LIBINPUT_LED_SCROLL_LOCK;
++	}
++	for (libinput_device *d : keyboards) {
++		libinput_device_led_update(d, (libinput_led)leds);
 +	}
 +}
 +
@@ -997,6 +1040,9 @@ index 0000000..f4ca9fc
 +	uint32_t xkb_keycode = p_evdev_key + 8;
 +	xkb_state_update_key(xkb_st, xkb_keycode, p_pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
 +	_update_modifiers();
++	if (p_pressed && !p_echo) {
++		_update_leds(); // Verr. Maj / Verr. Num changent à l'appui
++	}
 +
 +	// Changement de VT (Ctrl+Alt+F1..F12) : désactivé par défaut, car le retour
 +	// de VT gelait l'écran (voir kms-display-driver.md). Opt-in avec
@@ -1153,6 +1199,12 @@ index 0000000..f4ca9fc
 +	}
 +	while (libinput_event *ev = libinput_get_event(li)) {
 +		switch (libinput_event_get_type(ev)) {
++			case LIBINPUT_EVENT_DEVICE_ADDED:
++				_device_added(libinput_event_get_device(ev));
++				break;
++			case LIBINPUT_EVENT_DEVICE_REMOVED:
++				_device_removed(libinput_event_get_device(ev));
++				break;
 +			case LIBINPUT_EVENT_KEYBOARD_KEY: {
 +				libinput_event_keyboard *kb = libinput_event_get_keyboard_event(ev);
 +				_handle_key(libinput_event_keyboard_get_key(kb), libinput_event_keyboard_get_key_state(kb) == LIBINPUT_KEY_STATE_PRESSED);
@@ -1217,10 +1269,10 @@ index 0000000..f4ca9fc
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.h b/platform/linuxbsd/kms/kms_input.h
 new file mode 100644
-index 0000000..a1458ee
+index 0000000..1cea1cf
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,89 @@
 +#pragma once
 +
 +#ifdef KMS_ENABLED
@@ -1229,11 +1281,13 @@ index 0000000..a1458ee
 +#include "core/math/vector2.h"
 +#include "core/math/vector2i.h"
 +#include "core/templates/bit_field.h"
++#include "core/templates/vector.h"
 +#include "core/os/keyboard.h"
 +
 +class KMSSeat;
 +
 +struct libinput;
++struct libinput_device;
 +struct udev;
 +struct xkb_context;
 +struct xkb_keymap;
@@ -1266,6 +1320,11 @@ index 0000000..a1458ee
 +	PointerMode pointer_mode = POINTER_VISIBLE;
 +	BitField<MouseButtonMask> button_mask;
 +	bool vt_switch_enabled = false;
++	// Claviers connus (pour les LED Verr. Maj / Verr. Num) ; références libinput.
++	Vector<libinput_device *> keyboards;
++	void _device_added(libinput_device *p_device);
++	void _device_removed(libinput_device *p_device);
++	void _update_leds();
 +	bool shift = false, ctrl = false, alt = false, meta = false;
 +
 +	// Répétition de touches (libinput n'en fait pas).
