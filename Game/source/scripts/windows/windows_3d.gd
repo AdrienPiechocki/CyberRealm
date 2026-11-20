@@ -89,6 +89,10 @@ render_mode unshaded, blend_mix, cull_disabled, depth_draw_always;
 
 uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
+// true : alpha normalisé (x2, clampé) — masque l'alpha < 1 parasite des
+// buffers de jeux. false : alpha brut, pour les fenêtres réellement
+// translucides (Konsole...), détectées par la sonde d'alpha.
+uniform bool opaque_mode = true;
 
 void fragment() {
 	// Quand le buffer d'allocation (VkImage / texture) est plus grand que
@@ -104,7 +108,7 @@ void fragment() {
 	if (tex.a > 0.01) {
 		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
 		ALBEDO = pow(unmultiplied, vec3(2.2));
-		ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
+		ALPHA = opaque_mode ? clamp(tex.a * 2.0, 0.0, 1.0) : tex.a;
 	} else {
 		discard;
 	}
@@ -119,6 +123,10 @@ render_mode unshaded, blend_mix, cull_disabled, depth_test_disabled;
 
 uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
+// true : alpha normalisé (x2, clampé) — masque l'alpha < 1 parasite des
+// buffers de jeux. false : alpha brut, pour les fenêtres réellement
+// translucides (Konsole...), détectées par la sonde d'alpha.
+uniform bool opaque_mode = true;
 
 void fragment() {
 	vec2 ts = vec2(textureSize(window_texture, 0));
@@ -128,7 +136,7 @@ void fragment() {
 	if (tex.a > 0.01) {
 		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
 		ALBEDO = pow(unmultiplied, vec3(2.2));
-		ALPHA = clamp(tex.a * 2.0, 0.0, 1.0);
+		ALPHA = opaque_mode ? clamp(tex.a * 2.0, 0.0, 1.0) : tex.a;
 	} else {
 		discard;
 	}
@@ -155,6 +163,25 @@ var popup_parent_info: Dictionary = {} # popup_id -> {parent_window_id, parent_p
 # chute de FPS perceptible). Le ShaderMaterial reste propre à chaque quad
 # (uniformes window_texture/content_size), seule la ressource Shader est
 # partagée.
+# ── Sonde d'alpha des fenêtres (transparence en 3D) ───────────────────
+# Même logique que la sonde du mode focus : l'alpha de l'image CPU est
+# échantillonné UNE fois par fenêtre ; si trop de pixels sont non opaques, la
+# fenêtre est classée translucide et son quad garde l'alpha brut (opaque_mode
+# = false). Sinon l'alpha est normalisé comme avant.
+const ALPHA_CHECK_INTERVAL := 0.25 # s entre deux tentatives
+const ALPHA_PROBE_TIMEOUT := 2.0 # s avant abandon si aucune image exploitable
+const ALPHA_OPAQUE_MIN := 242 # alpha >= 242/255 considéré opaque
+const ALPHA_TRANSLUCENT_FRAC := 0.12 # > 12% px non opaques → translucide
+const ALPHA_PROBE_KEY := "windows_alpha"
+
+# Posé par wayland_room : Callable(clé: String, actif: bool) — demande/libère
+# la copie CPU des captures auprès du lan_manager.
+var cpu_capture_notify: Callable = Callable()
+var _alpha_probes: Dictionary = {} # wid -> temps restant avant abandon
+var _alpha_decided: Dictionary = {} # wid -> true (classé, ne plus sonder)
+var _alpha_translucent: Dictionary = {} # wid -> bool (résultat de la classification)
+var _alpha_check_cd := 0.0
+
 var _shared_window_shader: Shader = null
 var _shared_window_shader_no_depth: Shader = null
 
@@ -584,10 +611,84 @@ func on_window_mapped(id: int, title: String, app_id: String) -> void:
 	window_created.emit(id, quad)
 
 func _process(delta: float) -> void:
+	_update_alpha_probes(delta)
 	# Le décor est rechargé depuis un fichier, comme le thème CSS : le tick
 	# renvoie true quand un mtime a changé.
 	if Decorations.tick(delta):
 		_sync_all_decorations()
+
+func _update_alpha_probes(delta: float) -> void:
+	if _alpha_probes.is_empty():
+		return
+	for wid: int in _alpha_probes.keys():
+		_alpha_probes[wid] -= delta
+	_alpha_check_cd -= delta
+	if _alpha_check_cd <= 0.0:
+		_alpha_check_cd = ALPHA_CHECK_INTERVAL
+		for wid: int in _alpha_probes.keys():
+			if not quads.has(wid) or not is_instance_valid(quads[wid]):
+				_alpha_probes.erase(wid)
+				continue
+			var img: Image = get_window_image(wid)
+			if img == null or img.is_empty():
+				continue
+			_alpha_probes.erase(wid)
+			_alpha_decided[wid] = true
+			set_window_translucent(wid, _image_is_translucent(img))
+	for wid: int in _alpha_probes.keys():
+		if _alpha_probes[wid] <= 0.0:
+			_alpha_probes.erase(wid)
+			_alpha_decided[wid] = true # abandon : reste opaque (comportement historique)
+	if _alpha_probes.is_empty() and cpu_capture_notify.is_valid():
+		cpu_capture_notify.call(ALPHA_PROBE_KEY, false)
+
+# Vrai si plus de ALPHA_TRANSLUCENT_FRAC des pixels échantillonnés sont non opaques.
+static func _image_is_translucent(src: Image) -> bool:
+	var img := src.duplicate() as Image
+	img.convert(Image.FORMAT_RGBA8)
+	var w := img.get_width()
+	var h := img.get_height()
+	var step_x := maxi(w / mini(48, w), 1)
+	var step_y := maxi(h / mini(27, h), 1)
+	var total := 0
+	var clear := 0
+	for y in range(step_y / 2, h, step_y):
+		for x in range(step_x / 2, w, step_x):
+			total += 1
+			if img.get_pixel(x, y).a * 255.0 < float(ALPHA_OPAQUE_MIN):
+				clear += 1
+	return float(clear) / maxf(total, 1) > ALPHA_TRANSLUCENT_FRAC
+
+# Classification partagée avec le mode focus : -1 inconnue, 0 opaque, 1 translucide.
+func get_window_translucent(wid: int) -> int:
+	if not _alpha_translucent.has(wid):
+		return -1
+	return 1 if _alpha_translucent[wid] else 0
+
+# Enregistre la classification (sonde 3D ou sonde du focus) et l'applique au quad.
+func set_window_translucent(wid: int, translucent: bool) -> void:
+	_alpha_decided[wid] = true
+	_alpha_translucent[wid] = translucent
+	_alpha_probes.erase(wid)
+	_set_quad_opaque_mode(wid, not translucent)
+
+func _set_quad_opaque_mode(wid: int, opaque: bool) -> void:
+	var quad: MeshInstance3D = quads.get(wid)
+	if quad == null or not is_instance_valid(quad):
+		return
+	var mat := quad.material_override as ShaderMaterial
+	if mat != null:
+		mat.set_shader_parameter("opaque_mode", opaque)
+
+# Lance la sonde d'une fenêtre jamais classée (une salve par fenêtre).
+func _start_alpha_probe(wid: int) -> void:
+	if _alpha_decided.has(wid) or _alpha_probes.has(wid):
+		return
+	if _alpha_probes.is_empty():
+		_alpha_check_cd = 0.0
+		if cpu_capture_notify.is_valid():
+			cpu_capture_notify.call(ALPHA_PROBE_KEY, true)
+	_alpha_probes[wid] = ALPHA_PROBE_TIMEOUT
 
 func _sync_all_decorations() -> void:
 	for id: int in quads.keys():
@@ -704,6 +805,7 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	# (round_up_capture_size) — sans ça, le contenu serait comprimé
 	# dans le coin supérieur-gauche du mesh.
 	(quad.material_override as ShaderMaterial).set_shader_parameter("content_size", Vector2(width, height))
+	_start_alpha_probe(id)
 
 	# Toujours synchroniser les métadonnées (surface_size, content_offset,
 	# content_size) même pendant un resize : le calcul UV pour le forwarding
@@ -2298,6 +2400,9 @@ func _erase_window_state(id: int) -> void:
 	window_shared.erase(id)
 	window_server_side.erase(id)
 	_texture_versions.erase(id)
+	_alpha_probes.erase(id)
+	_alpha_decided.erase(id)
+	_alpha_translucent.erase(id)
 	_window_basis.erase(id)
 	snapped_to.erase(id)
 	if _snap_monitoring_wid == id:

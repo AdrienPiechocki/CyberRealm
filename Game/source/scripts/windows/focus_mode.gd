@@ -393,6 +393,16 @@ func _update_occluder_for_alpha(delta: float) -> void:
 		return
 	if not _alpha_probing:
 		return
+	# Classification déjà faite par la sonde 3D : inutile de copier l'image.
+	var known: int = windows.get_window_translucent(focus_fullscreen_id) \
+			if windows.has_method("get_window_translucent") else -1
+	if known != -1:
+		if known == 1:
+			_occluder_suspended = true
+			_world_occluder.visible = false
+		_apply_focus_alpha_mode()
+		_finish_alpha_probe()
+		return
 	_alpha_check_cd -= delta
 	if _alpha_check_cd > 0.0:
 		return
@@ -423,6 +433,8 @@ func _update_occluder_for_alpha(delta: float) -> void:
 	if frac > OCCLUDER_OFF_FRAC:
 		_occluder_suspended = true
 		_world_occluder.visible = false
+	if windows.has_method("set_window_translucent"):
+		windows.set_window_translucent(focus_fullscreen_id, frac > OCCLUDER_OFF_FRAC)
 	_apply_focus_alpha_mode()
 	_finish_alpha_probe()
 
