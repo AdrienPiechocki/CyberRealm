@@ -7,11 +7,9 @@ Lancement : `--display-driver kms` depuis un VT (session logind/seatd).
 État (testé sur Radeon 780M + RX 7600M XT, RADV, 1920x1080@60, depuis un TTY) :
 - libseat + surface Vulkan VK_EXT_acquire_drm_display / VK_KHR_display : OK, le jeu s'affiche et tourne.
 - Entrées (kms_input) : libinput + xkbcommon, clavier/souris OK, tap-to-click, LED Verr. Maj/Num. Touches mortes/Compose via xkb_compose (table de la locale LC_ALL/LC_CTYPE/LANG), pas de tactile.
-- Curseur : logiciel, côté jeu (Game/source/scripts/kms_cursor.gd), visible en MOUSE_MODE_VISIBLE.
-- Changement de VT : NON SUPPORTÉ. Le raccourci Ctrl+Alt+Fn (libseat_switch_session) a été retiré :
-  l'aller (F2) marche, mais au retour le jeu se bloque et les écrans gèlent (reboot nécessaire). La
-  ré-acquisition de l'écran (_seat_enable) est donc suspecte ; ne pas réactiver sans filet (ssh).
-  Avec le clavier en K_OFF, ni Ctrl+C ni Ctrl+Alt+Fn ne marchent : sortir par le menu pause du jeu.
+- Curseur : logiciel, côté jeu (Game/source/scripts/kms_cursor.gd), visible en MOUSE_MODE_VISIBLE. En mode focus, l'apparence posée par le client (wl_pointer.set_cursor) passe par l'overlay 2D de focus_mode.gd (pas de curseur matériel sous kms).
+- Changement de VT : OK (Ctrl+Alt+Fn ; ~1 s d'écran noir au retour). Le GPU n'est pas rouvert, l'écran n'est jamais relâché côté Vulkan (vkReleaseDisplayEXT plante RADV), la swapchain est recréée (2 fois) au retour.
+  Avec le clavier en K_OFF (libseat), Ctrl+C ne marche pas : sortir par le menu pause du jeu ou Ctrl+Alt+Fn.
 - TODO : multi-écrans, compose, branchement dans install.sh (option --with-kms ; build avec
   `kms=yes disable_path_overrides=no` pour lancer depuis les sources).
 
@@ -44,6 +42,6 @@ touche ISO (KEY_LESS) ; avec un keymap Godot en "us" au lieu de "fr", Shift+';' 
   5 s (CYBERREALM_KMS_WATCHDOG_TIMEOUT) dans les 30 s qui suivent un retour de VT, il journalise
   (stderr + `~/.local/state/cyberrealm/kms-session.log`) puis `_exit(70)` : le noyau ferme les fds
   DRM et rend l'écran. `CYBERREALM_KMS_WATCHDOG=always` l'arme en permanence (10 s), `off` le désactive.
-- Ctrl+Alt+F1..F12 : ignoré par défaut ; `CYBERREALM_KMS_VT_SWITCH=1` déclenche `libseat_switch_session`.
+- Ctrl+Alt+F1..F12 : actif par défaut (`libseat_switch_session`) ; `CYBERREALM_KMS_VT_SWITCH=0` le désactive.
   Jamais transmis au jeu. À tester avec un accès ssh de secours : la libération effective de l'écran par
   `_exit` n'est PAS encore vérifiée sur matériel.

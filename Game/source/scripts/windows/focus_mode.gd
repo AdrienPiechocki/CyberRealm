@@ -1805,7 +1805,10 @@ func _update_cursor_overlay(window_id: int, mouse_pos: Vector2, display_scale: V
 	if img_size.x <= 0.0 or img_size.y <= 0.0:
 		_show_system_cursor()
 		return
-	if absf(display_scale.x - 1.0) < 0.05 and absf(display_scale.y - 1.0) < 0.05 \
+	# DisplayServer "kms" : pas de curseur matériel (cursor_set_custom_image est
+	# un no-op) ; on passe toujours par l'overlay 2D.
+	if DisplayServer.get_name() != "kms" \
+			and absf(display_scale.x - 1.0) < 0.05 and absf(display_scale.y - 1.0) < 0.05 \
 			and img_size.x <= 256.0 and img_size.y <= 256.0:
 		var hw_key: int = hash([_cursor_img_hash, hotspot])
 		if _hw_cursor_key != hw_key:

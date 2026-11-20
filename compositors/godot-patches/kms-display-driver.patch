@@ -31,6 +31,32 @@ index 5de12a2..9d7b125 100644
  	virtual bool _use_validation_layers() const;
  	virtual Error _create_vulkan_instance(const VkInstanceCreateInfo *p_create_info, VkInstance *r_instance);
  
+diff --git a/drivers/vulkan/rendering_device_driver_vulkan.cpp b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+index 4b1bd9f..1e40298 100644
+--- a/drivers/vulkan/rendering_device_driver_vulkan.cpp
++++ b/drivers/vulkan/rendering_device_driver_vulkan.cpp
+@@ -3329,13 +3329,19 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
+ 		for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
+ 			SwapChain *swap_chain = (SwapChain *)(p_swap_chains[i].id);
+ 			swap_chain->image_index = UINT_MAX;
+-			if (results[i] == VK_ERROR_OUT_OF_DATE_KHR) {
++			if (results[i] == VK_ERROR_OUT_OF_DATE_KHR || results[i] == VK_ERROR_SURFACE_LOST_KHR) {
++				// SURFACE_LOST : affichage KMS repris après un changement de VT (swapchain périmée).
+ 				context_driver->surface_set_needs_resize(swap_chain->surface, true);
+ 				any_result_is_out_of_date = true;
+ 			}
+ 		}
+ 
+-		if (any_result_is_out_of_date || err == VK_ERROR_OUT_OF_DATE_KHR) {
++		if (any_result_is_out_of_date || err == VK_ERROR_OUT_OF_DATE_KHR || err == VK_ERROR_SURFACE_LOST_KHR) {
++			if (err == VK_ERROR_SURFACE_LOST_KHR) {
++				for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
++					context_driver->surface_set_needs_resize(((SwapChain *)(p_swap_chains[i].id))->surface, true);
++				}
++			}
+ 			// It is possible for presentation to fail with out of date while acquire might've succeeded previously. This case
+ 			// will be considered a silent failure as it can be triggered easily by resizing a window in the OS natively.
+ 			return FAILED;
 diff --git a/platform/linuxbsd/SCsub b/platform/linuxbsd/SCsub
 index 87586c5..055530b 100644
 --- a/platform/linuxbsd/SCsub
@@ -99,10 +125,10 @@ index 0000000..1a056f2
 +Return("source_files")
 diff --git a/platform/linuxbsd/kms/display_server_kms.cpp b/platform/linuxbsd/kms/display_server_kms.cpp
 new file mode 100644
-index 0000000..0491b5f
+index 0000000..a5309bd
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.cpp
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,436 @@
 +#ifdef KMS_ENABLED
 +
 +#include "display_server_kms.h"
@@ -234,6 +260,7 @@ index 0000000..0491b5f
 +	if (seat.is_open()) {
 +		seat.dispatch(0);
 +	}
++	_try_reacquire_display();
 +	if (seat.is_active()) {
 +		input.process();
 +	}
@@ -242,6 +269,37 @@ index 0000000..0491b5f
 +}
 +
 +// --- Session / VT -----------------------------------------------------------
++
++void DisplayServerKMS::_try_reacquire_display() {
++#if defined(VULKAN_ENABLED) && defined(RD_ENABLED)
++	if (display_kick_usec && seat.is_active() && rendering_context && OS::get_singleton()->get_ticks_usec() >= display_kick_usec) {
++		// Le premier retour de VT laissait parfois un écran noir : la swapchain
++		// recréée trop tôt n'était pas modesettée. On la recrée une 2e fois.
++		display_kick_usec = 0;
++		rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, display_size.x, display_size.y);
++	}
++	if (!display_pending || !seat.is_active() || !rendering_context) {
++		return;
++	}
++	uint64_t elapsed = OS::get_singleton()->get_ticks_usec() - display_pending_since_usec;
++	if (!drmIsMaster(drm_fd)) {
++		if (elapsed > 10000000) {
++			display_pending = false;
++			ERR_PRINT("KMS: DRM master jamais rendu après le retour de VT (10 s).");
++		}
++		return;
++	}
++	RenderingContextDriverVulkanKMS *ctx = static_cast<RenderingContextDriverVulkanKMS *>(rendering_context);
++	bool reacquired = ctx->reacquire_display(drm_fd);
++	print_line(vformat("KMS: ré-acquisition de l'écran (après %d ms) : %s", (int)(elapsed / 1000), reacquired ? "OK" : "ÉCHEC"));
++	display_pending = false;
++	if (reacquired) {
++		// Force la recréation de la swapchain au prochain present.
++		rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, display_size.x, display_size.y);
++		display_kick_usec = OS::get_singleton()->get_ticks_usec() + 700000;
++	}
++#endif
++}
 +
 +void DisplayServerKMS::_seat_disable(void *p_user) {
 +	DisplayServerKMS *self = static_cast<DisplayServerKMS *>(p_user);
@@ -267,20 +325,12 @@ index 0000000..0491b5f
 +	self->input.resume();
 +#if defined(VULKAN_ENABLED) && defined(RD_ENABLED)
 +	if (self->rendering_context && self->drm_device_id >= 0) {
-+		// libseat : les fds d'avant la désactivation sont à rouvrir.
-+		self->seat.close_device(self->drm_device_id);
-+		self->drm_device_id = self->seat.open_device(self->drm_path, self->drm_fd);
-+		if (self->drm_device_id < 0) {
-+			ERR_PRINT("KMS: impossible de rouvrir le GPU au retour de VT.");
-+			return;
-+		}
-+		RenderingContextDriverVulkanKMS *ctx = static_cast<RenderingContextDriverVulkanKMS *>(self->rendering_context);
-+		bool reacquired = ctx->reacquire_display(self->drm_fd);
-+		print_line(vformat("KMS: ré-acquisition de l'écran : %s", reacquired ? "OK" : "ÉCHEC"));
-+		if (reacquired) {
-+			// Force la recréation de la swapchain au prochain present.
-+			self->rendering_context->window_set_size(DisplayServerEnums::MAIN_WINDOW_ID, self->display_size.x, self->display_size.y);
-+		}
++		// Ne PAS fermer/rouvrir le GPU : logind rend le même fd valide
++		// (ResumeDevice) ; un nouveau open_device échoue en EINVAL.
++		// Mais le DRM master n'est rendu qu'APRÈS ce callback : on réessaie
++		// depuis process_events() (_try_reacquire_display).
++		self->display_pending = true;
++		self->display_pending_since_usec = OS::get_singleton()->get_ticks_usec();
 +	}
 +#endif
 +}
@@ -517,10 +567,10 @@ index 0000000..0491b5f
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/display_server_kms.h b/platform/linuxbsd/kms/display_server_kms.h
 new file mode 100644
-index 0000000..7f27f47
+index 0000000..dbd2224
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.h
-@@ -0,0 +1,228 @@
+@@ -0,0 +1,234 @@
 +/**************************************************************************/
 +/*  display_server_kms.h                                             */
 +/**************************************************************************/
@@ -597,6 +647,12 @@ index 0000000..7f27f47
 +	void _apply_mouse_mode();
 +	int drm_device_id = -1;
 +	int drm_fd = -1;
++	// Retour de VT : le DRM master n'est rendu par logind (ResumeDevice) qu'après
++	// le callback enable_seat ; la ré-acquisition de l'écran est donc réessayée.
++	bool display_pending = false;
++	uint64_t display_pending_since_usec = 0;
++	uint64_t display_kick_usec = 0; // 2e recréation de la swapchain, après le retour de VT
++	void _try_reacquire_display();
 +	String drm_path;
 +	uint32_t drm_connector_id = 0;
 +	Size2i display_size;
@@ -690,9 +746,9 @@ index 0000000..7f27f47
 +	void window_move_to_foreground(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
 +	bool window_is_focused(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return true; }
 +
-+	bool window_can_draw(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return seat.is_active(); }
++	bool window_can_draw(DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) const override { return seat.is_active() && !display_pending; }
 +
-+	bool can_any_window_draw() const override { return seat.is_active(); }
++	bool can_any_window_draw() const override { return seat.is_active() && !display_pending; }
 +
 +	void window_set_ime_active(const bool p_active, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
 +	void window_set_ime_position(const Point2i &p_pos, DisplayServerEnums::WindowID p_window = DisplayServerEnums::MAIN_WINDOW_ID) override {}
@@ -751,7 +807,7 @@ index 0000000..7f27f47
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
 new file mode 100644
-index 0000000..efb0854
+index 0000000..35a9624
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.cpp
 @@ -0,0 +1,512 @@
@@ -803,7 +859,7 @@ index 0000000..efb0854
 +	ERR_FAIL_COND_V_MSG(initialize_xkbcommon(0) != 0, ERR_CANT_CREATE, "KMS: libxkbcommon introuvable.");
 +#endif
 +	KeyMappingXKB::initialize();
-+	vt_switch_enabled = OS::get_singleton()->get_environment("CYBERREALM_KMS_VT_SWITCH") == "1";
++	vt_switch_enabled = OS::get_singleton()->get_environment("CYBERREALM_KMS_VT_SWITCH") != "0";
 +
 +	xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 +	ERR_FAIL_NULL_V(xkb_ctx, ERR_CANT_CREATE);
@@ -1044,9 +1100,9 @@ index 0000000..efb0854
 +		_update_leds(); // Verr. Maj / Verr. Num changent à l'appui
 +	}
 +
-+	// Changement de VT (Ctrl+Alt+F1..F12) : désactivé par défaut, car le retour
-+	// de VT gelait l'écran (voir kms-display-driver.md). Opt-in avec
-+	// CYBERREALM_KMS_VT_SWITCH=1 ; le watchdog (kms_watchdog.h) est le filet.
++	// Changement de VT (Ctrl+Alt+F1..F12) : actif par défaut (CYBERREALM_KMS_VT_SWITCH=0 le coupe). Le retour
++	// de VT a déjà gelé l'écran (voir kms-display-driver.md) ;
++	// le watchdog (kms_watchdog.h) est le filet.
 +	// Ctrl+Alt+Fn n'est de toute façon jamais transmis au jeu.
 +	if (ctrl && alt && p_pressed) {
 +		int vt = 0;
@@ -1743,10 +1799,10 @@ index 0000000..845ca10
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.cpp b/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.cpp
 new file mode 100644
-index 0000000..cd8bb22
+index 0000000..a8ce27e
 --- /dev/null
 +++ b/platform/linuxbsd/kms/rendering_context_driver_vulkan_kms.cpp
-@@ -0,0 +1,185 @@
+@@ -0,0 +1,176 @@
 +#ifdef VULKAN_ENABLED
 +#ifdef KMS_ENABLED
 +
@@ -1904,23 +1960,14 @@ index 0000000..cd8bb22
 +}
 +
 +void RenderingContextDriverVulkanKMS::release_display() {
-+	if (display != VK_NULL_HANDLE && display_device_index != UINT32_MAX) {
-+		vkReleaseDisplayEXT(physical_device_get(display_device_index), display);
-+		display = VK_NULL_HANDLE;
-+	}
++	// Volontairement vide : vkReleaseDisplayEXT sur un fd dont logind a retiré le
++	// DRM master fait planter RADV (SEGV), et après lui vkAcquireDrmDisplayEXT /
++	// vkGetDrmDisplayEXT renvoient VK_ERROR_UNKNOWN. L'écran reste « acquis » côté
++	// Vulkan pendant un changement de VT ; seule la swapchain est recréée au retour.
 +}
 +
 +bool RenderingContextDriverVulkanKMS::reacquire_display(int p_drm_fd) {
-+	ERR_FAIL_COND_V(display_device_index == UINT32_MAX || connector_id == 0, false);
-+	VkPhysicalDevice pd = physical_device_get(display_device_index);
-+	// Le handle peut avoir été invalidé par la libération : on le redemande.
-+	VkDisplayKHR d = VK_NULL_HANDLE;
-+	VkResult err = vkGetDrmDisplayEXT(pd, p_drm_fd, connector_id, &d);
-+	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS || d == VK_NULL_HANDLE, false, vformat("KMS: vkGetDrmDisplayEXT a échoué au retour de VT (%d).", (int)err));
-+	err = vkAcquireDrmDisplayEXT(pd, p_drm_fd, d);
-+	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, false, vformat("KMS: vkAcquireDrmDisplayEXT a échoué au retour de VT (%d).", (int)err));
-+	display = d;
-+	return true;
++	return display != VK_NULL_HANDLE;
 +}
 +
 +RenderingContextDriverVulkanKMS::RenderingContextDriverVulkanKMS() {
