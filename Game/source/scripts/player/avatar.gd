@@ -3,7 +3,7 @@ extends Node3D
 ## en position/rotation par le lan_manager. Pas de collision.
 ## Transparence progressive sous 1 m du joueur local.
 
-@export var pitch_treshold: float = 2.0
+@export_range(0.0, 1.0) var pitch_scale: float = 0.4  ## Amplitude du pitch de l'avatar (1 = pitch complet de la caméra)
 @export var pitch_pivot_path: NodePath = ^""
 
 @export var lerp_speed := 15.0  ## Vitesse de lissage (10 à 20)
@@ -110,7 +110,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	_target_pos = pos
 	_target_yaw = yaw
-	_target_pitch = -pitch
+	_target_pitch = pitch * pitch_scale
 
 	if not _has_received_first_transform:
 		_has_received_first_transform = true
@@ -118,7 +118,7 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 		_prev_pos = _target_pos
 		rotation.y = _target_yaw
 		var pitch_node := _pitch_pivot if _pitch_pivot != null else self
-		pitch_node.rotation.x = -pitch
+		pitch_node.rotation.x = _target_pitch
 
 
 func _process(delta: float) -> void:
