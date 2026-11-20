@@ -158,7 +158,8 @@ func _free_overlay_quad() -> void:
 #  - fenêtre du jeu visible en 3D, overlay fermé (passif) : plaqué sur son quad, le rect 2D caché ;
 #  - overlay ouvert (il prend la souris) : rect 2D centré à l'écran, seul endroit où le pointeur
 #    peut l'atteindre ;
-#  - mode focus, ou pas de fenêtre désignée : rect 2D à la position du layout (comportement d'origine).
+#  - mode focus : rect 2D à la position du layout (la fenêtre est à l'écran) ;
+#  - sinon (pas de fenêtre désignée, fenêtre cachée) : rien n'est dessiné.
 func _sync_overlay_3d() -> void:
 	var entry: Dictionary = {}
 	for lid in layer_rects:
@@ -181,7 +182,10 @@ func _sync_overlay_3d() -> void:
 	var interactive: bool = int(entry.get("kb", 0)) != 0
 	if quad == null or interactive:
 		_free_overlay_quad()
-		rect.visible = true
+		# Le layer 2D n'est montré que dans deux cas : overlay ouvert (il prend la souris), ou mode
+		# focus (la fenêtre est alors à l'écran). Sinon — jeu tout juste lancé et pas encore désigné
+		# (overlay-bind), fenêtre cachée, autre vue — il n'a pas sa place sur l'écran : caché.
+		rect.visible = interactive or focus.is_active()
 		if bound and interactive:
 			rect.position = ((get_viewport().get_visible_rect().size - rect.size) / 2.0).floor()
 		elif entry.has("layout_pos"):
