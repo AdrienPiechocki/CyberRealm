@@ -8,6 +8,8 @@ var quads: Dictionary = {}
 # _activate_window écrit focused_window_id AVANT de retirer la barre de titre :
 # si cette propriété manque, l'écriture échoue et interrompt la fonction.
 var focused_window_id: int = -1
+## Popups xdg (popup_id -> info) : lu par focus_mode (_refresh_popups, overlays).
+var popup_parent_info: Dictionary = {}
 
 func ensure_quad(id: int, title: String, app_id: String, size: Vector2) -> void:
 	window_titles[id] = title

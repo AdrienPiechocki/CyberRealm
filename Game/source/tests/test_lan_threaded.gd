@@ -24,6 +24,15 @@ class LogSpyLanManager:
 	func _lan_log(msg: String, reset := false) -> void:
 		lan_logs.append(msg)
 
+## Libère un LANManager de test. Hors de l'arbre, _exit_tree() ne tourne pas : sans
+## cette attente, une tâche de décodage encore en vol survit à l'objet et le
+## moteur signale des RefCounted fuités à la sortie.
+func _dispose(inst) -> void:
+	if inst._level_decode_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(inst._level_decode_task)
+		inst._level_decode_task = -1
+	inst.free()
+
 func _spin_until_loaded(inst, var_name: String) -> bool:
 	for i in 2000:
 		inst._poll_pending_scene_loads()
@@ -44,7 +53,7 @@ func test_level_queued_not_applied_synchronously():
 	r = Runner.assert_eq(emitted.is_empty(), true,
 		"Aucun level_apply_requested SYNCHRONE (le thread principal doit rester libre)")
 	if r != true: return r
-	inst.free()
+	_dispose(inst)
 	return true
 
 func test_level_defer_waits_for_pending_avatar_decode():
@@ -61,7 +70,7 @@ func test_level_defer_waits_for_pending_avatar_decode():
 	var d: Dictionary = inst._deferred_level
 	r = Runner.assert_eq(d.get("waiting", []), [5],
 		"le peer 5 doit rester dans la liste d'attente tant que son décodage n'est pas fini")
-	inst.free()
+	_dispose(inst)
 	return r
 
 func test_level_applied_via_poll_after_thread_ready():
@@ -69,21 +78,32 @@ func test_level_applied_via_poll_after_thread_ready():
 	var emitted: Array = []
 	inst.level_apply_requested.connect(func(scene, pos, rot, scl): emitted.append([scene, pos, rot, scl]))
 	inst._queue_level_scene_load(FIXTURE, Vector3(3, 4, 5), Vector3.ZERO, Vector3.ONE, 1024)
-	if not _spin_until_loaded(inst, "_pending_level_load") and emitted.is_empty():
-		return Runner.assert_true(false, "chargement threadé du niveau trop lent (>= 10s) — échec du mécanisme")
+	# On attend l'APPLICATION du niveau (signal émis par le poll), pas que
+	# _pending_level_load soit non vide : il l'est dès la mise en file, ce qui
+	# faisait sortir le test aussitôt sans rien vérifier (ni libérer inst).
+	for i in 2000:
+		inst._poll_pending_scene_loads()
+		if not emitted.is_empty():
+			break
+		OS.delay_msec(5)
 	if emitted.is_empty():
-		return Runner.assert_true(true, "le poll n'est pas forcé de finir dans le test mais le thread a déjà fini ; on ressortie")
+		_dispose(inst)
+		return Runner.assert_true(false, "chargement threadé du niveau trop lent (>= 10s) — échec du mécanisme")
 	var entry: Array = emitted[0]
 	var r = Runner.assert_true(entry[0] is PackedScene,
 		"level_apply_requested reçoit une PackedScene depuis le thread")
-	if r != true: return r
+	if r != true:
+		_dispose(inst)
+		return r
 	r = Runner.assert_eq(entry[1], Vector3(3, 4, 5),
 		"le spawn de l'hôte est conservé à travers le chargement threadé")
-	if r != true: return r
-	r = Runner.assert_eq(_spin_until_loaded(inst, "_pending_level_load"), false,
+	if r != true:
+		_dispose(inst)
+		return r
+	r = Runner.assert_true(inst._pending_level_load.is_empty(),
 		"la file du niveau doit être vidée après application")
-	inst.free()
-	return true
+	_dispose(inst)
+	return r
 
 func test_avatar_queued_then_cached_by_poll():
 	var inst = LANManager.new()
@@ -103,7 +123,7 @@ func test_avatar_queued_then_cached_by_poll():
 	if r != true: return r
 	r = Runner.assert_eq(inst._pending_avatar_loads.is_empty(), true,
 		"la file avatar doit être vidée après décodage")
-	inst.free()
+	_dispose(inst)
 	return true
 
 func test_level_decode_is_not_synchronous() -> Variant:
@@ -127,19 +147,19 @@ func test_level_decode_is_not_synchronous() -> Variant:
 	var r: Variant = Runner.assert_true(save_err == OK and not plain.is_empty(),
 		"fixture de scène temporaire écrite (prérequis)")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	var raw := plain.compress(FileAccess.COMPRESSION_ZSTD)
 	r = Runner.assert_true(
 		inst._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
 		"décodage soumis au pool de threads")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	r = Runner.assert_true(inst._pending_level_load.is_empty(),
 		"le handler de chunk ne doit RIEN mettre en file de façon synchrone")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	# Spin : le thread finit, _poll_level_decode met la file en place.
 	for i in 2000:
@@ -149,7 +169,11 @@ func test_level_decode_is_not_synchronous() -> Variant:
 		OS.delay_msec(5)
 	r = Runner.assert_true(not inst._pending_level_load.is_empty(),
 		"la file de chargement est peuplée par le poll, pas par le handler")
-	inst.free()
+	# Le poll a lancé un chargement threadé (ResourceLoader) que personne ne
+	# réclame : on le récupère pour que le moteur n'en garde pas l'état à la sortie.
+	if not inst._pending_level_load.is_empty():
+		ResourceLoader.load_threaded_get(String(inst._pending_level_load["path"]))
+	_dispose(inst)
 	return r
 
 func test_level_decode_failure_finalizes_join() -> Variant:
@@ -166,7 +190,7 @@ func test_level_decode_failure_finalizes_join() -> Variant:
 		inst._begin_level_decode(raw, raw.size() + 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE),
 		"tâche soumise")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	for i in 2000:
 		inst._poll_level_decode()
@@ -175,7 +199,7 @@ func test_level_decode_failure_finalizes_join() -> Variant:
 		OS.delay_msec(5)
 	r = Runner.assert_true(not inst._pending_join,
 		"échec de décodage = _finalize_join (jamais de join bloqué)")
-	inst.free()
+	_dispose(inst)
 	return r
 
 func test_level_decode_drop_when_load_already_pending() -> Variant:
@@ -202,7 +226,7 @@ func test_level_decode_drop_when_load_already_pending() -> Variant:
 	var r: Variant = Runner.assert_true(save_err == OK and not plain.is_empty(),
 		"fixture de scène temporaire écrite (prérequis)")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	# File déjà peuplée : marqueur que le poll ne doit JAMAIS écraser.
 	var marker := {"path": "user://already_pending.scn", "pos": Vector3(9, 9, 9),
@@ -213,7 +237,7 @@ func test_level_decode_drop_when_load_already_pending() -> Variant:
 		inst._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
 		"décodage soumis au pool de threads")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	# Spin : le thread fini, _poll_level_decode doit solder la tâche.
 	for i in 2000:
@@ -224,12 +248,12 @@ func test_level_decode_drop_when_load_already_pending() -> Variant:
 	r = Runner.assert_eq(inst._level_decode_task, -1,
 		"la tâche de décodage est soldée par le poll")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	r = Runner.assert_eq(inst._pending_level_load, marker,
 		"résultat DROPPÉ : la file déjà en attente n'est pas écrasée")
 	if r is String:
-		inst.free()
+		_dispose(inst)
 		return r
 	# Aspect log : aucun « queued » mensonger, et un diagnostic de drop
 	# honnête doit être passé par _lan_log (le push_warning de succès ne
@@ -240,11 +264,11 @@ func test_level_decode_drop_when_load_already_pending() -> Variant:
 		r = Runner.assert_true(not m.contains("queued"),
 			"le log ne doit jamais dire « queued » quand la file est déjà pleine : " + m)
 		if r is String:
-			inst.free()
+			_dispose(inst)
 			return r
 		if m.contains("already pending") and m.contains("dropped"):
 			saw_drop_log = true
 	r = Runner.assert_true(saw_drop_log,
 		"un diagnostic de drop honnête doit être loggé (« already pending … dropped »)")
-	inst.free()
+	_dispose(inst)
 	return r

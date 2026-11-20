@@ -21,7 +21,11 @@ func _setup() -> Variant:
 
 func _teardown() -> void:
 	if focus != null and is_instance_valid(focus):
+		# Le stub `windows` (monté par _mount_stack) n'est enfant de personne.
+		var stub: Variant = focus.windows
 		focus.free()
+		if stub is Node and is_instance_valid(stub) and not (stub as Node).is_inside_tree():
+			(stub as Node).free()
 	focus = null
 
 ## Un stylebox n'est pas une valeur comparable : on compare ce qui compte

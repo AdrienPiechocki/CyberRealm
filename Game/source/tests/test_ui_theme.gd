@@ -5,12 +5,35 @@ const UIThemeScript = preload("res://scripts/ui/ui_theme.gd")
 
 var _t: Node
 
+## Nœuds créés par les tests : jamais dans l'arbre, donc libérés ici (sinon ils
+## sont signalés « leaked at exit » par le moteur). Un enfant déjà libéré avec
+## son parent est ignoré par is_instance_valid.
+var _owned: Array[Node] = []
+
+func _own(n: Node) -> Node:
+	_owned.append(n)
+	return n
+
+func _free_owned() -> void:
+	for n in _owned:
+		if is_instance_valid(n):
+			n.free()
+	_owned.clear()
+	if _t != null and is_instance_valid(_t):
+		_t.free()
+	_t = null
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		_free_owned()
+
 func _init() -> void:
 	_t = UIThemeScript.new()
 
 ## Le runner réutilise UNE instance par fichier pour tous les test_* : _rules
 ## s'accumule entre les tests. Chaque test démarre donc sur une instance neuve.
 func _reset() -> void:
+	_free_owned()
 	_t = UIThemeScript.new()
 
 func test_parse_and_rules() -> Variant:
@@ -129,7 +152,7 @@ func test_split_4_shorthands() -> Variant:
 		return "parse: " + err
 	_t.parse(".y { padding: 2px 4px; }")
 	_t.parse(".z { padding: 5px; }")
-	var c := Button.new()
+	var c: Button = _own(Button.new())
 	_t.apply_class(c, "x")
 	var b: StyleBoxFlat = c.get_theme_stylebox("normal")
 	if b.content_margin_top != 1 or b.content_margin_bottom != 3:
@@ -145,12 +168,12 @@ func test_split_4_shorthands() -> Variant:
 func test_apply_class_and_meta_walk() -> Variant:
 	_reset()
 	_t.parse(".back-button { background-color: #2e2e40; }")
-	var b := Button.new()
+	var b: Button = _own(Button.new())
 	_t.apply_class(b, "back-button")
 	if b.get_theme_stylebox("normal").bg_color != Color(0x2e / 255.0, 0x2e / 255.0, 0x40 / 255.0):
 		return "class bg: %s" % b.get_theme_stylebox("normal").bg_color
-	var root := PanelContainer.new()
-	var child := Button.new()
+	var root: PanelContainer = _own(PanelContainer.new())
+	var child: Button = _own(Button.new())
 	child.set_meta("ui_class", "back-button")
 	root.add_child(child)
 	_t.apply_css(root)
@@ -159,11 +182,11 @@ func test_apply_class_and_meta_walk() -> Variant:
 func test_compound_class_prefers_element() -> Variant:
 	_reset()
 	_t.parse(".back-button { background-color: #000000; }\nbutton.back-button { background-color: #112233; }")
-	var b := Button.new()
+	var b: Button = _own(Button.new())
 	_t.apply_class(b, "back-button")
 	if b.get_theme_stylebox("normal").bg_color != Color(0x11 / 255.0, 0x22 / 255.0, 0x33 / 255.0):
 		return "button.back-button bg: %s" % b.get_theme_stylebox("normal").bg_color
-	var lbl := Label.new()
+	var lbl: Label = _own(Label.new())
 	_t.apply_class(lbl, "back-button")
 	return Runner.assert_eq(lbl.get_theme_stylebox("normal").bg_color, Color(0, 0, 0))
 
@@ -191,9 +214,9 @@ func test_default_css_loads() -> Variant:
 func test_margin_px_shorthand() -> Variant:
 	_reset()
 	_t.parse("panel.p { margin: 20px 40px; }")
-	var parent := Control.new()
+	var parent: Control = _own(Control.new())
 	parent.size = Vector2(1000, 800)
-	var c := PanelContainer.new()
+	var c: PanelContainer = _own(PanelContainer.new())
 	parent.add_child(c)
 	_t.apply_class(c, "p")
 	if c.anchor_left != 0.0 or c.anchor_right != 1.0 or c.anchor_top != 0.0 or c.anchor_bottom != 1.0:
@@ -205,9 +228,9 @@ func test_margin_px_shorthand() -> Variant:
 func test_margin_percent() -> Variant:
 	_reset()
 	_t.parse("panel.q { margin: 10% 25%; }")
-	var parent := Control.new()
+	var parent: Control = _own(Control.new())
 	parent.size = Vector2(1000, 800)
-	var c := PanelContainer.new()
+	var c: PanelContainer = _own(PanelContainer.new())
 	parent.add_child(c)
 	_t.apply_class(c, "q")
 	if absf(c.offset_top - 80.0) > 0.001 or absf(c.offset_bottom + 80.0) > 0.001:
@@ -221,9 +244,9 @@ func test_multi_class_meta_applies_both() -> Variant:
 	var err: String = _t.parse("panel.menu-panel { background-color: #111111; }\npanel.pause-menu { margin: 20%; }")
 	if err != "":
 		return "parse: " + err
-	var parent := Control.new()
+	var parent: Control = _own(Control.new())
 	parent.size = Vector2(1000, 800)
-	var c := PanelContainer.new()
+	var c: PanelContainer = _own(PanelContainer.new())
 	parent.add_child(c)
 	c.set_meta("ui_class", "menu-panel pause-menu")
 	_t.apply_css(parent)

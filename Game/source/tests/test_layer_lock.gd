@@ -62,7 +62,8 @@ func _build_world(focus_active := true) -> Variant:
 	return true
 
 func _teardown() -> void:
-	for n in [layers, fake_player, ui, pause_menu, window_menu]:
+	# focus est un Node3D jamais ajouté à l'arbre : personne d'autre ne le libère.
+	for n in [layers, fake_player, ui, pause_menu, window_menu, focus]:
 		if n != null and is_instance_valid(n):
 			n.free()
 

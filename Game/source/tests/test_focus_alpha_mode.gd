@@ -19,6 +19,10 @@ func _setup() -> Variant:
 
 func _teardown() -> void:
 	if focus != null and is_instance_valid(focus):
+		# Les overlays posés dans focus_rects ne sont pas dans l'arbre.
+		for rect: Variant in focus.focus_rects.values():
+			if rect is Node and is_instance_valid(rect) and not (rect as Node).is_inside_tree():
+				(rect as Node).free()
 		focus.free()
 
 func _make_overlay() -> TextureRect:
