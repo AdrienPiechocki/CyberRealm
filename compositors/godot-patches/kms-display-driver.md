@@ -6,7 +6,7 @@ Lancement : `--display-driver kms` depuis un VT (session logind/seatd).
 
 État (testé sur Radeon 780M + RX 7600M XT, RADV, 1920x1080@60, depuis un TTY) :
 - libseat + surface Vulkan VK_EXT_acquire_drm_display / VK_KHR_display : OK, le jeu s'affiche et tourne.
-- Entrées (kms_input) : libinput + xkbcommon, clavier/souris OK. Pas de compose/dead keys, pas de tactile.
+- Entrées (kms_input) : libinput + xkbcommon, clavier/souris OK. Touches mortes/Compose via xkb_compose (table de la locale LC_ALL/LC_CTYPE/LANG), pas de tactile.
 - Curseur : logiciel, côté jeu (Game/source/scripts/kms_cursor.gd), visible en MOUSE_MODE_VISIBLE.
 - Changement de VT : NON SUPPORTÉ. Le raccourci Ctrl+Alt+Fn (libseat_switch_session) a été retiré :
   l'aller (F2) marche, mais au retour le jeu se bloque et les écrans gèlent (reboot nécessaire). La

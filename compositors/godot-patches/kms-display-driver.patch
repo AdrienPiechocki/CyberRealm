@@ -744,10 +744,10 @@ index 0000000..f4951ad
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
 new file mode 100644
-index 0000000..f910131
+index 0000000..893b588
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.cpp
-@@ -0,0 +1,379 @@
+@@ -0,0 +1,442 @@
 +#ifdef KMS_ENABLED
 +
 +#include "kms_input.h"
@@ -764,6 +764,7 @@ index 0000000..f910131
 +#ifdef SOWRAP_ENABLED
 +#include "xkbcommon-so_wrap.h"
 +#else
++#include <xkbcommon/xkbcommon-compose.h>
 +#include <xkbcommon/xkbcommon.h>
 +#endif
 +
@@ -836,6 +837,28 @@ index 0000000..f910131
 +	xkb_st = xkb_state_new(xkb_map);
 +	ERR_FAIL_NULL_V(xkb_st, ERR_CANT_CREATE);
 +
++	// Composition (touches mortes) : table de la locale, comme le backend Wayland.
++	// Un échec n'est pas fatal : on retombe sur la saisie sans composition.
++	{
++		OS *os = OS::get_singleton();
++		String locale = os->get_environment("LC_ALL");
++		if (locale.is_empty()) {
++			locale = os->get_environment("LC_CTYPE");
++		}
++		if (locale.is_empty()) {
++			locale = os->get_environment("LANG");
++		}
++		if (locale.is_empty()) {
++			locale = "C";
++		}
++		xkb_compose_tbl = xkb_compose_table_new_from_locale(xkb_ctx, locale.utf8().get_data(), XKB_COMPOSE_COMPILE_NO_FLAGS);
++		if (xkb_compose_tbl) {
++			xkb_compose_st = xkb_compose_state_new(xkb_compose_tbl, XKB_COMPOSE_STATE_NO_FLAGS);
++		} else {
++			WARN_PRINT("KMS: table Compose introuvable pour la locale « " + locale + " » — touches mortes indisponibles.");
++		}
++	}
++
 +	static const libinput_interface iface = {
 +		&KMSInput::_open_restricted,
 +		&KMSInput::_close_restricted,
@@ -856,6 +879,14 @@ index 0000000..f910131
 +	if (udev_ctx) {
 +		udev_unref(udev_ctx);
 +		udev_ctx = nullptr;
++	}
++	if (xkb_compose_st) {
++		xkb_compose_state_unref(xkb_compose_st);
++		xkb_compose_st = nullptr;
++	}
++	if (xkb_compose_tbl) {
++		xkb_compose_table_unref(xkb_compose_tbl);
++		xkb_compose_tbl = nullptr;
 +	}
 +	if (xkb_st) {
 +		xkb_state_unref(xkb_st);
@@ -880,6 +911,9 @@ index 0000000..f910131
 +		libinput_suspend(li);
 +	}
 +	repeat_keycode = 0;
++	if (xkb_compose_st) {
++		xkb_compose_state_reset(xkb_compose_st);
++	}
 +}
 +
 +void KMSInput::resume() {
@@ -895,7 +929,7 @@ index 0000000..f910131
 +	meta = xkb_state_mod_name_is_active(xkb_st, XKB_MOD_NAME_LOGO, XKB_STATE_MODS_EFFECTIVE) > 0;
 +}
 +
-+void KMSInput::_emit_key(uint32_t p_xkb_keycode, bool p_pressed, bool p_echo) {
++void KMSInput::_emit_key(uint32_t p_xkb_keycode, bool p_pressed, bool p_echo, uint32_t p_unicode_override, bool p_use_override) {
 +	// Même logique que WaylandThread::_seat_state_get_key_event().
 +	Key shifted_key = KeyMappingXKB::get_keycode(xkb_state_key_get_one_sym(xkb_st, p_xkb_keycode));
 +
@@ -908,7 +942,7 @@ index 0000000..f910131
 +
 +	Key physical_keycode = KeyMappingXKB::get_scancode(p_xkb_keycode);
 +	KeyLocation location = KeyMappingXKB::get_location(p_xkb_keycode);
-+	uint32_t unicode = xkb_state_key_get_utf32(xkb_st, p_xkb_keycode);
++	uint32_t unicode = p_use_override ? p_unicode_override : xkb_state_key_get_utf32(xkb_st, p_xkb_keycode);
 +
 +	Key keycode = Key::NONE;
 +	if ((shifted_key & Key::SPECIAL) != Key::NONE || (plain_key & Key::SPECIAL) != Key::NONE) {
@@ -958,9 +992,38 @@ index 0000000..f910131
 +
 +	// Pas de raccourci de changement de VT : le retour de VT gelait l'écran
 +	// (voir kms-display-driver.md). On ne transmet donc pas Ctrl+Alt+Fn.
-+	_emit_key(xkb_keycode, p_pressed, p_echo);
++	bool consumed = false; // touche morte / séquence Compose en cours ou résolue
++	if (p_pressed && xkb_compose_st) {
++		xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_st, xkb_keycode);
++		// Les modificateurs sont ignorés par Compose (FEED_IGNORED) : ils passent normalement.
++		if (xkb_compose_state_feed(xkb_compose_st, sym) == XKB_COMPOSE_FEED_ACCEPTED) {
++			switch (xkb_compose_state_get_status(xkb_compose_st)) {
++				case XKB_COMPOSE_COMPOSING:
++				case XKB_COMPOSE_CANCELLED:
++					consumed = true; // touche morte mémorisée / séquence invalide : rien à émettre
++					break;
++				case XKB_COMPOSE_COMPOSED: {
++					char buf[256] = {};
++					int size = xkb_compose_state_get_utf8(xkb_compose_st, buf, sizeof(buf));
++					String composed = String::utf8(buf, size);
++					xkb_compose_state_reset(xkb_compose_st);
++					for (int i = 0; i < composed.length(); i++) {
++						_emit_key(xkb_keycode, true, p_echo, composed[i], true);
++					}
++					consumed = true;
++					break;
++				}
++				default:
++					break;
++			}
++		}
++	}
 +
-+	if (p_pressed && !p_echo && xkb_keymap_key_repeats(xkb_map, xkb_keycode)) {
++	if (!consumed) {
++		_emit_key(xkb_keycode, p_pressed, p_echo);
++	}
++
++	if (p_pressed && !p_echo && !consumed && xkb_keymap_key_repeats(xkb_map, xkb_keycode)) {
 +		repeat_keycode = xkb_keycode;
 +		repeat_next_usec = OS::get_singleton()->get_ticks_usec() + REPEAT_DELAY_USEC;
 +	} else if (!p_pressed && repeat_keycode == xkb_keycode) {
@@ -1129,10 +1192,10 @@ index 0000000..f910131
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.h b/platform/linuxbsd/kms/kms_input.h
 new file mode 100644
-index 0000000..991054c
+index 0000000..c5426d6
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.h
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,81 @@
 +#pragma once
 +
 +#ifdef KMS_ENABLED
@@ -1150,6 +1213,8 @@ index 0000000..991054c
 +struct xkb_context;
 +struct xkb_keymap;
 +struct xkb_state;
++struct xkb_compose_table;
++struct xkb_compose_state;
 +
 +// Clavier / souris via libinput (udev) + xkbcommon. Les périphériques sont
 +// ouverts par libseat. Les événements sont injectés dans Input.
@@ -1167,6 +1232,9 @@ index 0000000..991054c
 +	xkb_context *xkb_ctx = nullptr;
 +	xkb_keymap *xkb_map = nullptr;
 +	xkb_state *xkb_st = nullptr;
++	// Touches mortes (^, ¨, ´, `…) et séquences Compose.
++	xkb_compose_table *xkb_compose_tbl = nullptr;
++	xkb_compose_state *xkb_compose_st = nullptr;
 +
 +	Vector2i bounds;
 +	Vector2 pointer_pos;
@@ -1185,7 +1253,7 @@ index 0000000..991054c
 +
 +	void _update_modifiers();
 +	void _handle_key(uint32_t p_evdev_key, bool p_pressed, bool p_echo = false);
-+	void _emit_key(uint32_t p_xkb_keycode, bool p_pressed, bool p_echo);
++	void _emit_key(uint32_t p_xkb_keycode, bool p_pressed, bool p_echo, uint32_t p_unicode_override = 0, bool p_use_override = false);
 +	void _handle_motion(const Vector2 &p_delta);
 +	void _handle_button(uint32_t p_evdev_button, bool p_pressed);
 +	void _emit_wheel(MouseButton p_button, float p_factor);
