@@ -17,6 +17,7 @@ godot --headless --script tests/runner.gd
 | `test_capture_cache.gd` | Capture size rounding (64-byte alignment), image buffer sizing |
 | `test_video_encode_decode.gd` | JPEG/PNG encode/decode round-trip, quality/size tradeoff |
 | `test_audio_encode_decode.gd` | PCM buffer handling, sine wave generation, stereo interleave |
+| `test_level_tcp_limits.gd` | LevelTcp : quota de connexions et bannissement par IP |
 
 ## Writing Tests
 

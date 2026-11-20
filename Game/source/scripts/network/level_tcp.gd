@@ -22,6 +22,9 @@ const HANDSHAKE_TIMEOUT_MSEC := 5000
 const CONNECT_TIMEOUT_MSEC := 8000
 const STALL_TIMEOUT_MSEC := 15000
 const MAX_CONNECTIONS := 8
+const MAX_CONNECTIONS_PER_IP := 2 # un seul hôte ne peut pas saturer les 8 slots
+const MAX_REJECTS_PER_IP := 5 # jetons invalides/expirés tolérés par fenêtre
+const REJECT_WINDOW_MSEC := 60000 # fenêtre de comptage ; au-delà : IP bannie le temps de la fenêtre
 const MAX_PAYLOAD := 1 << 30 # 1 GiB : borne dure contre un en-tête hostile
 const WRITE_SLICE := 65536
 const WRITE_BUDGET := 1 << 20 # octets max par connexion et par tour de boucle
@@ -135,6 +138,7 @@ class Server extends RefCounted:
 
 	func _run() -> void:
 		var conns: Array = []
+		var rejects: Dictionary = {} # ip -> {"n": rejets, "since": ms}
 		while true:
 			_mutex.lock()
 			var stopping := _stop
@@ -148,13 +152,16 @@ class Server extends RefCounted:
 				var p := _server.take_connection()
 				if p == null:
 					break
-				if conns.size() >= LevelTcp.MAX_CONNECTIONS:
+				var peer_ip := LevelTcp.normalize_ip(p.get_connected_host())
+				if conns.size() >= LevelTcp.MAX_CONNECTIONS \
+						or _is_banned(rejects, peer_ip, Time.get_ticks_msec()) \
+						or _count_for_ip(conns, peer_ip) >= LevelTcp.MAX_CONNECTIONS_PER_IP:
 					p.disconnect_from_host()
 					continue
 				conns.append({
 					"peer": p,
 					"t0": Time.get_ticks_msec(),
-					"ip": LevelTcp.normalize_ip(p.get_connected_host()),
+					"ip": peer_ip,
 					"state": 0,
 					"peer_id": -1,
 					"sent": 0,
@@ -175,6 +182,8 @@ class Server extends RefCounted:
 						moved = true
 						c["moved"] = false
 				if not keep:
+					if bool(c.get("rejected", false)):
+						_note_reject(rejects, String(c["ip"]), Time.get_ticks_msec())
 					(c["peer"] as StreamPeerTCP).disconnect_from_host()
 					conns.remove_at(i)
 				i -= 1
@@ -183,6 +192,31 @@ class Server extends RefCounted:
 		for c in conns:
 			(c["peer"] as StreamPeerTCP).disconnect_from_host()
 		_server.stop()
+
+	static func _count_for_ip(conns: Array, ip: String) -> int:
+		var n := 0
+		for c in conns:
+			if String(c["ip"]) == ip:
+				n += 1
+		return n
+
+	## Enregistre un rejet de jeton pour cette IP (fenêtre glissante simple).
+	static func _note_reject(rejects: Dictionary, ip: String, now: int) -> void:
+		var r: Dictionary = rejects.get(ip, {"n": 0, "since": now})
+		if now - int(r["since"]) > LevelTcp.REJECT_WINDOW_MSEC:
+			r = {"n": 0, "since": now}
+		r["n"] = int(r["n"]) + 1
+		rejects[ip] = r
+
+	## IP ayant épuisé son quota de rejets dans la fenêtre courante.
+	static func _is_banned(rejects: Dictionary, ip: String, now: int) -> bool:
+		if not rejects.has(ip):
+			return false
+		var r: Dictionary = rejects[ip]
+		if now - int(r["since"]) > LevelTcp.REJECT_WINDOW_MSEC:
+			rejects.erase(ip)
+			return false
+		return int(r["n"]) >= LevelTcp.MAX_REJECTS_PER_IP
 
 	## Un pas de la machine à états d'une connexion. false = fermer.
 	func _step(c: Dictionary) -> bool:
@@ -204,6 +238,7 @@ class Server extends RefCounted:
 			var entry := _consume_token(r[1], String(c["ip"]), now)
 			if entry.is_empty():
 				_log("level tcp: %s — token rejected" % c["ip"])
+				c["rejected"] = true
 				return false
 			c["peer_id"] = int(entry["peer_id"])
 			var payload: PackedByteArray = entry["payload"]
