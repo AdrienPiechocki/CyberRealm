@@ -6,6 +6,9 @@ var _arrow: Node2D
 
 func _ready() -> void:
 	if DisplayServer.get_name() != "kms":
+		# queue_free() est différé à la fin de la frame : _process tournerait
+		# encore une fois avec _arrow nul (erreur à chaque lancement hors KMS).
+		set_process(false)
 		queue_free()
 		return
 	layer = 128
