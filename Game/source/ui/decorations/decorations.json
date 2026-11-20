@@ -3,7 +3,7 @@
 	// C'est aussi la marge haute du 9-patch.
     "titlebar_height": 20,
     // Taille « em » du titre, en px (la moitié de la barre).
-    "label_size": 10,
+    "label_size": 8,
     "label_color": "#dbe1f0",
     // Cadre : épaisseur des bandes gauche / droite / bas, en px.
 	// C'est aussi la marge du 9-patch.
