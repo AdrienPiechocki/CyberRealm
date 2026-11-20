@@ -77,7 +77,7 @@ index cb86815..a728082 100644
              if os.system("pkg-config --exists x11"):
 diff --git a/platform/linuxbsd/kms/SCsub b/platform/linuxbsd/kms/SCsub
 new file mode 100644
-index 0000000..35d9015
+index 0000000..1a056f2
 --- /dev/null
 +++ b/platform/linuxbsd/kms/SCsub
 @@ -0,0 +1,16 @@
@@ -88,7 +88,7 @@ index 0000000..35d9015
 +
 +File = env.File
 +
-+source_files = [File("kms_seat.cpp"), File("display_server_kms.cpp"), File("kms_input.cpp")]
++source_files = [File("kms_seat.cpp"), File("display_server_kms.cpp"), File("kms_input.cpp"), File("kms_watchdog.cpp")]
 +
 +# key_mapping_xkb.cpp est déjà compilé par wayland/SCsub quand Wayland est actif.
 +if not env["wayland"]:
@@ -99,10 +99,10 @@ index 0000000..35d9015
 +Return("source_files")
 diff --git a/platform/linuxbsd/kms/display_server_kms.cpp b/platform/linuxbsd/kms/display_server_kms.cpp
 new file mode 100644
-index 0000000..5df250f
+index 0000000..0491b5f
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.cpp
-@@ -0,0 +1,407 @@
+@@ -0,0 +1,412 @@
 +#ifdef KMS_ENABLED
 +
 +#include "display_server_kms.h"
@@ -237,6 +237,7 @@ index 0000000..5df250f
 +	if (seat.is_active()) {
 +		input.process();
 +	}
++	watchdog.heartbeat();
 +	Input::get_singleton()->flush_buffered_events();
 +}
 +
@@ -245,6 +246,7 @@ index 0000000..5df250f
 +void DisplayServerKMS::_seat_disable(void *p_user) {
 +	DisplayServerKMS *self = static_cast<DisplayServerKMS *>(p_user);
 +	print_line("KMS: session désactivée (changement de VT)");
++	self->watchdog.on_session_disabled();
 +	self->input.suspend();
 +	// On perd le DRM master : plus aucun accès GPU/écran tant qu'on n'est pas
 +	// de retour. window_can_draw() renvoie false (seat inactif) dès maintenant.
@@ -261,6 +263,7 @@ index 0000000..5df250f
 +		return; // Premier enable (pendant seat.open()) ou driver dummy.
 +	}
 +	print_line("KMS: session réactivée");
++	self->watchdog.on_session_enabled();
 +	self->input.resume();
 +#if defined(VULKAN_ENABLED) && defined(RD_ENABLED)
 +	if (self->rendering_context && self->drm_device_id >= 0) {
@@ -479,6 +482,7 @@ index 0000000..5df250f
 +	}
 +
 +	print_line(vformat("KMS: %dx%d@%.2f Hz", display_size.x, display_size.y, refresh_rate));
++	watchdog.start();
 +	r_error = OK;
 +#else
 +	r_error = ERR_UNAVAILABLE;
@@ -486,6 +490,7 @@ index 0000000..5df250f
 +}
 +
 +DisplayServerKMS::~DisplayServerKMS() {
++	watchdog.stop();
 +	if (native_menu) {
 +		memdelete(native_menu);
 +		native_menu = nullptr;
@@ -512,10 +517,10 @@ index 0000000..5df250f
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/display_server_kms.h b/platform/linuxbsd/kms/display_server_kms.h
 new file mode 100644
-index 0000000..f4951ad
+index 0000000..7f27f47
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.h
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,228 @@
 +/**************************************************************************/
 +/*  display_server_kms.h                                             */
 +/**************************************************************************/
@@ -552,6 +557,7 @@ index 0000000..f4951ad
 +
 +#include "kms_input.h"
 +#include "kms_seat.h"
++#include "kms_watchdog.h"
 +
 +#include "servers/display/display_server.h"
 +
@@ -583,6 +589,7 @@ index 0000000..f4951ad
 +	Callable window_event_callback;
 +
 +	KMSSeat seat;
++	KMSWatchdog watchdog; // filet contre les gels (retour de VT)
 +	KMSInput input;
 +	DisplayServerEnums::MouseMode mouse_mode = DisplayServerEnums::MOUSE_MODE_VISIBLE;
 +	DisplayServerEnums::MouseMode mouse_mode_override = DisplayServerEnums::MOUSE_MODE_VISIBLE;
@@ -744,10 +751,10 @@ index 0000000..f4951ad
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
 new file mode 100644
-index 0000000..893b588
+index 0000000..f4ca9fc
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.cpp
-@@ -0,0 +1,442 @@
+@@ -0,0 +1,460 @@
 +#ifdef KMS_ENABLED
 +
 +#include "kms_input.h"
@@ -796,6 +803,7 @@ index 0000000..893b588
 +	ERR_FAIL_COND_V_MSG(initialize_xkbcommon(0) != 0, ERR_CANT_CREATE, "KMS: libxkbcommon introuvable.");
 +#endif
 +	KeyMappingXKB::initialize();
++	vt_switch_enabled = OS::get_singleton()->get_environment("CYBERREALM_KMS_VT_SWITCH") == "1";
 +
 +	xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 +	ERR_FAIL_NULL_V(xkb_ctx, ERR_CANT_CREATE);
@@ -990,8 +998,25 @@ index 0000000..893b588
 +	xkb_state_update_key(xkb_st, xkb_keycode, p_pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
 +	_update_modifiers();
 +
-+	// Pas de raccourci de changement de VT : le retour de VT gelait l'écran
-+	// (voir kms-display-driver.md). On ne transmet donc pas Ctrl+Alt+Fn.
++	// Changement de VT (Ctrl+Alt+F1..F12) : désactivé par défaut, car le retour
++	// de VT gelait l'écran (voir kms-display-driver.md). Opt-in avec
++	// CYBERREALM_KMS_VT_SWITCH=1 ; le watchdog (kms_watchdog.h) est le filet.
++	// Ctrl+Alt+Fn n'est de toute façon jamais transmis au jeu.
++	if (ctrl && alt && p_pressed) {
++		int vt = 0;
++		if (p_evdev_key >= KEY_F1 && p_evdev_key <= KEY_F10) {
++			vt = int(p_evdev_key - KEY_F1) + 1;
++		} else if (p_evdev_key == KEY_F11 || p_evdev_key == KEY_F12) {
++			vt = int(p_evdev_key - KEY_F11) + 11;
++		}
++		if (vt) {
++			if (vt_switch_enabled) {
++				print_line(vformat("KMS: demande de bascule vers VT%d", vt));
++				seat->switch_session(vt);
++			}
++			return;
++		}
++	}
 +	bool consumed = false; // touche morte / séquence Compose en cours ou résolue
 +	if (p_pressed && xkb_compose_st) {
 +		xkb_keysym_t sym = xkb_state_key_get_one_sym(xkb_st, xkb_keycode);
@@ -1192,10 +1217,10 @@ index 0000000..893b588
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.h b/platform/linuxbsd/kms/kms_input.h
 new file mode 100644
-index 0000000..c5426d6
+index 0000000..a1458ee
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.h
-@@ -0,0 +1,81 @@
+@@ -0,0 +1,82 @@
 +#pragma once
 +
 +#ifdef KMS_ENABLED
@@ -1240,6 +1265,7 @@ index 0000000..c5426d6
 +	Vector2 pointer_pos;
 +	PointerMode pointer_mode = POINTER_VISIBLE;
 +	BitField<MouseButtonMask> button_mask;
++	bool vt_switch_enabled = false;
 +	bool shift = false, ctrl = false, alt = false, meta = false;
 +
 +	// Répétition de touches (libinput n'en fait pas).
@@ -1474,6 +1500,184 @@ index 0000000..9bc3fcf
 +
 +	KMSSeat() {}
 +	~KMSSeat() { close(); }
++};
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/kms_watchdog.cpp b/platform/linuxbsd/kms/kms_watchdog.cpp
+new file mode 100644
+index 0000000..11a2ef9
+--- /dev/null
++++ b/platform/linuxbsd/kms/kms_watchdog.cpp
+@@ -0,0 +1,112 @@
++#ifdef KMS_ENABLED
++
++#include "kms_watchdog.h"
++
++#include <fcntl.h>
++#include <time.h>
++#include <unistd.h>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++
++static uint64_t _now_usec() {
++	timespec ts;
++	clock_gettime(CLOCK_MONOTONIC, &ts);
++	return uint64_t(ts.tv_sec) * 1000000ULL + uint64_t(ts.tv_nsec) / 1000ULL;
++}
++
++void KMSWatchdog::start() {
++	const char *m = getenv("CYBERREALM_KMS_WATCHDOG");
++	if (m && (!strcmp(m, "off") || !strcmp(m, "0"))) {
++		return;
++	}
++	mode = (m && !strcmp(m, "always")) ? MODE_ALWAYS : MODE_VT;
++	timeout_usec = (mode == MODE_ALWAYS) ? 10000000ULL : 5000000ULL;
++	if (const char *t = getenv("CYBERREALM_KMS_WATCHDOG_TIMEOUT")) {
++		double sec = atof(t);
++		if (sec >= 1.0) {
++			timeout_usec = uint64_t(sec * 1000000.0);
++		}
++	}
++	last_beat_usec = _now_usec();
++	armed_until_usec = (mode == MODE_ALWAYS) ? UINT64_MAX : 0;
++	stop_flag = false;
++	started = pthread_create(&thread, nullptr, _run, this) == 0;
++}
++
++void KMSWatchdog::stop() {
++	if (!started) {
++		return;
++	}
++	stop_flag = true;
++	pthread_join(thread, nullptr);
++	started = false;
++}
++
++void KMSWatchdog::heartbeat() {
++	last_beat_usec.store(_now_usec(), std::memory_order_relaxed);
++}
++
++void KMSWatchdog::on_session_enabled() {
++	if (!started || mode != MODE_VT) {
++		return;
++	}
++	uint64_t now = _now_usec();
++	last_beat_usec = now;
++	armed_until_usec = now + VT_WINDOW_USEC;
++}
++
++void KMSWatchdog::on_session_disabled() {
++	if (!started || mode != MODE_VT) {
++		return;
++	}
++	armed_until_usec = 0;
++}
++
++void *KMSWatchdog::_run(void *p_self) {
++	KMSWatchdog *self = static_cast<KMSWatchdog *>(p_self);
++	while (!self->stop_flag) {
++		usleep(250000);
++		uint64_t now = _now_usec();
++		uint64_t until = self->armed_until_usec;
++		if (until == 0 || (until != UINT64_MAX && now > until)) {
++			continue;
++		}
++		uint64_t last = self->last_beat_usec;
++		if (now > last && now - last > self->timeout_usec) {
++			self->_fire(now - last);
++		}
++	}
++	return nullptr;
++}
++
++void KMSWatchdog::_fire(uint64_t p_stale_usec) {
++	// Uniquement des appels async-signal-safe : le processus est dans un état
++	// douteux (thread principal bloqué dans le pilote graphique).
++	char msg[192];
++	int n = snprintf(msg, sizeof(msg),
++			"KMS watchdog: boucle principale bloquee depuis %.1f s -> arret du processus (libere l'ecran et le VT).\n",
++			double(p_stale_usec) / 1e6);
++	if (n > 0) {
++		(void)!write(STDERR_FILENO, msg, size_t(n));
++		const char *state = getenv("XDG_STATE_HOME");
++		const char *home = getenv("HOME");
++		char path[512] = {};
++		if (state && *state) {
++			snprintf(path, sizeof(path), "%s/cyberrealm-kms-watchdog.log", state);
++		} else if (home && *home) {
++			snprintf(path, sizeof(path), "%s/.cyberrealm-kms-watchdog.log", home);
++		}
++		if (path[0]) {
++			int fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
++			if (fd >= 0) {
++				(void)!write(fd, msg, size_t(n));
++				fsync(fd);
++				close(fd);
++			}
++		}
++	}
++	_exit(70);
++}
++
++#endif // KMS_ENABLED
+diff --git a/platform/linuxbsd/kms/kms_watchdog.h b/platform/linuxbsd/kms/kms_watchdog.h
+new file mode 100644
+index 0000000..845ca10
+--- /dev/null
++++ b/platform/linuxbsd/kms/kms_watchdog.h
+@@ -0,0 +1,54 @@
++#pragma once
++
++#ifdef KMS_ENABLED
++
++#include <atomic>
++#include <cstdint>
++#include <pthread.h>
++
++// Filet de sécurité contre les gels d'affichage (voir kms-display-driver.md :
++// le retour de VT a déjà figé tous les écrans). Le thread principal appelle
++// heartbeat() à chaque process_events(). Un thread dédié (le principal est
++// bloqué dans ce cas) surveille ce battement : s'il s'arrête trop longtemps
++// alors que le watchdog est armé, il journalise puis termine le processus.
++// Le noyau ferme alors les fds DRM, ce qui rend l'écran et le VT au système.
++//
++// CYBERREALM_KMS_WATCHDOG :
++//   "vt" (défaut)  armé seulement pendant VT_WINDOW_SEC après un retour de VT
++//                  (là où le gel est connu) : un long chargement ne tue donc pas le jeu ;
++//   "always"       armé en permanence, délai 10 s ;
++//   "off" / "0"    désactivé.
++// CYBERREALM_KMS_WATCHDOG_TIMEOUT : délai en secondes (défaut 5 en « vt »).
++class KMSWatchdog {
++public:
++	enum Mode { MODE_OFF, MODE_VT, MODE_ALWAYS };
++
++private:
++	Mode mode = MODE_OFF;
++	uint64_t timeout_usec = 5000000;
++	static constexpr uint64_t VT_WINDOW_USEC = 30000000;
++
++	std::atomic<uint64_t> last_beat_usec{ 0 };
++	std::atomic<uint64_t> armed_until_usec{ 0 }; // 0 = désarmé ; UINT64_MAX = toujours
++	std::atomic<bool> stop_flag{ false };
++	pthread_t thread;
++	bool started = false;
++
++	static void *_run(void *p_self);
++	void _fire(uint64_t p_stale_usec);
++
++public:
++	// Lit l'environnement et démarre le thread (sans effet si désactivé).
++	void start();
++	void stop();
++	// Thread principal, à chaque tour de boucle.
++	void heartbeat();
++	// Retour de VT : arme (mode « vt ») pour la fenêtre de surveillance.
++	void on_session_enabled();
++	// Perte de la session : le gel est normal, on désarme.
++	void on_session_disabled();
++
++	~KMSWatchdog() { stop(); }
 +};
 +
 +#endif // KMS_ENABLED
