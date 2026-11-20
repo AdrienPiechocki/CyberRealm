@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+"""cyberrealm-portal-shortcuts — backend xdg-desktop-portal « GlobalShortcuts » de CyberRealm.
+
+Wayland interdit à une application de lire le clavier sans focus ; le portail
+GlobalShortcuts est la voie standard (KDE, GNOME, Hyprland l'ont). CyberRealm, lui,
+possède déjà TOUT le clavier : le jeu Godot reçoit chaque touche avant de la
+transmettre à une fenêtre. Ce processus fait donc le pont :
+
+    application ──(portail)──▶ ce backend ──(fichier)──▶ jeu Godot (global_shortcuts.gd)
+                                     ▲                          │ touche reconnue
+                                     └──────(fichier)───────────┘
+
+  * BindShortcuts : le backend enregistre les raccourcis demandés et publie la liste
+    des déclencheurs dans  $XDG_RUNTIME_DIR/cyberrealm-shortcuts  (JSON, remplacé
+    atomiquement) ; le jeu la relit dès qu'elle change.
+  * Quand le jeu reconnaît un déclencheur (et consomme la touche), il ajoute une
+    ligne « A <ref> » (appui) puis « D <ref> » (relâchement) à
+    $XDG_RUNTIME_DIR/cyberrealm-shortcut-events ; le backend émet alors les
+    signaux Activated / Deactivated du portail.
+
+Le déclencheur demandé (preferred_trigger, ex. « SHIFT+Tab ») est accordé tel quel,
+sauf réglage de l'utilisateur dans ~/.config/cyberrealm/shortcuts.json :
+    { "<app_id>/<id du raccourci>": "CTRL+ALT+o", ... }     (app_id vide = « host »)
+Une valeur vide désactive le raccourci. Il tourne sur le bus D-Bus privé du jeu
+et s'arrête avec lui."""
+import json, os, pathlib, sys
+
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME = "org.freedesktop.impl.portal.desktop.cyberrealm"
+PATH = "/org/freedesktop/portal/desktop"
+IFACE = "org.freedesktop.impl.portal.GlobalShortcuts"
+SESSION_IFACE = "org.freedesktop.impl.portal.Session"
+
+XML = f"""<node>
+  <interface name="{IFACE}">
+    <method name="CreateSession">
+      <arg type="o" name="handle" direction="in"/><arg type="o" name="session_handle" direction="in"/>
+      <arg type="s" name="app_id" direction="in"/><arg type="a{{sv}}" name="options" direction="in"/>
+      <arg type="u" name="response" direction="out"/><arg type="a{{sv}}" name="results" direction="out"/>
+    </method>
+    <method name="BindShortcuts">
+      <arg type="o" name="handle" direction="in"/><arg type="o" name="session_handle" direction="in"/>
+      <arg type="a(sa{{sv}})" name="shortcuts" direction="in"/><arg type="s" name="parent_window" direction="in"/>
+      <arg type="a{{sv}}" name="options" direction="in"/>
+      <arg type="u" name="response" direction="out"/><arg type="a{{sv}}" name="results" direction="out"/>
+    </method>
+    <method name="ListShortcuts">
+      <arg type="o" name="handle" direction="in"/><arg type="o" name="session_handle" direction="in"/>
+      <arg type="u" name="response" direction="out"/><arg type="a{{sv}}" name="results" direction="out"/>
+    </method>
+    <method name="ConfigureShortcuts">
+      <arg type="o" name="session_handle" direction="in"/><arg type="s" name="parent_window" direction="in"/>
+      <arg type="a{{sv}}" name="options" direction="in"/>
+    </method>
+    <signal name="Activated">
+      <arg type="o" name="session_handle"/><arg type="s" name="shortcut_id"/>
+      <arg type="t" name="timestamp"/><arg type="a{{sv}}" name="options"/>
+    </signal>
+    <signal name="Deactivated">
+      <arg type="o" name="session_handle"/><arg type="s" name="shortcut_id"/>
+      <arg type="t" name="timestamp"/><arg type="a{{sv}}" name="options"/>
+    </signal>
+    <signal name="ShortcutsChanged">
+      <arg type="o" name="session_handle"/><arg type="a(sa{{sv}})" name="shortcuts"/>
+    </signal>
+    <property name="version" type="u" access="read"/>
+  </interface>
+</node>"""
+SESSION_XML = f"""<node><interface name="{SESSION_IFACE}">
+  <method name="Close"/><signal name="Closed"><arg type="a{{sv}}" name="details"/></signal>
+  <property name="version" type="u" access="read"/></interface></node>"""
+
+RT = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+REGISTRY = RT / "cyberrealm-shortcuts"
+EVENTS = RT / "cyberrealm-shortcut-events"
+USER_CONF = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config") \
+    / "cyberrealm" / "shortcuts.json"
+
+
+def user_overrides():
+    try:
+        d = json.loads(USER_CONF.read_text(encoding="utf-8"))
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def describe(trigger):
+    """« SHIFT+Tab » -> « Shift+Tab » (texte montré à l'utilisateur par l'application)."""
+    return "+".join(p.capitalize() if p.isupper() and len(p) > 1 else p for p in trigger.split("+"))
+
+
+class Backend:
+    def __init__(self, conn):
+        self.conn = conn
+        self.sessions = {}     # session_handle -> {"app": str, "shortcuts": {id: {...}}}
+        self.refs = {}         # ref -> (session_handle, shortcut_id)
+        self.next_ref = 1
+        self.offset = 0
+        self.held = set()
+        node = Gio.DBusNodeInfo.new_for_xml(XML)
+        conn.register_object(PATH, node.interfaces[0], self.on_call, self.on_prop, None)
+        self.session_info = Gio.DBusNodeInfo.new_for_xml(SESSION_XML).interfaces[0]
+        # le jeu écrit les événements dans ce fichier ; on repart d'un fichier vide
+        EVENTS.write_text("")
+        self.monitor = Gio.File.new_for_path(str(EVENTS)).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.monitor.connect("changed", lambda *_: self.read_events())
+        self.publish()
+
+    # ---- interface D-Bus
+    def on_prop(self, _c, _s, _p, _i, name):
+        return GLib.Variant("u", 2) if name == "version" else None
+
+    def on_call(self, _c, sender, _path, _iface, method, params, inv):
+        try:
+            getattr(self, "m_" + method)(params.unpack(), inv)
+        except Exception as e:   # un appel bancal ne doit jamais tuer le backend
+            print(f"cyberrealm-portal-shortcuts: {method}: {e}", file=sys.stderr)
+            inv.return_dbus_error("org.freedesktop.DBus.Error.Failed", str(e))
+
+    def m_CreateSession(self, args, inv):
+        _handle, session, app_id, _opts = args
+        self.sessions[session] = {"app": app_id, "shortcuts": {}}
+        self.conn.register_object(session, self.session_info,
+                                  lambda *a: self.on_session_call(session, a[4], a[6]),
+                                  lambda *a: GLib.Variant("u", 1), None)
+        inv.return_value(GLib.Variant("(ua{sv})", (0, {})))
+
+    def on_session_call(self, session, method, inv):
+        if method == "Close":
+            self.drop(session)
+        inv.return_value(None)
+
+    def m_BindShortcuts(self, args, inv):
+        _handle, session, shortcuts, _parent, _opts = args
+        s = self.sessions.get(session)
+        if s is None:
+            inv.return_value(GLib.Variant("(ua{sv})", (2, {})))
+            return
+        over = user_overrides()
+        for sid, opts in shortcuts:
+            key = f"{s['app'] or 'host'}/{sid}"
+            trigger = over[key] if isinstance(over.get(key), str) else str(opts.get("preferred_trigger") or "")
+            prev = s["shortcuts"].get(sid)
+            ref = prev["ref"] if prev else self.next_ref
+            if not prev:
+                self.next_ref += 1
+            s["shortcuts"][sid] = {"ref": ref, "trigger": trigger,
+                                   "description": str(opts.get("description") or sid)}
+            self.refs[ref] = (session, sid)
+        self.publish()
+        inv.return_value(GLib.Variant("(ua{sv})", (0, {"shortcuts": self.variant(session)})))
+
+    def m_ListShortcuts(self, args, inv):
+        inv.return_value(GLib.Variant("(ua{sv})", (0, {"shortcuts": self.variant(args[1])})))
+
+    def m_ConfigureShortcuts(self, args, inv):
+        inv.return_value(None)   # pas d'interface de réglage : voir ~/.config/cyberrealm/shortcuts.json
+
+    def variant(self, session):
+        items = [(sid, {"description": GLib.Variant("s", d["description"]),
+                        "trigger_description": GLib.Variant("s", describe(d["trigger"]) if d["trigger"] else "")})
+                 for sid, d in self.sessions.get(session, {}).get("shortcuts", {}).items()]
+        return GLib.Variant("a(sa{sv})", items)
+
+    def drop(self, session):
+        s = self.sessions.pop(session, None)
+        if s:
+            for d in s["shortcuts"].values():
+                self.refs.pop(d["ref"], None)
+                self.held.discard(d["ref"])
+            self.publish()
+
+    # ---- jeu -> portail
+    def publish(self):
+        """Liste des déclencheurs actifs, lue par le jeu."""
+        rows = [{"ref": d["ref"], "trigger": d["trigger"], "id": sid, "app": s["app"]}
+                for s in self.sessions.values() for sid, d in s["shortcuts"].items() if d["trigger"]]
+        tmp = REGISTRY.with_name(REGISTRY.name + ".tmp")
+        tmp.write_text(json.dumps(rows))
+        os.replace(tmp, REGISTRY)
+
+    def read_events(self):
+        try:
+            with open(EVENTS, "rb") as f:
+                f.seek(self.offset)
+                data = f.read()
+        except OSError:
+            return
+        done = data.rfind(b"\n") + 1          # on ne consomme que les lignes complètes
+        self.offset += done
+        for line in data[:done].decode("utf-8", "replace").splitlines():
+            kind, _, ref = line.partition(" ")
+            if kind in ("A", "D") and ref.strip().isdigit():
+                self.emit(kind, int(ref))
+
+    def emit(self, kind, ref):
+        target = self.refs.get(ref)
+        if target is None:
+            return
+        session, sid = target
+        if kind == "A":
+            self.held.add(ref)
+        elif ref not in self.held:
+            return
+        else:
+            self.held.discard(ref)
+        self.conn.emit_signal(None, PATH, IFACE, "Activated" if kind == "A" else "Deactivated",
+                              GLib.Variant("(osta{sv})", (session, sid, GLib.get_monotonic_time() // 1000, {})))
+
+
+def main():
+    loop = GLib.MainLoop()
+    backends = []
+
+    def on_bus(conn, _name):
+        backends.append(Backend(conn))
+
+    def lost(_c, _n):
+        loop.quit()       # bus privé disparu (le jeu se ferme) : on s'arrête avec lui
+    Gio.bus_own_name(Gio.BusType.SESSION, NAME, Gio.BusNameOwnerFlags.NONE, on_bus, None, lost)
+    try:
+        loop.run()
+    finally:
+        for p in (REGISTRY, EVENTS):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+
+if __name__ == "__main__":
+    main()

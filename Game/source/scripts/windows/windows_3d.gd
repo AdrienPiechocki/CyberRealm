@@ -142,6 +142,7 @@ var quads: Dictionary = {} # window_id (int) -> MeshInstance3D
 var popup_quads: Dictionary = {} # popup_id (int) -> MeshInstance3D
 var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var window_titles: Dictionary = {} # window_id (int) -> String
+var window_app_ids: Dictionary = {} # window_id (int) -> String (app_id Wayland / classe X11)
 var window_shared: Dictionary = {} # window_id (int) -> bool (visible par les autres joueurs)
 var _texture_versions: Dictionary = {} # window_id (int) -> int (version du contenu, pour le LAN)
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
@@ -266,6 +267,13 @@ func get_window_texture(wid: int) -> Texture2D:
 # sous Windows3D, à l'identité de la room, pas dans le repère du niveau).
 # « shared » vaut false → le quad distant reste noir (placeholder) ;
 # « shared » vaut true → le contenu réel est streamé (voir get_window_image).
+# Taille en pixels du contenu d'une fenêtre (texture), (0, 0) si pas encore de contenu.
+func _content_px(wid: int) -> Vector2i:
+	var tex: Texture2D = window_textures.get(wid)
+	if tex == null or not is_instance_valid(tex):
+		return Vector2i.ZERO
+	return Vector2i(tex.get_width(), tex.get_height())
+
 func get_windows_state() -> Array:
 	var list: Array = []
 	for wid in quads:
@@ -282,6 +290,14 @@ func get_windows_state() -> Array:
 			"visible": quad.visible,
 			"shared": window_shared.get(wid, false),
 			"pid": compositor.get_window_pid(wid) if compositor != null else -1,
+			# Pour les clients qui suivent une fenêtre (overlay de Ludodex) : taille du
+			# CONTENU en pixels (la « size » ci-dessus est celle du quad 3D, en mètres),
+			# nom, et « hidden » = masquée par toggle_hide (l'équivalent de « réduite »).
+			"width": _content_px(wid).x,
+			"height": _content_px(wid).y,
+			"title": window_titles.get(wid, ""),
+			"app_id": window_app_ids.get(wid, ""),
+			"hidden": not quad.visible,
 		})
 	return list
 
@@ -495,7 +511,8 @@ func toggle_hide(id: int) -> void:
 	_set_quad_interactive(quad, quad.visible)
 	windows_state_changed.emit()
 
-func on_window_mapped(id: int, title: String, _app_id: String) -> void:
+func on_window_mapped(id: int, title: String, app_id: String) -> void:
+	window_app_ids[id] = app_id
 	var quad := MeshInstance3D.new()
 	var mesh := QuadMesh.new()
 	mesh.size = Vector2(1.6, 1.0) * WINDOW_QUAD_SCALE # ratio ajusté au premier texture_updated
@@ -2273,6 +2290,7 @@ func copy_window_basis(from_id: int, to_id: int) -> void:
 # testable : celui-ci await la freeing de l'occulteur, donc ne peut pas être
 # appelé depuis un test runner synchrone.
 func _erase_window_state(id: int) -> void:
+	window_app_ids.erase(id)
 	window_textures.erase(id)
 	window_shared.erase(id)
 	window_server_side.erase(id)

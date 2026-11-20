@@ -26,6 +26,7 @@ var layers: Node3D
 var pins: Node3D
 var fx: Node3D
 var presenter: Node3D # présente le viewport à l'output headless pour OBS
+var global_shortcuts: Node # raccourcis globaux (portail GlobalShortcuts), cf. scripts/input/global_shortcuts.gd
 var lan: Node # multijoueur LAN (hôte/join, avatars)
 var cmd: Node # drone de commandes IPC (cyberrealm-exec)
 var interactor: Node3D # clic gauche sur les objets du niveau (scripts user)
@@ -364,6 +365,12 @@ func _ready() -> void:
 	pins = _add_manager(preload("res://scripts/windows/pinned_windows.gd"), "PinnedWindows")
 	fx = _add_manager(preload("res://scripts/windows/effects.gd"), "Effects")
 	presenter = _add_manager(preload("res://scripts/windows/present_manager.gd"), "PresentManager")
+	# Raccourcis globaux (portail GlobalShortcuts) : moitié « clavier » du backend
+	# compositors/portal-shortcuts. Nœud simple (pas Node3D) : aucune scène 3D.
+	global_shortcuts = Node.new()
+	global_shortcuts.name = "GlobalShortcuts"
+	global_shortcuts.set_script(preload("res://scripts/input/global_shortcuts.gd"))
+	add_child(global_shortcuts)
 
 	win3d.setup(compositor, player)
 	focus.setup(compositor, player, ui, win3d, keyboard)
@@ -422,7 +429,11 @@ func _ready() -> void:
 	# exige KWin sur le compositeur → échec "denied or cancelled by user".
 	# "dwl:wlr" fait matcher wlr-portals.conf → backend wlr (vérifié).
 	compositor.set_portal_backend("dwl:wlr")
+	# Déclare le backend GlobalShortcuts au xdg-desktop-portal privé (avant son
+	# lancement), puis le démarre une fois le bus privé créé par launch_portals().
+	global_shortcuts.prepare()
 	compositor.launch_portals()
+	global_shortcuts.start_backend(compositor)
 	# Les layer surfaces sont ancrées à l'écran : le compositeur doit
 	# connaître la taille du viewport pour le layout (arrange_layer_surfaces).
 	compositor.set_output_size(int(get_viewport().get_visible_rect().size.x),
@@ -1135,6 +1146,13 @@ func _input(event: InputEvent) -> void:
 		elif event is InputEventJoypadButton:
 			layers.forward_gamepad_event(event)
 			return
+	# Raccourcis globaux (portail xdg GlobalShortcuts, ex. l'overlay de Ludodex) :
+	# prioritaires sur le mode focus et les binds — la touche est consommée. Ici, donc
+	# APRÈS le lockscreen et les layers keyboard-interactive : un overlay qui a pris le
+	# clavier reçoit ses propres touches (il referme lui-même avec la sienne).
+	if event is InputEventKey and not capture_selector.visible and global_shortcuts.try_event(event):
+		get_viewport().set_input_as_handled()
+		return
 	# interact_mode déclenché à la manette (bouton ou axe) : signaler au
 	# _process pour afficher le clavier virtuel en même temps que l'activation.
 	if (event is InputEventJoypadButton and event.pressed \

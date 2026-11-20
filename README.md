@@ -51,6 +51,17 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
+- **Global shortcuts** — implements the `org.freedesktop.portal.GlobalShortcuts`
+  portal, so any app can register a key that works whatever window has focus
+  (e.g. the Ludodex in-game overlay on `Shift+Tab`). The game sees every key
+  first: a recognised shortcut key is consumed (the focused window, focus mode
+  and custom binds never see it) and the app gets the portal's `Activated` signal.
+  The protocol part is `compositors/portal-shortcuts/cyberrealm-portal-shortcuts`
+  (Python, needs PyGObject), started with the portals on the game's private bus;
+  `global_shortcuts.gd` is the keyboard half. Requested triggers are granted as
+  asked; override or disable one in `~/.config/cyberrealm/shortcuts.json`
+  (`{"<app_id>/<shortcut id>": "CTRL+ALT+o"}`, empty string = off; the app id of a
+  non-Flatpak app is `host`).
 - **OBS capture built-in** — ships a patched `xdg-desktop-portal-wlr` so OBS can
   add *screen* and *window* capture sources straight from the game, choosing the
   target with an in-game selector UI.

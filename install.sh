@@ -120,7 +120,7 @@ install_system_packages() {
             pkgs=(base-devel godot wayland wayland-protocols pixman libdrm xwayland-satellite \
                   libinput scons pkgconf meson ninja vulkan-headers vulkan-icd-loader \
                   xdg-desktop-portal-wlr ffmpeg libva-mesa-driver libva libx11 openssh rsync \
-                  libxkbcommon pipewire opus mesa unzip)
+                  libxkbcommon pipewire opus mesa unzip python-gobject)
             ;;
         apt)
             pkgs=(build-essential git unzip xwayland \
@@ -128,7 +128,7 @@ install_system_packages() {
                   libinput-dev scons pkg-config meson ninja-build libvulkan-dev mesa-vulkan-drivers \
                   ffmpeg libavcodec-dev libavutil-dev libswscale-dev libva-dev \
                   libx11-dev libxkbcommon-dev libpipewire-0.3-dev libspa-0.2-dev libopus-dev \
-                  libgbm-dev libegl-dev libdbus-1-dev)
+                  libgbm-dev libegl-dev libdbus-1-dev python3-gi gir1.2-glib-2.0)
             ;;
         dnf)
             pkgs=(gcc-c++ make git unzip xwayland \
@@ -137,7 +137,7 @@ install_system_packages() {
                   vulkan-loader-devel mesa-vulkan-drivers ffmpeg-free libavcodec-free-devel \
                   libavutil-free-devel libswscale-free-devel libva-devel \
                   libX11-devel libxkbcommon-devel pipewire-devel libspa-devel opus-devel \
-                  mesa-libgbm-devel mesa-libEGL-devel dbus-devel)
+                  mesa-libgbm-devel mesa-libEGL-devel dbus-devel python3-gobject)
             ;;
     esac
     if [[ "$KMS_WANTED" -eq 1 ]]; then
