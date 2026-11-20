@@ -42,7 +42,7 @@ touche ISO (KEY_LESS) ; avec un keymap Godot en "us" au lieu de "fr", Shift+';' 
 
 - `kms_watchdog` : thread dédié qui surveille le battement de `process_events()`. S'il s'arrête plus de
   5 s (CYBERREALM_KMS_WATCHDOG_TIMEOUT) dans les 30 s qui suivent un retour de VT, il journalise
-  (stderr + `$XDG_STATE_HOME|$HOME/.cyberrealm-kms-watchdog.log`) puis `_exit(70)` : le noyau ferme les fds
+  (stderr + `~/.local/state/cyberrealm/kms-session.log`) puis `_exit(70)` : le noyau ferme les fds
   DRM et rend l'écran. `CYBERREALM_KMS_WATCHDOG=always` l'arme en permanence (10 s), `off` le désactive.
 - Ctrl+Alt+F1..F12 : ignoré par défaut ; `CYBERREALM_KMS_VT_SWITCH=1` déclenche `libseat_switch_session`.
   Jamais transmis au jeu. À tester avec un accès ssh de secours : la libération effective de l'écran par

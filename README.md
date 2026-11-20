@@ -288,7 +288,9 @@ template with `kms=yes`, and installs a **CyberRealm (KMS)** entry in
 `/usr/share/wayland-sessions` (sudo). Picking it in your login manager runs the
 game as the whole session — no host compositor. The game's output goes to
 `~/.local/state/cyberrealm/kms-session.log`. Limitations: single screen, no VT
-switching (the keyboard is owned by the game; quit from the pause menu), and
+switching by default (the keyboard is owned by the game; quit from the pause
+menu — `CYBERREALM_KMS_VT_SWITCH=1` enables Ctrl+Alt+F1..F12, guarded by a
+watchdog that kills a frozen game so the screen is released), and
 the first run should be done with an `ssh` session open as a safety net. See
 `compositors/godot-patches/kms-display-driver.md`.
 
@@ -462,6 +464,24 @@ choice is fed back to the portal and OBS starts streaming the game view.
   scripts (see `Game/source/user/README.md`).
 - No release binary is committed — `build/` is gitignored and produced by
   `install.sh`.
+
+## Troubleshooting
+
+| Symptom | Session | What to check |
+|---|---|---|
+| Black screen / `Failed to connect to Wayland display` | Wayland | The game needs a running host compositor (`echo $WAYLAND_DISPLAY`). Under KMS use the dedicated session instead. |
+| Client windows never appear | any | Launch the app from inside the game (it sets `WAYLAND_DISPLAY` to the game's own socket); an app started before the game connects to the host. |
+| Players can't join a LAN game | any | Firewall: UDP 7777/9999 and TCP 7778 must be open (`./install.sh` does it; for nftables, check the chain `inet filter input` exists). Router AP isolation also blocks it. |
+| Drag & drop file transfer fails | any | `sshd` running on the receiver, `rsync` and `ssh` installed on both, TCP 22 open. |
+| Polkit prompts appear on the wrong desktop | Wayland | Set the polkit agent in the pause menu; the host agent is stopped while the game runs and restarted on exit. |
+| `KMS: libseat … Function not implemented` | KMS | KMS cannot start from a graphical session: switch to a TTY (Ctrl+Alt+F3) or pick the *CyberRealm (KMS)* session at login. |
+| `^`, `¨` do nothing in the KMS session | KMS | Needs the `kms-display-driver.patch` revision with Compose support; check `LANG`/`LC_ALL` (the Compose table comes from the locale) and `/etc/vconsole.conf` for the layout. |
+| KMS session froze or exited with code 70 | KMS | `~/.local/state/cyberrealm/kms-session.log` (the watchdog logs there). `CYBERREALM_KMS_WATCHDOG=off|always` and `CYBERREALM_KMS_WATCHDOG_TIMEOUT=<s>` tune it. Keep an `ssh` session open when testing. |
+| Wrong monitor / resolution under KMS | KMS | `CYBERREALM_KMS_OUTPUT=DP-1`, `CYBERREALM_KMS_MODE=1920x1080@60`. |
+| Layout is QWERTY under KMS | KMS | Set `XKB_DEFAULT_LAYOUT` or fix `XKBLAYOUT` in `/etc/vconsole.conf` (`localectl set-x11-keymap fr`). |
+
+Regenerating the Godot KMS patch after editing the Godot tree:
+`compositors/godot-patches/make-patch.sh [build/godot-kms-src]`.
 
 ## UI theming
 
