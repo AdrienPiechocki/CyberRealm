@@ -129,6 +129,17 @@ func _cmd_windows() -> Dictionary:
 	var windows: Array = []
 	if win3d != null and win3d.has_method("get_windows_state"):
 		windows = win3d.get_windows_state()
+	# Mode focus : où la fenêtre est AFFICHÉE (x, y, width, height en pixels du viewport,
+	# remplaçant la taille du contenu). Les clients (overlay de Ludodex) s'y calent quand elle
+	# ne remplit pas l'écran. Hors focus (fenêtres 3D), pas de x/y : aucune position à l'écran.
+	if focus != null and focus.has_method("get_displayed_content_rect"):
+		for w in windows:
+			var r: Rect2 = focus.get_displayed_content_rect(int(w.get("wid", -1)))
+			if r.size.x > 0.0 and r.size.y > 0.0:
+				w["x"] = roundi(r.position.x)
+				w["y"] = roundi(r.position.y)
+				w["width"] = roundi(r.size.x)
+				w["height"] = roundi(r.size.y)
 	return {"ok": true, "output": windows}
 
 func _cmd_close(args: String) -> Dictionary:

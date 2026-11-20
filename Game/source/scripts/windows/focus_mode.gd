@@ -1443,6 +1443,14 @@ func _displayed_content_rect(id: int) -> Rect2:
 		Vector2(csize.x / surf.x, csize.y / surf.y) * disp.size
 	)
 
+# Zone du CONTENU de la fenêtre `id` à l'écran (coordonnées du viewport, = celles des layer
+# surfaces), pour les clients qui se calent sur la fenêtre (overlay de Ludodex).
+# Rect vide hors mode focus ou si la fenêtre n'a pas d'overlay.
+func get_displayed_content_rect(id: int) -> Rect2:
+	if not focus_mode or remote_focus:
+		return Rect2()
+	return _displayed_content_rect(id)
+
 func _sync_title_bar(id: int) -> void:
 	var bar: Panel = focus_title_bars.get(id)
 	if bar == null or not is_instance_valid(bar):
