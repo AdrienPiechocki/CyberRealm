@@ -24,7 +24,7 @@ Remove everything install.sh created, without touching the project source:
   - KWin script (removed + disabled), GNOME extension, Hyprland rule/require
   - Godot 4.7.2 export template (~/.local/share/godot/export_templates)
   - GDExtension build outputs and project build artifacts (build/, Game/build)
-  - firewall rules opened for UDP 7777/9999 and TCP 22
+  - firewall rules opened for UDP 7777/9999 and TCP 22/7778
 
 System packages installed by install.sh are NOT removed.
 
@@ -75,18 +75,24 @@ firewall_close() {
         as_root firewall-cmd --permanent --remove-port="$port/$proto" >/dev/null 2>&1 || true
         as_root firewall-cmd --reload
     elif command -v nft >/dev/null 2>&1 && as_root nft list ruleset >/dev/null 2>&1; then
-        as_root nft delete rule inet filter input tcp dport "$port" accept 2>/dev/null || true
-        as_root nft delete rule inet filter input udp dport "$port" accept 2>/dev/null || true
+        # nft ne supprime une règle que par son handle : on retrouve celle
+        # posée par install.sh grâce à son commentaire.
+        local handle
+        while handle="$(as_root nft -a list chain inet filter input 2>/dev/null \
+                | sed -n "s/.*comment \"cyberrealm-$proto-$port\" # handle \([0-9]*\)$/\1/p" | head -n1)" \
+                && [[ -n "$handle" ]]; do
+            as_root nft delete rule inet filter input handle "$handle" || break
+        done
     elif command -v iptables >/dev/null 2>&1; then
-        as_root iptables -D INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null || true
-        as_root iptables -D INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null || true
+        as_root iptables -D INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null || true
     fi
 }
 
-echo "uninstall: reversing firewall rules (UDP 7777, 9999, TCP 22) ..."
+echo "uninstall: reversing firewall rules (UDP 7777, 9999, TCP 22, 7778) ..."
 firewall_close udp 7777
 firewall_close udp 9999
 firewall_close tcp 22
+firewall_close tcp 7778
 
 # --- User helpers & launcher -------------------------------------------------
 echo "uninstall: removing helpers and desktop launcher ..."

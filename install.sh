@@ -315,13 +315,18 @@ firewall_open() {
         as_root firewall-cmd --permanent --add-port="$port/$proto"
         do_fwcmd=1
     elif command -v nft >/dev/null 2>&1 && as_root nft list ruleset >/dev/null 2>&1; then
-        as_root nft add rule inet filter input tcp dport "$port" accept 2>/dev/null || true
-        as_root nft add rule inet filter input udp dport "$port" accept 2>/dev/null || true
+        # Seulement le protocole demandé, dans la chaîne « inet filter input »
+        # si elle existe (sinon on le dit au lieu d'échouer en silence). Les
+        # règles portent un commentaire pour que uninstall.sh les retrouve.
+        if ! as_root nft list chain inet filter input >/dev/null 2>&1; then
+            echo "install: nft chain 'inet filter input' not found — open $proto/$port manually."
+        elif ! as_root nft list chain inet filter input | grep -q "cyberrealm-$proto-$port"; then
+            as_root nft add rule inet filter input "$proto" dport "$port" accept comment "cyberrealm-$proto-$port" \
+                || echo "install: could not add nft rule for $proto/$port — open it manually."
+        fi
     elif command -v iptables >/dev/null 2>&1; then
-        as_root iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null \
-            || as_root iptables -I INPUT -p tcp --dport "$port" -j ACCEPT
-        as_root iptables -C INPUT -p udp --dport "$port" -j ACCEPT 2>/dev/null \
-            || as_root iptables -I INPUT -p udp --dport "$port" -j ACCEPT
+        as_root iptables -C INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null \
+            || as_root iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT
     else
         echo "install: no firewall backend detected (ufw/firewalld/nft/iptables)."
         echo "          Manually open UDP ports 7777 & 9999 and TCP 22."
