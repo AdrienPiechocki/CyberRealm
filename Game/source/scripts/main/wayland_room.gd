@@ -273,22 +273,14 @@ func _apply_environment_settings(settings: Dictionary) -> void:
 		env.set_meta(ENV_LEVEL_META, base)
 	var level_vals: Dictionary = env.get_meta(ENV_LEVEL_META)
 
+	# Les réglages du joueur priment ; les valeurs du niveau ne servent que de
+	# défaut pour les clés que le joueur n'a pas encore réglées.
 	for key in ENV_TOGGLE_KEYS:
-		if level_vals[key]:
-			env.set(key, true)
-		elif settings.has(key):
-			env.set(key, settings[key])
+		env.set(key, settings[key] if settings.has(key) else level_vals[key])
 
-	if level_vals["adjustment_enabled"]:
-		env.adjustment_enabled = true
-		for key in ENV_ADJUST_KEYS:
-			env.set(key, level_vals[key])
-	else:
-		if settings.has("adjustment_enabled"):
-			env.adjustment_enabled = settings["adjustment_enabled"]
-		for key in ENV_ADJUST_KEYS:
-			if settings.has(key):
-				env.set(key, settings[key])
+	env.adjustment_enabled = settings.get("adjustment_enabled", level_vals["adjustment_enabled"])
+	for key in ENV_ADJUST_KEYS:
+		env.set(key, settings[key] if settings.has(key) else level_vals[key])
 
 func _level_world_environment() -> WorldEnvironment:
 	var level := get_node_or_null("Level")

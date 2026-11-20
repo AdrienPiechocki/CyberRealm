@@ -502,6 +502,10 @@ func _set_window_occluder_active(wid: int, active: bool) -> void:
 	var occ := quads[wid].get_node_or_null("Occluder") as OccluderInstance3D
 	if occ == null:
 		return
+	# Une fenêtre translucide laisse voir derrière elle : jamais d'occludeur.
+	if active and _alpha_translucent.get(wid, false):
+		occ.occluder = null
+		return
 	if active:
 		var occ_box := occ.get_meta("occluder_box", null) as BoxOccluder3D
 		if occ_box != null:
@@ -671,6 +675,8 @@ func set_window_translucent(wid: int, translucent: bool) -> void:
 	_alpha_translucent[wid] = translucent
 	_alpha_probes.erase(wid)
 	_set_quad_opaque_mode(wid, not translucent)
+	# Translucide → plus d'occludeur ; opaque → on le (re)pose.
+	_set_window_occluder_active(wid, not translucent)
 
 func _set_quad_opaque_mode(wid: int, opaque: bool) -> void:
 	var quad: MeshInstance3D = quads.get(wid)

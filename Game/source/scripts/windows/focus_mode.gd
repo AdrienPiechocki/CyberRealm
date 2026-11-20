@@ -377,24 +377,23 @@ func _update_occluder_for_alpha(delta: float) -> void:
 		_alpha_probe_deadline -= delta
 	# Toutes les reasons de ne pas pouvoir procéder tiennent en une condition,
 	# pour qu'aucun retour précoce puisse manquer de relâcher la copie CPU.
-	# focus_fullscreen_id n'est posé que si le CLIENT demande le plein écran xdg
-	# (is_window_fullscreen_requested) : une fenêtre simplement MAXIMISÉE le
-	# laisse à -1, et la salve ne peut alors pas aboutir du tout.
+	# Cible = fenêtre plein écran si le client l'a demandé, sinon la fenêtre active.
+	var pid := _probe_id()
 	var can_probe: bool = _world_occluder != null and not remote_focus \
-			and focus_fullscreen_id != -1 \
-			and windows.quads.has(focus_fullscreen_id)
+			and pid != -1 \
+			and windows.quads.has(pid)
 	if not can_probe:
 		if _alpha_probing:
 			print("[focus-alpha] préconditions absentes (occl=%s remote=%s fs_id=%d quad=%s) — copie CPU relâchée" % [
-				_world_occluder != null, remote_focus, focus_fullscreen_id,
-				windows.quads.has(focus_fullscreen_id),
+				_world_occluder != null, remote_focus, pid,
+				windows.quads.has(pid),
 			])
 			_finish_alpha_probe()
 		return
 	if not _alpha_probing:
 		return
 	# Classification déjà faite par la sonde 3D : inutile de copier l'image.
-	var known: int = windows.get_window_translucent(focus_fullscreen_id) \
+	var known: int = windows.get_window_translucent(pid) \
 			if windows.has_method("get_window_translucent") else -1
 	if known != -1:
 		if known == 1:
@@ -407,7 +406,7 @@ func _update_occluder_for_alpha(delta: float) -> void:
 	if _alpha_check_cd > 0.0:
 		return
 	_alpha_check_cd = ALPHA_CHECK_INTERVAL
-	var img: Image = windows.get_window_image(focus_fullscreen_id)
+	var img: Image = windows.get_window_image(pid)
 	if img == null or img.is_empty():
 		if _alpha_probe_deadline <= 0.0:
 			print("[focus-alpha] no CPU image available — occluder maintained")
@@ -429,12 +428,12 @@ func _update_occluder_for_alpha(delta: float) -> void:
 				clear += 1
 	var frac := float(clear) / maxf(total, 1)
 	print("[focus-alpha] window %d — non-opaque pixels: %d%%" % [
-		focus_fullscreen_id, int(frac * 100.0)])
+		pid, int(frac * 100.0)])
 	if frac > OCCLUDER_OFF_FRAC:
 		_occluder_suspended = true
 		_world_occluder.visible = false
 	if windows.has_method("set_window_translucent"):
-		windows.set_window_translucent(focus_fullscreen_id, frac > OCCLUDER_OFF_FRAC)
+		windows.set_window_translucent(pid, frac > OCCLUDER_OFF_FRAC)
 	_apply_focus_alpha_mode()
 	_finish_alpha_probe()
 
@@ -469,8 +468,13 @@ func _reset_occluder_alpha_state() -> void:
 func _focus_window_alpha_mode() -> bool:
 	return not _occluder_suspended
 
+# Fenêtre dont on sonde/règle l'alpha : la plein écran si elle existe, sinon la
+# fenêtre active (toutes les fenêtres focus sont au moins maximisées).
+func _probe_id() -> int:
+	return focus_fullscreen_id if focus_fullscreen_id != -1 else _active_id()
+
 func _apply_focus_alpha_mode() -> void:
-	var id := focus_fullscreen_id
+	var id := _probe_id()
 	if id == -1 or not focus_rects.has(id):
 		return
 	var fmat := focus_rects[id].material as ShaderMaterial
@@ -1011,7 +1015,7 @@ func on_window_texture_updated(id: int, texture: Texture2D, width: int, height: 
 		var fmat := focus_rects[id].material as ShaderMaterial
 		if fmat:
 			fmat.set_shader_parameter("content_size", st["content_size"])
-			fmat.set_shader_parameter("opaque_mode", _focus_window_alpha_mode())
+			fmat.set_shader_parameter("opaque_mode", windows.get_window_translucent(id) != 1)
 	# Nouvelle fenêtre / resize : ajuster la taille de l'overlay des fenêtres
 	# non plein écran à la nouvelle taille de surface.
 	_refresh_rect_layout(id)
