@@ -313,7 +313,19 @@ func on_layer_surface_layout_changed(id: int, x: int, y: int, w: int, h: int) ->
 func on_layer_surface_keyboard_interactive_changed(id: int, kb: int) -> void:
 	if not layer_rects.has(id):
 		return
+	var prev: int = int(layer_rects[id].get("kb", 0))
 	layer_rects[id]["kb"] = kb
+	if layer_rects[id].get("no_pointer", false):
+		return
+	# Même effet qu'au map (voir on_layer_surface_mapped), mais pour un client qui change
+	# d'interactivité APRÈS coup (overlay de Ludodex ouvert/fermé au raccourci) : à l'ouverture
+	# la souris est libérée pour l'overlay ; à la fermeture, CyberRealm la reprend (caméra FPS).
+	if kb != 0 and prev == 0:
+		layer_interact_active = true
+		player.layer_pointer_active = true
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	elif kb == 0 and prev != 0:
+		recapture_if_needed()
 
 func on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, w: int, h: int) -> void:
 	if not layer_rects.has(parent_layer_id):

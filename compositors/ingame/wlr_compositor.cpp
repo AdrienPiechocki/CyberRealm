@@ -1343,6 +1343,18 @@ void WlrCompositor::_process(double delta) {
             int kb = (int)ls.layer_surface->current.keyboard_interactive;
             if (kb != ls.last_keyboard_interactive) {
                 ls.last_keyboard_interactive = kb;
+                // Le focus clavier SUIT l'interactivité, pas seulement le map : un client qui
+                // bascule NONE <-> EXCLUSIVE après coup (overlay de Ludodex, popout DMS) doit
+                // prendre le clavier en passant en EXCLUSIVE et le RENDRE en repassant en NONE.
+                // Sans ce retour, keyboard_focus_layer_id restait collé sur une surface qui ne
+                // veut plus de clavier : le jeu croyait qu'un layer le gardait (keyboard_busy)
+                // et plus aucune touche n'atteignait CyberRealm ni les fenêtres.
+                if (kb == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_NONE) {
+                    unfocus_layer_surface(ls);
+                } else if (kb == ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE &&
+                        ls.layer_surface->current.layer != ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND) {
+                    focus_layer_surface(ls);
+                }
                 emit_signal("layer_surface_keyboard_interactive_changed", ls.id, kb);
             }
         }
