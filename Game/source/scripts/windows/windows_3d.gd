@@ -1219,6 +1219,8 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vect
 	var info: Dictionary = popup_parent_info.get(pid, {})
 	var win_size: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
 
+	var pgeo: Dictionary = compositor.get_popup_geometry(pid)
+	var popup_geo_off := Vector2(pgeo.get("x", 0), pgeo.get("y", 0))
 	var px: float
 	var py: float
 	if info.get("parent_popup_id", -1) == -1 and quads.has(info.get("parent_window_id", -1)):
@@ -1235,19 +1237,19 @@ func _handle_popup_pointer(body: StaticBody3D, hit: Dictionary, ray_origin: Vect
 		var window_body: StaticBody3D = window_quad.get_child(0)
 		var window_mesh: QuadMesh = window_quad.mesh
 		var window_surface_size: Vector2 = window_body.get_meta("surface_size", Vector2(1, 1))
-		var window_content_offset: Vector2 = window_body.get_meta("content_offset", Vector2.ZERO)
 		var window_uv := _uv_at_plane(window_quad, window_mesh, ray_origin, ray_dir, hit.position)
-		var surface_pos := Vector2(
-			window_uv.x * window_surface_size.x + window_content_offset.x,
-			window_uv.y * window_surface_size.y + window_content_offset.y)
-		px = surface_pos.x - float(info.x)
-		py = surface_pos.y - float(info.y)
+		# info.x/y est relatif à la window_geometry du parent (xdg_positioner),
+		# et le quad parent est recadré sur cette géométrie : pas de
+		# content_offset du parent ici. On ajoute en revanche le décalage de la
+		# window_geometry du popup dans sa surface (marge d'ombre GTK).
+		px = window_uv.x * window_surface_size.x - float(info.x) + popup_geo_off.x
+		py = window_uv.y * window_surface_size.y - float(info.y) + popup_geo_off.y
 	else:
 		# Sous-menu (parenté à un autre popup) : calcul direct sur le plan du
 		# popup, même convention que précédemment.
 		var uv := _uv_at_plane(quad, mesh, ray_origin, ray_dir, hit.position)
-		px = uv.x * win_size.x
-		py = uv.y * win_size.y
+		px = uv.x * win_size.x + popup_geo_off.x
+		py = uv.y * win_size.y + popup_geo_off.y
 	print("raycast: POPUP pid=", pid, " px=", px, " py=", py,
 		" surf_size=", win_size, " quad_pos=", quad.global_position,
 		" mesh_size=", mesh.size)

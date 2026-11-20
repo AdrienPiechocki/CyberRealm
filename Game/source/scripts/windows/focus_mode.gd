@@ -1243,6 +1243,12 @@ func _forward_to_popup(hit: Dictionary, mouse_pos: Vector2) -> void:
 	if global_rect.size.x > 0.0 and global_rect.size.y > 0.0:
 		px = (mouse_pos.x - global_rect.position.x) / global_rect.size.x * content_size.x
 		py = (mouse_pos.y - global_rect.position.y) / global_rect.size.y * content_size.y
+	# L'overlay est recadré sur la window_geometry du popup : ajouter son
+	# décalage dans la surface (marge d'ombre GTK) pour obtenir des
+	# coordonnées surface correctes côté client.
+	var pgeo: Dictionary = compositor.get_popup_geometry(popup_id)
+	px += float(pgeo.get("x", 0))
+	py += float(pgeo.get("y", 0))
 	if not _popup_motion_is_duplicate(popup_id, Vector2(px, py)):
 		compositor.forward_pointer_motion_popup(popup_id, px, py)
 	# Grab bouton pour le drag-and-drop : mémoriser le popup qui reçoit un

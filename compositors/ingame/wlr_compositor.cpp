@@ -176,6 +176,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_window_cursor", "window_id"), &WlrCompositor::get_window_cursor);
     ClassDB::bind_method(D_METHOD("get_window_pointer", "window_id"), &WlrCompositor::get_window_pointer);
     ClassDB::bind_method(D_METHOD("popup_accepts_input", "popup_id"), &WlrCompositor::popup_accepts_input);
+    ClassDB::bind_method(D_METHOD("get_popup_geometry", "popup_id"), &WlrCompositor::get_popup_geometry);
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
     ClassDB::bind_method(D_METHOD("present_viewport_frame", "rgba", "width", "height"), &WlrCompositor::present_viewport_frame);

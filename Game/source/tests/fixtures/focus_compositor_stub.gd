@@ -74,6 +74,9 @@ func forward_pointer_button_popup(_window_id: int, _button: int, _pressed: bool)
 func is_drag_active() -> bool:
 	return false
 
+func get_popup_geometry(_id: int) -> Dictionary:
+	return {"x": 0, "y": 0}
+
 func get_window_geometry(_id: int) -> Dictionary:
 	return {"x": 0, "y": 0, "width": 800, "height": 600}
 

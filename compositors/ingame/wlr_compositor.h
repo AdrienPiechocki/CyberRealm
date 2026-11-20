@@ -1202,6 +1202,7 @@ public:
     // dropdowns). Les tooltips ont une région d'input vide et ne doivent
     // pas intercepter les clics.
     bool popup_accepts_input(int popup_id);
+    Dictionary get_popup_geometry(int popup_id);
     void apply_content_opacity(uint8_t *dst, int w, int h, const wlr_box &geo);
     bool is_drag_active() const;
 

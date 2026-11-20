@@ -717,6 +717,20 @@ Dictionary WlrCompositor::get_window_geometry(int window_id) {
     result["height"] = geo.height;
     return result;
 }
+// Décalage (x,y) de la window_geometry du popup dans sa propre surface
+// (marge d'ombre GTK/Qt). La capture est recadrée sur cette géométrie : pour
+// envoyer au client des coordonnées surface correctes il faut rajouter x,y.
+Dictionary WlrCompositor::get_popup_geometry(int popup_id) {
+    Dictionary result;
+    result["x"] = 0;
+    result["y"] = 0;
+    PopupState *ps = find_popup(popup_id);
+    if (!ps || !ps->popup || !ps->popup->base) return result;
+    wlr_box geo = ps->popup->base->geometry;
+    result["x"] = geo.x;
+    result["y"] = geo.y;
+    return result;
+}
 bool WlrCompositor::popup_accepts_input(int popup_id) {
     PopupState *ps = find_popup(popup_id);
     if (!ps || !ps->popup || !ps->popup->base || !ps->popup->base->surface) return false;
