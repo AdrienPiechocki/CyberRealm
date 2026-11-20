@@ -160,6 +160,92 @@ static func key_fingerprint(pub_line: String) -> String:
 	return "SHA256:" + Marshalls.raw_to_base64(ctx.finish()).trim_suffix("=")
 
 
+# ── Clés d'hôte sshd (épinglage anti-interposition) ──────────────────────────
+#
+# Le destinataire annonce les clés PUBLIQUES de son sshd avec son contact ; l'expéditeur
+# les écrit dans un known_hosts à usage unique et se connecte en
+# StrictHostKeyChecking=yes : un tiers qui se glisserait entre les deux ne peut
+# plus présenter sa propre clé d'hôte (le TOFU « accept-new » l'aurait acceptée).
+# La confiance repose alors sur le canal d'annonce (RPC du jeu, chiffré si la
+# session l'est). Sans clés annoncées (sshd absent/illisible, ancien client),
+# on retombe sur le TOFU d'avant, signalé à l'utilisateur.
+
+const HOST_KEY_FILES := [
+	"/etc/ssh/ssh_host_ed25519_key.pub",
+	"/etc/ssh/ssh_host_ecdsa_key.pub",
+	"/etc/ssh/ssh_host_rsa_key.pub",
+]
+const HOST_KEY_TYPES := [
+	"ssh-ed25519", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384",
+	"ecdsa-sha2-nistp521", "ssh-rsa",
+]
+const MAX_HOST_KEYS := 4
+const MAX_HOST_KEY_LEN := 1024
+
+
+## Clés d'hôte publiques du sshd local, au format "type base64" (sans commentaire).
+static func local_host_public_keys(files: Array = HOST_KEY_FILES) -> PackedStringArray:
+	var out := PackedStringArray()
+	for path: String in files:
+		if not FileAccess.file_exists(path):
+			continue
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null:
+			continue
+		var line := f.get_as_text().get_slice("\n", 0)
+		f.close()
+		out.append_array(sanitize_host_keys(PackedStringArray([line])))
+	return out
+
+
+## Filtre strict d'une liste reçue du réseau : seules les lignes "type base64"
+## valides (type connu, base64 décodable) sont gardées, tronquées à
+## MAX_HOST_KEYS. Rien d'autre ne passe — la ligne est ensuite recopiée dans un
+## known_hosts, donc aucun espace, marqueur (@cert-authority…) ni saut de ligne.
+static func sanitize_host_keys(keys: PackedStringArray) -> PackedStringArray:
+	var out := PackedStringArray()
+	for raw in keys:
+		if out.size() >= MAX_HOST_KEYS:
+			break
+		var parts := String(raw).strip_edges().split(" ", false)
+		if parts.size() < 2:
+			continue
+		var type := parts[0]
+		var body := parts[1]
+		if not HOST_KEY_TYPES.has(type) or body.length() > MAX_HOST_KEY_LEN:
+			continue
+		if not _is_base64(body) or Marshalls.base64_to_raw(body).is_empty():
+			continue
+		var line := type + " " + body
+		if not out.has(line):
+			out.append(line)
+	return out
+
+
+static func _is_base64(s: String) -> bool:
+	# Longueur multiple de 4 : sinon base64_to_raw() journalise une erreur moteur.
+	if s.is_empty() or s.length() % 4 != 0:
+		return false
+	for i in s.length():
+		var c := s.unicode_at(i)
+		var ok := (c >= 48 and c <= 57) or (c >= 65 and c <= 90) \
+			or (c >= 97 and c <= 122) or c == 43 or c == 47 or c == 61
+		if not ok:
+			return false
+	return true
+
+
+## Contenu d'un known_hosts épinglant `host` sur `keys` (déjà nettoyées).
+## "" si l'adresse n'est pas une IP littérale (jamais de motif ni de joker).
+static func known_hosts_content(host: String, keys: PackedStringArray) -> String:
+	if not host.is_valid_ip_address():
+		return ""
+	var out := ""
+	for k in sanitize_host_keys(keys):
+		out += "%s %s\n" % [host, k]
+	return out
+
+
 # ── authorized_keys du destinataire ──────────────────────────────────────────
 
 ## Ligne inscrite pour un transfert : exécution réduite au strict nécessaire
@@ -444,7 +530,7 @@ func _on_roster_changed(roster: Array) -> void:
 		if pid == me or _contacts.has(pid) or _announced_to.has(pid):
 			continue
 		_announced_to[pid] = true
-		_announce_contact.rpc_id(pid, _local_ip(), _key_pub, key_fingerprint(_key_pub))
+		_announce_contact.rpc_id(pid, _local_ip(), _key_pub, key_fingerprint(_key_pub), local_host_public_keys())
 	# Pairs partis : purger contacts (un retour futur re-annoncera).
 	for pid in _contacts.keys():
 		if not present.has(pid):
@@ -456,19 +542,22 @@ func _on_roster_changed(roster: Array) -> void:
 
 
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
-func _announce_contact(ip: String, pubkey: String, fingerprint: String) -> void:
-	_apply_contact(multiplayer.get_remote_sender_id(), ip, pubkey, fingerprint)
+func _announce_contact(ip: String, pubkey: String, fingerprint: String,
+		host_keys: PackedStringArray) -> void:
+	_apply_contact(multiplayer.get_remote_sender_id(), ip, pubkey, fingerprint, host_keys)
 
 
-func _apply_contact(sender: int, ip: String, pubkey: String, fingerprint: String) -> void:
+func _apply_contact(sender: int, ip: String, pubkey: String, fingerprint: String,
+		host_keys: PackedStringArray = PackedStringArray()) -> void:
 	if sender == 0 or sender == multiplayer.get_unique_id() or ip.is_empty():
 		return
-	_contacts[sender] = {"ip": ip, "pubkey": pubkey, "fp": fingerprint}
+	_contacts[sender] = {"ip": ip, "pubkey": pubkey, "fp": fingerprint,
+		"host_keys": sanitize_host_keys(host_keys)}
 	# Réponse une seule fois par session : complète le maillage sans boucle.
 	if not _replied_to.has(sender):
 		_replied_to[sender] = true
 		ensure_local_keypair()
-		_announce_contact.rpc_id(sender, _local_ip(), _key_pub, key_fingerprint(_key_pub))
+		_announce_contact.rpc_id(sender, _local_ip(), _key_pub, key_fingerprint(_key_pub), local_host_public_keys())
 
 
 func _local_ip() -> String:
@@ -554,15 +643,19 @@ static func _clean_credential(s: String) -> String:
 ## rsync-over-ssh authentifié par NOTRE clé privée (le destinataire a installé
 ## notre clé publique). BatchMode : jamais de prompt interactif suspendu ;
 ## IdentitiesOnly : uniquement la clé du jeu ; known_hosts isolé dans le
-## dossier utilisateur (TOFU : première connexion = confiance initiale).
+## dossier utilisateur. `strict_host_keys` : known_hosts pré-rempli avec les clés
+## annoncées par le destinataire → StrictHostKeyChecking=yes (une clé d'hôte
+## différente fait échouer la connexion). Sinon repli TOFU (accept-new).
 ## Le shell ne voit JAMAIS les données : tout passe en argv après le script
 ## (exec "$@"), seuls les chemins temporaires locaux sont interpolés.
 static func build_rsync_argv(files: PackedStringArray, username: String,
 		key_path: String, host: String, dest_dir: String,
-		prog_path: String, err_path: String, known_hosts_path: String) -> PackedStringArray:
+		prog_path: String, err_path: String, known_hosts_path: String,
+		strict_host_keys: bool = false) -> PackedStringArray:
 	var script := 'exec "$@" >"%s" 2>"%s"' % [prog_path, err_path]
-	var ssh_opts := "ssh -i \"%s\" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=\"%s\" -o ConnectTimeout=10"
-	ssh_opts = ssh_opts % [key_path, known_hosts_path]
+	var policy := "yes" if strict_host_keys else "accept-new"
+	var ssh_opts := "ssh -i \"%s\" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=%s -o UserKnownHostsFile=\"%s\" -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=10"
+	ssh_opts = ssh_opts % [key_path, policy, known_hosts_path]
 	var argv := PackedStringArray(["sh", "-c", script, "sh",
 		"rsync", "-az", "--info=progress2", "--partial", "--timeout=30",
 		"-e", ssh_opts,
@@ -593,9 +686,23 @@ func _start_rsync(offer_id: int, offer: Dictionary, peer: int,
 	DirAccess.make_dir_recursive_absolute(tmp_dir)
 	var prog_path := tmp_dir.path_join("progress")
 	var err_path := tmp_dir.path_join("stderr")
+	var host := String(_contacts[peer]["ip"])
 	var kh_path := OS.get_user_data_dir().path_join("known_hosts")
+	var pinned := known_hosts_content(host, _contacts[peer].get("host_keys", PackedStringArray()))
+	if not pinned.is_empty():
+		# Épinglage : fichier propre à ce transfert, rien d'autre n'est accepté.
+		kh_path = tmp_dir.path_join("known_hosts")
+		var kh := FileAccess.open(kh_path, FileAccess.WRITE)
+		if kh == null:
+			pinned = ""
+			kh_path = OS.get_user_data_dir().path_join("known_hosts")
+		else:
+			kh.store_string(pinned)
+			kh.close()
+	if pinned.is_empty():
+		push_warning("FileShare: no host key announced by %s — falling back to trust-on-first-use" % host)
 	var argv := build_rsync_argv(offer["files"], username, _key_path,
-		String(_contacts[peer]["ip"]), dest_dir, prog_path, err_path, kh_path)
+		host, dest_dir, prog_path, err_path, kh_path, not pinned.is_empty())
 	var pid := OS.create_process(argv[0], argv.slice(1))
 	if pid <= 0:
 		_show_progress("Failed to start rsync", 100, "Error")

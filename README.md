@@ -376,8 +376,15 @@ is ever typed or transmitted**: the receiver accepts the request with one
 click, which temporarily authorizes the sender's throwaway SSH key for that
 single transfer (restricted line, auto-removed afterwards). Every machine
 needs `openssh` + `rsync`; receivers additionally need `sshd` running and
-port 22 reachable on the LAN (both handled/checked by `install.sh`). Full
-details: `Game/source/user/README.md`.
+port 22 reachable on the LAN (both handled/checked by `install.sh`). The
+receiver also announces its `sshd` **host public keys**
+(`/etc/ssh/ssh_host_*_key.pub`) with its contact; the sender pins them in a
+per-transfer `known_hosts` and connects with `StrictHostKeyChecking=yes`, so a
+machine impersonating the receiver on the LAN is refused. If no host key was
+announced (sshd missing or keys unreadable), it falls back to
+trust-on-first-use and logs a warning. The pinning is only as trustworthy as
+the game session itself: enable the session encryption (TLS) on untrusted
+networks. Full details: `Game/source/user/README.md`.
 
 ## Controls
 
