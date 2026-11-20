@@ -21,6 +21,11 @@ const ANCHOR_RIGHT := 8
 # contenu 3D (quads) comme dans un compositeur classique ; les popups de
 # layer passent encore au-dessus.
 const LAYER_Z_BASE := 1000
+# Layers dessinés PAR-DESSUS les fenêtres du mode focus (z 2000+), qui couvrent sinon tous les
+# layers : l'overlay de Ludodex doit se voir au-dessus du jeu en plein écran. Au-dessus aussi du
+# curseur et des popups du focus (2100), sous le cadre de capture de zone (3001/3002 : outil de capture).
+const ABOVE_FOCUS_NAMESPACES := ["ludodex-overlay"]
+const ABOVE_FOCUS_Z := 2900
 
 # z_index du lockscreen (ext-session-lock-v1) : au-dessus de tout — layer
 # surfaces, mode focus, PiP — car un session verrouillée ne doit montrer
@@ -242,7 +247,7 @@ func on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: in
 	rect.stretch_mode = TextureRect.STRETCH_SCALE
 	rect.position = Vector2(x, y)
 	rect.size = Vector2(max(w, 1), max(h, 1))
-	rect.z_index = _layer_z_index(layer)
+	rect.z_index = ABOVE_FOCUS_Z if ns in ABOVE_FOCUS_NAMESPACES else _layer_z_index(layer)
 	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var mat := ShaderMaterial.new()
 	mat.shader = layer_shader
@@ -257,7 +262,8 @@ func on_layer_surface_mapped(id: int, ns: String, layer: int, anchor: int, x: in
 	# ré-armé et le fondu annulé en boucle). On le marque no_pointer pour que
 	# _layer_at l'ignore et on saute le bloc interactif ci-dessous.
 	var no_pointer: bool = "fade-to-lock" in ns
-	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb, "no_pointer": no_pointer}
+	layer_rects[id] = {"rect": rect, "layer": layer, "anchor": anchor, "kb": kb, "no_pointer": no_pointer,
+		"above_focus": ns in ABOVE_FOCUS_NAMESPACES}
 	if kb != 0 and not no_pointer:
 		# App interactive en overlay (rofi, launcher...): libérer la souris
 		# pour qu'elle soit utilisable sur l'overlay au lieu de tourner la
@@ -337,7 +343,7 @@ func on_layer_popup_mapped(popup_id: int, parent_layer_id: int, x: int, y: int, 
 	rect.stretch_mode = TextureRect.STRETCH_SCALE
 	rect.position = parent_entry.rect.position + Vector2(x, y)
 	rect.size = Vector2(max(w, 1), max(h, 1))
-	rect.z_index = _layer_z_index(LAYER_OVERLAY, true)
+	rect.z_index = ABOVE_FOCUS_Z + 50 if parent_entry.get("above_focus", false) else _layer_z_index(LAYER_OVERLAY, true)
 	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	var mat := ShaderMaterial.new()
 	mat.shader = layer_shader
