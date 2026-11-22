@@ -302,9 +302,9 @@ Limitations to know:
 
 ## Custom window shaders (transitions and borders)
 
-Three optional spatial shaders customise how windows look. Put them in the
-game's **user data folder** (`user://`, e.g. `~/.local/share/godot/app_userdata/<project>/`)
-— they are picked up and **hot-reloaded** while the game runs. Ready-to-copy
+Three optional spatial shaders customise how windows look. Put them in this
+folder (`res://user/`) or in the game's user data folder (`user://`, which
+takes priority) — they are picked up and **hot-reloaded** while the game runs. Ready-to-copy
 examples live in `res://ui/decorations/examples/`.
 
 | File | Used for |

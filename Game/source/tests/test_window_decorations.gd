@@ -686,11 +686,11 @@ func test_decoration_draw_order_is_explicit() -> Variant:
 	# priorities explicites, un bouton disparaît quand la caméra passe de l'autre
 	# côté de la fenêtre. Ce test verrouille l'ordre, pas le rendu.
 	var bar := _quad().get_node_or_null("Titlebar") as MeshInstance3D
-	var bar_mat := bar.material_override as StandardMaterial3D
+	var bar_mat := bar.material_override as Material
 	var bar_pri := bar_mat.render_priority
 	var btn := _quad().get_node_or_null("Titlebar/BtnClose") as StaticBody3D
 	var btn_mat := ((btn.get_child(1) as MeshInstance3D).material_override \
-		as StandardMaterial3D)
+		as Material)
 	var r = Runner.assert_true(btn_mat.render_priority > bar_pri,
 		"un bouton doit être dessiné APRÈS la bande qui le porte")
 	if _fail(r):
@@ -703,14 +703,18 @@ func test_decoration_draw_order_is_explicit() -> Variant:
 	var deco := _quad().get_node_or_null("Decoration") as Node3D
 	var piece := deco.get_node("FrameLeft") as StaticBody3D
 	var piece_mat := ((piece.get_child(1) as MeshInstance3D).material_override \
-		as StandardMaterial3D)
+		as Material)
 	r = Runner.assert_true(piece_mat.render_priority <= bar_pri,
 		"le cadre ne doit pas passer devant la barre")
 	if _fail(r):
 		return r
 	# Le tri par transparence étant le vrai coupable, aucun objet du décor ne
 	# doit être opaque : un opaque écrase le tri et masque le test.
-	return Runner.assert_true(bar_mat.transparency == BaseMaterial3D.TRANSPARENCY_ALPHA,
+	# (Un shader de bordure personnalisé remplace le StandardMaterial : alors
+	# c'est son propre blend_mix qui assure la transparence.)
+	if not (bar_mat is BaseMaterial3D):
+		return true
+	return Runner.assert_true((bar_mat as BaseMaterial3D).transparency == BaseMaterial3D.TRANSPARENCY_ALPHA,
 		"la bande doit rester en transparence ALPHA")
 
 func test_frame_edge_starts_a_resize() -> Variant:

@@ -632,6 +632,37 @@ func _process(delta: float) -> void:
 	# renvoie true quand un mtime a changé.
 	if Decorations.tick(delta):
 		_sync_all_decorations()
+	_update_window_sorting()
+
+# Ordre de dessin des fenêtres. Godot trie les transparents par la distance du
+# CENTRE de chaque objet à la caméra : pour deux fenêtres qui se chevauchent
+# (surtout décalées ou de tailles différentes), la plus éloignée peut avoir le
+# centre le plus proche, et passe alors PAR-DESSUS l'autre. On remplace donc la
+# clé de tri de chaque pièce d'une fenêtre par la distance de la caméra au PLAN
+# de la fenêtre (sorting_offset = distance du centre − distance au plan ; la clé
+# effective est distance − offset). Toutes les pièces d'une fenêtre partagent
+# ainsi la même clé ; leur ordre interne reste fixé par render_priority.
+func _update_window_sorting() -> void:
+	var cam := _camera()
+	if cam == null:
+		return
+	var cp := cam.global_position
+	for id: int in quads.keys():
+		var quad: MeshInstance3D = quads[id]
+		if not is_instance_valid(quad) or not quad.visible:
+			continue
+		var n := quad.global_basis.z.normalized()
+		var plane_d := absf((cp - quad.global_position).dot(n))
+		_apply_sort_key(quad, cp, plane_d)
+
+func _apply_sort_key(node: Node, cp: Vector3, plane_d: float) -> void:
+	if node is MeshInstance3D:
+		var mi := node as MeshInstance3D
+		mi.sorting_offset = cp.distance_to(mi.global_position) - plane_d
+	for c in node.get_children():
+		# Les popups (enfants du quad) héritent de la même clé : leur
+		# render_priority (1) les garde devant le contenu.
+		_apply_sort_key(c, cp, plane_d)
 
 func _update_alpha_probes(delta: float) -> void:
 	if _alpha_probes.is_empty():
@@ -788,6 +819,15 @@ func on_window_unmapped(id: int) -> void:
 	if focused_window_id == id:
 		focused_window_id = -1
 	
+	# Le compositeur libère la texture de la fenêtre juste après l'unmap : pour
+	# que la transition de fermeture ait encore une image à animer, on en prend
+	# un instantané AVANT d'oublier l'état.
+	var snapshot_rid := RID()
+	var snapshot: Texture2D = null
+	if WindowShaders.get_shader("close") != null and quads.has(id):
+		var snap := _snapshot_texture(window_textures.get(id))
+		snapshot = snap[0]
+		snapshot_rid = snap[1]
 	_erase_window_state(id)
 	if quads.has(id):
 		var quad = quads[id]
@@ -804,11 +844,50 @@ func on_window_unmapped(id: int) -> void:
 				windows_state_changed.emit()
 				quad.remove_from_group("window")
 				_disable_collisions(quad)
+				if snapshot != null:
+					var base := quad.material_override as ShaderMaterial
+					if base != null:
+						base.set_shader_parameter("window_texture", snapshot)
 				await _play_transition(quad, "close")
 			if is_instance_valid(quad):
 				quad.queue_free()
+		if snapshot_rid.is_valid():
+			await get_tree().process_frame
+			var rd := RenderingServer.get_rendering_device()
+			if rd != null:
+				rd.free_rid(snapshot_rid)
 		quads.erase(id)
 	windows_state_changed.emit()
+
+# Copie GPU de la texture d'une fenêtre, indépendante du cycle de vie de la
+# fenêtre. Renvoie [Texture2D ou null, RID de la copie (à libérer) ou RID()].
+func _snapshot_texture(tex: Texture2D) -> Array:
+	if tex == null or not is_instance_valid(tex):
+		return [null, RID()]
+	if not (tex is Texture2DRD):
+		var img := tex.get_image()
+		if img == null or img.is_empty():
+			return [null, RID()]
+		return [ImageTexture.create_from_image(img), RID()]
+	var rd := RenderingServer.get_rendering_device()
+	var src: RID = (tex as Texture2DRD).texture_rd_rid
+	if rd == null or not src.is_valid() or not rd.texture_is_valid(src):
+		return [null, RID()]
+	var fmt := rd.texture_get_format(src)
+	if fmt == null or not (fmt.usage_bits & RenderingDevice.TEXTURE_USAGE_CAN_COPY_FROM_BIT):
+		return [null, RID()]
+	fmt.usage_bits = RenderingDevice.TEXTURE_USAGE_SAMPLING_BIT \
+		| RenderingDevice.TEXTURE_USAGE_CAN_COPY_TO_BIT
+	var dst := rd.texture_create(fmt, RDTextureView.new())
+	if not dst.is_valid():
+		return [null, RID()]
+	var size := Vector3(fmt.width, fmt.height, 1.0)
+	if rd.texture_copy(src, dst, Vector3.ZERO, Vector3.ZERO, size, 0, 0, 0, 0) != OK:
+		rd.free_rid(dst)
+		return [null, RID()]
+	var out := Texture2DRD.new()
+	out.texture_rd_rid = dst
+	return [out, dst]
 
 func _disable_collisions(node: Node) -> void:
 	if node is CollisionObject3D:

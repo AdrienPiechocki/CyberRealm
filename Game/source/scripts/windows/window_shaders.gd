@@ -2,8 +2,8 @@ extends RefCounted
 ## Shaders personnalisés des fenêtres : transitions d'ouverture / fermeture et
 ## bordures.
 ##
-## Trois fichiers optionnels, cherchés dans `user://` PUIS dans
-## `res://ui/decorations/` (même principe que les SVG du décor) :
+## Trois fichiers optionnels, cherchés dans `user://`, puis `res://user/`,
+## puis `res://ui/decorations/` (même principe que les SVG du décor) :
 ##   window_open.gdshader    transition d'ouverture
 ##   window_close.gdshader   transition de fermeture
 ##   window_border.gdshader  cadre (bordures + bande de titre)
@@ -31,6 +31,10 @@ static func path_for(kind: String) -> String:
 	var user_path := "user://" + file
 	if FileAccess.file_exists(user_path):
 		return user_path
+	# Dossier `user/` du projet (ignoré par git, voir user/README.md).
+	var project_path := "res://user/" + file
+	if FileAccess.file_exists(project_path):
+		return project_path
 	var res_path := Decorations.RES_DIR + "/" + file
 	if FileAccess.file_exists(res_path):
 		return res_path
