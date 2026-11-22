@@ -21,6 +21,7 @@ const WINDOW_QUAD_SCALE := 2.0
 
 const Decorations := preload("res://scripts/ui/window_decorations.gd")
 const WindowDecoration := preload("res://scripts/windows/window_decoration_3d.gd")
+const WindowShaders := preload("res://scripts/windows/window_shaders.gd")
 
 # Barre de titre du jeu (décorations server-side). Le compositeur répond
 # SERVER_SIDE à xdg-decoration-v1 : les clients (dont xwayland-satellite,
@@ -184,6 +185,7 @@ var _alpha_check_cd := 0.0
 
 var _shared_window_shader: Shader = null
 var _shared_window_shader_no_depth: Shader = null
+var _shared_window_shader_translucent: Shader = null
 
 var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1 = aucune
 
@@ -261,6 +263,16 @@ func _window_shader() -> Shader:
 		_shared_window_shader = Shader.new()
 		_shared_window_shader.code = WAYLAND_SHADER_CODE
 	return _shared_window_shader
+
+# Variante translucide : même rendu mais sans écriture de profondeur, sinon la
+# fenêtre translucide du dessus (triée avant celle du dessous selon la position)
+# rejette par depth test les pixels de la fenêtre derrière elle.
+func _window_shader_translucent() -> Shader:
+	if _shared_window_shader_translucent == null:
+		_shared_window_shader_translucent = Shader.new()
+		_shared_window_shader_translucent.code = WAYLAND_SHADER_CODE.replace(
+			"depth_draw_always", "depth_draw_never")
+	return _shared_window_shader_translucent
 
 func _window_shader_no_depth() -> Shader:
 	if _shared_window_shader_no_depth == null:
@@ -684,7 +696,16 @@ func _set_quad_opaque_mode(wid: int, opaque: bool) -> void:
 		return
 	var mat := quad.material_override as ShaderMaterial
 	if mat != null:
+		if quad.has_meta(WindowShaders.ACTIVE_META):
+			# Le matériau est celui de la transition : on diffère.
+			quad.set_meta("pending_opaque", opaque)
+			quad.set_meta("window_id_of", wid)
+			return
 		mat.set_shader_parameter("opaque_mode", opaque)
+		# Effet X-RAY actif (shader sans depth test) : effects.gd restaurera le bon
+		# shader selon opaque_mode à la désactivation.
+		if mat.shader != _window_shader_no_depth():
+			mat.shader = _window_shader() if opaque else _window_shader_translucent()
 
 # Lance la sonde d'une fenêtre jamais classée (une salve par fenêtre).
 func _start_alpha_probe(wid: int) -> void:
@@ -775,9 +796,53 @@ func on_window_unmapped(id: int) -> void:
 			if occ != null:
 				occ.queue_free()
 				await get_tree().physics_frame
-			quad.queue_free()
+			if is_instance_valid(quad) and quad.visible \
+					and WindowShaders.get_shader("close") != null:
+				# Transition de fermeture : le quad survit le temps de l'effet,
+				# mais n'est plus ni une fenêtre, ni cliquable, ni enregistré.
+				quads.erase(id)
+				windows_state_changed.emit()
+				quad.remove_from_group("window")
+				_disable_collisions(quad)
+				await _play_transition(quad, "close")
+			if is_instance_valid(quad):
+				quad.queue_free()
 		quads.erase(id)
 	windows_state_changed.emit()
+
+func _disable_collisions(node: Node) -> void:
+	if node is CollisionObject3D:
+		(node as CollisionObject3D).collision_layer = 0
+		(node as CollisionObject3D).collision_mask = 0
+	for c in node.get_children():
+		_disable_collisions(c)
+
+# Joue la transition "open" / "close" (shader utilisateur) sur le quad et son
+# décor. Rend la main à la fin ; sans shader, retourne aussitôt.
+func _play_transition(quad: MeshInstance3D, kind: String) -> void:
+	var mats: Array = WindowShaders.begin_transition(quad, kind)
+	if mats.is_empty():
+		return
+	var closing := kind == "close"
+	var dur := float(Decorations.metrics().get("transition_%s_duration" % kind, 0.3))
+	WindowShaders.set_progress(mats, 0.0, closing)
+	var tw := create_tween()
+	tw.tween_method(func(v: float) -> void: WindowShaders.set_progress(mats, v, closing),
+		0.0, 1.0, maxf(dur, 0.01))
+	await tw.finished
+	if not is_instance_valid(quad):
+		return
+	WindowShaders.end_transition(quad)
+	if closing:
+		return
+	# Matériaux rendus : on réapplique le skin de bordure et le mode d'alpha
+	# éventuellement décidé pendant l'effet.
+	_sync_decorations(quad)
+	if quad.has_meta("pending_opaque"):
+		var wid := int(quad.get_meta("window_id_of", -1))
+		if wid >= 0:
+			_set_quad_opaque_mode(wid, bool(quad.get_meta("pending_opaque")))
+		quad.remove_meta("pending_opaque")
 
 # Vrai si le mesh de cette fenêtre est piloté par le redimensionnement en cours
 # (la fenêtre tirée, ou une voisine qui partage son bord).
@@ -812,6 +877,10 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	# dans le coin supérieur-gauche du mesh.
 	(quad.material_override as ShaderMaterial).set_shader_parameter("content_size", Vector2(width, height))
 	_start_alpha_probe(id)
+	# Transition d'ouverture : à la PREMIÈRE texture (avant, le contenu est vide).
+	if not quad.has_meta("open_played"):
+		quad.set_meta("open_played", true)
+		_play_transition(quad, "open")
 
 	# Toujours synchroniser les métadonnées (surface_size, content_offset,
 	# content_size) même pendant un resize : le calcul UV pour le forwarding

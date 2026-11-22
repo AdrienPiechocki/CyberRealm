@@ -13,6 +13,7 @@ godot --headless --script tests/runner.gd
 
 | File | Description |
 |------|-------------|
+| `test_window_shaders.gd` | Custom window shaders: shipped examples valid, transition swaps/restores materials |
 | `test_lan_protocol.gd` | PIN generation, validation, chunk reassembly, Dictionary serialization |
 | `test_capture_cache.gd` | Capture size rounding (64-byte alignment), image buffer sizing |
 | `test_video_encode_decode.gd` | JPEG/PNG encode/decode round-trip, quality/size tradeoff |

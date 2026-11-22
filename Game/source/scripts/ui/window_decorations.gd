@@ -8,6 +8,8 @@ extends RefCounted
 ## API STATIQUE, pas d'autoload : `windows_3d.gd` est préchargé par plusieurs
 ## tests lancés via `godot --headless --script`, où les autoloads n'existent pas.
 
+const WindowShaders := preload("res://scripts/windows/window_shaders.gd")
+
 const RES_DIR := "res://ui/decorations"
 const USER_DIR := "user://"
 const RES_JSON := "res://ui/decorations/decorations.json"
@@ -42,6 +44,10 @@ static func default_metrics() -> Dictionary:
 		"button_margin": 7.0,
 		"button_alignment": "right",
 		"button_states": 3.0,
+		# Durée (s) des transitions, utilisées seulement si un shader
+		# window_open / window_close existe (voir windows/window_shaders.gd).
+		"transition_open_duration": 0.3,
+		"transition_close_duration": 0.3,
 	}
 
 static func metrics() -> Dictionary:
@@ -315,6 +321,8 @@ static func current_mtimes() -> Dictionary:
 		var chosen := asset_path(asset)
 		if chosen != "":
 			out[chosen] = FileAccess.get_modified_time(chosen)
+	# Shaders personnalisés (transitions, bordures) : rechargés à chaud aussi.
+	out.merge(WindowShaders.mtimes())
 	return out
 
 ## `user://` d'abord : c'est le principe de `style.css`, la personnalisation

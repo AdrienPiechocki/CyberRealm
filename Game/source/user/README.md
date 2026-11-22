@@ -299,3 +299,32 @@ Limitations to know:
   heavy level (hundreds of MB of assets) will take a while to load client
   side. If the transfer definitively dies (no chunk for 15 s), the client
   still enters the game on its local map.
+
+## Custom window shaders (transitions and borders)
+
+Three optional spatial shaders customise how windows look. Put them in the
+game's **user data folder** (`user://`, e.g. `~/.local/share/godot/app_userdata/<project>/`)
+— they are picked up and **hot-reloaded** while the game runs. Ready-to-copy
+examples live in `res://ui/decorations/examples/`.
+
+| File | Used for |
+|---|---|
+| `window_open.gdshader` | opening transition (first frame of content) |
+| `window_close.gdshader` | closing transition (the window lingers until it ends) |
+| `window_border.gdshader` | window frame and title bar strip |
+
+Each must be a `shader_type spatial`. The game fills these uniforms **if your
+shader declares them**:
+
+- Transitions: `sampler2D window_texture`, `vec2 content_size`,
+  `bool opaque_mode`, `bool is_decoration` (frame/buttons vs. content),
+  `bool closing`, `float progress` (0 → 1), `vec2 part_offset` (position of the
+  drawn piece inside the window), `vec2 window_half_size`.
+  Deform in *window space* (`VERTEX.xy + part_offset`) so frame and content
+  move together. The title text is hidden during a transition.
+- Border: `sampler2D border_texture`, `vec2 part_offset`, `vec2 piece_size`,
+  `vec2 window_half_size`. Use `TIME` for animation.
+
+Durations are set in `decorations.json`: `transition_open_duration` and
+`transition_close_duration` (seconds, default 0.3). Delete the file to go back
+to the default look.

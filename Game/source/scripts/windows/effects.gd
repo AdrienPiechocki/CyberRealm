@@ -51,7 +51,7 @@ func toggle_find(id: int) -> void:
 			# Restaurer le shader d'origine du material de base.
 			if _original_shaders.has(id):
 				var mat: ShaderMaterial = quad.material_override
-				mat.shader = _original_shaders[id]
+				mat.shader = windows._window_shader() if mat.get_shader_parameter("opaque_mode") != false else windows._window_shader_translucent()
 				_original_shaders.erase(id)
 		else:
 			set_quad_visible(id, true)
