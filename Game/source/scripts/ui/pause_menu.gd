@@ -16,6 +16,7 @@ signal tutorial_requested
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
+signal accent_color_changed(color: Color)
 signal lan_avatar_changed(path: String)
 signal lan_name_changed(name: String)
 
@@ -256,6 +257,7 @@ func _ready() -> void:
 	_apply_styling()
 	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 	_settings = _load_settings()
+	UITheme.set_accent_color(get_accent_color())
 	_apply_saved_keybinds()
 
 func _apply_styling() -> void:
@@ -441,6 +443,30 @@ func _show_general() -> void:
 	var screenshots_btn := _make_btn("Screenshot Folder")
 	screenshots_btn.pressed.connect(_show_screenshots)
 	container.add_child(screenshots_btn)
+
+	# ── Couleur d'accentuation (appliquée immédiatement) ──
+	var accent_label := Label.new()
+	accent_label.text = "Accent color"
+	accent_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	accent_label.add_theme_font_size_override("font_size", 13)
+	accent_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(accent_label)
+
+	var accent_btn := ColorPickerButton.new()
+	accent_btn.focus_mode = Control.FOCUS_ALL
+	accent_btn.edit_alpha = false
+	accent_btn.color = get_accent_color()
+	accent_btn.custom_minimum_size = Vector2(64, 30)
+	accent_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	container.add_child(accent_btn)
+	accent_btn.color_changed.connect(_set_accent_color)
+
+	var accent_reset := _make_btn("Reset accent color", "action-button")
+	accent_reset.pressed.connect(func():
+		accent_btn.color = UITheme.DEFAULT_ACCENT
+		_set_accent_color(UITheme.DEFAULT_ACCENT)
+	)
+	container.add_child(accent_reset)
 
 	# ── Max FPS (appliqué immédiatement) ──
 	var fps_label := Label.new()
@@ -1233,6 +1259,24 @@ func get_lan_player_name() -> String:
 
 func get_lan_avatar_path() -> String:
 	return String(_settings.get("lan_avatar_path", ""))
+
+# Couleur d'accentuation : hex "#rrggbb" ; repli sur le défaut si illisible.
+func get_accent_color() -> Color:
+	var s := String(_settings.get("accent_color", "")).strip_edges()
+	if s == "":
+		return UITheme.DEFAULT_ACCENT
+	if not s.begins_with("#"):
+		s = "#" + s
+	var c := Color.from_string(s, UITheme.DEFAULT_ACCENT)
+	c.a = 1.0
+	return c
+
+func _set_accent_color(c: Color) -> void:
+	c.a = 1.0
+	_settings["accent_color"] = c.to_html(false)
+	_save_settings()
+	UITheme.set_accent_color(c)
+	accent_color_changed.emit(c)
 
 func get_lan_player_color() -> Color:
 	var fallback := Color(0.2, 0.6, 1.0)

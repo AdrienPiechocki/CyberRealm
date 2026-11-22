@@ -744,6 +744,9 @@ func enter_focus(id: int) -> void:
 	_refresh_rect_layout(id)
 	# Barre de titre (déplacement par clic-glisser, sans modificateur).
 	_ensure_title_bar(id)
+	# Le premier layout a eu lieu avant la barre : le refaire pour que le
+	# centrage de l'ensemble (barre + contenu) s'applique dès l'ouverture.
+	_refresh_rect_layout(id)
 
 	# Cacher le quad 3D, l'overlay 2D prend le relais
 	# windows.set_quad_visible(id, false)
@@ -1053,7 +1056,13 @@ func _refresh_rect_layout(id: int) -> void:
 		rect.position = _state(id)["ui_offset"]
 		_sync_title_bar(id)
 		return
-	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], viewport_size)
+	# La barre de titre occupe de la hauteur au-dessus du contenu : une grande
+	# fenêtre doit tenir (barre + contenu) dans le viewport, sinon l'ensemble,
+	# centré, déborde en haut de l'écran.
+	var fit_size := viewport_size
+	if focus_title_bars.has(id):
+		fit_size.y = maxf(viewport_size.y - titlebar_h(), 1.0)
+	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], fit_size)
 	rect.size = display_size
 	# Centrage fin sur le CONTENU VISIBLE (pas le buffer) : compense le
 	# padding d'arrondi 64 et les offsets de géométrie (CSD). Calculé SANS

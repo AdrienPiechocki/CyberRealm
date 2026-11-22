@@ -27,6 +27,19 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
 		_free_owned()
 
+func test_accent_keyword() -> Variant:
+	_reset()
+	_t.accent_color = Color(1, 0, 0)
+	_t.parse("a { c: accent; d: accent(.5); e: accent(abc); }")
+	var bad := Color(-1, -1, -1, -1)
+	var c: Color = _t.get_color("a", "c", bad)
+	if c != Color(1, 0, 0, 1):
+		return "accent: %s" % c
+	var d: Color = _t.get_color("a", "d", bad)
+	if d.r != 1.0 or absf(d.a - 0.5) > 0.001:
+		return "accent(.5): %s" % d
+	return Runner.assert_eq(_t.get_color("a", "e", bad), bad)
+
 func _init() -> void:
 	_t = UIThemeScript.new()
 

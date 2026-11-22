@@ -8,7 +8,12 @@ signal stylesheet_reloaded
 const RES_CSS_PATH := "res://ui/style.css"
 const USER_CSS_PATH := "user://style.css"
 
+const DEFAULT_ACCENT := Color(0.4, 0.6, 1.0)
+
 var theme: Theme
+## Couleur d'accentuation choisie dans les paramètres. Les feuilles CSS la
+## référencent avec `accent` ou `accent(alpha)` à la place d'une couleur.
+var accent_color := DEFAULT_ACCENT
 var _rules: Array = []
 var _stylebox_cache: Dictionary = {}
 var _res_mtime := -1
@@ -44,6 +49,16 @@ func load_css() -> void:
 		push_error("UITheme(" + USER_CSS_PATH + "): " + err)
 	_rebuild_theme()
 	stylesheet_reloaded.emit()
+
+## Change la couleur d'accentuation et reconstruit le thème (les contrôles
+## abonnés à stylesheet_reloaded se restylent).
+func set_accent_color(c: Color) -> void:
+	c.a = 1.0
+	if c == accent_color:
+		return
+	accent_color = c
+	if is_inside_tree():
+		load_css()
 
 ## Parse des règles CSS « subset ». Retourne "" ou un message d'erreur.
 func parse(css_text: String, source := "") -> String:
@@ -180,9 +195,18 @@ func _prop_value(element: String, prop: String) -> String:
 			return r["props"][prop]
 	return ""
 
-## Parse une couleur : #rgb, #rrggbb, #rrggbbaa, rgb(), rgba().
+## Parse une couleur : #rgb, #rrggbb, #rrggbbaa, rgb(), rgba(), accent,
+## accent(alpha) (même convention d'alpha que rgba()).
 func _parse_color(v: String) -> Color:
 	var s := v.strip_edges()
+	if s == "accent":
+		return accent_color
+	if s.begins_with("accent(") and s.ends_with(")"):
+		var av := s.substr(7, s.length() - 8).strip_edges()
+		var a := _parse_num(av) if av.find(".") != -1 else _chan(av)
+		if is_nan(a):
+			return Color(-1, -1, -1, -1)
+		return Color(accent_color.r, accent_color.g, accent_color.b, a)
 	if s.begins_with("#"):
 		var hex := s.substr(1).strip_edges()
 		match hex.length():

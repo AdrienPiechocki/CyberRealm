@@ -8,9 +8,9 @@ panel.tutorial-panel{ background-color: rgba(18,18,23,.98); border-color: rgba(1
 
 button { background-color: rgba(31,36,51,.9); border-color: rgba(77,102,153,.5);
          border-width: 1px; corner-radius: 5px; padding: 8px 14px; font-size: 15px; }
-button:hover   { background-color: rgba(46,56,89,.95); border-color: rgba(102,153,255,.7); }
+button:hover   { background-color: rgba(46,56,89,.95); border-color: accent(.7); }
 button:pressed { background-color: rgba(51,77,128,.95); }
-button:focus   { border-color: rgba(102,153,255,.9); }
+button:focus   { border-color: accent(.9); }
 
 button.back-button      { background-color: rgba(46,46,64,.9); }
 button.action-button    { corner-radius: 4px; padding: 6px 12px; font-size: 14px; }
@@ -20,18 +20,18 @@ button.tab-button       { background-color: rgba(26,26,38,.8);
                           corner-bottom-left-radius: 0px; corner-bottom-right-radius: 0px;
                           padding: 4px 10px; font-size: 13px; }
 button.tab-button:hover { background-color: rgba(38,51,89,.95);
-                          border-color: rgba(102,153,255,.6); border-width: 0 0 2px 0; }
+                          border-color: accent(.6); border-width: 0 0 2px 0; }
 button.tab-button:pressed { background-color: rgba(38,56,102,.95);
-                          border-color: rgba(102,153,255,.8); border-width: 0 0 2px 0; }
+                          border-color: accent(.8); border-width: 0 0 2px 0; }
 button.tab-button-selected { background-color: rgba(38,56,102,.95);
-                          border-color: rgba(102,153,255,.8); border-width: 0 0 2px 0;
+                          border-color: accent(.8); border-width: 0 0 2px 0;
                           corner-top-left-radius: 4px; corner-top-right-radius: 4px;
                           corner-bottom-left-radius: 0px; corner-bottom-right-radius: 0px;
                           padding: 4px 10px; font-size: 13px; }
 button.tab-button-selected:hover { background-color: rgba(38,51,89,.95);
-                          border-color: rgba(102,153,255,.6); border-width: 0 0 2px 0; }
+                          border-color: accent(.6); border-width: 0 0 2px 0; }
 button.tab-button-selected:pressed { background-color: rgba(38,56,102,.95);
-                          border-color: rgba(102,153,255,.8); border-width: 0 0 2px 0; }
+                          border-color: accent(.8); border-width: 0 0 2px 0; }
 button.key-button       { border-color: rgba(77,102,153,.4); corner-radius: 4px;
                           padding: 4px; font-size: 13px; }
 button.key-mod-button   { background-color: rgba(38,46,71,.9); border-color: rgba(77,102,153,.4);

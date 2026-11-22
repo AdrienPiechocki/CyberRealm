@@ -500,6 +500,11 @@ override any rule — user rules are parsed after the bundled ones, so they win.
 Both files are watched: saving either reloads the theme live, no restart
 needed.
 
+The accent color is set in the pause menu (General → Accent color) and is
+saved in `settings.json`. In any CSS color value, `accent` or `accent(.5)`
+(with alpha) stands for it; the bundled theme uses it for hover/focus/selected
+highlights, and your `style.css` can too.
+
 The supported subset is deliberately small. A selector is an element (`button`,
 `label`, `line-edit`, `check-button`, `option-button`, `slider`, `panel`, `hud`,
 `radial`, `tutorial`), optionally with a class (`.name` or `element.name`) and a
