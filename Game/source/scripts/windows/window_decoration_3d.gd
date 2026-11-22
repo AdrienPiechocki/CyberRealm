@@ -109,7 +109,7 @@ static func _unshaded(priority: int = PRIORITY_FRAME) -> StandardMaterial3D:
 ## StandardMaterial historique. Contrat du shader : `border_texture`,
 ## `part_offset`, `piece_size`, `window_half_size` (remplis si déclarés).
 static func _skin(visual: MeshInstance3D, priority: int, tex: Texture2D,
-		offset: Vector2, size: Vector2, half: Vector2) -> void:
+		offset: Vector2, size: Vector2, half: Vector2, thick: Vector2) -> void:
 	var cur := visual.material_override
 	# Transition en cours : le matériau est celui de l'effet, on ne le touche
 	# qu'en texture ; le skin sera recalé à la prochaine synchronisation.
@@ -127,6 +127,9 @@ static func _skin(visual: MeshInstance3D, priority: int, tex: Texture2D,
 		WindowShaders.set_param(sm, "part_offset", offset)
 		WindowShaders.set_param(sm, "piece_size", size)
 		WindowShaders.set_param(sm, "window_half_size", half)
+		# x = épaisseur du cadre, y = hauteur de la barre (monde).
+		WindowShaders.set_param(sm, "frame_thickness", thick.x)
+		WindowShaders.set_param(sm, "bar_thickness", thick.y)
 	else:
 		var std := cur as StandardMaterial3D
 		if std == null:
@@ -234,7 +237,7 @@ static func sync(quad: MeshInstance3D) -> void:
 				continue
 			var rect: Array = frame_piece_rect(spec["piece"], half, t, b)
 			_place(node, rect[0], rect[1], Decorations.border_piece(spec["piece"]),
-				spec["piece"], s, half)
+				spec["piece"], s, half, Vector2(t, b))
 	_sync_bar(quad, s, mesh, half)
 
 ## Les bords ne s'étirent pas : la bande médiane du SVG est RÉPÉTÉE à sa taille
@@ -301,7 +304,7 @@ static func band_px_of(atlas: Texture2D) -> Vector2:
 	return Vector2.ZERO
 
 static func _place(node: StaticBody3D, pos: Vector2, size: Vector2, atlas: Texture2D,
-		piece: String, s: float, half: Vector2) -> void:
+		piece: String, s: float, half: Vector2, thick: Vector2) -> void:
 	node.position = Vector3(pos.x, pos.y, 0.0)
 	var shape := (node.get_child(0) as CollisionShape3D).shape as BoxShape3D
 	shape.size = Vector3(maxf(size.x, 0.001), maxf(size.y, 0.001), FRAME_DEPTH)
@@ -312,7 +315,7 @@ static func _place(node: StaticBody3D, pos: Vector2, size: Vector2, atlas: Textu
 		visual.mesh = tiled_mesh(size, band, piece == "left" or piece == "right", s, uv)
 	else:
 		visual.mesh = quad_uv_mesh(size, uv)
-	_skin(visual, PRIORITY_FRAME, tiled_albedo(atlas), pos, size, half)
+	_skin(visual, PRIORITY_FRAME, tiled_albedo(atlas), pos, size, half, thick)
 
 static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vector2) -> void:
 	var titlebar := quad.get_node_or_null("Titlebar") as MeshInstance3D
@@ -330,7 +333,8 @@ static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vect
 		q.size = bar_size
 		titlebar.mesh = q
 	_skin(titlebar, PRIORITY_BAR, tiled_albedo(top_atlas) if has_top else top_atlas,
-		Vector2(0.0, half.y + bar_h * 0.5), bar_size, half)
+		Vector2(0.0, half.y + bar_h * 0.5), bar_size, half,
+		Vector2(Decorations.world(Decorations.metrics(), s)["border"], bar_h))
 	if top_band.x <= 0.0 or top_band.y <= 0.0:
 		(titlebar.mesh as QuadMesh).size = bar_size
 	titlebar.position = Vector3(0.0, half.y + bar_h * 0.5, 0.001)
