@@ -206,8 +206,7 @@ The Morrowind level provides:
 | Option | Effect |
 |---|---|
 | **Time of day** | *Real time (local clock)*: the sky follows each machine's own clock. *Fixed hour*: freezes the sky at the hour set with the slider (00:00 – 23:45, 15 min steps). |
-| **Fog thickness** | Multiplier of the fog density, from 0 (no fog) to 5 (default 1.0), on both the distance fog and the volumetric fog. Interiors never have fog. |
-| **Fog follows time of day** | In *Real time* mode the fog thickness varies with the hour: thick at dawn (peak around 6:30), lifting during the morning, light in the afternoon, a light veil in the evening. It multiplies *Fog thickness*; it has no effect with a *Fixed hour*. |
+| **Fog** | In *Real time* mode the fog is **automatic**: thick at dawn (peak around 6:30), lifting during the morning, light in the afternoon, a light veil in the evening (the slider is disabled). With a *Fixed hour*, the **Fog thickness** slider (0 = no fog to 5, default 1.0) sets the density of the distance fog and of the volumetric fog. Interiors never have fog. |
 | **Cloud density** | Cloud cover of the sky, from 0% (clear) to 100% (overcast). |
 | **Rain** | Turns the rain (and the overcast sky) on or off. |
 
