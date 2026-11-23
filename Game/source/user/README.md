@@ -206,10 +206,15 @@ The Morrowind level provides:
 | Option | Effect |
 |---|---|
 | **Time of day** | *Real time (local clock)*: the sky follows each machine's own clock. *Fixed hour*: freezes the sky at the hour set with the slider (00:00 – 23:45, 15 min steps). |
+| **Fog thickness** | Multiplier of the fog density, from 0 (no fog) to 5 (default 1.0), on both the distance fog and the volumetric fog. Interiors never have fog. |
 | **Rain** | Turns the rain (and the overcast sky) on or off. |
 
 There are no keyboard shortcuts for these any more: everything goes through
 this page.
+
+Interiors use the level's environment (same effects and color adjustments as
+outside) **without sky and without fog**; the graphics settings of the pause menu
+keep applying to them.
 
 ### Multiplayer
 
@@ -221,7 +226,7 @@ this page.
 - In *Real time* mode each player sees the time of their own machine, so
   players in different time zones see a different sky. Use *Fixed hour* to
   make everybody see the same one.
-- Clients only accept the three values above (mode, hour, rain), and only from
+- Clients only accept the values above (mode, hour, fog, rain), and only from
   the host.
 
 ### Adding your own options
