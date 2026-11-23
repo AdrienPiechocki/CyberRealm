@@ -14,6 +14,10 @@ extends Node3D
 @export var anim_jump: StringName = &""
 @export var walk_speed_threshold := 0.1
 
+## Avatar local (enfant du joueur, ex. free-cam) : jamais d'apply_transform ;
+## le pose suit le parent et la vitesse est déduite du déplacement global.
+var follow_parent := false
+
 var peer_id := 0
 var player_name := ""
 var local_player: CharacterBody3D = null
@@ -122,6 +126,10 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 
 
 func _process(delta: float) -> void:
+	if follow_parent:
+		_update_animation(delta)
+		_update_transparency()
+		return
 	if not _has_received_first_transform:
 		return
 
@@ -139,6 +147,10 @@ func _process(delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if follow_parent:
+		_calculate_relative_velocity(_prev_pos, delta)
+		_prev_pos = global_position
+		return
 	if not _has_received_first_transform:
 		return
 

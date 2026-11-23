@@ -1138,7 +1138,9 @@ func spawn_freecam_avatar(player: Node3D) -> Node:
 	av.name = "FreeCamAvatar"
 	av.scale = _spawn_scale()
 	av.setup(0, player_name, player_color)
+	av.follow_parent = true
 	player.add_child(av)
+	av._prev_pos = av.global_position
 	av.start_prewarm()
 	av.set_arrived(true)
 	return av

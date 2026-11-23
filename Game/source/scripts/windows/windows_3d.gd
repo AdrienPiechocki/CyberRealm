@@ -647,22 +647,48 @@ func _update_window_sorting() -> void:
 	if cam == null:
 		return
 	var cp := cam.global_position
+	# render_priority prime sur le tri par distance : sans base par fenêtre, le
+	# décor (priorité 1-2) d'une fenêtre ARRIÈRE se dessinait par-dessus le
+	# contenu (priorité 0) d'une fenêtre DEVANT. Chaque fenêtre reçoit donc une
+	# plage de priorités propre, croissante du fond vers l'avant.
+	var order: Array = []
 	for id: int in quads.keys():
 		var quad: MeshInstance3D = quads[id]
 		if not is_instance_valid(quad) or not quad.visible:
 			continue
 		var n := quad.global_basis.z.normalized()
-		var plane_d := absf((cp - quad.global_position).dot(n))
-		_apply_sort_key(quad, cp, plane_d)
+		order.append([absf((cp - quad.global_position).dot(n)), quad])
+	order.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
+	for i in order.size():
+		var base := mini(i * WINDOW_PRIORITY_SPAN, WINDOW_PRIORITY_MAX)
+		_apply_sort_key(order[i][1], cp, order[i][0], base)
 
-func _apply_sort_key(node: Node, cp: Vector3, plane_d: float) -> void:
+const WINDOW_PRIORITY_SPAN := 4 # décor 0..2 + popups (1) + marge
+const WINDOW_PRIORITY_MAX := 100 # reste sous les overlays (flash/x-ray : 127)
+
+func _apply_sort_key(node: Node, cp: Vector3, plane_d: float, base: int) -> void:
 	if node is MeshInstance3D:
 		var mi := node as MeshInstance3D
 		mi.sorting_offset = cp.distance_to(mi.global_position) - plane_d
+		var mat := mi.material_override
+		# Matériau d'effet de transition : priorité propre, on n'y touche pas.
+		if mat != null and not mi.has_meta(WindowShaders.TRANSITION_META):
+			if not mat.has_meta(&"_prio0"):
+				mat.set_meta(&"_prio0", mat.render_priority)
+			var want: int = int(mat.get_meta(&"_prio0")) + base
+			if mat.render_priority != want:
+				mat.render_priority = want
+	elif node is Label3D:
+		var lb := node as Label3D
+		if not lb.has_meta(&"_prio0"):
+			lb.set_meta(&"_prio0", Vector2i(lb.render_priority, lb.outline_render_priority))
+		var p0: Vector2i = lb.get_meta(&"_prio0")
+		lb.render_priority = p0.x + base
+		lb.outline_render_priority = p0.y + base
 	for c in node.get_children():
 		# Les popups (enfants du quad) héritent de la même clé : leur
 		# render_priority (1) les garde devant le contenu.
-		_apply_sort_key(c, cp, plane_d)
+		_apply_sort_key(c, cp, plane_d, base)
 
 func _update_alpha_probes(delta: float) -> void:
 	if _alpha_probes.is_empty():
