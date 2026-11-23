@@ -25,6 +25,10 @@ func setup(windows_ref: Node3D) -> void:
 	xray_overlay.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 func on_window_created(id: int, quad: MeshInstance3D) -> void:
+	# Les quads de fenêtres restent hors occlusion culling : peu nombreux, et
+	# sinon ils clignotent quand le buffer d'occlusion est reconstruit (sortie
+	# du focus).
+	_set_occlusion_ignored(quad, true)
 	_start_flash(id, quad)
 
 func on_window_unmapped(id: int) -> void:
@@ -44,7 +48,7 @@ func toggle_find(id: int) -> void:
 		# L'occlusion culling retirerait la fenêtre du rendu quand elle est
 		# derrière un mur/une fenêtre — incompatible avec l'effet X-RAY
 		# (no_depth_test censé montrer le contenu à travers les obstacles).
-		_set_occlusion_ignored(quad, active)
+		_set_occlusion_ignored(quad, true)
 		if not active:
 			_end_flash(id)
 			quad.material_overlay = null
