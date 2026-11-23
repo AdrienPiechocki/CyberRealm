@@ -208,7 +208,6 @@ The Morrowind level provides:
 | **Time of day** | *Real time (local clock)*: the sky follows each machine's own clock. *Fixed hour*: freezes the sky at the hour set with the slider (00:00 – 23:45, 15 min steps). |
 | **Fog** | In *Real time* mode the fog is **automatic**: thick at dawn (peak around 6:30), lifting during the morning, light in the afternoon, a light veil in the evening (the slider is disabled). With a *Fixed hour*, the **Fog thickness** slider (0 = no fog to 5, default 1.0) sets the density of the distance fog and of the volumetric fog. Interiors never have fog. |
 | **Cloud density** | Cloud cover of the sky, from 0% (clear) to 100% (overcast). |
-| **Sun glare** | Strength of the sun's glow, from 0 (none) to 3 (default 1.0). The glow is drawn after the windows, so a semi-transparent window in front of the sun no longer makes it disappear. It only shows on sky pixels (terrain and opaque windows hide it). |
 | **Rain** | Turns the rain (and the overcast sky) on or off. |
 
 There are no keyboard shortcuts for these any more: everything goes through
@@ -228,7 +227,7 @@ keep applying to them.
 - In *Real time* mode each player sees the time of their own machine, so
   players in different time zones see a different sky. Use *Fixed hour* to
   make everybody see the same one.
-- Clients only accept the values above (mode, hour, fog, clouds, sun glare, rain), and only from
+- Clients only accept the values above (mode, hour, fog, clouds, rain), and only from
   the host.
 
 ### Adding your own options
