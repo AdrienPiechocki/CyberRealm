@@ -398,7 +398,7 @@ func _update_occluder_for_alpha(delta: float) -> void:
 	if known != -1:
 		if known == 1:
 			_occluder_suspended = true
-			_world_occluder.visible = false
+			_hide_world_occluder()
 		_apply_focus_alpha_mode()
 		_finish_alpha_probe()
 		return
@@ -431,7 +431,7 @@ func _update_occluder_for_alpha(delta: float) -> void:
 		pid, int(frac * 100.0)])
 	if frac > OCCLUDER_OFF_FRAC:
 		_occluder_suspended = true
-		_world_occluder.visible = false
+		_hide_world_occluder()
 	if windows.has_method("set_window_translucent"):
 		windows.set_window_translucent(pid, frac > OCCLUDER_OFF_FRAC)
 	_apply_focus_alpha_mode()
@@ -932,7 +932,7 @@ func on_window_unmapped(id: int) -> void:
 	_remove_title_bar(id)
 	if focus_rects.has(id):
 		if is_instance_valid(focus_rects[id]):
-			_world_occluder.visible = false
+			_hide_world_occluder()
 			await get_tree().physics_frame
 			focus_rects[id].queue_free()
 		focus_rects.erase(id)
@@ -1782,6 +1782,17 @@ func _suspend_occlusion_after_focus() -> void:
 	if token == _occlusion_resume_token:
 		vp.use_occlusion_culling = true
 
+# TOUT retrait de l'occludeur plein écran passe par ici : le buffer d'occlusion
+# garde sa silhouette quelques frames, y compris quand il est retiré hors de
+# la sortie du focus (fenêtre fermée, sonde de translucidité). Sans la
+# suspension, le niveau disparaît pendant ces frames.
+func _hide_world_occluder() -> void:
+	if _world_occluder == null or not is_instance_valid(_world_occluder):
+		return
+	if _world_occluder.visible:
+		_suspend_occlusion_after_focus()
+	_world_occluder.visible = false
+
 func _reset_focus_ui() -> void:
 	# Une sélection de zone en cours est annulée : la sortie du mode focus
 	# doit remettre l'écran (et le pointer-lock) dans son état normal.
@@ -1790,9 +1801,7 @@ func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
 	# l'occludeur plein écran.
 	if _world_occluder != null and is_instance_valid(_world_occluder):
-		if _world_occluder.visible:
-			_suspend_occlusion_after_focus()
-		_world_occluder.visible = false
+		_hide_world_occluder()
 	_reset_occluder_alpha_state()
 	_clear_popup_overlays()
 	popup_drag_id = -1
