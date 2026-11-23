@@ -1760,6 +1760,28 @@ func _handle_zone_selection() -> void:
 	if _left_release_this_frame() and _zone_dragging:
 		_end_zone_selection(true)
 
+# Le buffer de profondeur de l'occlusion culling garde l'occludeur plein écran
+# pendant quelques frames après son retrait : le monde resterait cullé (skybox
+# seule). On coupe donc l'occlusion culling du viewport le temps que le buffer
+# se reconstruise, puis on la rétablit.
+const OCCLUSION_RESUME_FRAMES := 8
+var _occlusion_resume_token := 0
+
+func _suspend_occlusion_after_focus() -> void:
+	var vp := get_viewport()
+	if vp == null or not is_inside_tree():
+		return
+	_occlusion_resume_token += 1
+	var token := _occlusion_resume_token
+	vp.use_occlusion_culling = false
+	for i in OCCLUSION_RESUME_FRAMES:
+		await get_tree().process_frame
+		if not is_inside_tree():
+			return
+	# Une sortie de focus plus récente reprend la main sur la réactivation.
+	if token == _occlusion_resume_token:
+		vp.use_occlusion_culling = true
+
 func _reset_focus_ui() -> void:
 	# Une sélection de zone en cours est annulée : la sortie du mode focus
 	# doit remettre l'écran (et le pointer-lock) dans son état normal.
@@ -1768,6 +1790,8 @@ func _reset_focus_ui() -> void:
 	# Sortie du mode focus : la scène 3D redevient visible, retirer
 	# l'occludeur plein écran.
 	if _world_occluder != null and is_instance_valid(_world_occluder):
+		if _world_occluder.visible:
+			_suspend_occlusion_after_focus()
 		_world_occluder.visible = false
 	_reset_occluder_alpha_state()
 	_clear_popup_overlays()
