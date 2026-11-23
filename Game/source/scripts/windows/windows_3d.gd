@@ -646,7 +646,13 @@ func _update_window_sorting() -> void:
 	var cam := _camera()
 	if cam == null:
 		return
-	var cp := cam.global_position
+	# Position INTERPOLÉE : avec physics_interpolation, global_position d'une
+	# caméra portée par le joueur est celle du dernier tick physique, pas celle
+	# du rendu. L'écart (jusqu'à un tick de déplacement, soit des centimètres en
+	# marchant) faussait sorting_offset — recalculé par rapport à la distance
+	# que le moteur mesurera avec la position rendue — et inversait l'ordre de
+	# deux fenêtres proches dès qu'on s'éloignait.
+	var cp := cam.get_global_transform_interpolated().origin
 	# render_priority prime sur le tri par distance : sans base par fenêtre, le
 	# décor (priorité 1-2) d'une fenêtre ARRIÈRE se dessinait par-dessus le
 	# contenu (priorité 0) d'une fenêtre DEVANT. Chaque fenêtre reçoit donc une
