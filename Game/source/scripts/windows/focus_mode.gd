@@ -661,6 +661,8 @@ func enter_focus(id: int) -> void:
 		focus_opened_during[id] = true
 	focus_mode = true
 	focus_stack.append(id)
+	# Le quad 3D garde sa taille pendant le focus (voir windows.focus_frozen).
+	windows.focus_frozen[id] = true
 	# L'overlay couvre la vue : activer l'occludeur plein écran pour que
 	# l'occlusion culling retire la scène 3D derrière.
 	_ensure_world_occluder()
@@ -794,6 +796,18 @@ func exit_focus() -> void:
 		return
 
 	compositor.release_all_keys()
+
+	# Fenêtres que le client va redimensionner (retour à leur taille d'origine) :
+	# leur quad suivra la prochaine texture. Les autres sont recalées tout de
+	# suite sur leur surface actuelle.
+	var resized_back := {}
+	for rid in focus_stack:
+		if focus_opened_during.has(rid):
+			continue
+		if rid == focus_fullscreen_id or focus_maximized.has(rid):
+			resized_back[rid] = true
+	for rid in focus_stack:
+		windows.release_focus_frozen(rid, not resized_back.has(rid))
 
 	# Restaurer la fenêtre passée en plein écran (seule la première de la pile
 	# l'était) et réafficher les quads 3D de toute la pile. Les fenêtres déjà
@@ -929,6 +943,7 @@ func on_window_unmapped(id: int) -> void:
 		return
 	var was_active := id == _active_id()
 	focus_stack.erase(id)
+	windows.focus_frozen.erase(id)
 	_remove_title_bar(id)
 	if focus_rects.has(id):
 		if is_instance_valid(focus_rects[id]):
@@ -1547,6 +1562,7 @@ func _raise_window(id: int) -> void:
 	if id < 0 or not focus_stack.has(id):
 		return
 	focus_stack.erase(id)
+	windows.focus_frozen.erase(id)
 	focus_stack.append(id)
 	for i in focus_stack.size():
 		var wid: int = focus_stack[i]
@@ -1766,6 +1782,38 @@ func _handle_zone_selection() -> void:
 # se reconstruise, puis on la rétablit.
 const OCCLUSION_RESUME_FRAMES := 8
 var _occlusion_resume_token := 0
+# Viewport 3D minuscule qui partage le monde du principal (voir plus bas).
+var _occlusion_keepalive: SubViewport = null
+
+# POURQUOI le flash de fin de suspension : le moteur (module raycast) ne met à
+# jour la scène des occludeurs que dans buffer_update(), appelé uniquement pour
+# un viewport qui a un buffer d'occlusion. Pendant la suspension (culling
+# coupé) le retrait de l'occludeur plein écran n'est donc JAMAIS pris en
+# compte : à la réactivation, la première frame est culée avec l'ANCIENNE scène
+# (occludeur plein écran compris) — le niveau disparaît, seul le fond reste.
+# Un second viewport avec occlusion culling, sur le même monde, garde la scène
+# à jour pendant toute la suspension (cull_mask 0 : il ne dessine rien).
+func _start_occlusion_keepalive(main_vp: Viewport) -> void:
+	if _occlusion_keepalive != null and is_instance_valid(_occlusion_keepalive):
+		return
+	var sv := SubViewport.new()
+	sv.name = "OcclusionKeepAlive"
+	sv.size = Vector2i(64, 64)
+	sv.world_3d = main_vp.world_3d
+	sv.use_occlusion_culling = true
+	sv.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	sv.audio_listener_enable_3d = false
+	var cam := Camera3D.new()
+	cam.cull_mask = 0
+	sv.add_child(cam)
+	add_child(sv)
+	cam.current = true
+	_occlusion_keepalive = sv
+
+func _stop_occlusion_keepalive() -> void:
+	if _occlusion_keepalive != null and is_instance_valid(_occlusion_keepalive):
+		_occlusion_keepalive.queue_free()
+	_occlusion_keepalive = null
 
 func _suspend_occlusion_after_focus() -> void:
 	var vp := get_viewport()
@@ -1774,6 +1822,7 @@ func _suspend_occlusion_after_focus() -> void:
 	_occlusion_resume_token += 1
 	var token := _occlusion_resume_token
 	vp.use_occlusion_culling = false
+	_start_occlusion_keepalive(vp)
 	for i in OCCLUSION_RESUME_FRAMES:
 		await get_tree().process_frame
 		if not is_inside_tree():
@@ -1781,6 +1830,7 @@ func _suspend_occlusion_after_focus() -> void:
 	# Une sortie de focus plus récente reprend la main sur la réactivation.
 	if token == _occlusion_resume_token:
 		vp.use_occlusion_culling = true
+		_stop_occlusion_keepalive()
 
 # TOUT retrait de l'occludeur plein écran passe par ici : le buffer d'occlusion
 # garde sa silhouette quelques frames, y compris quand il est retiré hors de
@@ -1820,6 +1870,8 @@ func _reset_focus_ui() -> void:
 	focus_rects.clear()
 	focus_states.clear()
 	focus_maximized.clear()
+	for fid in focus_stack:
+		windows.focus_frozen.erase(fid)
 	focus_stack.clear()
 	focus_fullscreen_id = -1
 	focus_mode = false
