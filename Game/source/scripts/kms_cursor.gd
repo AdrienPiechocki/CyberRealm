@@ -11,7 +11,11 @@ func _ready() -> void:
 		set_process(false)
 		queue_free()
 		return
-	layer = 128
+	# Sans fenêtre hôte, les popups (menus déroulants, sélecteur de couleur) sont des
+	# sous-fenêtres INTÉGRÉES, dessinées par Godot sur une couche de canvas à 1024
+	# (Viewport::SUBWINDOW_CANVAS_LAYER) : le curseur doit être au-dessus, sinon il
+	# passe dessous.
+	layer = 1025
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_arrow = _CursorShape.new()
 	add_child(_arrow)
