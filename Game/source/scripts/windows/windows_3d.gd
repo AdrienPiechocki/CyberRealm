@@ -178,6 +178,12 @@ const ALPHA_PROBE_KEY := "windows_alpha"
 # Posé par wayland_room : Callable(clé: String, actif: bool) — demande/libère
 # la copie CPU des captures auprès du lan_manager.
 var cpu_capture_notify: Callable = Callable()
+## Fenêtres en mode focus : leur quad 3D (toujours visible derrière l'overlay)
+## garde sa taille d'avant le focus. Le client est agrandi plein écran, et
+## suivre sa texture donnait au quad la taille de l'écran : à la sortie du
+## focus, ce grand quad opaque masquait le niveau jusqu'à ce que le client
+## ait recommit sa taille d'origine.
+var focus_frozen: Dictionary = {} # wid (int) -> true
 var _alpha_probes: Dictionary = {} # wid -> temps restant avant abandon
 var _alpha_decided: Dictionary = {} # wid -> true (classé, ne plus sonder)
 var _alpha_translucent: Dictionary = {} # wid -> bool (résultat de la classification)
@@ -665,9 +671,107 @@ func _update_window_sorting() -> void:
 		var n := quad.global_basis.z.normalized()
 		order.append([absf((cp - quad.global_position).dot(n)), quad])
 	order.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
+	order = _order_far_to_near(order, cp)
 	for i in order.size():
 		var base := mini(i * WINDOW_PRIORITY_SPAN, WINDOW_PRIORITY_MAX)
 		_apply_sort_key(order[i][1], cp, order[i][0], base)
+
+# Ordre de dessin FOND → AVANT de fenêtres éventuellement inclinées. La distance
+# au plan ne suffit pas : pour deux plans non parallèles elle dépend de la
+# position du joueur et inverse l'ordre alors que l'une est réellement devant
+# l'autre. On compare donc les fenêtres deux à deux : A est devant B si les
+# quatre coins de B sont de l'autre côté du plan de A que la caméra (ou
+# l'inverse). Les paires qui s'interpénètrent ou sont coplanaires n'imposent
+# rien : elles gardent l'ordre par distance au plan (`order`, déjà trié).
+# Tri topologique stable ; en cas de cycle, on retombe sur l'ordre initial.
+func _order_far_to_near(order: Array, cp: Vector3) -> Array:
+	var n := order.size()
+	if n < 2:
+		return order
+	var corners: Array = []
+	var normals: Array = []
+	var sides: Array = []
+	for e: Array in order:
+		var q: MeshInstance3D = e[1]
+		var half := Vector2(1.0, 1.0)
+		if q.mesh is QuadMesh:
+			half = (q.mesh as QuadMesh).size * 0.5
+		var t := q.global_transform
+		corners.append([t * Vector3(-half.x, -half.y, 0.0), t * Vector3(half.x, -half.y, 0.0),
+			t * Vector3(half.x, half.y, 0.0), t * Vector3(-half.x, half.y, 0.0)])
+		var nn := t.basis.z.normalized()
+		normals.append(nn)
+		sides.append(1.0 if (cp - t.origin).dot(nn) >= 0.0 else -1.0)
+	# before[i] : indices à dessiner AVANT i (plus loin que i).
+	var before: Array = []
+	var indeg: Array = []
+	for i in n:
+		before.append([])
+		indeg.append(0)
+	for i in range(n):
+		for j in range(i + 1, n):
+			var r := _in_front(order, corners, normals, sides, i, j)
+			if r == 0:
+				continue
+			# r > 0 : i devant j → j d'abord.
+			var far_i := j if r > 0 else i
+			var near_i := i if r > 0 else j
+			(before[near_i] as Array).append(far_i)
+	for i in n:
+		indeg[i] = (before[i] as Array).size()
+	var done: Array = []
+	done.resize(n)
+	done.fill(false)
+	var out: Array = []
+	while out.size() < n:
+		var pick := -1
+		for i in n:
+			if not done[i] and indeg[i] == 0:
+				pick = i
+				break
+		if pick == -1:
+			for i in n:
+				if not done[i]:
+					pick = i
+					break
+		done[pick] = true
+		out.append(order[pick])
+		for i in n:
+			if not done[i] and (before[i] as Array).has(pick):
+				indeg[i] -= 1
+	return out
+
+## +1 : fenêtre i devant j ; -1 : j devant i ; 0 : indécidable.
+func _in_front(_order: Array, corners: Array, normals: Array, sides: Array,
+		i: int, j: int) -> int:
+	var a := _side_test(corners, normals, sides, i, j) # j derrière le plan de i ?
+	var b := _side_test(corners, normals, sides, j, i)
+	var r := 0
+	if a != 0:
+		r += a
+	if b != 0:
+		r -= b
+	return clampi(r, -1, 1) if (a == 0 or b == 0 or a != b) else 0
+
+## +1 : tous les coins de `j` sont derrière le plan de `i` (côté opposé à la
+## caméra) ; -1 : tous devant ; 0 : mélange ou coplanaire.
+func _side_test(corners: Array, normals: Array, sides: Array, i: int, j: int) -> int:
+	var o: Vector3 = (corners[i] as Array)[0]
+	var nn: Vector3 = normals[i]
+	var sd: float = sides[i]
+	var behind := 0
+	var front := 0
+	for c: Vector3 in (corners[j] as Array):
+		var d := (c - o).dot(nn) * sd
+		if d < -0.002:
+			behind += 1
+		elif d > 0.002:
+			front += 1
+	if behind == 4:
+		return 1
+	if front == 4:
+		return -1
+	return 0
 
 const WINDOW_PRIORITY_SPAN := 4 # décor 0..2 + popups (1) + marge
 const WINDOW_PRIORITY_MAX := 100 # reste sous les overlays (flash/x-ray : 127)
@@ -1017,6 +1121,14 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	if _is_resize_controlled(id):
 		return
 
+	if focus_frozen.has(id):
+		return
+	_fit_quad_to_surface(quad, body, width, height)
+
+## Redonne au quad la taille monde correspondant à une surface de width × height
+## px (ratio d'aspect du client ; hauteur conservée si la fenêtre a été
+## redimensionnée à la main).
+func _fit_quad_to_surface(quad: MeshInstance3D, body: StaticBody3D, width: int, height: int) -> void:
 	# Garde le ratio d'aspect réel de la fenêtre. Utilise la hauteur
 	# courante du mesh (pas un hardcoded 3.0) pour éviter un saut de
 	# taille après un resize où la hauteur a été interpolée.
@@ -1048,6 +1160,17 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	shape.size = Vector3(mesh.size.x, mesh.size.y, shape.size.z)
 	_sync_decorations(quad)
 	windows_state_changed.emit()
+
+## Fin du gel de taille (sortie du focus). `refit` : la fenêtre ne sera pas
+## redimensionnée par le client, on recale donc le quad sur sa surface actuelle.
+func release_focus_frozen(id: int, refit: bool) -> void:
+	focus_frozen.erase(id)
+	if not refit or not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+	var quad: MeshInstance3D = quads[id]
+	var body: StaticBody3D = quad.get_child(0)
+	var sz: Vector2 = body.get_meta("surface_size", Vector2(1, 1))
+	_fit_quad_to_surface(quad, body, int(sz.x), int(sz.y))
 
 func on_popup_mapped(id: int, parent_window_id: int, parent_popup_id: int, x: int, y: int, width: int, height: int) -> void:
 	var parent_quad: MeshInstance3D = null
@@ -2589,6 +2712,7 @@ func _erase_window_state(id: int) -> void:
 	window_server_side.erase(id)
 	_texture_versions.erase(id)
 	_alpha_probes.erase(id)
+	focus_frozen.erase(id)
 	_alpha_decided.erase(id)
 	_alpha_translucent.erase(id)
 	_window_basis.erase(id)
