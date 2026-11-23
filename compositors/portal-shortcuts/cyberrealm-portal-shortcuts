@@ -22,7 +22,15 @@ Le déclencheur demandé (preferred_trigger, ex. « SHIFT+Tab ») est accordé t
 sauf réglage de l'utilisateur dans ~/.config/cyberrealm/shortcuts.json :
     { "<app_id>/<id du raccourci>": "CTRL+ALT+o", ... }     (app_id vide = « host »)
 Une valeur vide désactive le raccourci. Il tourne sur le bus D-Bus privé du jeu
-et s'arrête avec lui."""
+et s'arrête avec lui.
+
+Il sert aussi le portail « Settings » pour deux clés de org.freedesktop.appearance,
+choisies dans les paramètres du jeu et lues par les applications (libadwaita, Qt,
+flatpak...) via le portail :
+  * accent-color : « #rrggbb » dans $XDG_RUNTIME_DIR/cyberrealm-accent ;
+  * color-scheme : « dark » ou « light » dans $XDG_RUNTIME_DIR/cyberrealm-color-scheme.
+Le backend relit chaque fichier à chaque changement et émet SettingChanged. Sans
+fichier, la clé est absente (les applications gardent leur valeur par défaut)."""
 import json, os, pathlib, sys
 
 import gi
@@ -33,6 +41,27 @@ NAME = "org.freedesktop.impl.portal.desktop.cyberrealm"
 PATH = "/org/freedesktop/portal/desktop"
 IFACE = "org.freedesktop.impl.portal.GlobalShortcuts"
 SESSION_IFACE = "org.freedesktop.impl.portal.Session"
+SETTINGS_IFACE = "org.freedesktop.impl.portal.Settings"
+APPEARANCE = "org.freedesktop.appearance"
+ACCENT_KEY = "accent-color"
+SCHEME_KEY = "color-scheme"
+
+SETTINGS_XML = f"""<node>
+  <interface name="{SETTINGS_IFACE}">
+    <method name="ReadAll">
+      <arg type="as" name="namespaces" direction="in"/>
+      <arg type="a{{sa{{sv}}}}" name="value" direction="out"/>
+    </method>
+    <method name="Read">
+      <arg type="s" name="namespace" direction="in"/><arg type="s" name="key" direction="in"/>
+      <arg type="v" name="value" direction="out"/>
+    </method>
+    <signal name="SettingChanged">
+      <arg type="s" name="namespace"/><arg type="s" name="key"/><arg type="v" name="value"/>
+    </signal>
+    <property name="version" type="u" access="read"/>
+  </interface>
+</node>"""
 
 XML = f"""<node>
   <interface name="{IFACE}">
@@ -76,6 +105,8 @@ SESSION_XML = f"""<node><interface name="{SESSION_IFACE}">
 RT = pathlib.Path(os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
 REGISTRY = RT / "cyberrealm-shortcuts"
 EVENTS = RT / "cyberrealm-shortcut-events"
+ACCENT = RT / "cyberrealm-accent"
+SCHEME = RT / "cyberrealm-color-scheme"
 USER_CONF = pathlib.Path(os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config") \
     / "cyberrealm" / "shortcuts.json"
 
@@ -86,6 +117,25 @@ def user_overrides():
         return d if isinstance(d, dict) else {}
     except (OSError, ValueError):
         return {}
+
+
+def read_accent():
+    """Couleur d'accentuation du jeu -> (r, g, b) en 0..1, None si absente/illisible."""
+    try:
+        h = ACCENT.read_text(encoding="utf-8").strip().lstrip("#")
+        if len(h) < 6:
+            return None
+        return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+    except (OSError, ValueError):
+        return None
+
+
+def read_scheme():
+    """Schéma de couleurs du jeu -> 1 (sombre) / 2 (clair) du portail, None si absent."""
+    try:
+        return {"dark": 1, "light": 2}.get(SCHEME.read_text(encoding="utf-8").strip().lower())
+    except OSError:
+        return None
 
 
 def describe(trigger):
@@ -104,6 +154,14 @@ class Backend:
         node = Gio.DBusNodeInfo.new_for_xml(XML)
         conn.register_object(PATH, node.interfaces[0], self.on_call, self.on_prop, None)
         self.session_info = Gio.DBusNodeInfo.new_for_xml(SESSION_XML).interfaces[0]
+        conn.register_object(PATH, Gio.DBusNodeInfo.new_for_xml(SETTINGS_XML).interfaces[0],
+                             self.on_settings_call, self.on_prop, None)
+        self.accent = read_accent()
+        self.accent_monitor = Gio.File.new_for_path(str(ACCENT)).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.accent_monitor.connect("changed", lambda *_: self.accent_changed())
+        self.scheme = read_scheme()
+        self.scheme_monitor = Gio.File.new_for_path(str(SCHEME)).monitor_file(Gio.FileMonitorFlags.NONE, None)
+        self.scheme_monitor.connect("changed", lambda *_: self.scheme_changed())
         # le jeu écrit les événements dans ce fichier ; on repart d'un fichier vide
         EVENTS.write_text("")
         self.monitor = Gio.File.new_for_path(str(EVENTS)).monitor_file(Gio.FileMonitorFlags.NONE, None)
@@ -120,6 +178,59 @@ class Backend:
         except Exception as e:   # un appel bancal ne doit jamais tuer le backend
             print(f"cyberrealm-portal-shortcuts: {method}: {e}", file=sys.stderr)
             inv.return_dbus_error("org.freedesktop.DBus.Error.Failed", str(e))
+
+    # ---- portail Settings (accent-color uniquement)
+    def accent_variant(self):
+        return GLib.Variant("(ddd)", self.accent)
+
+    def appearance(self):
+        """Clés d'apparence actuellement définies : {clé: Variant}."""
+        out = {}
+        if self.accent:
+            out[ACCENT_KEY] = self.accent_variant()
+        if self.scheme:
+            out[SCHEME_KEY] = GLib.Variant("u", self.scheme)
+        return out
+
+    def on_settings_call(self, _c, sender, _path, _iface, method, params, inv):
+        try:
+            args = params.unpack()
+            if method == "ReadAll":
+                wanted = args[0]
+                match = not wanted or any(n in ("", "*") or n == APPEARANCE
+                                          or (n.endswith(".*") and APPEARANCE.startswith(n[:-1]))
+                                          for n in wanted)
+                out = {}
+                if match and self.appearance():
+                    out[APPEARANCE] = self.appearance()
+                inv.return_value(GLib.Variant("(a{sa{sv}})", (out,)))
+            elif method == "Read":
+                if args[0] == APPEARANCE and args[1] in self.appearance():
+                    inv.return_value(GLib.Variant("(v)", (self.appearance()[args[1]],)))
+                else:
+                    inv.return_dbus_error("org.freedesktop.portal.Error.NotFound",
+                                          f"Key {args[0]}.{args[1]} not found")
+            else:
+                inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+        except Exception as e:
+            print(f"cyberrealm-portal-shortcuts: Settings.{method}: {e}", file=sys.stderr)
+            inv.return_dbus_error("org.freedesktop.DBus.Error.Failed", str(e))
+
+    def accent_changed(self):
+        new = read_accent()
+        if new is None or new == self.accent:
+            return
+        self.accent = new
+        self.conn.emit_signal(None, PATH, SETTINGS_IFACE, "SettingChanged",
+                              GLib.Variant("(ssv)", (APPEARANCE, ACCENT_KEY, self.accent_variant())))
+
+    def scheme_changed(self):
+        new = read_scheme()
+        if new is None or new == self.scheme:
+            return
+        self.scheme = new
+        self.conn.emit_signal(None, PATH, SETTINGS_IFACE, "SettingChanged",
+                              GLib.Variant("(ssv)", (APPEARANCE, SCHEME_KEY, GLib.Variant("u", new))))
 
     def m_CreateSession(self, args, inv):
         _handle, session, app_id, _opts = args
@@ -225,7 +336,7 @@ def main():
     try:
         loop.run()
     finally:
-        for p in (REGISTRY, EVENTS):
+        for p in (REGISTRY, EVENTS, ACCENT, SCHEME):
             try:
                 p.unlink()
             except OSError:

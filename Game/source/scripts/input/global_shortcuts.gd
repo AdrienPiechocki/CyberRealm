@@ -59,16 +59,42 @@ func prepare() -> void:
 	DirAccess.make_dir_recursive_absolute(share + "/xdg-desktop-portal/portals")
 	_write(share + "/xdg-desktop-portal/portals/cyberrealm.portal",
 		"[portal]\nDBusName=org.freedesktop.impl.portal.desktop.cyberrealm\n"
-		+ "Interfaces=org.freedesktop.impl.portal.GlobalShortcuts;\nUseIn=dwl;wlr;\n")
+		+ "Interfaces=org.freedesktop.impl.portal.GlobalShortcuts;org.freedesktop.impl.portal.Settings;\nUseIn=dwl;wlr;\n")
 	# « dwl:wlr » (set_portal_backend) : ce fichier prime sur wlr-portals.conf ; tout reste
-	# chez wlr, sauf GlobalShortcuts qui va à notre backend.
+	# chez wlr, sauf GlobalShortcuts qui va à notre backend. Settings : notre backend ne
+	# sert que l'accent et le color-scheme ; « ;gtk » garde le reste des réglages de
+	# l'hôte (thème d'icônes, polices, curseur...) lus par les apps flatpak — sans lui,
+	# elles perdent par exemple leur thème d'icônes (Ludodex : icône de filtre).
 	_write(share + "/xdg-desktop-portal/dwl-portals.conf",
-		"[preferred]\ndefault=wlr\norg.freedesktop.impl.portal.GlobalShortcuts=cyberrealm\n")
+		"[preferred]\ndefault=wlr\norg.freedesktop.impl.portal.GlobalShortcuts=cyberrealm\n"
+		+ "org.freedesktop.impl.portal.Settings=cyberrealm;gtk\n")
 	var dirs := OS.get_environment("XDG_DATA_DIRS")
 	if dirs.is_empty():
 		dirs = "/usr/local/share:/usr/share"
 	if not dirs.begins_with(share + ":"):
 		OS.set_environment("XDG_DATA_DIRS", share + ":" + dirs)
+
+## Publie la couleur d'accentuation (portail Settings, org.freedesktop.appearance /
+## accent-color) : les applications, y compris flatpak, la lisent via le portail.
+## Le backend relit ce fichier à chaque changement et émet SettingChanged.
+func set_accent(color: Color) -> void:
+	if _rt.is_empty():
+		return
+	var text := "#" + color.to_html(false)
+	var path := _rt + "/cyberrealm-accent"
+	if FileAccess.file_exists(path) and FileAccess.get_file_as_string(path) == text:
+		return
+	_write(path, text)
+
+## Publie le schéma de couleurs ("dark" / "light") : org.freedesktop.appearance /
+## color-scheme, lu par les applications via le portail.
+func set_color_scheme(scheme: String) -> void:
+	if _rt.is_empty():
+		return
+	var path := _rt + "/cyberrealm-color-scheme"
+	if FileAccess.file_exists(path) and FileAccess.get_file_as_string(path) == scheme:
+		return
+	_write(path, scheme)
 
 ## À appeler APRÈS compositor.launch_portals() (le bus privé existe alors).
 func start_backend(compositor: Object) -> void:

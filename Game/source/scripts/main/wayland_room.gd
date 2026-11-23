@@ -26,6 +26,9 @@ var layers: Node3D
 var pins: Node3D
 var fx: Node3D
 var presenter: Node3D # présente le viewport à l'output headless pour OBS
+const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
+
+var _app_theme_timer: Timer
 var global_shortcuts: Node # raccourcis globaux (portail GlobalShortcuts), cf. scripts/input/global_shortcuts.gd
 var lan: Node # multijoueur LAN (hôte/join, avatars)
 var cmd: Node # drone de commandes IPC (cyberrealm-exec)
@@ -282,6 +285,11 @@ func _apply_environment_settings(settings: Dictionary) -> void:
 	for key in ENV_ADJUST_KEYS:
 		env.set(key, settings[key] if settings.has(key) else level_vals[key])
 
+func _apply_app_theme() -> void:
+	var scheme: String = pause_menu.get_color_scheme()
+	AppThemeScript.apply(scheme)
+	AppThemeScript.apply_kde_colors(scheme, pause_menu.get_accent_color())
+
 func _level_world_environment() -> WorldEnvironment:
 	var level := get_node_or_null("Level")
 	if level == null:
@@ -488,6 +496,21 @@ func _ready() -> void:
 	pause_menu.pins_opacity_changed.connect(_on_pins_opacity_changed)
 	pause_menu.pins_position_changed.connect(_on_pins_position_changed)
 	pause_menu.pins_border_color_changed.connect(_on_pins_border_color_changed)
+	# Accent : aussi publié aux applications via le portail Settings.
+	global_shortcuts.set_accent(UITheme.accent_color)
+	pause_menu.accent_color_changed.connect(global_shortcuts.set_accent)
+	global_shortcuts.set_color_scheme(pause_menu.get_color_scheme())
+	pause_menu.color_scheme_changed.connect(global_shortcuts.set_color_scheme)
+	# Thème des apps Qt/GTK (icônes + couleurs KDE) : fichiers de config, réécrits
+	# après un court délai (le sélecteur de couleur émet en continu pendant le drag).
+	_app_theme_timer = Timer.new()
+	_app_theme_timer.one_shot = true
+	_app_theme_timer.wait_time = 0.4
+	_app_theme_timer.timeout.connect(_apply_app_theme)
+	add_child(_app_theme_timer)
+	_apply_app_theme()
+	pause_menu.color_scheme_changed.connect(func(_s: String): _app_theme_timer.start())
+	pause_menu.accent_color_changed.connect(func(_c: Color): _app_theme_timer.start())
 	pause_menu.pins_size_divisor_changed.connect(_on_pins_size_divisor_changed)
 	# Appliquer la couche, la transparence, la position, la taille et la couleur
 	# de bordure des fenêtres épinglées

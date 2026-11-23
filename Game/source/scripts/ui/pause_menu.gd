@@ -17,6 +17,7 @@ signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
 signal accent_color_changed(color: Color)
+signal color_scheme_changed(scheme: String)
 signal lan_avatar_changed(path: String)
 signal lan_name_changed(name: String)
 
@@ -444,30 +445,6 @@ func _show_general() -> void:
 	screenshots_btn.pressed.connect(_show_screenshots)
 	container.add_child(screenshots_btn)
 
-	# ── Couleur d'accentuation (appliquée immédiatement) ──
-	var accent_label := Label.new()
-	accent_label.text = "Accent color"
-	accent_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	accent_label.add_theme_font_size_override("font_size", 13)
-	accent_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
-	container.add_child(accent_label)
-
-	var accent_btn := ColorPickerButton.new()
-	accent_btn.focus_mode = Control.FOCUS_ALL
-	accent_btn.edit_alpha = false
-	accent_btn.color = get_accent_color()
-	accent_btn.custom_minimum_size = Vector2(64, 30)
-	accent_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	container.add_child(accent_btn)
-	accent_btn.color_changed.connect(_set_accent_color)
-
-	var accent_reset := _make_btn("Reset accent color", "action-button")
-	accent_reset.pressed.connect(func():
-		accent_btn.color = UITheme.DEFAULT_ACCENT
-		_set_accent_color(UITheme.DEFAULT_ACCENT)
-	)
-	container.add_child(accent_reset)
-
 	# ── Max FPS (appliqué immédiatement) ──
 	var fps_label := Label.new()
 	fps_label.text = "Max FPS"
@@ -535,6 +512,8 @@ func _show_graphics() -> void:
 	var pins_btn := _make_btn("Pinned Windows")
 	pins_btn.pressed.connect(_show_pins)
 	container.add_child(pins_btn)
+
+	_add_appearance_rows()
 
 	container.add_child(_make_spacer())
 
@@ -1271,6 +1250,10 @@ func get_accent_color() -> Color:
 	c.a = 1.0
 	return c
 
+# Thème clair/sombre annoncé aux applications ; sombre par défaut (ambiance du jeu).
+func get_color_scheme() -> String:
+	return "light" if String(_settings.get("color_scheme", "dark")) == "light" else "dark"
+
 func _set_accent_color(c: Color) -> void:
 	c.a = 1.0
 	_settings["accent_color"] = c.to_html(false)
@@ -1310,6 +1293,59 @@ func _save_lan_name(edit: LineEdit) -> void:
 	_settings["lan_player_name"] = nm
 	_save_settings()
 	lan_name_changed.emit(nm)
+
+# Apparence des applications : couleur d'accentuation + thème clair/sombre, en
+# deux lignes compactes. Appliqués
+# immédiatement et publiés aux apps via le portail Settings.
+func _add_appearance_rows() -> void:
+	var accent_row := HBoxContainer.new()
+	accent_row.add_theme_constant_override("separation", 8)
+	container.add_child(accent_row)
+	accent_row.add_child(_make_row_label("Accent color"))
+
+	var accent_btn := ColorPickerButton.new()
+	accent_btn.focus_mode = Control.FOCUS_ALL
+	accent_btn.edit_alpha = false
+	accent_btn.color = get_accent_color()
+	accent_btn.custom_minimum_size = Vector2(64, 30)
+	accent_row.add_child(accent_btn)
+	accent_btn.color_changed.connect(_set_accent_color)
+
+	var accent_reset := _make_btn("Reset", "action-button")
+	accent_reset.custom_minimum_size = Vector2(0, 30)
+	accent_reset.size_flags_horizontal = Control.SIZE_SHRINK_END
+	accent_reset.pressed.connect(func():
+		accent_btn.color = UITheme.DEFAULT_ACCENT
+		_set_accent_color(UITheme.DEFAULT_ACCENT)
+	)
+	accent_row.add_child(accent_reset)
+
+	var scheme_row := HBoxContainer.new()
+	scheme_row.add_theme_constant_override("separation", 8)
+	container.add_child(scheme_row)
+	scheme_row.add_child(_make_row_label("App theme"))
+
+	var scheme_opt := OptionButton.new()
+	scheme_opt.add_item("Dark")
+	scheme_opt.add_item("Light")
+	scheme_opt.selected = 1 if get_color_scheme() == "light" else 0
+	scheme_opt.custom_minimum_size = Vector2(0, 32)
+	scheme_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scheme_row.add_child(scheme_opt)
+	scheme_opt.item_selected.connect(func(i: int):
+		var v := "light" if i == 1 else "dark"
+		_settings["color_scheme"] = v
+		_save_settings()
+		color_scheme_changed.emit(v)
+	)
+
+func _make_row_label(text: String) -> Label:
+	var lbl := Label.new()
+	lbl.text = text
+	lbl.custom_minimum_size = Vector2(110, 0)
+	lbl.add_theme_font_size_override("font_size", 14)
+	lbl.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	return lbl
 
 func _show_graphics_general() -> void:
 	_clear()
