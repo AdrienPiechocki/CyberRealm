@@ -194,6 +194,47 @@ Rules:
 - A spammer cannot flood the session: relaying is limited to one interaction
   per player every 150 ms.
 
+## Level options (pause menu)
+
+A level can add its own settings to the pause menu: a **Level** button appears
+on the main page (between *Tutorial* and *Back*) and opens a **LEVEL OPTIONS**
+page. This is done by the level itself (see `Levels/Morrowind/scripts/level_options.gd`),
+not by the game: levels without such a script simply have no **Level** button.
+
+The Morrowind level provides:
+
+| Option | Effect |
+|---|---|
+| **Time of day** | *Real time (local clock)*: the sky follows each machine's own clock. *Fixed hour*: freezes the sky at the hour set with the slider (00:00 – 23:45, 15 min steps). |
+| **Rain** | Turns the rain (and the overcast sky) on or off. |
+
+There are no keyboard shortcuts for these any more: everything goes through
+this page.
+
+### Multiplayer
+
+- **Only the host can change the options** (or the player, in a solo game).
+  Other players see the page read-only, with the current values.
+- Every change is applied on the host, then sent to all clients (about 0.25 s
+  after the last adjustment, so dragging the slider does not flood the
+  network). A player who joins later receives the current state with the level.
+- In *Real time* mode each player sees the time of their own machine, so
+  players in different time zones see a different sky. Use *Fixed hour* to
+  make everybody see the same one.
+- Clients only accept the three values above (mode, hour, rain), and only from
+  the host.
+
+### Adding your own options
+
+The pause menu has no extension point, so `level_options.gd` hooks into it at
+runtime: it adds the **Level** button each time the main page is rebuilt and
+builds its own page with the menu's helpers. It removes everything when the
+level is replaced. To add an option to this level, edit that script (it is
+never overwritten by `Levels/Morrowind/integrate.py`): read and write the
+state on the level's nodes (so late joiners get it through the baked level)
+and send changes with the existing `authority` RPC. Reuse the same pattern
+for another level.
+
 ## Back to the default level
 
 Delete (or rename) `res://user/level.tscn`. The game then uses
