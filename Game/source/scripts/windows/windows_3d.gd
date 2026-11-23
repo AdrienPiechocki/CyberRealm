@@ -669,9 +669,23 @@ func _update_window_sorting() -> void:
 		if not is_instance_valid(quad) or not quad.visible:
 			continue
 		var n := quad.global_basis.z.normalized()
-		order.append([absf((cp - quad.global_position).dot(n)), quad])
+		order.append([absf((cp - quad.global_position).dot(n)), quad, id])
 	order.sort_custom(func(a: Array, b: Array) -> bool: return a[0] > b[0])
 	order = _order_far_to_near(order, cp)
+	# Les fenêtres OPAQUES écrivent la profondeur : dessinées en premier, le test
+	# de profondeur règle seul leur occlusion avec n'importe quelle fenêtre, même
+	# interpénétrée ou inclinée, quel que soit le côté d'où l'on regarde. Les
+	# translucides (sans écriture de profondeur) passent ensuite, du fond vers
+	# l'avant : elles se testent contre les opaques, et le tri ne sert plus
+	# qu'entre translucides. Partition stable.
+	var opaque_first: Array = []
+	var translucent: Array = []
+	for e: Array in order:
+		if _alpha_translucent.get(e[2], false):
+			translucent.append(e)
+		else:
+			opaque_first.append(e)
+	order = opaque_first + translucent
 	for i in order.size():
 		var base := mini(i * WINDOW_PRIORITY_SPAN, WINDOW_PRIORITY_MAX)
 		_apply_sort_key(order[i][1], cp, order[i][0], base)
