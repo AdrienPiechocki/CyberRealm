@@ -753,8 +753,12 @@ func _in_front(_order: Array, corners: Array, normals: Array, sides: Array,
 		r -= b
 	return clampi(r, -1, 1) if (a == 0 or b == 0 or a != b) else 0
 
-## +1 : tous les coins de `j` sont derrière le plan de `i` (côté opposé à la
-## caméra) ; -1 : tous devant ; 0 : mélange ou coplanaire.
+## +1 : `j` est entièrement derrière le plan de `i` (côté opposé à la caméra) ;
+## -1 : entièrement devant ; 0 : les deux côtés (interpénétration) ou coplanaire.
+## Les coins posés SUR le plan comptent pour neutres : deux fenêtres collées
+## par un bord (le cas courant) en partagent, et exiger quatre coins stricts
+## rendait la paire indécidable — l'ordre retombait alors sur la distance au
+## plan, qui s'inverse selon la position du joueur.
 func _side_test(corners: Array, normals: Array, sides: Array, i: int, j: int) -> int:
 	var o: Vector3 = (corners[i] as Array)[0]
 	var nn: Vector3 = normals[i]
@@ -763,15 +767,17 @@ func _side_test(corners: Array, normals: Array, sides: Array, i: int, j: int) ->
 	var front := 0
 	for c: Vector3 in (corners[j] as Array):
 		var d := (c - o).dot(nn) * sd
-		if d < -0.002:
+		if d < -SORT_PLANE_EPS:
 			behind += 1
-		elif d > 0.002:
+		elif d > SORT_PLANE_EPS:
 			front += 1
-	if behind == 4:
+	if behind > 0 and front == 0:
 		return 1
-	if front == 4:
+	if front > 0 and behind == 0:
 		return -1
 	return 0
+
+const SORT_PLANE_EPS := 0.02 # m
 
 const WINDOW_PRIORITY_SPAN := 4 # décor 0..2 + popups (1) + marge
 const WINDOW_PRIORITY_MAX := 100 # reste sous les overlays (flash/x-ray : 127)
