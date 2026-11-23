@@ -3,7 +3,7 @@ extends Node3D
 ## en position/rotation par le lan_manager. Pas de collision.
 ## Transparence progressive sous 1 m du joueur local.
 
-@export_range(0.0, 1.0) var pitch_scale: float = 0.4  ## Amplitude du pitch de l'avatar (1 = pitch complet de la caméra)
+@export_range(-1.0, 1.0) var pitch_scale: float = 0.4  ## Amplitude du pitch de l'avatar (1 = pitch complet de la caméra). Négatif : inverse le sens (os de tête orienté à l'envers)
 @export var pitch_pivot_path: NodePath = ^""
 
 @export var lerp_speed := 15.0  ## Vitesse de lissage (10 à 20)
