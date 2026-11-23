@@ -17,6 +17,7 @@ extends Node3D
 ## Avatar local (enfant du joueur, ex. free-cam) : jamais d'apply_transform ;
 ## le pose suit le parent et la vitesse est déduite du déplacement global.
 var follow_parent := false
+var _pitch_cam: Camera3D = null
 
 var peer_id := 0
 var player_name := ""
@@ -127,6 +128,7 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 
 func _process(delta: float) -> void:
 	if follow_parent:
+		_follow_parent_pitch(delta)
 		_update_animation(delta)
 		_update_transparency()
 		return
@@ -145,6 +147,24 @@ func _process(delta: float) -> void:
 	_update_animation(delta)
 	_update_transparency()
 
+
+## Mode follow_parent : le pitch de la tête reprend celui de la caméra du joueur
+## (le parent), comme le fait apply_transform pour un avatar distant. Le pitch
+## est appliqué dès la première frame, sans lissage, pour ne pas voir la tête
+## balayer l'angle à l'entrée en free-cam.
+func _follow_parent_pitch(delta: float) -> void:
+	if _pitch_cam == null or not is_instance_valid(_pitch_cam):
+		var parent := get_parent()
+		_pitch_cam = parent.get_node_or_null("Camera3D") as Camera3D if parent != null else null
+		if _pitch_cam == null:
+			return
+		_target_pitch = _pitch_cam.rotation.x * pitch_scale
+		(_pitch_pivot if _pitch_pivot != null else self).rotation.x = _target_pitch
+		return
+	_target_pitch = _pitch_cam.rotation.x * pitch_scale
+	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
+	pitch_node.rotation.x = lerp_angle(pitch_node.rotation.x, _target_pitch,
+		1.0 - exp(-delta * lerp_speed))
 
 func _physics_process(delta: float) -> void:
 	if follow_parent:
