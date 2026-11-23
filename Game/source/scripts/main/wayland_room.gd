@@ -495,7 +495,8 @@ func _ready() -> void:
 	pause_menu.pins_layer_changed.connect(_on_pins_layer_changed)
 	pause_menu.pins_opacity_changed.connect(_on_pins_opacity_changed)
 	pause_menu.pins_position_changed.connect(_on_pins_position_changed)
-	pause_menu.pins_border_color_changed.connect(_on_pins_border_color_changed)
+	# Bordure de la loupe des pins = couleur d'accentuation.
+	pause_menu.accent_color_changed.connect(pins.set_pins_border_color)
 	# Accent : aussi publié aux applications via le portail Settings.
 	global_shortcuts.set_accent(UITheme.accent_color)
 	pause_menu.accent_color_changed.connect(global_shortcuts.set_accent)
@@ -520,7 +521,7 @@ func _ready() -> void:
 	# La taille d'abord : elle recalcule PIN_SIZE, dont dépend le ratio utilisé
 	# par la loupe.
 	pins.set_pins_size_divisor(pause_menu.get_pins_size_divisor())
-	pins.set_pins_border_color(pause_menu.get_pins_border_color())
+	pins.set_pins_border_color(pause_menu.get_accent_color())
 	# Appliquer les réglages graphiques & contrôles
 	pause_menu._apply_aa(pause_menu.get_aa_mode())
 	Engine.max_fps = pause_menu.get_fps_limit()
@@ -1726,9 +1727,6 @@ func _on_pins_opacity_changed(percent: int) -> void:
 
 func _on_pins_position_changed(position: String) -> void:
 	pins.set_pins_position(position)
-
-func _on_pins_border_color_changed(color: Color) -> void:
-	pins.set_pins_border_color(color)
 
 func _on_pins_size_divisor_changed(divisor: float) -> void:
 	pins.set_pins_size_divisor(divisor)

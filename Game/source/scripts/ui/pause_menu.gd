@@ -7,7 +7,6 @@ signal polkit_agent_changed(path: String)
 signal pins_layer_changed(above: bool)
 signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
-signal pins_border_color_changed(color: Color)
 signal pins_size_divisor_changed(divisor: float)
 signal lan_host_requested
 signal lan_join_requested(ip: String, pin: String, encrypted: bool)
@@ -1009,23 +1008,6 @@ func get_pins_size_divisor() -> float:
 		return 3.0
 	return clampf(float(d), PIN_SIZE_DIVISOR_MIN, PIN_SIZE_DIVISOR_MAX)
 
-# Couleur de la bordure du pin en loupe. Même format que lan_player_color
-# (hex de Color.to_html) : le repli couvre un ancien format Color et une
-# entrée illisible, pour qu'un settings.json corrompu ne peigne pas le pin
-# en noir.
-func get_pins_border_color() -> Color:
-	var fallback := Color(0.29, 0.59, 1.0, 1.0)
-	var v = _settings.get("pins_border_color", fallback)
-	if v is Color:
-		return v
-	if v is String:
-		var s := (v as String).strip_edges()
-		if s.begins_with("#"):
-			return Color.from_string(s, fallback)
-		if s.length() == 6 or s.length() == 8:
-			return Color.from_string("#" + s, fallback)
-	return fallback
-
 func get_aa_mode() -> String:
 	return _settings.get("aa_mode", "off")
 
@@ -1160,34 +1142,19 @@ func _show_pins() -> void:
 		_refresh_size.call(value)
 	)
 
-	var color_label := Label.new()
-	color_label.text = "Loupe border color"
-	color_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	color_label.add_theme_font_size_override("font_size", 13)
-	color_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
-	container.add_child(color_label)
-
-	var color_btn := ColorPickerButton.new()
-	color_btn.focus_mode = Control.FOCUS_ALL
-	color_btn.color = get_pins_border_color()
-	color_btn.custom_minimum_size = Vector2(64, 30)
-	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	container.add_child(color_btn)
-
 	# Auto-apply : chaque changement est sauvegardé et émis immédiatement.
 	var auto_apply := func(_v = null) -> void:
-		_apply_pins_settings(opt, pos_opt, slider, size_slider, color_btn)
+		_apply_pins_settings(opt, pos_opt, slider, size_slider)
 	opt.item_selected.connect(auto_apply)
 	pos_opt.item_selected.connect(auto_apply)
 	slider.value_changed.connect(auto_apply)
 	size_slider.value_changed.connect(auto_apply)
-	color_btn.color_changed.connect(auto_apply)
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
 
 func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSlider,
-		size_slider: HSlider, color_btn: ColorPickerButton) -> void:
+		size_slider: HSlider) -> void:
 	var above := opt.selected == 1
 	var percent: int = clampi(int(slider.value), 0, 100)
 	var pos := "top_left"
@@ -1195,17 +1162,14 @@ func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSli
 		pos = String(PIN_POSITIONS[pos_opt.selected].get("id", "top_left"))
 	var divisor := clampf(snappedf(size_slider.value, PIN_SIZE_DIVISOR_STEP),
 		PIN_SIZE_DIVISOR_MIN, PIN_SIZE_DIVISOR_MAX)
-	var color: Color = color_btn.color
 	var old_above := get_pins_above_focus()
 	var old_percent := get_pins_opacity()
 	var old_pos := get_pins_position()
 	var old_divisor := get_pins_size_divisor()
-	var old_color_hex := get_pins_border_color().to_html(true)
 	_settings["pins_above_focus"] = above
 	_settings["pins_opacity"] = percent
 	_settings["pins_position"] = pos
 	_settings["pins_size_divisor"] = divisor
-	_settings["pins_border_color"] = color.to_html(true)
 	_save_settings()
 	# N'émet que ce qui a réellement changé (les curseurs appellent ceci à chaque cran).
 	if above != old_above:
@@ -1216,8 +1180,6 @@ func _apply_pins_settings(opt: OptionButton, pos_opt: OptionButton, slider: HSli
 		pins_position_changed.emit(pos)
 	if not is_equal_approx(divisor, old_divisor):
 		pins_size_divisor_changed.emit(divisor)
-	if color.to_html(true) != old_color_hex:
-		pins_border_color_changed.emit(color)
 
 # ── LAN multiplayer ──────────────────────────────────────────────────
 

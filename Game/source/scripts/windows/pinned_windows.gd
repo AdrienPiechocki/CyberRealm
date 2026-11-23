@@ -45,7 +45,7 @@ const ZOOM_STICK_DEADZONE := 0.2
 # changement de direction dans _advance_scroll_hold.
 const ZOOM_HOLD_RATE := 10.0
 # Bordure bleue = mode loupe actif. Défaut seulement : la couleur effective
-# vient de pins_border_color, réglable depuis pause_menu > Graphics.
+# vient de pins_border_color, fixée à la couleur d'accentuation (menu pause > Graphics).
 const ZOOM_BORDER_COLOR := Color(0.29, 0.59, 1.0, 1.0)
 
 ## Émis quand le mode loupe est activé/désactivé. wayland_room s'en sert pour

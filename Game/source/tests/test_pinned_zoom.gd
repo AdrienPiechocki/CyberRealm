@@ -1014,27 +1014,6 @@ func test_pins_size_divisor_setting_defaults_to_three() -> Variant:
 	menu.free()
 	return res
 
-func test_pins_border_color_setting_defaults_to_legacy_blue() -> Variant:
-	## Absence de réglage = la couleur d'origine, sinon les joueurs qui ont
-	## déjà épinglé avant ce réglage verraient leur bordure magenta.
-	var menu := PanelContainer.new()
-	menu.set_script(PauseMenu)
-	var res: Variant = Runner.assert_true(
-		menu.get_pins_border_color().is_equal_approx(Color(0.29, 0.59, 1.0, 1.0)),
-		"la couleur par défaut doit être le bleu d'origine")
-	menu.free()
-	return res
-
-func test_pins_border_color_setting_survives_a_corrupt_value() -> Variant:
-	var menu := PanelContainer.new()
-	menu.set_script(PauseMenu)
-	menu._settings["pins_border_color"] = "pas une couleur"
-	var res: Variant = Runner.assert_true(
-		menu.get_pins_border_color().is_equal_approx(Color(0.29, 0.59, 1.0, 1.0)),
-		"une valeur illisible doit retomber sur la couleur par défaut")
-	menu.free()
-	return res
-
 func test_slider_range_matches_the_pin_clamp() -> Variant:
 	## Le menu et le pin ont chacun leurs bornes (le menu pour le slider, le pin
 	## pour le clamp). Elles ne sont pas partagées par une constante commune,
