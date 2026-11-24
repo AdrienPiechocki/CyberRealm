@@ -137,6 +137,11 @@ person, with the head hidden, and entirely in third person (**F5**).
   **Fps Back Offset** (how far the body sits behind the camera) are exported
   on `avatar.gd`.
 - `CYBERREALM_NO_FULLBODY=1` disables the local body entirely.
+- **Walk in place** (`Walk In Place`, on by default): if the walk animation
+  carries root motion (the avatar advances several meters per loop, then snaps
+  back), the horizontal movement of the root track is removed at load; the
+  vertical bounce is kept. Adjust `Root Motion Threshold` if a track is
+  wrongly detected.
 
 ## Custom scripts
 

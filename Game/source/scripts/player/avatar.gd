@@ -23,6 +23,13 @@ extends Node3D
 @export var anim_walk: StringName = &""
 @export var anim_jump: StringName = &""
 @export var walk_speed_threshold := 0.1
+## Supprime le déplacement du « root motion » de l'animation de marche (certains exports la font avancer l'avatar
+## de plusieurs mètres par boucle : il glisse puis retombe au point de départ). Le sur-place laisse le joueur
+## porter le déplacement.
+@export var walk_in_place := true
+## Déplacement horizontal minimal (unités de l'animation) entre première et dernière clé pour qu'une piste de
+## position soit considérée comme du root motion.
+@export var root_motion_threshold := 0.2
 
 ## Avatar local (enfant du joueur, ex. free-cam) : jamais d'apply_transform ;
 ## le pose suit le parent et la vitesse est déduite du déplacement global.
@@ -126,6 +133,8 @@ func setup(id: int, pname: String, color: Color) -> void:
 			_anim_player = AnimationPlayer.new()
 			_anim_player.name = "AnimationPlayer"
 			add_child(_anim_player)
+		if walk_in_place and anim_walk != &"" and _anim_player.has_animation(anim_walk):
+			_strip_root_motion(_anim_player.get_animation(anim_walk))
 
 	# Pivot du pitch
 	_pitch_pivot = null
@@ -265,6 +274,24 @@ func _apply_ground_carry() -> void:
 		_last_ground_transform = current_transform
 	else:
 		_last_ground_collider = null
+
+
+## Fige X/Z des pistes de position qui avancent d'au moins root_motion_threshold entre la 1re et la dernière clé
+## (la hauteur Y est conservée : rebond de la marche). Idempotent : la 2e fois, plus rien ne dépasse le seuil.
+func _strip_root_motion(anim: Animation) -> void:
+	for t in anim.get_track_count():
+		if anim.track_get_type(t) != Animation.TYPE_POSITION_3D:
+			continue
+		var n := anim.track_get_key_count(t)
+		if n < 2:
+			continue
+		var first: Vector3 = anim.track_get_key_value(t, 0)
+		var last: Vector3 = anim.track_get_key_value(t, n - 1)
+		if Vector2(last.x - first.x, last.z - first.z).length() < root_motion_threshold:
+			continue
+		for k in n:
+			var v: Vector3 = anim.track_get_key_value(t, k)
+			anim.track_set_key_value(t, k, Vector3(first.x, v.y, first.z))
 
 
 func _update_animation(_delta: float) -> void:
