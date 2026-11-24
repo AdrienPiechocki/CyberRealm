@@ -833,7 +833,7 @@ func _on_pin_zoom_changed(active: bool) -> void:
 # « toggle_ui hides player names » est active. Le meta Engine sert aux avatars
 # créés pendant que l'UI est masquée (cf. avatar.gd).
 func _refresh_name_labels() -> void:
-	var hidden := not ui.visible and pause_menu.does_toggle_ui_hide_names()
+	var hidden: bool = not ui.visible and bool(pause_menu.does_toggle_ui_hide_names())
 	Engine.set_meta("hide_avatar_names", hidden)
 	for n in get_tree().get_nodes_in_group("avatar_name_label"):
 		(n as Label3D).visible = not hidden
