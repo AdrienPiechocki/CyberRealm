@@ -81,6 +81,7 @@ func _ready():
 	$WindowMenuLayer/WindowMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$PauseMenuLayer/PauseMenu.visibility_changed.connect(_on_menu_visibility_changed)
 	$RadialMenuLayer/RadialMenu.visibility_changed.connect(_on_menu_visibility_changed)
+	$PauseMenuLayer/PauseMenu.respawn_requested.connect(respawn)
 	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 	_apply_cursor_css()
 	# Vérification gyro : print de présence des capteurs manette, activé par
@@ -90,6 +91,11 @@ func _ready():
 		for dev in Input.get_connected_joypads():
 			print("PAD dev=%d guid=%s has_sensors=%s" % [
 				dev, Input.get_joy_guid(dev), Input.has_joy_motion_sensors(dev)])
+
+func respawn() -> void:
+	position = spawn_pos
+	rotation = spawn_rotation
+	velocity = Vector3.ZERO
 
 func _apply_cursor_css() -> void:
 	var cursor := get_node_or_null("UI/Cursor")

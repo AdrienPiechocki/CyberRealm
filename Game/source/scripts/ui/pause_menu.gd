@@ -12,6 +12,7 @@ signal lan_host_requested
 signal lan_join_requested(ip: String, pin: String, encrypted: bool)
 signal lan_video_settings_changed(bitrate: int, codec: String, fps: int)
 signal tutorial_requested
+signal respawn_requested
 signal lan_disconnect_requested
 signal lan_discover_requested
 signal lan_color_changed(color: Color)
@@ -409,6 +410,13 @@ func _show_main() -> void:
 		tutorial_requested.emit()
 	)
 	container.add_child(tutorial_btn)
+
+	var respawn_btn := _make_btn("Respawn")
+	respawn_btn.pressed.connect(func():
+		hide_menu()
+		respawn_requested.emit()
+	)
+	container.add_child(respawn_btn)
 	
 	container.add_child(_make_spacer())
 	
