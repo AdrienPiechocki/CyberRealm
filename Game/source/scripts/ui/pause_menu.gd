@@ -24,6 +24,7 @@ signal lan_name_changed(name: String)
 signal graphics_settings_changed(aa_mode: String, fps_limit: int)
 signal snapping_disabled_changed(disabled: bool)
 signal ui_hides_names_changed(enabled: bool)
+signal fullbody_changed(enabled: bool)
 signal mouse_sens_changed(mult: float)
 signal pad_look_sens_changed(mult: float)
 signal focus_stick_sens_changed(mult: float)
@@ -70,7 +71,7 @@ const REMAPPABLE_ACTIONS := [
 	"look_up", "look_down", "look_left", "look_right",
 	"interact_mode", "layer_interact", "window_menu", "radial_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
-	"screenshot", "force_game", "freecam", "toggle_ui",
+	"screenshot", "force_game", "freecam", "toggle_tps", "toggle_ui",
 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
 
@@ -515,6 +516,21 @@ func _show_general() -> void:
 		_settings["toggle_ui_hides_names"] = on
 		_save_settings()
 		ui_hides_names_changed.emit(on)
+	)
+
+	# Full body awareness : voir son propre corps (tête cachée) en vue 1ère personne.
+	var body_check := CheckButton.new()
+	body_check.text = "Full body awareness (see your own body in first person)"
+	body_check.button_pressed = is_fullbody_enabled()
+	body_check.custom_minimum_size = Vector2(0, 36)
+	body_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	body_check.add_theme_font_size_override("font_size", 14)
+	container.add_child(body_check)
+
+	body_check.toggled.connect(func(on: bool):
+		_settings["fullbody_awareness"] = on
+		_save_settings()
+		fullbody_changed.emit(on)
 	)
 
 	container.add_child(_make_spacer())
@@ -1061,6 +1077,10 @@ func is_snapping_disabled() -> bool:
 # toggle_ui masque-t-il aussi les noms des joueurs ? (GENERAL). Défaut : non.
 func does_toggle_ui_hide_names() -> bool:
 	return bool(_settings.get("toggle_ui_hides_names", false))
+
+# Full body awareness : corps du joueur visible en 1ère personne ? (GENERAL). Défaut : oui.
+func is_fullbody_enabled() -> bool:
+	return bool(_settings.get("fullbody_awareness", true))
 
 func _show_pins() -> void:
 	_clear()

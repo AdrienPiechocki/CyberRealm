@@ -14,7 +14,7 @@ extends Node3D
 ## Nom de l'os de la tête. Vide = détection automatique (premier os dont le nom contient « head »).
 @export var fps_head_bone: StringName = &""
 ## Recul du corps par rapport à la caméra en 1ère personne (m), pour ne pas voir l'intérieur du cou/des épaules.
-@export var fps_back_offset := 0.12
+@export var fps_back_offset := 0.22
 ## Hauteur des yeux au-dessus de l'origine de l'os de la tête (m, avant échelle) : la caméra 1ère personne se place là.
 @export var fps_eye_offset := 0.08
 

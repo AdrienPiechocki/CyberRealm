@@ -620,6 +620,7 @@ func _ready() -> void:
 	# Corps du joueur local (full body awareness) : reconstruit quand l'avatar, la couleur ou le nom changent.
 	pause_menu.lan_avatar_changed.connect(func(_p): _spawn_body_avatar.call_deferred())
 	pause_menu.lan_color_changed.connect(func(_c): _spawn_body_avatar.call_deferred())
+	pause_menu.fullbody_changed.connect(func(_on): _refresh_body_view())
 	_spawn_body_avatar.call_deferred()
 	pause_menu.lan_host_requested.connect(lan.host_game)
 	pause_menu.lan_join_requested.connect(lan.join_game)
@@ -1415,10 +1416,14 @@ func _refresh_body_view() -> void:
 		if player.tps_active:
 			_spawn_body_avatar()
 		return
-	var supported: bool = _body_avatar.set_first_person(not player.tps_active)
-	_body_avatar.set_suppressed(player.freecam_active)
-	# Caméra 1ère personne à hauteur de la tête de l'avatar (chaque avatar a sa taille) ; hauteur d'origine sinon.
-	player.set_eye_height(_body_avatar.get_eye_height_local() if supported else NAN)
+	var fp: bool = not player.tps_active
+	var enabled: bool = pause_menu.is_fullbody_enabled()
+	var supported: bool = _body_avatar.set_first_person(fp)
+	# Option « Full body awareness » coupée : pas de corps en 1ère personne (la 3e personne le montre toujours).
+	_body_avatar.set_suppressed(player.freecam_active or (fp and not enabled))
+	# Caméra à hauteur de la tête de l'avatar (chaque avatar a sa taille) ; hauteur d'origine si le corps est coupé.
+	var use_head: bool = supported and (not fp or enabled)
+	player.set_eye_height(_body_avatar.get_eye_height_local() if use_head else NAN)
 
 
 func _toggle_freecam() -> void:
