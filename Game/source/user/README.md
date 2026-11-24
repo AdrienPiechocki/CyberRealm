@@ -145,6 +145,12 @@ person, with the head hidden, and entirely in third person (**F5**).
 - **Idle Motion Scale** (default 0.35): amplitude of the idle animation
   around its first frame (1 = original, 0 = frozen). The walk is also aligned
   on the idle root position, so the body does not jump forward when walking.
+- **Animation blending** (group *Animation blending*): idle <-> walk and jump
+  transitions cross-fade (`Blend Idle Walk` 0.2 s, `Blend Jump` 0.1 s), and the
+  walk plays faster/slower with the real speed so the feet do not slide. The
+  reference speed is deduced from the root motion removed by *Walk In Place*;
+  set `Walk Reference Speed` (m/s) if your walk has none. The speed factor is
+  clamped by `Walk Speed Scale Min/Max`.
 
 ## Custom scripts
 

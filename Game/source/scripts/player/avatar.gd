@@ -33,6 +33,17 @@ extends Node3D
 ## Amplitude de l'animation d'idle (1 = d'origine, 0 = pose figée sur sa première image). Certains idles
 ## balancent beaucoup le corps ; réduire calme l'avatar sans changer la pose de départ.
 @export_range(0.0, 1.0, 0.05) var idle_motion_scale := 0.35
+@export_group("Animation blending")
+## Durée (s) du fondu entre idle et marche, dans les deux sens.
+@export var blend_idle_walk := 0.2
+## Durée (s) du fondu vers / depuis le saut.
+@export var blend_jump := 0.1
+## Vitesse (m/s) que l'animation de marche couvre naturellement à vitesse 1. 0 = déduite du déplacement de la piste
+## racine (retiré par walk_in_place) ; si l'animation n'en a pas, pas d'adaptation de vitesse.
+@export var walk_reference_speed := 0.0
+## Bornes du facteur de vitesse de la marche (vitesse réelle / vitesse de référence).
+@export var walk_speed_scale_min := 0.6
+@export var walk_speed_scale_max := 2.5
 
 ## Avatar local (enfant du joueur, ex. free-cam) : jamais d'apply_transform ;
 ## le pose suit le parent et la vitesse est déduite du déplacement global.
@@ -301,6 +312,11 @@ func _strip_root_motion(anim: Animation, ref: Animation = null) -> void:
 		var last: Vector3 = anim.track_get_key_value(t, n - 1)
 		if Vector2(last.x - first.x, last.z - first.z).length() < root_motion_threshold:
 			continue
+		# Déplacement de la boucle (unités locales de la piste) : sert à déduire la vitesse naturelle de la marche.
+		if not anim.has_meta("cr_root_disp") or Vector2(last.x - first.x, last.z - first.z).length() \
+				> (anim.get_meta("cr_root_disp") as Vector2).length():
+			anim.set_meta("cr_root_disp", Vector2(last.x - first.x, last.z - first.z))
+			anim.set_meta("cr_root_path", anim.track_get_path(t))
 		var pin := Vector2(first.x, first.z)
 		if ref != null:
 			var rt := ref.find_track(anim.track_get_path(t), Animation.TYPE_POSITION_3D)
@@ -335,24 +351,70 @@ func _calm_animation(anim: Animation, amount: float) -> void:
 				anim.track_set_key_value(t, k, q0.slerp(q, amount))
 
 
-func _update_animation(_delta: float) -> void:
+var _speed_smooth := 0.0
+var _walking := false
+var _walk_ref := -1.0          # vitesse de référence résolue (-1 = pas encore calculée, 0 = inconnue)
+
+# Vitesse monde (m/s) que la marche couvre à vitesse 1 : déplacement de la piste racine / durée, converti avec
+# l'échelle du nœud animé (le modèle peut être agrandi). Calculé à la 1re marche (l'avatar est alors dans l'arbre).
+func _resolve_walk_reference() -> float:
+	if walk_reference_speed > 0.0:
+		return walk_reference_speed
+	if _anim_player == null or not _anim_player.has_animation(anim_walk):
+		return 0.0
+	var anim := _anim_player.get_animation(anim_walk)
+	if not anim.has_meta("cr_root_disp") or anim.length <= 0.0:
+		return 0.0
+	var disp: Vector2 = anim.get_meta("cr_root_disp")
+	var path: NodePath = anim.get_meta("cr_root_path")
+	var base := _anim_player.get_node_or_null(_anim_player.root_node)
+	if base == null:
+		return 0.0
+	var node := base.get_node_or_null(NodePath(String(path).get_slice(":", 0)))
+	if node == null:
+		return 0.0
+	var space := (node if node is Skeleton3D else node.get_parent()) as Node3D
+	if space == null or not space.is_inside_tree():
+		return 0.0
+	return (space.global_transform.basis * Vector3(disp.x, 0.0, disp.y)).length() / anim.length
+
+
+func _update_animation(delta: float) -> void:
 	if _anim_player == null:
 		return
 
+	# Vitesse horizontale lissée (la mesure brute est bruitée : snapshots réseau, marches d'escalier).
+	_speed_smooth = lerpf(_speed_smooth, _relative_speed_h, 1.0 - exp(-12.0 * delta))
 	# On utilise la vitesse relative calculée dans _physics_process
 	_is_grounded = absf(_relative_speed_v) < 1.0
-	
+
+	# Hystérésis : démarre la marche au seuil, ne l'arrête qu'à la moitié (pas de va-et-vient près de 0).
+	if _walking:
+		_walking = _speed_smooth > walk_speed_threshold * 0.5
+	else:
+		_walking = _speed_smooth > walk_speed_threshold
+
 	var target: StringName = &""
 	if not _is_grounded and anim_jump != &"":
 		target = anim_jump
-	elif _relative_speed_h > walk_speed_threshold and anim_walk != &"":
+	elif _walking and anim_walk != &"":
 		target = anim_walk
 	elif anim_idle != &"":
 		target = anim_idle
 
 	if target != &"" and target != _current_anim:
-		_anim_player.play(target)
+		var blend := blend_jump if (target == anim_jump or _current_anim == anim_jump) else blend_idle_walk
+		_anim_player.play(target, blend)
 		_current_anim = target
+
+	# Marche : vitesse de lecture proportionnelle à la vitesse réelle, pour que les pieds ne glissent pas.
+	var want := 1.0
+	if _current_anim == anim_walk and anim_walk != &"":
+		if _walk_ref < 0.0:
+			_walk_ref = _resolve_walk_reference()
+		if _walk_ref > 0.0:
+			want = clampf(_speed_smooth / _walk_ref, walk_speed_scale_min, walk_speed_scale_max)
+	_anim_player.speed_scale = lerpf(_anim_player.speed_scale, want, 1.0 - exp(-10.0 * delta))
 
 
 func _update_transparency() -> void:
