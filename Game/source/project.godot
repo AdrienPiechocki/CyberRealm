@@ -32,6 +32,13 @@ window/stretch/aspect="expand"
 display_server/driver.linuxbsd="wayland"
 display/display_server/driver="wayland"
 
+[shader_globals]
+
+window_sat_comp={
+"type": "float",
+"value": 1.0
+}
+
 [global_group]
 
 player=""

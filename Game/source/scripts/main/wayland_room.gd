@@ -263,6 +263,7 @@ const ENV_ADJUST_KEYS := [
 const ENV_LEVEL_META := "level_env_values"
 
 func _apply_environment_settings(settings: Dictionary) -> void:
+	_update_window_saturation_comp.call_deferred()
 	if settings.is_empty():
 		return
 	var we := _level_world_environment()
@@ -284,6 +285,16 @@ func _apply_environment_settings(settings: Dictionary) -> void:
 	env.adjustment_enabled = settings.get("adjustment_enabled", level_vals["adjustment_enabled"])
 	for key in ENV_ADJUST_KEYS:
 		env.set(key, settings[key] if settings.has(key) else level_vals[key])
+
+# Les fenêtres 3D ne doivent pas subir la saturation de l'Environment
+# (post-traitement du viewport) : leurs shaders appliquent la saturation
+# inverse via le global window_sat_comp.
+func _update_window_saturation_comp() -> void:
+	var sat := 1.0
+	var we := _level_world_environment()
+	if we != null and we.environment != null and we.environment.adjustment_enabled:
+		sat = we.environment.adjustment_saturation
+	RenderingServer.global_shader_parameter_set("window_sat_comp", 1.0 / maxf(sat, 0.05))
 
 func _apply_app_theme() -> void:
 	var scheme: String = pause_menu.get_color_scheme()

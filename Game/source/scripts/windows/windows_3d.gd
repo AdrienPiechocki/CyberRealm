@@ -88,6 +88,14 @@ const WAYLAND_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled, depth_draw_always;
 
+global uniform float window_sat_comp;
+// Pré-compense la saturation de l'Environment (post-traitement) : les
+// fenêtres gardent leurs couleurs d'origine. Calculé en espace sRGB.
+vec3 window_unsaturate(vec3 c) {
+	float g = dot(c, vec3(0.2125, 0.7154, 0.0721));
+	return clamp(mix(vec3(g), c, window_sat_comp), 0.0, 1.0);
+}
+
 uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
 // true : alpha normalisé (x2, clampé) — masque l'alpha < 1 parasite des
@@ -108,7 +116,7 @@ void fragment() {
 	vec4 tex = texture(window_texture, mapped_uv);
 	if (tex.a > 0.01) {
 		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
-		ALBEDO = pow(unmultiplied, vec3(2.2));
+		ALBEDO = pow(window_unsaturate(unmultiplied), vec3(2.2));
 		ALPHA = opaque_mode ? clamp(tex.a * 2.0, 0.0, 1.0) : tex.a;
 	} else {
 		discard;
@@ -121,6 +129,14 @@ void fragment() {
 const WAYLAND_SHADER_NO_DEPTH_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled, depth_test_disabled;
+
+global uniform float window_sat_comp;
+// Pré-compense la saturation de l'Environment (post-traitement) : les
+// fenêtres gardent leurs couleurs d'origine. Calculé en espace sRGB.
+vec3 window_unsaturate(vec3 c) {
+	float g = dot(c, vec3(0.2125, 0.7154, 0.0721));
+	return clamp(mix(vec3(g), c, window_sat_comp), 0.0, 1.0);
+}
 
 uniform sampler2D window_texture : filter_linear_mipmap;
 uniform vec2 content_size = vec2(0.0, 0.0);
@@ -136,7 +152,7 @@ void fragment() {
 	vec4 tex = texture(window_texture, mapped_uv);
 	if (tex.a > 0.01) {
 		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
-		ALBEDO = pow(unmultiplied, vec3(2.2));
+		ALBEDO = pow(window_unsaturate(unmultiplied), vec3(2.2));
 		ALPHA = opaque_mode ? clamp(tex.a * 2.0, 0.0, 1.0) : tex.a;
 	} else {
 		discard;
