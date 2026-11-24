@@ -1234,8 +1234,86 @@ static void wlr_surface_send_frame_done_tree(wlr_surface *surface,
         const_cast<timespec *>(now));
 }
 
+// Récolte les zombies orphelins. Le jeu est PR_SET_CHILD_SUBREAPER : les
+// démons relancés par les apps (ksystemstats, etc.) redeviennent ses enfants à
+// la mort de leur parent, et personne ne les attendait avant shutdown_apps() —
+// ils restaient <defunct> toute la session. On ne fait PAS waitpid(-1) : Godot
+// attend lui-même certains enfants (OS.execute, OS.is_process_running +
+// get_process_exit_code pour rsync) et un waitpid global lui volerait le code
+// de sortie. On ne récolte donc que les zombies directs restés en l'état plus
+// de REAP_GRACE_MS (Godot sonde bien plus vite), un pid à la fois.
+static void reap_stale_zombies() {
+    static constexpr long REAP_SCAN_INTERVAL_MS = 1000;
+    static constexpr long REAP_GRACE_MS = 5000;
+    static std::unordered_map<pid_t, long> first_seen;
+    static long last_scan_ms = 0;
+
+    timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long now_ms = ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
+    if (now_ms - last_scan_ms < REAP_SCAN_INTERVAL_MS) {
+        return;
+    }
+    last_scan_ms = now_ms;
+
+    DIR *dir = opendir("/proc");
+    if (!dir) {
+        return;
+    }
+    const pid_t self = getpid();
+    std::vector<pid_t> zombies;
+    dirent *ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') {
+            continue;
+        }
+        pid_t pid = (pid_t)atoi(ent->d_name);
+        char path[64];
+        snprintf(path, sizeof(path), "/proc/%d/stat", (int)pid);
+        FILE *f = fopen(path, "r");
+        if (!f) {
+            continue;
+        }
+        char buf[512];
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = '\0';
+        // Format : "pid (comm) S ppid ..." — comm peut contenir espaces/parenthèses.
+        char *rp = strrchr(buf, ')');
+        if (!rp || rp[1] != ' ') {
+            continue;
+        }
+        char state = 0;
+        int ppid = 0;
+        if (sscanf(rp + 2, "%c %d", &state, &ppid) == 2 && state == 'Z' && ppid == self) {
+            zombies.push_back(pid);
+        }
+    }
+    closedir(dir);
+
+    // Oublier les pids qui ne sont plus zombies (récoltés par Godot, etc.).
+    for (auto it = first_seen.begin(); it != first_seen.end();) {
+        if (std::find(zombies.begin(), zombies.end(), it->first) == zombies.end()) {
+            it = first_seen.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    for (pid_t pid : zombies) {
+        auto it = first_seen.find(pid);
+        if (it == first_seen.end()) {
+            first_seen[pid] = now_ms;
+        } else if (now_ms - it->second >= REAP_GRACE_MS) {
+            waitpid(pid, nullptr, WNOHANG);
+            first_seen.erase(it);
+        }
+    }
+}
+
 void WlrCompositor::_process(double delta) {
     if (!event_loop) return;
+
+    reap_stale_zombies();
 
     // Flush deferred Vulkan releases from last frame BEFORE dispatching
     // new events (which may trigger new captures).
