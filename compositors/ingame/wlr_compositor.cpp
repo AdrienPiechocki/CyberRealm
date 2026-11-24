@@ -17,6 +17,8 @@
 #include <thread>
 #include <cctype>
 #include <vector>
+#include <sys/file.h>
+#include <errno.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -1142,11 +1144,26 @@ void WlrCompositor::start_headless() {
     const char *socket = nullptr;
     {
         const char *rt = getenv("XDG_RUNTIME_DIR");
+        bool live_owner = false;
         if (rt) {
             std::string path = std::string(rt) + "/cyberrealm-0";
-            unlink(path.c_str());
+            // Le verrou <socket>.lock est tenu (flock) par le compositeur vivant
+            // qui possède le socket. S'il l'est, NE PAS supprimer le socket : une
+            // 2e instance (test headless, relance) le détachait du système de
+            // fichiers, et plus aucune app ne pouvait se connecter à cyberrealm-0
+            // (« Failed to create wl_display »). On retombe alors sur un nom auto.
+            int lfd = open((path + ".lock").c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0660);
+            if (lfd >= 0) {
+                if (flock(lfd, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK) {
+                    live_owner = true;
+                }
+                close(lfd);   // libère notre test de verrou
+            }
+            if (!live_owner) {
+                unlink(path.c_str());
+            }
         }
-        if (wl_display_add_socket(display, "cyberrealm-0") == 0) {
+        if (!live_owner && wl_display_add_socket(display, "cyberrealm-0") == 0) {
             socket = "cyberrealm-0";
         } else {
             socket = wl_display_add_socket_auto(display);
