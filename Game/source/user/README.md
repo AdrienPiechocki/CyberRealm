@@ -121,6 +121,23 @@ watch out for that on modest machines.
   textured ones (their materials are duplicated automatically).
 - The player name (NameLabel) is visible through walls.
 
+### First person / third person (full body awareness)
+
+Each player sees **their own avatar** (the one they picked) as a body in first
+person, with the head hidden, and entirely in third person (**F5**).
+
+- Skeleton avatars: the head bone is auto-detected (first bone whose name
+  contains `head`) and scaled to zero after the animation — skull, hair and
+  helmet skinned to it disappear. If your rig names it differently, set
+  **First person > Fps Head Bone** on the `avatar.gd` node.
+- Skeleton-less avatars: meshes whose name contains `head`, `helm`, `hair`,
+  `hat`, `hood`, `face`, `mask`, `brow` or `beard` are hidden. If nothing can
+  be hidden, the avatar is simply not drawn in first person.
+- **Fullbody Enabled** (off = never draw the avatar in first person) and
+  **Fps Back Offset** (how far the body sits behind the camera) are exported
+  on `avatar.gd`.
+- `CYBERREALM_NO_FULLBODY=1` disables the local body entirely.
+
 ## Custom scripts
 
 Your levels and avatars can carry your own `.gd` scripts, including in

@@ -58,7 +58,7 @@ var _interact_pad_pressed := false
 # et l'avatar personnel planté à la position du joueur (visible en solo).
 var _freecam: Node3D = null
 var _freecam_avatar: Node = null
-var _tps_avatar: Node = null
+var _body_avatar: Node = null
 
 # Agent d'authentification polkit : polkitd n'accepte qu'un seul agent par
 # session logind, donc le nôtre ne peut s'enregistrer que si l'agent KDE hôte
@@ -179,6 +179,7 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	# est repositionné au spawn, l'ancre avatar serait périmée.
 	if _freecam != null and is_instance_valid(_freecam):
 		_close_freecam()
+	_spawn_body_avatar.call_deferred()      # échelle d'apparition du joueur potentiellement différente
 	var old_level := get_node_or_null("Level") as Node3D
 	if old_level == null:
 		return false
@@ -616,6 +617,10 @@ func _ready() -> void:
 	pause_menu.lan_name_changed.connect(lan.update_local_name)
 	# Avatar choisi au menu LAN (persisté) : appliqué avant tout host/join.
 	lan.set_selected_avatar(pause_menu.get_lan_avatar_path())
+	# Corps du joueur local (full body awareness) : reconstruit quand l'avatar, la couleur ou le nom changent.
+	pause_menu.lan_avatar_changed.connect(func(_p): _spawn_body_avatar.call_deferred())
+	pause_menu.lan_color_changed.connect(func(_c): _spawn_body_avatar.call_deferred())
+	_spawn_body_avatar.call_deferred()
 	pause_menu.lan_host_requested.connect(lan.host_game)
 	pause_menu.lan_join_requested.connect(lan.join_game)
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)
@@ -1380,16 +1385,36 @@ func _on_window_menu_screenshot(wid: int) -> void:
 # 2D, menus compris), enregistré dans le dossier de captures du menu pause.
 func _set_tps(on: bool) -> void:
 	player.set_tps(on)
-	if _tps_avatar != null and is_instance_valid(_tps_avatar):
-		_tps_avatar.queue_free()
-	_tps_avatar = null
-	if on and lan != null and is_instance_valid(lan):
-		_tps_avatar = lan.spawn_freecam_avatar(player)
-		if _tps_avatar != null:
-			_tps_avatar.name = "TpsAvatar"
-			var lbl := _tps_avatar.find_child("NameLabel", true, false) as Node3D
-			if lbl != null:
-				lbl.visible = false     # pas de pseudo flottant au-dessus de soi
+	_refresh_body_view()
+
+
+# Corps du joueur local : un avatar (celui qu'il a choisi, éventuellement custom) enfant du joueur. En 1ère
+# personne la tête est cachée (full body awareness), en 3e personne il est entier. CYBERREALM_NO_FULLBODY=1 le coupe.
+func _spawn_body_avatar() -> void:
+	if _body_avatar != null and is_instance_valid(_body_avatar):
+		_body_avatar.queue_free()
+	_body_avatar = null
+	if OS.get_environment("CYBERREALM_NO_FULLBODY") == "1" or lan == null or not is_instance_valid(lan):
+		return
+	var av: Node = lan.spawn_freecam_avatar(player)
+	if av == null:
+		return
+	av.name = "BodyAvatar"
+	var lbl := av.find_child("NameLabel", true, false) as Node3D
+	if lbl != null:
+		lbl.visible = false          # pas de pseudo flottant au-dessus de soi
+		lbl.remove_from_group("avatar_name_label")
+	_body_avatar = av
+	_refresh_body_view()
+
+
+func _refresh_body_view() -> void:
+	if _body_avatar == null or not is_instance_valid(_body_avatar):
+		if player.tps_active:
+			_spawn_body_avatar()
+		return
+	_body_avatar.set_first_person(not player.tps_active)
+	_body_avatar.set_suppressed(player.freecam_active)
 
 
 func _toggle_freecam() -> void:
@@ -1418,6 +1443,7 @@ func _open_freecam() -> void:
 	player.add_child(fc)
 	_freecam = fc
 	player.freecam_active = true
+	_refresh_body_view()
 	# Avatar personnel planté à la position du joueur (visible même en solo).
 	if lan != null and is_instance_valid(lan):
 		_freecam_avatar = lan.spawn_freecam_avatar(player)
@@ -1431,6 +1457,7 @@ func _close_freecam() -> void:
 		_freecam_avatar.queue_free()
 	_freecam_avatar = null
 	player.freecam_active = false
+	_refresh_body_view()
 	# La caméra détachée a pris current=true : la rendre au joueur (tête ou caméra TPS).
 	player.refresh_current_camera()
 

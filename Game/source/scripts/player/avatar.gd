@@ -8,6 +8,14 @@ extends Node3D
 
 @export var lerp_speed := 15.0  ## Vitesse de lissage (10 à 20)
 
+@export_group("First person")
+## Vue 1ère personne : le joueur voit son propre corps, tête cachée (os de tête réduit à zéro).
+@export var fullbody_enabled := true
+## Nom de l'os de la tête. Vide = détection automatique (premier os dont le nom contient « head »).
+@export var fps_head_bone: StringName = &""
+## Recul du corps par rapport à la caméra en 1ère personne (m), pour ne pas voir l'intérieur du cou/des épaules.
+@export var fps_back_offset := 0.12
+
 @export_group("Animations")
 @export var anim_idle: StringName = &""
 @export var anim_walk: StringName = &""
@@ -41,6 +49,16 @@ var _current_anim: StringName = &""
 var _prewarm_ready := false
 var _prewarming := false
 var _arrived := false
+
+# Vue 1ère personne (corps du joueur local)
+const HeadHiderScript := preload("res://scripts/player/head_hider.gd")
+const HEAD_MESH_WORDS := ["head", "helm", "hair", "hat", "hood", "face", "mask", "brow", "beard"]
+var _fp := false
+var _fp_ready := false
+var _fp_supported := false
+var _head_hider: SkeletonModifier3D = null
+var _head_meshes: Array[MeshInstance3D] = []
+var _suppressed := false
 
 # Suivi du sol mobile (plateforme / bateau)
 var _last_ground_collider: Node3D = null
@@ -299,7 +317,88 @@ func set_arrived(arrived: bool) -> void:
 
 
 func _update_visible() -> void:
-	visible = _prewarm_ready and _arrived
+	visible = _prewarm_ready and _arrived and not _suppressed and not (_fp and not _fp_supported)
+
+
+## Masque temporairement l'avatar (ex. free-cam, qui a son propre avatar).
+func set_suppressed(on: bool) -> void:
+	_suppressed = on
+	_update_visible()
+
+
+## Corps du joueur local : en 1ère personne (fp) la tête est cachée et le corps légèrement reculé ; en 3e
+## personne tout est visible. Renvoie false si l'avatar ne permet pas de cacher la tête (alors il est masqué en 1ère
+## personne plutôt que de laisser la caméra à l'intérieur de son crâne).
+func set_first_person(fp: bool) -> bool:
+	if not _fp_ready:
+		_setup_head_hiding()
+	_fp = fp
+	if _head_hider != null:
+		_head_hider.set("hidden", fp)
+		if not fp:
+			_restore_head_scale()
+	for m in _head_meshes:
+		if is_instance_valid(m):
+			m.visible = not fp
+	position.z = fps_back_offset if fp else 0.0
+	_update_visible()
+	return _fp_supported
+
+
+func _setup_head_hiding() -> void:
+	_fp_ready = true
+	_fp_supported = false
+	if not fullbody_enabled:
+		return
+	var sk := _find_skeleton(self)
+	if sk != null:
+		var bone := _find_head_bone(sk)
+		if bone >= 0:
+			_head_hider = HeadHiderScript.new()
+			_head_hider.name = "HeadHider"
+			_head_hider.set("bone_name", sk.get_bone_name(bone))
+			sk.add_child(_head_hider)
+			_fp_supported = true
+		return
+	# Avatar sans squelette (ex. capsule + casque) : on cache les meshes rigides dont le nom évoque la tête.
+	var meshes: Array[MeshInstance3D] = []
+	_collect_meshes(self, meshes)
+	for mi in meshes:
+		var low := String(mi.name).to_lower()
+		for w in HEAD_MESH_WORDS:
+			if low.contains(w):
+				_head_meshes.append(mi)
+				break
+	_fp_supported = not _head_meshes.is_empty()
+
+
+func _find_head_bone(sk: Skeleton3D) -> int:
+	if fps_head_bone != &"":
+		return sk.find_bone(fps_head_bone)
+	var best := -1
+	var best_depth := 1 << 30
+	for i in sk.get_bone_count():
+		var low := sk.get_bone_name(i).to_lower()
+		if not low.contains("head") or low.contains("headband") or low.contains("end") or low.contains("top"):
+			continue
+		var depth := 0
+		var p := sk.get_bone_parent(i)
+		while p >= 0:
+			depth += 1
+			p = sk.get_bone_parent(p)
+		if depth < best_depth:
+			best_depth = depth
+			best = i
+	return best
+
+
+func _restore_head_scale() -> void:
+	var sk := _find_skeleton(self)
+	if sk == null or _head_hider == null:
+		return
+	var i := sk.find_bone(String(_head_hider.get("bone_name")))
+	if i >= 0:
+		sk.set_bone_pose_scale(i, sk.get_bone_rest(i).basis.get_scale())
 
 
 func _prewarm_gpu() -> void:
