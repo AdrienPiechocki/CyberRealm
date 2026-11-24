@@ -233,6 +233,14 @@ var tps_distance := TPS_DISTANCE     # distance voulue (réglable)
 var tps_dist_now := 0.0              # distance réelle après collision
 var _tps_cam: Camera3D = null
 
+## Le joueur est-il réellement en l'air (saut, chute) ? Utilisé par l'avatar pour l'animation de saut. S'appuie sur la
+## physique (is_on_floor + la tolérance de _step_up qui absorbe le clignotement dans les escaliers) : une montée de
+## marches ou de pente reste « au sol ». Un élan vers le haut compte tout de suite comme un saut.
+func is_airborne() -> bool:
+	if is_on_floor():
+		return false
+	return _floor_grace <= 0.0 or velocity.y > 1.0
+
 ## Écart (repère du joueur) à ajouter à la caméra pour qu'elle suive la tête animée de l'avatar.
 func set_head_follow(offset: Vector3) -> void:
 	_head_follow = offset

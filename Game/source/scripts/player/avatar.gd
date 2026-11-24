@@ -269,7 +269,7 @@ var _relative_speed_v := 0.0
 # Distance origine de l'avatar -> sol (m). Debout, l'origine est ~0,55 m au-dessus du sol (centre de la capsule du
 # joueur) ; au-delà de AIR_GAP on est réellement en l'air. Sert à choisir saut / déplacement : la vitesse verticale
 # mesurée ne convient pas (les marches sont montées par « step-up » instantané, les pentes donnent du vy en marchant).
-const AIR_GAP := 0.8
+const AIR_GAP := 0.68
 const AIR_DEBOUNCE := 0.08      # s en l'air avant de passer à l'animation de saut (ignore les trous minuscules)
 var _ground_gap := 0.0
 var _air_time := 0.0
@@ -287,7 +287,12 @@ func _update_ground_gap() -> void:
 		excl.append(local_player.get_rid())
 	q.exclude = excl
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
-	_ground_gap = 99.0 if hit.is_empty() else (hit.position as Vector3).distance_to(from) - 0.3
+	if hit.is_empty():
+		_ground_gap = 99.0
+	else:
+		# Distance PERPENDICULAIRE au sol : sur une pente de 40° la distance verticale grandit de 1/cos, la
+		# perpendiculaire reste celle du plat.
+		_ground_gap = ((hit.position as Vector3).distance_to(from) - 0.3) * clampf((hit.normal as Vector3).y, 0.3, 1.0)
 
 
 func _calculate_relative_velocity(pos_before_player_move: Vector3, delta: float) -> void:
@@ -570,6 +575,10 @@ func _update_tree(delta: float) -> void:
 
 
 func _compute_grounded(delta: float) -> bool:
+	# Joueur local : la physique fait foi (immédiat au saut, tient jusqu'à l'atterrissage).
+	var par := get_parent()
+	if follow_parent and par != null and par.has_method("is_airborne"):
+		return not par.is_airborne()
 	if _ground_gap > AIR_GAP:
 		_air_time += delta
 	else:
