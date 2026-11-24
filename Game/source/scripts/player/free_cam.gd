@@ -11,6 +11,10 @@ extends Node3D
 var player: Node3D = null
 var sensitivity := 0.002
 var pad_look_speed := 2.5
+## Environment / CameraAttributes du WorldEnvironment de la scène courante
+## (renseignés par wayland_room avant l'ajout dans l'arbre).
+var environment: Environment = null
+var camera_attributes: CameraAttributes = null
 
 const SPEED := 10.0
 const PITCH_LIMIT := deg_to_rad(80.0)
@@ -21,6 +25,10 @@ var _cam: Camera3D = null
 func _ready() -> void:
 	_cam = Camera3D.new()
 	_cam.name = "FreeCamCamera"
+	# La caméra utilise l'Environment du niveau courant (même ressource que le
+	# WorldEnvironment : les réglages du menu pause restent répercutés).
+	_cam.environment = environment
+	_cam.attributes = camera_attributes
 	add_child(_cam)
 	# Reprendre la transform de la caméra du joueur (position + orientation
 	# figées) : l'entrée en vue libre ne saute pas visuellement.

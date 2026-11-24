@@ -1376,6 +1376,10 @@ func _open_freecam() -> void:
 	fc.player = player
 	fc.sensitivity = player.mouse_sensitivity
 	fc.pad_look_speed = player.pad_look_speed
+	var we := _level_world_environment()
+	if we != null:
+		fc.environment = we.environment
+		fc.camera_attributes = we.camera_attributes
 	player.add_child(fc)
 	_freecam = fc
 	player.freecam_active = true
