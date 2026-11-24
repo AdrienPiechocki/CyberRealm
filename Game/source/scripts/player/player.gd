@@ -9,6 +9,7 @@ var _cam_rest_y := 0.0
 var _body_radius := 0.3
 var _floor_grace := 0.0
 
+const PROP_LAYER := 1 << 20   # couche physique des objets de décor (props.gd du niveau)
 var speed = 5
 var jump_speed = 3
 var mouse_sensitivity = 0.002
@@ -69,6 +70,11 @@ var spawn_scale: Vector3 = Vector3.ONE
 
 func _ready():
 	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+	# Objets de décor physiques : collision (pour les pousser) mais jamais « plateforme » — leur mouvement ne
+	# porte ni ne déplace le joueur.
+	collision_mask |= PROP_LAYER
+	platform_floor_layers = 0xFFFFFFFF & ~PROP_LAYER
+	platform_wall_layers = 0xFFFFFFFF & ~PROP_LAYER
 	spawn_pos = position
 	spawn_rotation = rotation
 	spawn_scale = scale
@@ -382,6 +388,10 @@ func _push_rigid_bodies() -> void:
 		var col := get_slide_collision(i)
 		var rb := col.get_collider() as RigidBody3D
 		if rb == null:
+			continue
+		if rb.freeze:       # objet de décor encore figé : le contact enclenche sa physique
+			if rb.has_method("touch"):
+				rb.touch()
 			continue
 		var push := -col.get_normal()
 		push.y = 0.0
