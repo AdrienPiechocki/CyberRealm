@@ -151,6 +151,15 @@ person, with the head hidden, and entirely in third person (**F5**).
   reference speed is deduced from the root motion removed by *Walk In Place*;
   set `Walk Reference Speed` (m/s) if your walk has none. The speed factor is
   clamped by `Walk Speed Scale Min/Max`.
+- **Directional locomotion** (subgroup *Directional locomotion*): set any of
+  `Anim Walk Back/Left/Right` and `Anim Run`, `Anim Run Back/Left/Right` and the
+  avatar blends them from its velocity in its own frame (an `AnimationTree` is
+  built at runtime). The idle sits at the center of the blend space, so idle ->
+  walk -> run is continuous, and strafing/backing up plays the matching
+  animation. Each animation's natural speed comes from its root motion
+  (`Default Walk Speed` / `Default Run Speed` if it has none). Directions left
+  empty fall back to the forward walk; avatars without these fields keep the
+  simple idle/walk/jump behavior. Jumps cross-fade (`Blend Loco Jump`).
 
 ## Custom scripts
 

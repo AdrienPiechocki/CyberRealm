@@ -22,6 +22,21 @@ extends Node3D
 @export var anim_idle: StringName = &""
 @export var anim_walk: StringName = &""
 @export var anim_jump: StringName = &""
+@export_subgroup("Directional locomotion")
+## Marche dans les autres directions (avatar de face : « left » = déplacement vers sa gauche). Renseigner au moins
+## une de ces animations active le mélange directionnel (AnimationTree créé à l'exécution) ; les directions non
+## renseignées retombent sur la marche avant.
+@export var anim_walk_back: StringName = &""
+@export var anim_walk_left: StringName = &""
+@export var anim_walk_right: StringName = &""
+## Course : mêmes règles. Elle prend le relais de la marche quand le joueur dépasse sa vitesse naturelle.
+@export var anim_run: StringName = &""
+@export var anim_run_back: StringName = &""
+@export var anim_run_left: StringName = &""
+@export var anim_run_right: StringName = &""
+## Vitesse naturelle (m/s) des animations sans root motion exploitable (marche / course).
+@export var default_walk_speed := 2.0
+@export var default_run_speed := 5.0
 @export var walk_speed_threshold := 0.1
 ## Supprime le déplacement du « root motion » de l'animation de marche (certains exports la font avancer l'avatar
 ## de plusieurs mètres par boucle : il glisse puis retombe au point de départ). Le sur-place laisse le joueur
@@ -44,6 +59,8 @@ extends Node3D
 ## Bornes du facteur de vitesse de la marche (vitesse réelle / vitesse de référence).
 @export var walk_speed_scale_min := 0.6
 @export var walk_speed_scale_max := 2.5
+## Mélange directionnel : durée (s) du fondu boucle de déplacement <-> saut.
+@export var blend_loco_jump := 0.1
 
 ## Avatar local (enfant du joueur, ex. free-cam) : jamais d'apply_transform ;
 ## le pose suit le parent et la vitesse est déduite du déplacement global.
@@ -151,8 +168,10 @@ func setup(id: int, pname: String, color: Color) -> void:
 				if anim_idle != &"" and _anim_player.has_animation(anim_idle) else null
 		if idle_anim != null and idle_motion_scale < 1.0:
 			_calm_animation(idle_anim, idle_motion_scale)
-		if walk_in_place and anim_walk != &"" and _anim_player.has_animation(anim_walk):
-			_strip_root_motion(_anim_player.get_animation(anim_walk), idle_anim)
+		if walk_in_place:
+			for nm in _locomotion_names():
+				_strip_root_motion(_anim_player.get_animation(nm), idle_anim)
+		_use_tree = _directional_requested()
 
 	# Pivot du pitch
 	_pitch_pivot = null
@@ -241,11 +260,13 @@ func _physics_process(delta: float) -> void:
 	_calculate_relative_velocity(pos_after_ground_carry, delta)
 
 var _relative_speed_h := 0.0
+var _rel_vel := Vector3.ZERO     # vitesse horizontale monde (m/s)
 var _relative_speed_v := 0.0
 
 func _calculate_relative_velocity(pos_before_player_move: Vector3, delta: float) -> void:
 	# On mesure uniquement la distance parcourue par le joueur sur le navire
 	var vel := global_position - pos_before_player_move
+	_rel_vel = Vector3(vel.x, 0.0, vel.z) / maxf(delta, 0.001)
 	_relative_speed_h = Vector2(vel.x, vel.z).length() / maxf(delta, 0.001)
 	_relative_speed_v = vel.y / maxf(delta, 0.001)
 
@@ -355,14 +376,13 @@ var _speed_smooth := 0.0
 var _walking := false
 var _walk_ref := -1.0          # vitesse de référence résolue (-1 = pas encore calculée, 0 = inconnue)
 
-# Vitesse monde (m/s) que la marche couvre à vitesse 1 : déplacement de la piste racine / durée, converti avec
-# l'échelle du nœud animé (le modèle peut être agrandi). Calculé à la 1re marche (l'avatar est alors dans l'arbre).
-func _resolve_walk_reference() -> float:
-	if walk_reference_speed > 0.0:
-		return walk_reference_speed
-	if _anim_player == null or not _anim_player.has_animation(anim_walk):
+# Vitesse monde (m/s) qu'une animation de déplacement couvre à vitesse 1 : déplacement de sa piste racine / durée,
+# converti avec l'échelle du nœud animé (le modèle peut être agrandi). 0 = inconnue (pas de root motion).
+# À appeler quand l'avatar est dans l'arbre.
+func _anim_natural_speed(anim_name: StringName) -> float:
+	if _anim_player == null or not _anim_player.has_animation(anim_name):
 		return 0.0
-	var anim := _anim_player.get_animation(anim_walk)
+	var anim := _anim_player.get_animation(anim_name)
 	if not anim.has_meta("cr_root_disp") or anim.length <= 0.0:
 		return 0.0
 	var disp: Vector2 = anim.get_meta("cr_root_disp")
@@ -379,8 +399,154 @@ func _resolve_walk_reference() -> float:
 	return (space.global_transform.basis * Vector3(disp.x, 0.0, disp.y)).length() / anim.length
 
 
+func _resolve_walk_reference() -> float:
+	if walk_reference_speed > 0.0:
+		return walk_reference_speed
+	return _anim_natural_speed(anim_walk)
+
+
+## Toutes les animations de déplacement renseignées et présentes dans l'AnimationPlayer.
+func _locomotion_names() -> Array[StringName]:
+	var out: Array[StringName] = []
+	for nm in [anim_walk, anim_walk_back, anim_walk_left, anim_walk_right,
+			anim_run, anim_run_back, anim_run_left, anim_run_right]:
+		if nm != &"" and _anim_player != null and _anim_player.has_animation(nm) and not out.has(nm):
+			out.append(nm)
+	return out
+
+
+func _directional_requested() -> bool:
+	if _anim_player == null:
+		return false
+	for nm in [anim_walk_back, anim_walk_left, anim_walk_right, anim_run, anim_run_back, anim_run_left, anim_run_right]:
+		if nm != &"" and _anim_player.has_animation(nm):
+			return true
+	return false
+
+
+# ── Mélange directionnel (AnimationTree) ─────────────────────────────
+# État « loco » : BlendSpace2D (x = vitesse latérale, y = vitesse avant, en m/s) -> TimeScale. L'idle est au centre :
+# repos -> marche -> course se mélangent en continu. État « jump » : l'animation de saut, en fondu.
+
+var _use_tree := false
+var _tree: AnimationTree = null
+var _tree_playback: AnimationNodeStateMachinePlayback = null
+var _loco_vel := Vector2.ZERO       # vitesse locale lissée (x droite, y avant)
+var _loco_top := 1.0                # plus grande vitesse naturelle de la carte (au-delà : accélération de lecture)
+
+func _build_tree() -> void:
+	var space := AnimationNodeBlendSpace2D.new()
+	space.sync = true
+	var fwd := anim_walk
+	var walk_v := _natural_or(fwd, default_walk_speed)
+	var top := walk_v
+	if anim_idle != &"" and _anim_player.has_animation(anim_idle):
+		_add_loco_point(space, anim_idle, Vector2.ZERO)
+	var set := [
+		# [nom, direction (x droite, y avant), repli sur…, vitesse par défaut]
+		[anim_walk, Vector2(0, 1), anim_walk, default_walk_speed],
+		[anim_walk_back, Vector2(0, -1), anim_walk, default_walk_speed],
+		[anim_walk_left, Vector2(-1, 0), anim_walk, default_walk_speed],
+		[anim_walk_right, Vector2(1, 0), anim_walk, default_walk_speed],
+		[anim_run, Vector2(0, 1), anim_run, default_run_speed],
+		[anim_run_back, Vector2(0, -1), anim_run, default_run_speed],
+		[anim_run_left, Vector2(-1, 0), anim_run, default_run_speed],
+		[anim_run_right, Vector2(1, 0), anim_run, default_run_speed],
+	]
+	var used := {}
+	for e in set:
+		var nm: StringName = e[0]
+		if nm == &"" or not _anim_player.has_animation(nm):
+			continue
+		var v := _natural_or(nm, e[3])
+		var pt: Vector2 = (e[1] as Vector2) * v
+		if used.has(pt):
+			continue
+		used[pt] = true
+		_add_loco_point(space, nm, pt)
+		top = maxf(top, v)
+	# Directions sans aucune animation : on reprend la marche avant (sinon le mélange tomberait sur l'idle en reculant).
+	for dir in [Vector2(0, -1), Vector2(-1, 0), Vector2(1, 0)]:
+		var has_dir := false
+		for pt in used:
+			if (pt as Vector2).normalized().is_equal_approx(dir):
+				has_dir = true
+				break
+		if not has_dir and anim_walk != &"" and _anim_player.has_animation(anim_walk):
+			_add_loco_point(space, anim_walk, dir * walk_v)
+	_loco_top = top
+	space.min_space = Vector2(-top * 1.5, -top * 1.5)
+	space.max_space = Vector2(top * 1.5, top * 1.5)
+	space.snap = Vector2(0.01, 0.01)
+
+	var bt := AnimationNodeBlendTree.new()
+	bt.add_node(&"bs", space)
+	bt.add_node(&"ts", AnimationNodeTimeScale.new())
+	bt.connect_node(&"ts", 0, &"bs")
+	bt.connect_node(&"output", 0, &"ts")
+
+	var sm := AnimationNodeStateMachine.new()
+	sm.add_node(&"loco", bt)
+	sm.add_transition(&"Start", &"loco", AnimationNodeStateMachineTransition.new())
+	if anim_jump != &"" and _anim_player.has_animation(anim_jump):
+		var jn := AnimationNodeAnimation.new()
+		jn.animation = anim_jump
+		sm.add_node(&"jump", jn)
+		for pair in [[&"loco", &"jump"], [&"jump", &"loco"]]:
+			var tr := AnimationNodeStateMachineTransition.new()
+			tr.xfade_time = blend_loco_jump
+			sm.add_transition(pair[0], pair[1], tr)
+
+	_tree = AnimationTree.new()
+	_tree.name = "LocomotionTree"
+	_tree.tree_root = sm
+	add_child(_tree)
+	_tree.anim_player = _tree.get_path_to(_anim_player)
+	_tree.active = true
+	_tree_playback = _tree.get("parameters/playback") as AnimationNodeStateMachinePlayback
+	if _tree_playback != null:
+		_tree_playback.start(&"loco")
+
+
+func _add_loco_point(space: AnimationNodeBlendSpace2D, anim_name: StringName, pt: Vector2) -> void:
+	var n := AnimationNodeAnimation.new()
+	n.animation = anim_name
+	space.add_blend_point(n, pt, -1, StringName("p%d" % space.get_blend_point_count()))
+
+
+func _natural_or(anim_name: StringName, fallback: float) -> float:
+	var v := _anim_natural_speed(anim_name) if anim_name != &"" else 0.0
+	if v <= 0.0 and anim_name == anim_walk and walk_reference_speed > 0.0:
+		v = walk_reference_speed
+	return v if v > 0.0 else fallback
+
+
+func _update_tree(delta: float) -> void:
+	if _tree == null:
+		_build_tree()
+		return
+	# Vitesse dans le repère de l'avatar (x droite, y avant ; l'avant est -Z), lissée (réseau, escaliers).
+	var lv := global_basis.orthonormalized().inverse() * _rel_vel
+	_loco_vel = _loco_vel.lerp(Vector2(lv.x, -lv.z), 1.0 - exp(-12.0 * delta))
+	_tree.set("parameters/loco/bs/blend_position", _loco_vel)
+	# Au-delà de la vitesse naturelle la plus rapide, on accélère la lecture au lieu de laisser les pieds glisser.
+	var m := _loco_vel.length()
+	var s := 1.0 if m <= _loco_top else clampf(m / _loco_top, 1.0, walk_speed_scale_max)
+	_tree.set("parameters/loco/ts/scale", s)
+	_is_grounded = absf(_relative_speed_v) < 1.0
+	if _tree_playback != null and anim_jump != &"" and _anim_player.has_animation(anim_jump):
+		var cur := _tree_playback.get_current_node()
+		if not _is_grounded and cur != &"jump":
+			_tree_playback.travel(&"jump")
+		elif _is_grounded and cur == &"jump":
+			_tree_playback.travel(&"loco")
+
+
 func _update_animation(delta: float) -> void:
 	if _anim_player == null:
+		return
+	if _use_tree and is_inside_tree():
+		_update_tree(delta)
 		return
 
 	# Vitesse horizontale lissée (la mesure brute est bruitée : snapshots réseau, marches d'escalier).
