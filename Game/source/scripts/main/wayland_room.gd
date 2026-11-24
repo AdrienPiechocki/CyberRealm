@@ -334,6 +334,9 @@ func _ready() -> void:
 		RenderingServer.get_current_rendering_method(),
 	])
 	_rdi_enabled = OS.get_environment(RENDER_DEBUG_ENV) == "1"
+	if _rdi_enabled:
+		# Mesure GPU/CPU du viewport principal, lue dans le diagnostic périodique.
+		RenderingServer.viewport_set_measure_render_time(get_viewport().get_viewport_rid(), true)
 	# S'auto-déclare : sans cette ligne, un log sans "[render] fps=" est
 	# ambigu (variable d'env non arrivée au process ? _process gelé ?). On écrit
 	# donc l'état, pour qu'un log muet se lise sans deviner.
@@ -824,8 +827,11 @@ func _process(delta: float) -> void:
 		_rdi_accum += delta
 		_rdi_frames += 1
 		if _rdi_accum >= RENDER_DEBUG_PERIOD_SEC:
-			print("[render] fps=%d setup_cpu=%.2fms grab=%s focus=%s pip=%s pinprio=%d draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
+			var vp_rid := get_viewport().get_viewport_rid()
+			print("[render] fps=%d gpu_vp=%.2fms cpu_vp=%.2fms setup_cpu=%.2fms grab=%s focus=%s pip=%s pinprio=%d draw_calls=%d prims=%d vram=%.0fMB scale3d=%.2f" % [
 				int(_rdi_frames / _rdi_accum),
+				RenderingServer.viewport_get_measured_render_time_gpu(vp_rid),
+				RenderingServer.viewport_get_measured_render_time_cpu(vp_rid),
 				RenderingServer.get_frame_setup_time_cpu(),
 				bool(win3d.get("is_moving")),
 				bool(focus.get("focus_mode")),
