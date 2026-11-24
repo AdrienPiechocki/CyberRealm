@@ -209,6 +209,80 @@ func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
 # Lissage caméra au rendu (pas au tick physique) : supprime le tremblement.
 func _process(delta: float) -> void:
 	$Camera3D.position.y = lerpf($Camera3D.position.y, _cam_rest_y, 1.0 - exp(-StepSmoothSpeed * delta))
+	if tps_active:
+		_update_tps_camera(delta)
+
+# ── Vue 3e personne ──────────────────────────────────────────────────
+# Le Camera3D du joueur reste la « tête » (visée, fenêtres, pitch réseau, prise d'objets) ; en TPS le rendu passe
+# par une seconde caméra reculée le long de l'axe du regard (collision avec le décor). Comme elle est exactement
+# sur l'axe tête→regard, le centre de l'écran vise toujours le même point que le viseur en première personne.
+const TPS_DISTANCE := 3.0
+const TPS_MIN_DISTANCE := 0.4        # plus près que ça, la caméra reste collée à la tête
+const TPS_MARGIN := 0.25
+var tps_active := false
+var tps_distance := TPS_DISTANCE     # distance voulue (réglable)
+var tps_dist_now := 0.0              # distance réelle après collision
+var _tps_cam: Camera3D = null
+
+func set_tps(on: bool) -> void:
+	if on == tps_active:
+		return
+	tps_active = on
+	if on:
+		if _tps_cam == null:
+			_tps_cam = Camera3D.new()
+			_tps_cam.name = "TpsCamera"
+			add_child(_tps_cam)
+		tps_dist_now = 0.0
+		_update_tps_camera(1.0)
+	refresh_current_camera()
+
+## Rend courante la bonne caméra (appelé aussi à la sortie de la vue libre).
+func refresh_current_camera() -> void:
+	if freecam_active:
+		return
+	if tps_active and _tps_cam != null:
+		_tps_cam.make_current()
+	else:
+		$Camera3D.make_current()
+
+## Caméra qui produit l'image du joueur (pour projeter les rayons de visée).
+func get_view_camera() -> Camera3D:
+	return _tps_cam if tps_active and _tps_cam != null else $Camera3D as Camera3D
+
+## Rayon de visée sous la souris/viseur : [origine, direction]. En TPS l'origine est avancée jusqu'à la tête
+## pour que la portée d'interaction se compte depuis le joueur, pas depuis la caméra reculée.
+func aim_ray(mouse_pos: Vector2) -> Array:
+	var cam := get_view_camera()
+	var origin := cam.project_ray_origin(mouse_pos)
+	var dir := cam.project_ray_normal(mouse_pos)
+	if tps_active:
+		origin += dir * tps_dist_now
+	return [origin, dir]
+
+func _update_tps_camera(delta: float) -> void:
+	var head := $Camera3D as Camera3D
+	var hp := head.global_position
+	var back := head.global_basis.z
+	var want := tps_distance
+	var q := PhysicsRayQueryParameters3D.create(hp, hp + back * (tps_distance + TPS_MARGIN), 1, [get_rid()])
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if not hit.is_empty():
+		want = clampf(hp.distance_to(hit.position) - TPS_MARGIN, TPS_MIN_DISTANCE, tps_distance)
+	# Se rapproche vite (pas de traversée de mur), s'éloigne en douceur.
+	tps_dist_now = want if want < tps_dist_now or tps_dist_now == 0.0 \
+			else lerpf(tps_dist_now, want, 1.0 - exp(-8.0 * delta))
+	_tps_cam.global_transform = Transform3D(head.global_basis, hp + back * tps_dist_now)
+	# Mêmes réglages de rendu que la tête (l'intérieur y pose son propre Environment, interiors.gd).
+	if _tps_cam.environment != head.environment:
+		_tps_cam.environment = head.environment
+	if _tps_cam.attributes != head.attributes:
+		_tps_cam.attributes = head.attributes
+	_tps_cam.cull_mask = head.cull_mask
+	_tps_cam.fov = head.fov
+	_tps_cam.near = head.near
+	_tps_cam.far = head.far
+	_tps_cam.keep_aspect = head.keep_aspect
 
 func _ground_y(from: Vector3, length: float) -> float:
 	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * length, collision_mask, [get_rid()])

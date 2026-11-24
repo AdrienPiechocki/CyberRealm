@@ -58,6 +58,7 @@ var _interact_pad_pressed := false
 # et l'avatar personnel planté à la position du joueur (visible en solo).
 var _freecam: Node3D = null
 var _freecam_avatar: Node = null
+var _tps_avatar: Node = null
 
 # Agent d'authentification polkit : polkitd n'accepte qu'un seul agent par
 # session logind, donc le nôtre ne peut s'enregistrer que si l'agent KDE hôte
@@ -789,9 +790,9 @@ func _aim_pos() -> Vector2:
 # pour une fenêtre du compositeur local, {"remote_peer": pid, "remote_wid":
 # wid} pour une fenêtre d'un autre joueur (vue seule), {} sinon.
 func _raycast_window_target(mouse_pos: Vector2) -> Dictionary:
-	var cam: Camera3D = player.get_node("Camera3D") as Camera3D
-	var ray_origin = cam.project_ray_origin(mouse_pos)
-	var ray_dir = cam.project_ray_normal(mouse_pos)
+	var aim: Array = player.aim_ray(mouse_pos)
+	var ray_origin: Vector3 = aim[0]
+	var ray_dir: Vector3 = aim[1]
 	var to = ray_origin + ray_dir * 1000.0
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
@@ -1003,6 +1004,13 @@ func _process(delta: float) -> void:
 		_toggle_freecam()
 		return
 
+	if player.tps_active and focus.is_active():
+		_set_tps(false)     # le mode focus a sa propre caméra : on quitte la vue 3e personne
+	# Vue 3e personne (F5) : caméra reculée derrière le joueur, qui devient visible (avatar personnel).
+	if Input.is_action_just_pressed("toggle_tps", true) \
+			and not focus.is_active() and not layers.keyboard_busy() and not player.freecam_active:
+		_set_tps(not player.tps_active)
+
 	# Masque/affiche le HUD (réticule, FPS) pour des captures propres.
 	# Bloqué en mode focus (le layer UI porte les overlays focus).
 	if Input.is_action_just_pressed("toggle_ui", true) \
@@ -1149,10 +1157,10 @@ func _process(delta: float) -> void:
 		interact_mode_active = new_interact
 		player.interact_mode_active = new_interact
 
-	var cam: Camera3D = player.get_node("Camera3D") as Camera3D
 	var mouse_pos := _aim_pos()
-	var ray_origin := cam.project_ray_origin(mouse_pos)
-	var ray_dir := cam.project_ray_normal(mouse_pos)
+	var aim: Array = player.aim_ray(mouse_pos)
+	var ray_origin: Vector3 = aim[0]
+	var ray_dir: Vector3 = aim[1]
 	win3d.process_raycast(ray_origin, ray_dir, delta, interact_mode_active)
 	# Interaction monde (clic gauche sur un objet scripté du niveau) : même
 	# rayon, évalué APRÈS le système de fenêtres — un clic qui touche une
@@ -1370,6 +1378,20 @@ func _on_window_menu_screenshot(wid: int) -> void:
 
 # Capture plein écran : readback natif Godot du viewport (world + overlays
 # 2D, menus compris), enregistré dans le dossier de captures du menu pause.
+func _set_tps(on: bool) -> void:
+	player.set_tps(on)
+	if _tps_avatar != null and is_instance_valid(_tps_avatar):
+		_tps_avatar.queue_free()
+	_tps_avatar = null
+	if on and lan != null and is_instance_valid(lan):
+		_tps_avatar = lan.spawn_freecam_avatar(player)
+		if _tps_avatar != null:
+			_tps_avatar.name = "TpsAvatar"
+			var lbl := _tps_avatar.find_child("NameLabel", true, false) as Node3D
+			if lbl != null:
+				lbl.visible = false     # pas de pseudo flottant au-dessus de soi
+
+
 func _toggle_freecam() -> void:
 	if _freecam != null and is_instance_valid(_freecam):
 		_close_freecam()
@@ -1409,10 +1431,8 @@ func _close_freecam() -> void:
 		_freecam_avatar.queue_free()
 	_freecam_avatar = null
 	player.freecam_active = false
-	# La caméra détachée a pris current=true : la rendre au joueur.
-	var cam := player.get_node_or_null("Camera3D") as Camera3D
-	if cam != null:
-		cam.make_current()
+	# La caméra détachée a pris current=true : la rendre au joueur (tête ou caméra TPS).
+	player.refresh_current_camera()
 
 
 func _take_screenshot() -> void:
