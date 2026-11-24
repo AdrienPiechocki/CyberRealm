@@ -16,7 +16,19 @@ func _process_modification_with_delta(_delta: float) -> void:
 	var sk := get_skeleton()
 	if sk == null:
 		return
-	for nm in [bone_name] + extra_bones:
+	var head := sk.find_bone(bone_name)
+	if head >= 0:
+		sk.set_bone_pose_scale(head, HIDE_SCALE)
+	for nm in extra_bones:
 		var i := sk.find_bone(nm)
-		if i >= 0:
-			sk.set_bone_pose_scale(i, HIDE_SCALE)
+		if i < 0:
+			continue
+		sk.set_bone_pose_scale(i, HIDE_SCALE)
+		# Les os enfants (ex. clavicules -> bras, rattachées au COU sur les rigs « Bip01 ») héritent de l'échelle :
+		# on la compense (échelle et position locales x 1/HIDE_SCALE) pour que leur pose globale reste intacte.
+		# La tête, elle, doit disparaître avec le cou.
+		for c in sk.get_bone_children(i):
+			if c == head:
+				continue
+			sk.set_bone_pose_position(c, sk.get_bone_pose_position(c) / HIDE_SCALE.x)
+			sk.set_bone_pose_scale(c, sk.get_bone_pose_scale(c) / HIDE_SCALE.x)
