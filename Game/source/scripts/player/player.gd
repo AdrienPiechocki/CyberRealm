@@ -7,6 +7,8 @@ extends CharacterBody3D
 
 var _cam_rest_y := 0.0
 var _cam_rest_default := 0.0
+var _head_follow := Vector3.ZERO     # écart caméra voulu (suivi de la tête de l'avatar)
+var _head_applied := Vector3.ZERO    # part déjà ajoutée à Camera3D.position
 var _body_radius := 0.3
 var _floor_grace := 0.0
 
@@ -210,7 +212,12 @@ func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
 
 # Lissage caméra au rendu (pas au tick physique) : supprime le tremblement.
 func _process(delta: float) -> void:
+	# Le suivi de la tête de l'avatar (full body awareness) s'ajoute APRÈS le lissage des marches : on retire celui
+	# de la frame précédente avant de lisser, sinon il serait lissé (retard) puis accumulé.
+	$Camera3D.position -= _head_applied
 	$Camera3D.position.y = lerpf($Camera3D.position.y, _cam_rest_y, 1.0 - exp(-StepSmoothSpeed * delta))
+	_head_applied = _head_follow
+	$Camera3D.position += _head_applied
 	if tps_active:
 		_update_tps_camera(delta)
 
@@ -225,6 +232,10 @@ var tps_active := false
 var tps_distance := TPS_DISTANCE     # distance voulue (réglable)
 var tps_dist_now := 0.0              # distance réelle après collision
 var _tps_cam: Camera3D = null
+
+## Écart (repère du joueur) à ajouter à la caméra pour qu'elle suive la tête animée de l'avatar.
+func set_head_follow(offset: Vector3) -> void:
+	_head_follow = offset
 
 ## Hauteur de la caméra « tête » (1ère personne) : celle de la tête de l'avatar. NAN = hauteur par défaut de la scène.
 func set_eye_height(y: float) -> void:

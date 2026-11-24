@@ -202,6 +202,7 @@ func _process(delta: float) -> void:
 		_follow_parent_pitch(delta)
 		_update_animation(delta)
 		_update_transparency()
+		_track_head_camera()
 		return
 	if not _has_received_first_transform:
 		return
@@ -241,6 +242,7 @@ func _physics_process(delta: float) -> void:
 	if follow_parent:
 		_calculate_relative_velocity(_prev_pos, delta)
 		_prev_pos = global_position
+		_update_ground_gap()
 		return
 	if not _has_received_first_transform:
 		return
@@ -258,10 +260,35 @@ func _physics_process(delta: float) -> void:
 
 	# 4. Calcul de la vitesse RELATIVE (uniquement le déplacement du joueur sur le pont)
 	_calculate_relative_velocity(pos_after_ground_carry, delta)
+	_update_ground_gap()
 
 var _relative_speed_h := 0.0
 var _rel_vel := Vector3.ZERO     # vitesse horizontale monde (m/s)
 var _relative_speed_v := 0.0
+
+# Distance origine de l'avatar -> sol (m). Debout, l'origine est ~0,55 m au-dessus du sol (centre de la capsule du
+# joueur) ; au-delà de AIR_GAP on est réellement en l'air. Sert à choisir saut / déplacement : la vitesse verticale
+# mesurée ne convient pas (les marches sont montées par « step-up » instantané, les pentes donnent du vy en marchant).
+const AIR_GAP := 0.8
+const AIR_DEBOUNCE := 0.08      # s en l'air avant de passer à l'animation de saut (ignore les trous minuscules)
+var _ground_gap := 0.0
+var _air_time := 0.0
+
+func _update_ground_gap() -> void:
+	if not is_inside_tree():
+		return
+	var from := global_position + Vector3.UP * 0.3
+	var q := PhysicsRayQueryParameters3D.create(from, from + Vector3.DOWN * 3.0, 1)
+	var excl: Array[RID] = []
+	var par := get_parent()
+	if par is CollisionObject3D:
+		excl.append((par as CollisionObject3D).get_rid())
+	if is_instance_valid(local_player):
+		excl.append(local_player.get_rid())
+	q.exclude = excl
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	_ground_gap = 99.0 if hit.is_empty() else (hit.position as Vector3).distance_to(from) - 0.3
+
 
 func _calculate_relative_velocity(pos_before_player_move: Vector3, delta: float) -> void:
 	# On mesure uniquement la distance parcourue par le joueur sur le navire
@@ -533,13 +560,21 @@ func _update_tree(delta: float) -> void:
 	var m := _loco_vel.length()
 	var s := 1.0 if m <= _loco_top else clampf(m / _loco_top, 1.0, walk_speed_scale_max)
 	_tree.set("parameters/loco/ts/scale", s)
-	_is_grounded = absf(_relative_speed_v) < 1.0
+	_is_grounded = _compute_grounded(delta)
 	if _tree_playback != null and anim_jump != &"" and _anim_player.has_animation(anim_jump):
 		var cur := _tree_playback.get_current_node()
 		if not _is_grounded and cur != &"jump":
 			_tree_playback.travel(&"jump")
 		elif _is_grounded and cur == &"jump":
 			_tree_playback.travel(&"loco")
+
+
+func _compute_grounded(delta: float) -> bool:
+	if _ground_gap > AIR_GAP:
+		_air_time += delta
+	else:
+		_air_time = 0.0
+	return _air_time < AIR_DEBOUNCE
 
 
 func _update_animation(delta: float) -> void:
@@ -551,8 +586,7 @@ func _update_animation(delta: float) -> void:
 
 	# Vitesse horizontale lissée (la mesure brute est bruitée : snapshots réseau, marches d'escalier).
 	_speed_smooth = lerpf(_speed_smooth, _relative_speed_h, 1.0 - exp(-12.0 * delta))
-	# On utilise la vitesse relative calculée dans _physics_process
-	_is_grounded = absf(_relative_speed_v) < 1.0
+	_is_grounded = _compute_grounded(delta)
 
 	# Hystérésis : démarre la marche au seuil, ne l'arrête qu'à la moitié (pas de va-et-vient près de 0).
 	if _walking:
@@ -667,6 +701,37 @@ func get_eye_height_local() -> float:
 	else:
 		return NAN
 	return parent.to_local(world).y
+
+
+var _head_tracking := false
+
+## Full body awareness : la caméra du joueur suit la tête de l'avatar PENDANT les animations (rebond de la marche,
+## inclinaison de l'idle, accroupissement…) : on lui transmet l'écart entre la position animée de l'os de la tête et
+## sa position de repos (celle qui fixe la hauteur d'yeux, cf. get_eye_height_local), dans le repère du joueur.
+func _track_head_camera() -> void:
+	var active := _fp and _fp_supported and not _suppressed and _head_hider != null
+	var player := get_parent()
+	if player == null or not player.has_method("set_head_follow"):
+		return
+	if not active:
+		if _head_tracking:
+			_head_tracking = false
+			player.set_head_follow(Vector3.ZERO)
+		return
+	var sk := _find_skeleton(self)
+	var i := sk.find_bone(String(_head_hider.get("bone_name"))) if sk != null else -1
+	if i < 0:
+		return
+	var animated := sk.global_transform * sk.get_bone_global_pose(i).origin
+	var rest := sk.global_transform * sk.get_bone_global_rest(i).origin
+	_head_tracking = true
+	player.set_head_follow((player as Node3D).to_local(animated) - (player as Node3D).to_local(rest))
+
+
+func _exit_tree() -> void:
+	var player := get_parent()
+	if _head_tracking and player != null and is_instance_valid(player) and player.has_method("set_head_follow"):
+		player.set_head_follow(Vector3.ZERO)
 
 
 func _setup_head_hiding() -> void:
