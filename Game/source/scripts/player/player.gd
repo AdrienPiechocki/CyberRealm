@@ -167,6 +167,7 @@ func _physics_process(delta):
 	if not interact_mode_active:
 		_step_up(delta)
 		move_and_slide()
+		_push_rigid_bodies()
 		if is_on_floor() and Input.is_action_just_pressed("jump", true) and not _menu_just_closed:
 			velocity.y = jump_speed
 		$UI/Cursor.label_settings.font_color = UITheme.get_color("hud", "cursor-color", Color(1, 1, 1))
@@ -372,3 +373,21 @@ func _pad_menu_activate(event: InputEventJoypadButton) -> bool:
 	fe.pressed.emit()
 	get_viewport().set_input_as_handled()
 	return true
+
+
+# Le joueur pousse les RigidBody3D qu'il percute (objets de décor physiques) ; la vitesse transmise reste
+# modeste pour qu'un simple frôlement ne les propulse pas.
+func _push_rigid_bodies() -> void:
+	for i in get_slide_collision_count():
+		var col := get_slide_collision(i)
+		var rb := col.get_collider() as RigidBody3D
+		if rb == null:
+			continue
+		var push := -col.get_normal()
+		push.y = 0.0
+		var spd := Vector3(velocity.x, 0.0, velocity.z).length()
+		if spd < 0.1 or push == Vector3.ZERO:
+			continue
+		rb.sleeping = false
+		rb.apply_impulse(push.normalized() * minf(spd, 4.0) * minf(rb.mass, 3.0) * 0.5,
+				col.get_position() - rb.global_position)
