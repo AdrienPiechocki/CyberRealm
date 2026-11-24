@@ -104,17 +104,17 @@ vec3 window_untonemap(vec3 y) {
 		y = min(y, vec3(0.999));
 		return w2 * 0.5 * ((y - 1.0) + sqrt((1.0 - y) * (1.0 - y) + 4.0 * y / w2));
 	} else if (window_tm.x > 1.5 && window_tm.x < 2.5) {
-		const float A = 0.88;
-		const float B = 0.6;
-		const float C = 0.1;
-		const float D = 0.2;
-		const float E = 0.01;
-		const float F = 0.3;
-		float wt = ((w * (A * w + C * B) + D * E) / (w * (A * w + B) + D * F)) - E / F;
-		vec3 t = min(y, vec3(0.999)) * wt + E / F;
-		vec3 a = (t - 1.0) * A;
-		vec3 b = B * (t - C);
-		vec3 c = D * (t * F - E);
+		const float FM_A = 0.88;
+		const float FM_B = 0.6;
+		const float FM_C = 0.1;
+		const float FM_D = 0.2;
+		const float FM_E = 0.01;
+		const float FM_F = 0.3;
+		float wt = ((w * (FM_A * w + FM_C * FM_B) + FM_D * FM_E) / (w * (FM_A * w + FM_B) + FM_D * FM_F)) - FM_E / FM_F;
+		vec3 t = min(y, vec3(0.999)) * wt + FM_E / FM_F;
+		vec3 a = (t - 1.0) * FM_A;
+		vec3 b = FM_B * (t - FM_C);
+		vec3 c = FM_D * (t * FM_F - FM_E);
 		vec3 disc = max(b * b - 4.0 * a * c, 0.0);
 		return (-b - sqrt(disc)) / (2.0 * min(a, vec3(-0.0001)));
 	}
@@ -179,17 +179,17 @@ vec3 window_untonemap(vec3 y) {
 		y = min(y, vec3(0.999));
 		return w2 * 0.5 * ((y - 1.0) + sqrt((1.0 - y) * (1.0 - y) + 4.0 * y / w2));
 	} else if (window_tm.x > 1.5 && window_tm.x < 2.5) {
-		const float A = 0.88;
-		const float B = 0.6;
-		const float C = 0.1;
-		const float D = 0.2;
-		const float E = 0.01;
-		const float F = 0.3;
-		float wt = ((w * (A * w + C * B) + D * E) / (w * (A * w + B) + D * F)) - E / F;
-		vec3 t = min(y, vec3(0.999)) * wt + E / F;
-		vec3 a = (t - 1.0) * A;
-		vec3 b = B * (t - C);
-		vec3 c = D * (t * F - E);
+		const float FM_A = 0.88;
+		const float FM_B = 0.6;
+		const float FM_C = 0.1;
+		const float FM_D = 0.2;
+		const float FM_E = 0.01;
+		const float FM_F = 0.3;
+		float wt = ((w * (FM_A * w + FM_C * FM_B) + FM_D * FM_E) / (w * (FM_A * w + FM_B) + FM_D * FM_F)) - FM_E / FM_F;
+		vec3 t = min(y, vec3(0.999)) * wt + FM_E / FM_F;
+		vec3 a = (t - 1.0) * FM_A;
+		vec3 b = FM_B * (t - FM_C);
+		vec3 c = FM_D * (t * FM_F - FM_E);
 		vec3 disc = max(b * b - 4.0 * a * c, 0.0);
 		return (-b - sqrt(disc)) / (2.0 * min(a, vec3(-0.0001)));
 	}
