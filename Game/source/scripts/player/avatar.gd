@@ -168,6 +168,7 @@ func setup(id: int, pname: String, color: Color) -> void:
 				if anim_idle != &"" and _anim_player.has_animation(anim_idle) else null
 		if idle_anim != null and idle_motion_scale < 1.0:
 			_calm_animation(idle_anim, idle_motion_scale)
+		_anim_player.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_PHYSICS
 		if walk_in_place:
 			for nm in _locomotion_names():
 				_strip_root_motion(_anim_player.get_animation(nm), idle_anim)
@@ -187,6 +188,10 @@ func apply_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	_target_pos = pos
 	_target_yaw = yaw
 	_target_pitch = pitch * pitch_scale
+	if _has_received_first_transform and is_inside_tree() and global_position.distance_to(pos) > TELEPORT_SNAP:
+		global_position = pos     # téléportation distante (porte…) : pas de glissade sur toute la distance
+		_prev_pos = pos
+		_on_teleport()
 
 	if not _has_received_first_transform:
 		_has_received_first_transform = true
@@ -202,7 +207,6 @@ func _process(delta: float) -> void:
 		_follow_parent_pitch(delta)
 		_update_animation(delta)
 		_update_transparency()
-		_track_head_camera()
 		return
 	if not _has_received_first_transform:
 		return
@@ -246,6 +250,7 @@ func _physics_process(delta: float) -> void:
 		_calculate_relative_velocity(_prev_pos, delta)
 		_prev_pos = _ref_position()
 		_update_ground_gap()
+		_track_head_camera()
 		return
 	if not _has_received_first_transform:
 		return
@@ -300,6 +305,25 @@ func _update_ground_gap() -> void:
 
 var _ref_inited := false
 
+const TELEPORT_DIST := 2.0       # m par tick physique : au-delà, déplacement instantané (téléportation)
+const TELEPORT_SNAP := 5.0       # m : un avatar distant plus loin que ça de sa cible réseau s'y place d'un coup
+
+# Après une téléportation : plus aucune vitesse mesurée, retour à l'idle immédiat (sinon le saut de position donne
+# une vitesse énorme -> animation de course à l'arrivée).
+func _on_teleport() -> void:
+	_rel_vel = Vector3.ZERO
+	_relative_speed_h = 0.0
+	_relative_speed_v = 0.0
+	_speed_smooth = 0.0
+	_loco_vel = Vector2.ZERO
+	_walking = false
+	_air_time = 0.0
+	if _tree != null:
+		_tree.set("parameters/loco/bs/blend_position", Vector2.ZERO)
+		_tree.set("parameters/loco/ts/scale", 1.0)
+		if _tree_playback != null:
+			_tree_playback.start(&"loco")
+
 # Point dont on mesure le déplacement. Avatar local : l'ORIGINE DU JOUEUR (parent), pas celle de l'avatar : en 1ère
 # personne le corps est décalé derrière la caméra (fps_back_offset), donc tourner la tête sur place le fait décrire
 # un arc et il « marchait » sur place (tremblement en idle).
@@ -312,6 +336,9 @@ func _ref_position() -> Vector3:
 func _calculate_relative_velocity(pos_before_player_move: Vector3, delta: float) -> void:
 	# On mesure uniquement la distance parcourue par le joueur sur le navire
 	var vel := _ref_position() - pos_before_player_move
+	if vel.length() > TELEPORT_DIST:      # porte, changement de niveau, respawn : ce n'est pas de la course
+		_on_teleport()
+		return
 	_rel_vel = Vector3(vel.x, 0.0, vel.z) / maxf(delta, 0.001)
 	_relative_speed_h = Vector2(vel.x, vel.z).length() / maxf(delta, 0.001)
 	_relative_speed_v = vel.y / maxf(delta, 0.001)
@@ -545,7 +572,11 @@ func _build_tree() -> void:
 
 	_tree = AnimationTree.new()
 	_tree.name = "LocomotionTree"
-	_tree.process_priority = -10     # pose à jour AVANT que l'avatar (et la caméra qui suit la tête) la lise
+	# Animation au tick PHYSIQUE (le projet active physics_interpolation) : mise à jour par frame, les nœuds animés
+	# (racine du squelette) seraient interpolés à tort et trembleraient. Calculée AVANT que l'avatar (et la caméra qui
+	# suit la tête) ne lise la pose.
+	_tree.callback_mode_process = AnimationMixer.ANIMATION_CALLBACK_MODE_PROCESS_PHYSICS
+	_tree.process_physics_priority = -10
 	_tree.tree_root = sm
 	add_child(_tree)
 	_tree.anim_player = _tree.get_path_to(_anim_player)
@@ -574,7 +605,11 @@ func _update_tree(delta: float) -> void:
 		return
 	# Vitesse dans le repère de l'avatar (x droite, y avant ; l'avant est -Z), lissée (réseau, escaliers).
 	var lv := global_basis.orthonormalized().inverse() * _rel_vel
-	_loco_vel = _loco_vel.lerp(Vector2(lv.x, -lv.z), 1.0 - exp(-12.0 * delta))
+	var raw := Vector2(lv.x, -lv.z)
+	# Zone morte douce : le bruit de mesure (arrondis de position, snapshots réseau) ne doit pas mélanger un peu de
+	# marche à l'idle (tremblement à l'arrêt).
+	raw *= smoothstep(0.1, 0.5, raw.length())
+	_loco_vel = _loco_vel.lerp(raw, 1.0 - exp(-12.0 * delta))
 	_tree.set("parameters/loco/bs/blend_position", _loco_vel)
 	# Au-delà de la vitesse naturelle la plus rapide, on accélère la lecture au lieu de laisser les pieds glisser.
 	var m := _loco_vel.length()
@@ -770,6 +805,10 @@ func _setup_head_hiding() -> void:
 			_head_hider = HeadHiderScript.new()
 			_head_hider.name = "HeadHider"
 			_head_hider.set("bone_name", sk.get_bone_name(bone))
+			var neck := _find_bone_named(sk, "neck")
+			if neck >= 0 and neck != bone:
+				var nb: Array[String] = [sk.get_bone_name(neck)]
+				_head_hider.set("extra_bones", nb)
 			sk.add_child(_head_hider)
 			_fp_supported = true
 		return
@@ -783,6 +822,25 @@ func _setup_head_hiding() -> void:
 				_head_meshes.append(mi)
 				break
 	_fp_supported = not _head_meshes.is_empty()
+
+
+## Os le plus haut dans la hiérarchie dont le nom contient `word` (hors « twist »).
+func _find_bone_named(sk: Skeleton3D, word: String) -> int:
+	var best := -1
+	var best_depth := 1 << 30
+	for i in sk.get_bone_count():
+		var low := sk.get_bone_name(i).to_lower()
+		if not low.contains(word) or low.contains("twist"):
+			continue
+		var depth := 0
+		var p := sk.get_bone_parent(i)
+		while p >= 0:
+			depth += 1
+			p = sk.get_bone_parent(p)
+		if depth < best_depth:
+			best_depth = depth
+			best = i
+	return best
 
 
 func _find_head_bone(sk: Skeleton3D) -> int:
@@ -809,9 +867,11 @@ func _restore_head_scale() -> void:
 	var sk := _find_skeleton(self)
 	if sk == null or _head_hider == null:
 		return
-	var i := sk.find_bone(String(_head_hider.get("bone_name")))
-	if i >= 0:
-		sk.set_bone_pose_scale(i, sk.get_bone_rest(i).basis.get_scale())
+	var names: Array = [String(_head_hider.get("bone_name"))] + (_head_hider.get("extra_bones") as Array)
+	for nm in names:
+		var i := sk.find_bone(nm)
+		if i >= 0:
+			sk.set_bone_pose_scale(i, sk.get_bone_rest(i).basis.get_scale())
 
 
 func _prewarm_gpu() -> void:
