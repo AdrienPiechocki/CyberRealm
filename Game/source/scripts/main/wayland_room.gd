@@ -1394,12 +1394,14 @@ func _spawn_body_avatar() -> void:
 	if _body_avatar != null and is_instance_valid(_body_avatar):
 		_body_avatar.queue_free()
 	_body_avatar = null
+	player.set_eye_height(NAN)
 	if OS.get_environment("CYBERREALM_NO_FULLBODY") == "1" or lan == null or not is_instance_valid(lan):
 		return
 	var av: Node = lan.spawn_freecam_avatar(player)
 	if av == null:
 		return
 	av.name = "BodyAvatar"
+	av.scale = Vector3.ONE      # l'échelle du joueur (parent) s'applique déjà
 	var lbl := av.find_child("NameLabel", true, false) as Node3D
 	if lbl != null:
 		lbl.visible = false          # pas de pseudo flottant au-dessus de soi
@@ -1413,8 +1415,10 @@ func _refresh_body_view() -> void:
 		if player.tps_active:
 			_spawn_body_avatar()
 		return
-	_body_avatar.set_first_person(not player.tps_active)
+	var supported: bool = _body_avatar.set_first_person(not player.tps_active)
 	_body_avatar.set_suppressed(player.freecam_active)
+	# Caméra 1ère personne à hauteur de la tête de l'avatar (chaque avatar a sa taille) ; hauteur d'origine sinon.
+	player.set_eye_height(_body_avatar.get_eye_height_local() if supported else NAN)
 
 
 func _toggle_freecam() -> void:

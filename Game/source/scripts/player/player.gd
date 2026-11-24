@@ -6,6 +6,7 @@ extends CharacterBody3D
 @export var gravity:float = 9.8
 
 var _cam_rest_y := 0.0
+var _cam_rest_default := 0.0
 var _body_radius := 0.3
 var _floor_grace := 0.0
 
@@ -79,6 +80,7 @@ func _ready():
 	spawn_rotation = rotation
 	spawn_scale = scale
 	_cam_rest_y = $Camera3D.position.y
+	_cam_rest_default = _cam_rest_y
 	for c in get_children():
 		if c is CollisionShape3D and c.shape != null and "radius" in c.shape:
 			_body_radius = c.shape.radius
@@ -223,6 +225,10 @@ var tps_active := false
 var tps_distance := TPS_DISTANCE     # distance voulue (réglable)
 var tps_dist_now := 0.0              # distance réelle après collision
 var _tps_cam: Camera3D = null
+
+## Hauteur de la caméra « tête » (1ère personne) : celle de la tête de l'avatar. NAN = hauteur par défaut de la scène.
+func set_eye_height(y: float) -> void:
+	_cam_rest_y = _cam_rest_default if is_nan(y) else y
 
 func set_tps(on: bool) -> void:
 	if on == tps_active:

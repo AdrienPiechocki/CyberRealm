@@ -15,6 +15,8 @@ extends Node3D
 @export var fps_head_bone: StringName = &""
 ## Recul du corps par rapport à la caméra en 1ère personne (m), pour ne pas voir l'intérieur du cou/des épaules.
 @export var fps_back_offset := 0.12
+## Hauteur des yeux au-dessus de l'origine de l'os de la tête (m, avant échelle) : la caméra 1ère personne se place là.
+@export var fps_eye_offset := 0.08
 
 @export_group("Animations")
 @export var anim_idle: StringName = &""
@@ -343,6 +345,32 @@ func set_first_person(fp: bool) -> bool:
 	position.z = fps_back_offset if fp else 0.0
 	_update_visible()
 	return _fp_supported
+
+
+## Hauteur (dans le repère du parent, ici le joueur) où placer la caméra 1ère personne pour qu'elle soit au niveau
+## de la tête de CET avatar. Basée sur la pose de repos (pas l'animation : pas de balancement de la caméra).
+## Renvoie NAN si l'avatar n'a pas de tête repérable.
+func get_eye_height_local() -> float:
+	if not _fp_ready:
+		_setup_head_hiding()
+	var parent := get_parent() as Node3D
+	if parent == null or not is_inside_tree():
+		return NAN
+	var world := Vector3.ZERO
+	if _head_hider != null:
+		var sk := _find_skeleton(self)
+		var i := sk.find_bone(String(_head_hider.get("bone_name"))) if sk != null else -1
+		if i < 0:
+			return NAN
+		world = (sk.global_transform * sk.get_bone_global_rest(i)).origin
+		world += sk.global_transform.basis.y.normalized() * fps_eye_offset * sk.global_transform.basis.get_scale().y
+	elif not _head_meshes.is_empty():
+		for mi in _head_meshes:
+			world += mi.global_transform * mi.get_aabb().get_center()
+		world /= _head_meshes.size()
+	else:
+		return NAN
+	return parent.to_local(world).y
 
 
 func _setup_head_hiding() -> void:
