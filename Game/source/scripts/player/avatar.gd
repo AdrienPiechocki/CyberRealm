@@ -90,6 +90,11 @@ func setup(id: int, pname: String, color: Color) -> void:
 		_label.position = Vector3(0, 1.8, 0)
 		add_child(_label)
 	_label.text = pname
+	# Masquage par toggle_ui (option « toggle_ui hides player names ») :
+	# wayland_room pilote le groupe et le meta Engine pour les avatars créés
+	# pendant que l'UI est masquée.
+	_label.add_to_group("avatar_name_label")
+	_label.visible = not bool(Engine.get_meta("hide_avatar_names", false))
 	_label.no_depth_test = true
 	_label.render_priority = 100
 	_label.outline_render_priority = 99

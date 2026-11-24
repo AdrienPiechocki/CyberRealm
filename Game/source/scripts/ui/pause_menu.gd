@@ -23,6 +23,7 @@ signal lan_name_changed(name: String)
 
 signal graphics_settings_changed(aa_mode: String, fps_limit: int)
 signal snapping_disabled_changed(disabled: bool)
+signal ui_hides_names_changed(enabled: bool)
 signal mouse_sens_changed(mult: float)
 signal pad_look_sens_changed(mult: float)
 signal focus_stick_sens_changed(mult: float)
@@ -499,6 +500,21 @@ func _show_general() -> void:
 		_settings["snapping_disabled"] = on
 		_save_settings()
 		snapping_disabled_changed.emit(on)
+	)
+
+	# toggle_ui masque aussi les noms des joueurs (Label3D des avatars).
+	var names_check := CheckButton.new()
+	names_check.text = "toggle_ui hides player names"
+	names_check.button_pressed = does_toggle_ui_hide_names()
+	names_check.custom_minimum_size = Vector2(0, 36)
+	names_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	names_check.add_theme_font_size_override("font_size", 14)
+	container.add_child(names_check)
+
+	names_check.toggled.connect(func(on: bool):
+		_settings["toggle_ui_hides_names"] = on
+		_save_settings()
+		ui_hides_names_changed.emit(on)
 	)
 
 	container.add_child(_make_spacer())
@@ -1041,6 +1057,10 @@ func get_fps_limit() -> int:
 # un défaut inversé le désactiverait pour tout le monde, en silence.
 func is_snapping_disabled() -> bool:
 	return bool(_settings.get("snapping_disabled", false))
+
+# toggle_ui masque-t-il aussi les noms des joueurs ? (GENERAL). Défaut : non.
+func does_toggle_ui_hide_names() -> bool:
+	return bool(_settings.get("toggle_ui_hides_names", false))
 
 func _show_pins() -> void:
 	_clear()

@@ -574,6 +574,9 @@ func _ready() -> void:
 	pause_menu.snapping_disabled_changed.connect(func(disabled: bool):
 		win3d.set_snapping_enabled(not disabled)
 	)
+	pause_menu.ui_hides_names_changed.connect(func(_on: bool):
+		_refresh_name_labels()
+	)
 	pause_menu.environment_settings_changed.connect(func(settings: Dictionary):
 		_apply_environment_settings(settings)
 	)
@@ -826,6 +829,15 @@ func _toggle_remote_pin(peer_id: int, wid: int) -> void:
 func _on_pin_zoom_changed(active: bool) -> void:
 	player.pin_zoom_active = active
 
+# Noms des joueurs (Label3D des avatars) : masqués avec le HUD si l'option
+# « toggle_ui hides player names » est active. Le meta Engine sert aux avatars
+# créés pendant que l'UI est masquée (cf. avatar.gd).
+func _refresh_name_labels() -> void:
+	var hidden := not ui.visible and pause_menu.does_toggle_ui_hide_names()
+	Engine.set_meta("hide_avatar_names", hidden)
+	for n in get_tree().get_nodes_in_group("avatar_name_label"):
+		(n as Label3D).visible = not hidden
+
 # ── Boucle principale ────────────────────────────────────────────────
 
 # toggle_ui masque/affiche le CanvasLayer $Level/Player/UI. Or ce layer
@@ -996,6 +1008,7 @@ func _process(delta: float) -> void:
 	if Input.is_action_just_pressed("toggle_ui", true) \
 			and _ui_toggle_allowed(focus.is_active(), layers.keyboard_busy()):
 		ui.visible = not ui.visible
+		_refresh_name_labels()
 		return
 
 	# Mode focus: le raccourci focus (ex. Super+F) pour sortir, kill_window
