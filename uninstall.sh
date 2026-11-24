@@ -99,7 +99,9 @@ echo "uninstall: removing helpers and desktop launcher ..."
 rm -f "$HOME/.local/bin/cyberrealm-run" \
       "$HOME/.local/bin/cyberrealm-launch" \
       "$HOME/.local/bin/cyberrealm-exec" \
-      "$HOME/.local/bin/cyberrealm-kms-session"
+      "$HOME/.local/bin/cyberrealm-kms-session" \
+      "$HOME/.local/bin/cyberrealm-kms-session-obs" \
+      "$HOME/.local/bin/cyberrealm-obs"
 rmdir "$HOME/.local/bin" 2>/dev/null || true
 rm -f "$HOME/.local/share/applications/cyberrealm.desktop"
 rmdir "$HOME/.local/share/applications" 2>/dev/null || true
