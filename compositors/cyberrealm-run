@@ -52,13 +52,46 @@ fi
 # l'éditeur official ; /usr/bin/godot (build Arch) charge le layer sans crash.
 export DISABLE_LSFGVK=1
 
+# Volume de sortie : persistance gérée par le jeu.
+# Au boot, alsa-restore remet le mixer matériel à l'état de asound.state (valeur
+# périmée, jamais re-sauvegardée à l'extinction), et WirePlumber ne réapplique
+# pas son propre volume : le slider du shell retombe toujours à la même valeur
+# d'une session à l'autre. On sauvegarde donc le volume du sink par défaut à la
+# sortie du jeu et on le réapplique à son lancement (sans droits root, sans
+# toucher à la config système). Sans wpctl, rien n'est fait.
+VOL_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/cyberrealm/sink-volume"
+
+restore_volume() {
+    command -v wpctl >/dev/null 2>&1 || return 0
+    [[ -r "$VOL_FILE" ]] || return 0
+    local v
+    v="$(<"$VOL_FILE")"
+    [[ "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]] || return 0
+    wpctl set-volume @DEFAULT_AUDIO_SINK@ "$v" 2>/dev/null || true
+}
+
+save_volume() {
+    command -v wpctl >/dev/null 2>&1 || return 0
+    local out v
+    out="$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)" || return 0
+    v="$(sed -n 's/^Volume: \([0-9.]*\).*/\1/p' <<<"$out")"
+    [[ -n "$v" ]] || return 0
+    mkdir -p "$(dirname "$VOL_FILE")"
+    printf '%s\n' "$v" >"$VOL_FILE"
+}
+
+restore_volume
+trap save_volume EXIT
+
 # Sans systemd utilisateur (session non-systemd), on lance directement : le
 # nettoyage interne shutdown_apps() reste la seule protection.
 if ! command -v systemd-run >/dev/null 2>&1; then
-    exec "$GAME" "$@"
+    "$GAME" "$@"
+    exit $?
 fi
 if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -S "$XDG_RUNTIME_DIR/systemd/private" ]]; then
-    exec "$GAME" "$@"
+    "$GAME" "$@"
+    exit $?
 fi
 
 UNIT="cyberrealm-$$"
