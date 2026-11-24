@@ -65,6 +65,20 @@ func setup(p_player: CharacterBody3D, p_lan: Node) -> void:
 func _exit_tree() -> void:
 	_set_aimed(null)
 
+# Filet de sécurité : cible détruite (objet cassé…) ou souris libérée sans passage par update_aim (retours anticipés
+# de wayland_room) -> le tooltip ne doit pas rester affiché.
+func _process(_delta: float) -> void:
+	if _prompt == null or not _prompt.visible:
+		return
+	if not is_instance_valid(_aimed_target) or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
+		# Pas de _set_aimed(null) : comparer à une cible libérée n'est pas fiable, on remet l'état à zéro.
+		if is_instance_valid(_aimed_target) and _aimed_target.has_method("interact_focus"):
+			_aimed_target.interact_focus(false)
+		_aimed_target = null
+		_update_prompt()
+	else:
+		_update_prompt()
+
 ## Appelé chaque frame par wayland_room APRÈS win3d.process_raycast (même
 ## rayon caméra) : toutes les portes logiques amont (menus, focus, lock,
 ## overlays clavier, chargement LAN) ont déjà filtré.
@@ -80,6 +94,7 @@ func update_aim(ray_origin: Vector3, ray_dir: Vector3, simulate_pressed := false
 		return
 	var target := resolve_target(ray_origin, ray_dir)
 	_set_aimed(target)
+	_update_prompt()   # le texte peut changer sans que la cible change (objet pris puis lâché : « take » <-> « throw »)
 	if target != null and (simulate_pressed or Input.is_action_just_pressed("left_click", false)):
 		interact_with(target)
 
