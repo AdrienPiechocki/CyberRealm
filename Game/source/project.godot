@@ -34,6 +34,10 @@ display/display_server/driver="wayland"
 
 [shader_globals]
 
+window_tm={
+"type": "vec4",
+"value": Color(0, 1, 1, 0)
+}
 window_bcs={
 "type": "vec3",
 "value": Vector3(1, 1, 1)

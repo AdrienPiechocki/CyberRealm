@@ -286,16 +286,21 @@ func _apply_environment_settings(settings: Dictionary) -> void:
 	for key in ENV_ADJUST_KEYS:
 		env.set(key, settings[key] if settings.has(key) else level_vals[key])
 
-# Les fenêtres 3D ne doivent pas subir l'ajustement couleur de l'Environment
-# (post-traitement du viewport) : leurs shaders appliquent l'inverse via le
-# global window_bcs (luminosité, contraste, saturation).
+# Les fenêtres 3D ne doivent subir ni le tonemap ni l'ajustement couleur de
+# l'Environment (post-traitement du viewport) : leurs shaders appliquent
+# l'inverse via les globals window_tm (mode, white, exposition) et window_bcs
+# (luminosité, contraste, saturation).
 func _update_window_color_comp() -> void:
 	var bcs := Vector3.ONE
+	var tm := Color(0, 1, 1, 0)
 	var we := _level_world_environment()
-	if we != null and we.environment != null and we.environment.adjustment_enabled:
+	if we != null and we.environment != null:
 		var env := we.environment
-		bcs = Vector3(env.adjustment_brightness, env.adjustment_contrast, env.adjustment_saturation)
+		if env.adjustment_enabled:
+			bcs = Vector3(env.adjustment_brightness, env.adjustment_contrast, env.adjustment_saturation)
+		tm = Color(float(env.tonemap_mode), maxf(1.0, env.tonemap_white), env.tonemap_exposure, 0.0)
 	RenderingServer.global_shader_parameter_set("window_bcs", bcs)
+	RenderingServer.global_shader_parameter_set("window_tm", tm)
 
 func _apply_app_theme() -> void:
 	var scheme: String = pause_menu.get_color_scheme()

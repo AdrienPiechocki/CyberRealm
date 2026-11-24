@@ -34,15 +34,44 @@ shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled, depth_draw_never;
 
 global uniform vec3 window_bcs;
-// Pré-compense l'ajustement couleur de l'Environment (post-traitement :
-// luminosité, contraste, saturation, appliqués dans cet ordre) : les fenêtres
-// gardent leurs couleurs d'origine. Inverse calculé en espace sRGB.
-vec3 window_unadjust(vec3 c) {
-	float g = dot(c, vec3(0.2125, 0.7154, 0.0721));
-	c = mix(vec3(g), c, 1.0 / max(window_bcs.z, 0.05));
-	c = (c - 0.5) / max(window_bcs.y, 0.05) + 0.5;
-	c = c / max(window_bcs.x, 0.05);
-	return clamp(c, 0.0, 1.0);
+global uniform vec4 window_tm;
+// Les fenêtres ne doivent subir ni le tonemap ni l'ajustement couleur de
+// l'Environment (post-traitement du viewport). On renvoie la valeur linéaire
+// que le pipeline (exposition -> tonemap -> luminosité (linéaire) -> sRGB ->
+// contraste -> saturation (moyenne)) ramène exactement à la couleur d'origine.
+// window_bcs = (luminosité, contraste, saturation) ; window_tm = (mode,
+// white, exposition, -) avec mode 0 linéaire, 1 Reinhard, 2 filmic (3 ACES
+// et 4 AgX : pas d'inverse, tonemap non compensé).
+vec3 window_untonemap(vec3 y) {
+	float w = window_tm.y;
+	if (window_tm.x > 0.5 && window_tm.x < 1.5) {
+		float w2 = w * w;
+		y = min(y, vec3(0.999));
+		return w2 * 0.5 * ((y - 1.0) + sqrt((1.0 - y) * (1.0 - y) + 4.0 * y / w2));
+	} else if (window_tm.x > 1.5 && window_tm.x < 2.5) {
+		const float A = 0.88;
+		const float B = 0.6;
+		const float C = 0.1;
+		const float D = 0.2;
+		const float E = 0.01;
+		const float F = 0.3;
+		float wt = ((w * (A * w + C * B) + D * E) / (w * (A * w + B) + D * F)) - E / F;
+		vec3 t = min(y, vec3(0.999)) * wt + E / F;
+		vec3 a = (t - 1.0) * A;
+		vec3 b = B * (t - C);
+		vec3 c = D * (t * F - E);
+		vec3 disc = max(b * b - 4.0 * a * c, 0.0);
+		return (-b - sqrt(disc)) / (2.0 * min(a, vec3(-0.0001)));
+	}
+	return y;
+}
+
+vec3 window_encode(vec3 d) {
+	float m = (d.r + d.g + d.b) / 3.0;
+	d = m + (d - m) / max(window_bcs.z, 0.05);
+	d = (d - 0.5) / max(window_bcs.y, 0.05) + 0.5;
+	vec3 lin = pow(clamp(d, 0.0, 1.0), vec3(2.2)) / max(window_bcs.x, 0.05);
+	return window_untonemap(lin) / max(window_tm.z, 0.01);
 }
 
 uniform sampler2D u_tex : filter_linear;
@@ -57,7 +86,7 @@ void fragment() {
 	if (tex.a < 0.01) {
 		discard;
 	}
-	ALBEDO = pow(window_unadjust(tex.rgb / max(tex.a, 0.001)), vec3(2.2));
+	ALBEDO = window_encode(tex.rgb / max(tex.a, 0.001));
 	ALPHA = tex.a;
 }
 """
