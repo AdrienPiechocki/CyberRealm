@@ -240,8 +240,11 @@ func _follow_parent_pitch(delta: float) -> void:
 
 func _physics_process(delta: float) -> void:
 	if follow_parent:
+		if not _ref_inited:
+			_prev_pos = _ref_position()
+			_ref_inited = true
 		_calculate_relative_velocity(_prev_pos, delta)
-		_prev_pos = global_position
+		_prev_pos = _ref_position()
 		_update_ground_gap()
 		return
 	if not _has_received_first_transform:
@@ -295,9 +298,20 @@ func _update_ground_gap() -> void:
 		_ground_gap = ((hit.position as Vector3).distance_to(from) - 0.3) * clampf((hit.normal as Vector3).y, 0.3, 1.0)
 
 
+var _ref_inited := false
+
+# Point dont on mesure le déplacement. Avatar local : l'ORIGINE DU JOUEUR (parent), pas celle de l'avatar : en 1ère
+# personne le corps est décalé derrière la caméra (fps_back_offset), donc tourner la tête sur place le fait décrire
+# un arc et il « marchait » sur place (tremblement en idle).
+func _ref_position() -> Vector3:
+	if follow_parent and get_parent() is Node3D:
+		return (get_parent() as Node3D).global_position
+	return global_position
+
+
 func _calculate_relative_velocity(pos_before_player_move: Vector3, delta: float) -> void:
 	# On mesure uniquement la distance parcourue par le joueur sur le navire
-	var vel := global_position - pos_before_player_move
+	var vel := _ref_position() - pos_before_player_move
 	_rel_vel = Vector3(vel.x, 0.0, vel.z) / maxf(delta, 0.001)
 	_relative_speed_h = Vector2(vel.x, vel.z).length() / maxf(delta, 0.001)
 	_relative_speed_v = vel.y / maxf(delta, 0.001)
@@ -531,6 +545,7 @@ func _build_tree() -> void:
 
 	_tree = AnimationTree.new()
 	_tree.name = "LocomotionTree"
+	_tree.process_priority = -10     # pose à jour AVANT que l'avatar (et la caméra qui suit la tête) la lise
 	_tree.tree_root = sm
 	add_child(_tree)
 	_tree.anim_player = _tree.get_path_to(_anim_player)

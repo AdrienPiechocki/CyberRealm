@@ -244,6 +244,10 @@ func is_airborne() -> bool:
 ## Écart (repère du joueur) à ajouter à la caméra pour qu'elle suive la tête animée de l'avatar.
 func set_head_follow(offset: Vector3) -> void:
 	_head_follow = offset
+	# Appliqué tout de suite (l'avatar l'appelle après la mise à jour de son animation, dans la même frame) :
+	# la caméra suit la tête sans retard d'une frame.
+	$Camera3D.position += offset - _head_applied
+	_head_applied = offset
 
 ## Hauteur de la caméra « tête » (1ère personne) : celle de la tête de l'avatar. NAN = hauteur par défaut de la scène.
 func set_eye_height(y: float) -> void:
