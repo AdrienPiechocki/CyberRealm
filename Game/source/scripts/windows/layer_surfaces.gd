@@ -33,12 +33,16 @@ const OVERLAY_3D_SHADER_CODE = """
 shader_type spatial;
 render_mode unshaded, blend_mix, cull_disabled, depth_draw_never;
 
-global uniform float window_sat_comp;
-// Pré-compense la saturation de l'Environment (post-traitement) : les
-// fenêtres gardent leurs couleurs d'origine. Calculé en espace sRGB.
-vec3 window_unsaturate(vec3 c) {
+global uniform vec3 window_bcs;
+// Pré-compense l'ajustement couleur de l'Environment (post-traitement :
+// luminosité, contraste, saturation, appliqués dans cet ordre) : les fenêtres
+// gardent leurs couleurs d'origine. Inverse calculé en espace sRGB.
+vec3 window_unadjust(vec3 c) {
 	float g = dot(c, vec3(0.2125, 0.7154, 0.0721));
-	return clamp(mix(vec3(g), c, window_sat_comp), 0.0, 1.0);
+	c = mix(vec3(g), c, 1.0 / max(window_bcs.z, 0.05));
+	c = (c - 0.5) / max(window_bcs.y, 0.05) + 0.5;
+	c = c / max(window_bcs.x, 0.05);
+	return clamp(c, 0.0, 1.0);
 }
 
 uniform sampler2D u_tex : filter_linear;
@@ -53,7 +57,7 @@ void fragment() {
 	if (tex.a < 0.01) {
 		discard;
 	}
-	ALBEDO = pow(window_unsaturate(tex.rgb / max(tex.a, 0.001)), vec3(2.2));
+	ALBEDO = pow(window_unadjust(tex.rgb / max(tex.a, 0.001)), vec3(2.2));
 	ALPHA = tex.a;
 }
 """

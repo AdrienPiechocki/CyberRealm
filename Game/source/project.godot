@@ -34,9 +34,9 @@ display/display_server/driver="wayland"
 
 [shader_globals]
 
-window_sat_comp={
-"type": "float",
-"value": 1.0
+window_bcs={
+"type": "vec3",
+"value": Vector3(1, 1, 1)
 }
 
 [global_group]
