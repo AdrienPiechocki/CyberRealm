@@ -142,6 +142,9 @@ person, with the head hidden, and entirely in third person (**F5**).
   back), the horizontal movement of the root track is removed at load; the
   vertical bounce is kept. Adjust `Root Motion Threshold` if a track is
   wrongly detected.
+- **Idle Motion Scale** (default 0.35): amplitude of the idle animation
+  around its first frame (1 = original, 0 = frozen). The walk is also aligned
+  on the idle root position, so the body does not jump forward when walking.
 
 ## Custom scripts
 

@@ -30,6 +30,9 @@ extends Node3D
 ## Déplacement horizontal minimal (unités de l'animation) entre première et dernière clé pour qu'une piste de
 ## position soit considérée comme du root motion.
 @export var root_motion_threshold := 0.2
+## Amplitude de l'animation d'idle (1 = d'origine, 0 = pose figée sur sa première image). Certains idles
+## balancent beaucoup le corps ; réduire calme l'avatar sans changer la pose de départ.
+@export_range(0.0, 1.0, 0.05) var idle_motion_scale := 0.35
 
 ## Avatar local (enfant du joueur, ex. free-cam) : jamais d'apply_transform ;
 ## le pose suit le parent et la vitesse est déduite du déplacement global.
@@ -133,8 +136,12 @@ func setup(id: int, pname: String, color: Color) -> void:
 			_anim_player = AnimationPlayer.new()
 			_anim_player.name = "AnimationPlayer"
 			add_child(_anim_player)
+		var idle_anim: Animation = _anim_player.get_animation(anim_idle) \
+				if anim_idle != &"" and _anim_player.has_animation(anim_idle) else null
+		if idle_anim != null and idle_motion_scale < 1.0:
+			_calm_animation(idle_anim, idle_motion_scale)
 		if walk_in_place and anim_walk != &"" and _anim_player.has_animation(anim_walk):
-			_strip_root_motion(_anim_player.get_animation(anim_walk))
+			_strip_root_motion(_anim_player.get_animation(anim_walk), idle_anim)
 
 	# Pivot du pitch
 	_pitch_pivot = null
@@ -277,8 +284,13 @@ func _apply_ground_carry() -> void:
 
 
 ## Fige X/Z des pistes de position qui avancent d'au moins root_motion_threshold entre la 1re et la dernière clé
-## (la hauteur Y est conservée : rebond de la marche). Idempotent : la 2e fois, plus rien ne dépasse le seuil.
-func _strip_root_motion(anim: Animation) -> void:
+## (la hauteur Y est conservée : rebond de la marche). X/Z sont alignés sur la même piste de l'idle (`ref`) quand
+## elle existe : sinon la marche, figée à sa 1re image, placerait le corps devant/derrière sa position d'idle.
+## Idempotent (méta posée sur l'animation, partagée entre instances).
+func _strip_root_motion(anim: Animation, ref: Animation = null) -> void:
+	if anim.has_meta("cr_in_place"):
+		return
+	anim.set_meta("cr_in_place", true)
 	for t in anim.get_track_count():
 		if anim.track_get_type(t) != Animation.TYPE_POSITION_3D:
 			continue
@@ -289,9 +301,38 @@ func _strip_root_motion(anim: Animation) -> void:
 		var last: Vector3 = anim.track_get_key_value(t, n - 1)
 		if Vector2(last.x - first.x, last.z - first.z).length() < root_motion_threshold:
 			continue
+		var pin := Vector2(first.x, first.z)
+		if ref != null:
+			var rt := ref.find_track(anim.track_get_path(t), Animation.TYPE_POSITION_3D)
+			if rt >= 0 and ref.track_get_key_count(rt) > 0:
+				var rv: Vector3 = ref.track_get_key_value(rt, 0)
+				pin = Vector2(rv.x, rv.z)
 		for k in n:
 			var v: Vector3 = anim.track_get_key_value(t, k)
-			anim.track_set_key_value(t, k, Vector3(first.x, v.y, first.z))
+			anim.track_set_key_value(t, k, Vector3(pin.x, v.y, pin.y))
+
+
+## Réduit l'amplitude d'une animation autour de sa première image : positions et rotations interpolées entre la
+## pose de la clé 0 et chaque clé (scale 1 = inchangé). Idempotent via une méta posée sur l'animation.
+func _calm_animation(anim: Animation, amount: float) -> void:
+	if anim.has_meta("cr_calmed"):
+		return
+	anim.set_meta("cr_calmed", true)
+	for t in anim.get_track_count():
+		var type := anim.track_get_type(t)
+		var n := anim.track_get_key_count(t)
+		if n < 2:
+			continue
+		if type == Animation.TYPE_POSITION_3D:
+			var p0: Vector3 = anim.track_get_key_value(t, 0)
+			for k in range(1, n):
+				var v: Vector3 = anim.track_get_key_value(t, k)
+				anim.track_set_key_value(t, k, p0.lerp(v, amount))
+		elif type == Animation.TYPE_ROTATION_3D:
+			var q0: Quaternion = anim.track_get_key_value(t, 0)
+			for k in range(1, n):
+				var q: Quaternion = anim.track_get_key_value(t, k)
+				anim.track_set_key_value(t, k, q0.slerp(q, amount))
 
 
 func _update_animation(_delta: float) -> void:
