@@ -36,6 +36,12 @@ func _ready() -> void:
 		var pc := player.get_node_or_null("Camera3D") as Camera3D
 		if pc != null:
 			global_transform = pc.global_transform
+			# Un intérieur pose son propre Environment sur la caméra du
+			# joueur (interiors.gd) : il prime sur celui du WorldEnvironment.
+			if pc.environment != null:
+				_cam.environment = pc.environment
+			if pc.attributes != null:
+				_cam.attributes = pc.attributes
 	_cam.current = true
 
 
