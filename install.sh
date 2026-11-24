@@ -620,16 +620,6 @@ fi
 exit "\$rc"
 EOF
     chmod 755 "$HOME/.local/bin/cyberrealm-kms-session"
-    # Enregistrement OBS de la vue 3D : layer Vulkan obs-vkcapture (paquet
-    # obs-vkcapture). La capture PipeWire du compositeur integre ne voit que
-    # les fenetres et fait chuter les FPS du jeu.
-    cat > "$HOME/.local/bin/cyberrealm-obs" <<'EOF2'
-#!/usr/bin/env bash
-# Genere par install.sh --with-kms : lance OBS dans le bureau virtuel du jeu.
-unset OBS_VKCAPTURE
-exec "$HOME/.local/bin/cyberrealm-launch" obs "$@"
-EOF2
-    chmod 755 "$HOME/.local/bin/cyberrealm-obs"
     if confirm "install: install the \"CyberRealm (KMS)\" session entry in /usr/share/wayland-sessions (sudo)?"; then
         tmp_desktop="$(mktemp)"
         cat > "$tmp_desktop" <<EOF
