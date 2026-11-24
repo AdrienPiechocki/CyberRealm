@@ -942,6 +942,11 @@ func on_window_unmapped(id: int) -> void:
 	if not focus_mode or not focus_stack.has(id):
 		return
 	var was_active := id == _active_id()
+	# Même protection qu'à la sortie du focus, inconditionnelle : la fenêtre
+	# tuée disparaît (quad, occludeur) et le buffer d'occlusion garde sa
+	# silhouette ; si l'occludeur monde est déjà masqué (sonde de translucidité)
+	# _hide_world_occluder ne suspendrait rien.
+	_suspend_occlusion_after_focus()
 	focus_stack.erase(id)
 	windows.focus_frozen.erase(id)
 	_remove_title_bar(id)
