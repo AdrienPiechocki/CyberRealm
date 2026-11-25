@@ -200,7 +200,7 @@ open windows.\n\n(Image: the window menu)",
 		"Pause menu",
 		"Press Esc to open the Pause menu: remap keybinds, startup apps, custom \
 binds, keyboard layout, polkit agent, pinned windows settings, multiplayer, worlds and this \
-tutorial. Categories are on the left (LB / RB on a gamepad).\n\n(Image: the pause menu)",
+tutorial. Categories are on the left.\n\n(Image: the pause menu)",
 		[_key("pause_menu")],
 		1, "pause"))
 	_pages.append(_page(

@@ -453,7 +453,7 @@ func _show_main() -> void:
 	container.add_child(_make_title("Paused"))
 
 	var hint := Label.new()
-	hint.text = "Pick a category on the left.  Esc / B goes back, LB / RB switches category."
+	hint.text = "Pick a category on the left.  Esc / B goes back."
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.set_meta("ui_class", "hint")
 	UITheme.apply_class(hint, "hint")
@@ -2752,14 +2752,6 @@ func _category_label(view: String) -> String:
 			return String(page["label"])
 	return ""
 
-## Catégories ordonnées (sidebar), pour LB / RB.
-func _category_order() -> Array:
-	var out: Array = []
-	for cat in _CATEGORIES:
-		out.append(String(cat[0]))
-	for page in _extra_pages:
-		out.append(String(page["id"]))
-	return out
 
 func _refresh_sidebar() -> void:
 	var active := _category_of(_current_view)
@@ -2995,17 +2987,6 @@ func _focus_content_first() -> void:
 			(it as Control).grab_focus()
 			return
 
-## LB / RB : catégorie précédente / suivante.
-func _cycle_category(step: int) -> void:
-	var order := _category_order()
-	if order.is_empty():
-		return
-	var idx := order.find(_category_of(_current_view))
-	idx = (idx + step) % order.size() if idx >= 0 else (0 if step > 0 else order.size() - 1)
-	if idx < 0:
-		idx += order.size()
-	_show_category(String(order[idx]))
-
 ## Le stick droit fait défiler la liste interne d'une page quand le panneau
 ## lui-même ne défile pas.
 func _scroll_visible_container(amount: int) -> void:
@@ -3058,15 +3039,6 @@ func _input(event: InputEvent) -> void:
 			_keyboard.show_menu(focus_owner)
 			get_viewport().set_input_as_handled()
 			return
-
-	# LB / RB : catégorie précédente / suivante (hors capture de touche).
-	if event is InputEventJoypadButton and event.pressed \
-			and event.button_index in [JOY_BUTTON_LEFT_SHOULDER, JOY_BUTTON_RIGHT_SHOULDER] \
-			and _waiting_action == "" and not _custom_key_waiting and not _is_popup_open() \
-			and not (_keyboard != null and _keyboard.visible):
-		_cycle_category(-1 if event.button_index == JOY_BUTTON_LEFT_SHOULDER else 1)
-		get_viewport().set_input_as_handled()
-		return
 
 	# B : pendant un rebind manette, laissé capturable (fall-through à la
 	# capture ci-dessous). Pendant un rebind clavier, consommé sans modifier
