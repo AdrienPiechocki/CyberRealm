@@ -71,6 +71,7 @@ const ONLINE_LOCK_BASE_MSEC := 30000
 const ONLINE_LOCK_MAX_MSEC := 3600000
 const ONLINE_GLOBAL_ATTEMPTS := 40          # tentatives d'authentification max par minute, tous pairs confondus
 const NAME_MAX_LEN := 24
+var _auth_sent := false                     # client : mot de passe envoyé au serveur (échec ensuite = refus d'authentification)
 var _online_fail: Dictionary = {}           # ip -> {count, level, until}
 var _online_attempts: Array = []            # horodatages (ms) des tentatives récentes
 var _level_sha256 := PackedByteArray()      # serveur : empreinte du blob compressé envoyé
@@ -993,6 +994,7 @@ func _on_peer_authenticating(id: int) -> void:
 	if is_host:
 		return                       # le serveur attend les identifiants du client
 	# Client : envoie le mot de passe (dans la session TLS dont le certificat a été vérifié).
+	_auth_sent = true
 	(multiplayer as SceneMultiplayer).send_auth(id, _pin.to_utf8_buffer())
 
 func _on_peer_auth_failed(id: int) -> void:
@@ -1164,8 +1166,14 @@ func _on_connection_failed() -> void:
 	if _should_attempt_reconnect():
 		_begin_reconnect()
 	elif session_online:
+		var rejected := _auth_sent
 		_disconnect_session()
-		_set_status("Connection failed — server unreachable, or its TLS certificate is not valid for this name (the name must match the certificate).")
+		if rejected:
+			# La poignée de main TLS a abouti (certificat accepté) et le mot de passe est parti : c'est le serveur qui
+			# a refusé — mauvais mot de passe, ou verrouillage temporaire après plusieurs échecs.
+			_set_status("Authentication refused by the server — wrong password (12+ characters, not the LAN PIN), or temporarily locked out after repeated failures.")
+		else:
+			_set_status("Connection failed — server unreachable, or its TLS certificate is not valid for this name (the name must match the certificate).")
 	else:
 		_disconnect_session()
 		var tls_hint := " TLS était activé sur le Join — si l'hôte ne chiffre pas, retentez sans TLS." if _last_join_encrypted else ""
@@ -4317,6 +4325,7 @@ func _disconnect_session(keep_context := false) -> void:
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
 	session_dedicated = false
 	session_online = false
+	_auth_sent = false
 	_teardown_engine_auth()
 	if admin:
 		admin = false
