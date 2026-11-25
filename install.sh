@@ -474,6 +474,15 @@ if [[ "$REBUILD_TEMPLATE" -eq 1 ]]; then
         fi
     fi
     "$SHM_FIX" "$GODOT_SRC"
+    # Une version précédente du patch KMS (celle du stamp) peut être appliquée
+    # dans l'arbre : on la retire si elle diffère de la version voulue (ou si
+    # KMS n'est plus demandé), sinon le nouveau patch tombe en conflit.
+    if [[ -f "$KMS_STAMP" ]] \
+        && { [[ "$KMS_WANTED" -eq 0 ]] || ! cmp -s "$KMS_PATCH" "$KMS_STAMP"; } \
+        && (cd "$GODOT_SRC" && git apply --reverse --check "$KMS_STAMP" 2>/dev/null); then
+        echo "install: retrait de l'ancienne version du patch KMS dans $GODOT_SRC"
+        (cd "$GODOT_SRC" && git apply --reverse "$KMS_STAMP")
+    fi
     if [[ "$KMS_WANTED" -eq 1 ]]; then
         if (cd "$GODOT_SRC" && git apply --check "$KMS_PATCH" 2>/dev/null); then
             (cd "$GODOT_SRC" && git apply "$KMS_PATCH")
