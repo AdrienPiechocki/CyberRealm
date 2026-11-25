@@ -1122,6 +1122,13 @@ func _process(delta: float) -> void:
 	if pins.zooming:
 		return
 
+	# Vue TPS : la molette règle la distance de la caméra, tant qu'elle ne sert pas à une fenêtre
+	# (grab, resize, fenêtre visée) ni au mode interaction.
+	if player.tps_active and not interact_mode_active and not win3d.is_moving and not win3d.is_resizing \
+			and (Input.is_action_just_pressed("scroll_up", false) or Input.is_action_just_pressed("scroll_down", false)) \
+			and _raycast_window_target(_aim_pos()).is_empty():
+		player.zoom_tps(-1.0 if Input.is_action_just_pressed("scroll_up", false) else 1.0)
+
 	# K en visant une fenêtre LOCALE → demander sa fermeture (close). Les
 	# fenêtres distantes ne sont pas fermables (aucune interaction).
 	if Input.is_action_just_pressed("kill_window", true) and not interact_mode_active:

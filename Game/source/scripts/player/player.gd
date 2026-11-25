@@ -232,6 +232,8 @@ func _process(delta: float) -> void:
 const TPS_DISTANCE := 3.0
 const TPS_MIN_DISTANCE := 0.4        # plus près que ça, la caméra reste collée à la tête
 const TPS_MARGIN := 0.25
+const TPS_MAX_DISTANCE := 8.0
+const TPS_ZOOM_STEP := 0.4
 var tps_active := false
 var tps_distance := TPS_DISTANCE     # distance voulue (réglable)
 var tps_dist_now := 0.0              # distance réelle après collision
@@ -271,6 +273,10 @@ func set_head_follow(offset: Vector3) -> void:
 ## Hauteur de la caméra « tête » (1ère personne) : celle de la tête de l'avatar. NAN = hauteur par défaut de la scène.
 func set_eye_height(y: float) -> void:
 	_cam_rest_y = _cam_rest_default if is_nan(y) else y
+
+## Molette en TPS : steps > 0 éloigne la caméra, < 0 la rapproche.
+func zoom_tps(steps: float) -> void:
+	tps_distance = clampf(tps_distance + steps * TPS_ZOOM_STEP, TPS_MIN_DISTANCE, TPS_MAX_DISTANCE)
 
 func set_tps(on: bool) -> void:
 	if on == tps_active:
