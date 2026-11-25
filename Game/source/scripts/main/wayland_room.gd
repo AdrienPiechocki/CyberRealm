@@ -705,6 +705,7 @@ func _ready() -> void:
 	lan.status_changed.connect(func(_text: String):
 		pause_menu.set_lan_connected(lan.is_session_active())
 	)
+	lan.session_state_changed.connect(pause_menu.set_lan_connected)
 	lan.players_changed.connect(pause_menu.set_lan_players)
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
 	lan.pin_changed.connect(pause_menu.set_lan_pin)

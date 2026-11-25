@@ -12,6 +12,10 @@ signal level_apply_requested(scene: PackedScene, spawn: Vector3, spawn_rotation:
 # Déconnexion d'une session : le client doit retrouver SON niveau personnel
 # (wayland_room filtre : no-op si aucun niveau hôte n'avait été appliqué).
 signal local_level_restore_requested
+# Début / fin de session (hôte ou client). status_changed ne suffit pas : à la
+# déconnexion, le dernier statut est émis AVANT que session_active repasse à
+# false (ou pas du tout quand on quitte soi-même).
+signal session_state_changed(active: bool)
 # Émis quand le PIN de session est généré (hôte) ou reçu (client).
 signal pin_changed(pin: String)
 
@@ -755,6 +759,7 @@ func host_game() -> bool:
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
+	session_state_changed.emit(true)
 	_refresh_level_sync()
 	_pin = forced_pin if forced_pin != "" else _generate_pin()
 	pin_changed.emit(_pin)
@@ -1048,6 +1053,7 @@ func _auth_callback(id: int, data: PackedByteArray) -> void:
 func _on_connected_to_server() -> void:
 	session_active = true
 	is_host = false
+	session_state_changed.emit(true)
 	# Reconnexion : chaque connexion réussie remet les compteurs à zéro.
 	_session_closed_received = false
 	_reconnecting = false
@@ -4338,6 +4344,7 @@ func _disconnect_session(keep_context := false) -> void:
 	session_active = false
 	is_host = false
 	session_encrypted = false
+	session_state_changed.emit(false)
 	_announced = false
 	_avatar_sent_to.clear()
 	_avatar_send_cache = PackedByteArray()
