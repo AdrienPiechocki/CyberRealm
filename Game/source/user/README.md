@@ -233,6 +233,10 @@ Rules:
   or filter by `player_id` when only the author should do something.
 - A spammer cannot flood the session: relaying is limited to one interaction
   per player every 150 ms.
+- An object that handles its own input without being aimed at (e.g. a prop
+  held in hand) can join the `interact_held` group: its
+  `get_interact_prompt()` text then stays under the crosshair, aimed or not,
+  until it leaves the group.
 
 ## Level options (pause menu)
 

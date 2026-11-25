@@ -9,6 +9,9 @@ extends Node3D
 ##    viseur quand l'objet est visé (défaut : « Left click: interact »).
 ##  - func interact_focus(aimed: bool) — optionnel : surbrillance maison quand
 ##    le viseur entre/sort de l'objet.
+##  - Groupe HELD_GROUP (« interact_held ») — optionnel : un objet qui gère
+##    ses propres actions sans être visé (objet tenu en main…) s'y ajoute ;
+##    son get_interact_prompt() est alors affiché en priorité, visé ou non.
 ##
 ## Multijoueur : chaque machine exécute SA copie. Un clic appelle interact()
 ## localement PUIS relaie à tous les pairs (RPC fiable, relais serveur) qui
@@ -29,6 +32,7 @@ const WINDOW_METAS: Array[String] = ["window_id", "titlebar_of", "titlebar_butto
 # Anti-spam du relais réseau : au plus une interaction par pair et période.
 const NET_RATE_LIMIT_MSEC := 150
 const PROMPT_DEFAULT := "Left click: interact"
+const HELD_GROUP := "interact_held"
 
 var player: CharacterBody3D = null
 var lan: Node = null # session active ? (null en solo pur)
@@ -68,7 +72,11 @@ func _exit_tree() -> void:
 # Filet de sécurité : cible détruite (objet cassé…) ou souris libérée sans passage par update_aim (retours anticipés
 # de wayland_room) -> le tooltip ne doit pas rester affiché.
 func _process(_delta: float) -> void:
-	if _prompt == null or not _prompt.visible:
+	if _prompt == null:
+		return
+	if not _prompt.visible:
+		if _held_target() != null:
+			_update_prompt()   # objet tenu : texte affiché même sans rien viser
 		return
 	if not is_instance_valid(_aimed_target) or Input.mouse_mode != Input.MOUSE_MODE_CAPTURED:
 		# Pas de _set_aimed(null) : comparer à une cible libérée n'est pas fiable, on remet l'état à zéro.
@@ -202,12 +210,25 @@ func _set_aimed(t: Node) -> void:
 func _update_prompt() -> void:
 	if _prompt == null or not is_instance_valid(_prompt):
 		return
-	var txt := _prompt_text(_aimed_target)
+	var txt := ""
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		txt = _prompt_text(_held_target())
+	if txt.is_empty():
+		txt = _prompt_text(_aimed_target)
 	if txt.is_empty():
 		_prompt.visible = false
 	else:
 		_prompt.text = txt
 		_prompt.visible = true
+
+## Premier objet du groupe HELD_GROUP encore valide (null si aucun).
+func _held_target() -> Node:
+	if not is_inside_tree():
+		return null
+	for n in get_tree().get_nodes_in_group(HELD_GROUP):
+		if is_instance_valid(n) and n.is_inside_tree():
+			return n
+	return null
 
 ## Texte à afficher pour une cible visée ("" = rien). Facteur isolé pour
 ## testabilité.
