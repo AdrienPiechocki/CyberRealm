@@ -16,47 +16,48 @@ godot --headless --path Game/source --script scripts/tools/export_level_blob.gd 
 Without arguments it exports `res://user/level.tscn` if present, else `res://scenes/level.tscn`, to `level.crblob`.
 Re-export whenever the level changes, then copy the file to the server.
 
-## 2. Run the server
+## 2. Install on the server (Raspberry Pi 5 or any Linux arm64/x86_64)
 
-Copy `Game/source` and `level.crblob` to the server (any Godot 4.7 binary for the target architecture — on a Pi 5 the
-`linux.arm64` build), import once, then run:
+`server/install-server.sh` does everything: downloads the matching Godot 4.7.2 (arm64 on a Pi), installs a **minimal copy
+of the project** (scripts + server scene — no assets, no Wayland extension, ~2 MB), imports it, installs the level,
+writes a config and creates a systemd service.
 
 ```sh
-godot --headless --path Game/source --import        # once
-godot --headless --path Game/source scenes/dedicated_server.tscn -- \
-    --blob=/srv/cyberrealm/level.crblob --pin=4242 --name="My server" --max-players=8
+git clone --depth 1 https://github.com/AdrienPiechocki/CyberRealm.git && cd CyberRealm   # or rsync Game/source over
+scp you@desktop:level.crblob .                                                           # the blob from step 1
+sudo ./server/install-server.sh install --blob level.crblob --pin 4242 --name "My server" --open-firewall
 ```
 
-| Option | Default | |
-|---|---|---|
-| `--blob=FILE` | *(required)* | level exported at step 1 |
-| `--pin=NNNN` | random | fixed PIN (printed at startup otherwise) |
-| `--name=TEXT` | `CyberRealm Server` | name shown by LAN discovery |
-| `--max-players=N` | `8` | |
-| `--no-dtls` | encrypted | disable DTLS (debug only) |
+Other commands:
+
+| Command | |
+|---|---|
+| `install-server.sh update [--blob NEW]` | re-sync the project from this checkout (after a `git pull`), optionally swap the level, restart |
+| `install-server.sh blob FILE` | replace the level and restart |
+| `install-server.sh status` | PIN, ports, systemd status |
+| `install-server.sh uninstall [--purge]` | remove the service and the app (`--purge`: also level, config, user) |
+
+Options: `--pin NNNN` (kept across updates, random if never given), `--name`, `--max-players N` (8), `--no-dtls`,
+`--source DIR`, `--prefix DIR` (`/opt/cyberrealm-server`), `--user NAME`, `--godot-bin PATH`, `--no-service`
+(local install without root/systemd — handy to try the script on a desktop).
+
+Layout: `app/` (project), `godot/` (binary), `data/level.crblob`, `server.conf` (PIN, name, max players, DTLS),
+`run-server.sh` (what systemd runs). Logs: `journalctl -u cyberrealm-server -f`.
+
+**After every change to `lan_manager.gd` RPCs, re-export the game on the players' side too** (a stale client fails
+with `rpc node checksum failed` in the server log and times out).
+
+### Running it by hand
+
+```sh
+godot --headless --path Game/source scenes/dedicated_server.tscn -- \
+    --blob=level.crblob [--pin=4242] [--name="My server"] [--max-players=8] [--no-dtls]
+```
 
 Ports: **UDP 7777** (game), **UDP 9999** (LAN discovery), **TCP 7778** (level transfer). Players connect with the
-LAN page of the pause menu: enter the server IP and PIN.
+LAN page of the pause menu: enter the server IP and PIN (tick TLS unless started with `--no-dtls`).
 
-On a non-x86_64 machine Godot logs that the `waylandgodot` extension has no library for this architecture: this is
-expected and harmless, the server never uses it.
-
-## systemd unit (example)
-
-```ini
-[Unit]
-Description=CyberRealm dedicated server
-After=network-online.target
-
-[Service]
-User=cyberrealm
-WorkingDirectory=/srv/cyberrealm
-ExecStart=/usr/local/bin/godot --headless --path /srv/cyberrealm/Game/source scenes/dedicated_server.tscn -- --blob=/srv/cyberrealm/level.crblob --pin=4242
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
-```
+On a non-x86_64 machine nothing about the `waylandgodot` extension is installed, so Godot never loads it.
 
 ## Server authority over level physics
 

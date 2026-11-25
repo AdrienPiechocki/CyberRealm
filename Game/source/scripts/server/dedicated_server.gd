@@ -55,7 +55,7 @@ func _ready() -> void:
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
-		if lan != null and is_instance_valid(lan) and lan.has_method("disconnect_session"):
+		if lan != null and is_instance_valid(lan) and lan.get("session_active") == true:
 			lan.disconnect_session()
 
 
