@@ -1,0 +1,8 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://scripts/server/dedicated_server.gd" id="1"]
+
+; La racine DOIT s'appeler comme celle du jeu (WaylandRoom) : Godot identifie les RPC par chemin de nœud
+; (/root/WaylandRoom/LAN), identique chez le serveur et les clients.
+[node name="WaylandRoom" type="Node"]
+script = ExtResource("1")

@@ -54,6 +54,11 @@ var _avatar_blobs: Dictionary = {} # peer_id -> PackedByteArray (scène binaire)
 var _pin: String = ""
 # peer_id -> true : client en attente de vérification du PIN par l'hôte.
 var _pending_auth: Dictionary = {}
+# Serveur dédié (headless, sans joueur) : l'hôte n'est PAS un joueur — ni roster, ni avatar, ni synchro de transform ;
+# il porte le niveau (blob prébaké), le PIN et le relais. Voir scripts/server/dedicated_server.gd.
+var dedicated := false
+var forced_pin := ""                 # PIN imposé (sinon tiré au sort)
+var max_players := MAX_PLAYERS
 # Chiffrement DTLS de la session (toggle pause_menu). Exposé en var publique.
 var encryption_enabled := true
 # anti brute-force PIN : adresse IP -> timestamp (ms) du dernier échec (purge).
@@ -184,7 +189,7 @@ var windows_provider: Callable = Callable() # renvoie la liste des fenêtres loc
 var windows_moving_provider: Callable = Callable() # true si le joueur déplace/redimensionne une fenêtre
 var window_image_provider: Callable = Callable() # Callable(window_id) -> Image (contenu réel, stream partage)
 var window_version_provider: Callable = Callable() # Callable(window_id) -> int (version du contenu)
-var compositor: WlrCompositor = null # pour start/stop_audio_share, poll_audio_packet, audio_decode
+var compositor: Node = null # WlrCompositor (typé Node : le serveur dédié tourne SANS l'extension) pour start/stop_audio_share, poll_audio_packet, audio_decode
 # Références vers les sous-systèmes locaux (posées par wayland_room) : mise à
 # jour des PiP / overlays focus des fenêtres distantes (vue seule).
 var pins = null
@@ -694,7 +699,7 @@ func host_game() -> bool:
 		_set_status("Already in a LAN session")
 		return false
 	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_server(PORT, MAX_PLAYERS, 8)
+	var err := peer.create_server(PORT, max_players, 8)
 	if err != OK:
 		_set_status("Host error: " + error_string(err))
 		return false
@@ -711,7 +716,7 @@ func host_game() -> bool:
 	session_active = true
 	is_host = true
 	_refresh_level_sync()
-	_pin = _generate_pin()
+	_pin = forced_pin if forced_pin != "" else _generate_pin()
 	pin_changed.emit(_pin)
 	_lan_log("host PIN: " + _pin)
 	# Miroir des scripts utilisateur reparti à zéro pour cette session (les
@@ -728,7 +733,8 @@ func host_game() -> bool:
 	_last_heartbeat_sent_msec = 0
 	_host_spawn_transform.clear()
 	_players.clear()
-	_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
+	if not dedicated:
+		_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	_start_responder()
@@ -1052,8 +1058,8 @@ func _roster_snapshot(entries: Array) -> void:
 # Chaque pair saute son propre peer_id (il a déjà son joueur local).
 @rpc("any_peer", "reliable", "call_local")
 func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
-	if peer_id == multiplayer.get_unique_id():
-		return
+	if peer_id == multiplayer.get_unique_id() or dedicated:
+		return      # (serveur dédié : pas de rendu, le roster vient de _register_player)
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].setup(peer_id, pname, color)
 		if _level_stable and _remote_players[peer_id].has_method("start_prewarm"):
@@ -1967,6 +1973,8 @@ func _diag_count_res(node: Node, diag: Dictionary) -> void:
 		_diag_count_res(c, diag)
 
 func _send_avatar_to(id: int) -> void:
+	if dedicated:
+		return      # le serveur dédié n'a pas d'avatar
 	# Bake + compression une seule fois par session (voir _avatar_send_cache).
 	if _avatar_send_cache.is_empty():
 		var t0 := Time.get_ticks_msec()
@@ -3020,7 +3028,7 @@ func _start_video_share() -> void:
 		if compositor.video_share_start(codec, _video_bitrate, _video_fps):
 			_video_mode = true
 			_video_codec = compositor.video_share_codec()
-			var hw := compositor.video_share_hardware()
+			var hw = compositor.video_share_hardware()
 			print("[video] inter-frame sharing started: codec=%s hardware=%s bitrate=%d fps=%d" % [
 				_video_codec, "yes" if hw else "no", _video_bitrate, _video_fps])
 			return
