@@ -337,6 +337,7 @@ func _init() -> void:
 	_load_level()
 
 func _ready() -> void:
+	_setup_waypoints()
 	# Spawn d'origine du joueur dans SON niveau (le Player._ready() vient de
 	# le capturer) : référence pour restore_local_level() après une déconnexion
 	# LAN. À capturer avant toute session, rien n'a encore bougé le joueur.
@@ -1909,3 +1910,25 @@ func _rebind_refs(n: Node, from: Object, to: Object) -> void:
 				n.set(pname, to)
 	for c in n.get_children():
 		_rebind_refs(c, from, to)
+
+# ── Waypoints (SUPER+SHIFT+N / SUPER+N) ─────────────────────────────
+
+func _setup_waypoints() -> void:
+	var wp := Node.new()
+	wp.set_script(load("res://scripts/main/waypoints.gd"))
+	wp.name = "Waypoints"
+	wp.set("player", player)
+	wp.set("level_key", Callable(self, "_waypoint_level_key"))
+	wp.set("can_handle", Callable(self, "_waypoints_allowed"))
+	add_child(wp)
+
+# Clé du niveau courant : uid de sa scène (sinon chemin). "" sur un niveau d'hôte LAN.
+func _waypoint_level_key() -> String:
+	if _level_swapped or _level_path == "":
+		return ""
+	var uid := ResourceLoader.get_resource_uid(_level_path)
+	return ResourceUID.id_to_text(uid) if uid != ResourceUID.INVALID_ID else _level_path
+
+func _waypoints_allowed() -> bool:
+	return not (player.freecam_active or focus.is_active() or interact_mode_active or layers.keyboard_busy()
+			or window_menu.visible or capture_selector.visible or pause_menu.visible)
