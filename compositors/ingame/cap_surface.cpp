@@ -243,7 +243,13 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd, int timeout_ms) {
 
     // Tenter EXPORT_SYNC_FILE d'abord (sync GPU fiable cross-API).
     struct dma_buf_export_sync_file export_args = {};
-    export_args.flags = DMA_BUF_SYNC_WRITE;
+    // READ = n'attendre que les ÉCRITEURS (le render pass EGL). WRITE
+    // attendrait aussi les LECTEURS : Godot échantillonne ce même dma-buf
+    // (import Vulkan) pour afficher le quad, donc chaque capture bloquait
+    // jusqu'à la fin de la frame GPU de Godot (poll au plafond de 4/10 ms
+    // même pour une bande de 1920x62). L'écriture suivante d'EGL attend
+    // les lecteurs côté noyau (sync implicite), sans bloquer le CPU.
+    export_args.flags = DMA_BUF_SYNC_READ;
     if (ioctl(dma_fd, DMA_BUF_IOCTL_EXPORT_SYNC_FILE, &export_args) == 0) {
         struct pollfd pfd;
         pfd.fd = export_args.fd;

@@ -55,7 +55,52 @@ func _process(_delta: float) -> void:
 			_present_idle_counter = 0
 			_present_viewport_frame()
 
+## Readback ASYNCHRONE (RenderingDevice.texture_get_data_async) : la copie
+## GPU→CPU est mise en file dans la frame courante et rendue 1-2 frames plus
+## tard par callback, sans bloquer le thread principal ni vider la file GPU.
+## Le get_image() synchrone coûte un stall complet par frame (1080p ≈ 8 Mo) :
+## c'était la cause du lag du screenshare. Au plus MAX_READBACKS_IN_FLIGHT
+## lectures en vol ; au-delà la frame est sautée (le flux ralentit au lieu
+## de faire ramer le jeu).
+const MAX_READBACKS_IN_FLIGHT := 2
+var _readbacks_in_flight := 0
+var _async_readback_ok := true # false → repli définitif sur get_image()
+
 func _present_viewport_frame() -> void:
+	if _async_readback_ok and _present_viewport_frame_async():
+		return
+	_present_viewport_frame_sync()
+
+func _present_viewport_frame_async() -> bool:
+	var rd := RenderingServer.get_rendering_device()
+	if rd == null:
+		_async_readback_ok = false
+		return false
+	var vp_tex := RenderingServer.viewport_get_texture(get_viewport().get_viewport_rid())
+	var tex := RenderingServer.texture_get_rd_texture(vp_tex)
+	if not tex.is_valid():
+		_async_readback_ok = false
+		return false
+	var fmt := rd.texture_get_format(tex)
+	if fmt.format != RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM \
+			and fmt.format != RenderingDevice.DATA_FORMAT_R8G8B8A8_SRGB:
+		_async_readback_ok = false
+		return false
+	if _readbacks_in_flight >= MAX_READBACKS_IN_FLIGHT:
+		return true # trop de lectures en vol : on saute cette frame
+	if rd.texture_get_data_async(tex, 0, _on_readback.bind(fmt.width, fmt.height)) != OK:
+		_async_readback_ok = false
+		return false
+	_readbacks_in_flight += 1
+	return true
+
+func _on_readback(data: PackedByteArray, w: int, h: int) -> void:
+	_readbacks_in_flight = maxi(_readbacks_in_flight - 1, 0)
+	if compositor == null or data.size() < w * h * 4:
+		return
+	compositor.present_viewport_frame(data, w, h)
+
+func _present_viewport_frame_sync() -> void:
 	var vp := get_viewport()
 	var img := vp.get_texture().get_image()
 	if img == null or img.is_empty():
