@@ -3933,14 +3933,26 @@ func _poll_responder() -> void:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 func _local_ips() -> Array:
-	var ips: Array = []
-	for ip in IP.get_local_addresses():
-		if ip.begins_with("127.") or ip.begins_with("169.254.") or ":" in ip:
-			continue
-		ips.append(ip)
-	if ips.is_empty():
-		ips.append("127.0.0.1")
-	return ips
+	# Les adresses des interfaces virtuelles (pont Docker 172.17.0.1, libvirt, veth…) passent EN DERNIER : un serveur
+	# qui héberge des conteneurs affichait l'adresse du pont comme « son » IP, injoignable depuis le réseau.
+	var real: Array = []
+	var virtual: Array = []
+	for itf in IP.get_local_interfaces():
+		var nm := String(itf.get("name", ""))
+		var is_virtual := false
+		for prefix in ["docker", "br-", "veth", "virbr", "lxc", "lxd", "cni", "flannel", "podman"]:
+			if nm.begins_with(prefix):
+				is_virtual = true
+				break
+		for ip in itf.get("addresses", []):
+			var a := String(ip)
+			if a.begins_with("127.") or a.begins_with("169.254.") or ":" in a:
+				continue
+			(virtual if is_virtual else real).append(a)
+	real.append_array(virtual)
+	if real.is_empty():
+		real.append("127.0.0.1")
+	return real
 
 func _local_ip() -> String:
 	return _local_ips()[0]

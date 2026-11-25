@@ -304,9 +304,14 @@ start_service() {
     systemctl restart "$SERVICE_NAME"
 }
 
+# Adresse(s) à donner aux joueurs : d'abord celle de la route par défaut (le vrai réseau), puis les autres, sans les
+# ponts Docker/virtuels (172.17.x…), injoignables depuis l'extérieur.
 lan_ips() {
-    { hostname -I 2>/dev/null || ip -4 -o addr show scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}'; } \
-        | tr ' ' '\n' | grep -E '^[0-9]+\.' | paste -sd' ' - || true
+    local primary others
+    primary="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "src") { print $(i + 1); exit }}')"
+    others="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.' | grep -vE '^172\.(1[7-9]|2[0-9]|3[01])\.0\.1$' \
+        | grep -vxF "${primary:-none}" | paste -sd' ' - || true)"
+    printf '%s' "${primary:+$primary }$others"
 }
 
 summary() {
