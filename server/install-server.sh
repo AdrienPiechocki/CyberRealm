@@ -32,6 +32,7 @@ DTLS=""                             # 1 = chiffré (défaut), 0 = --no-dtls
 ONLINE=""                           # 1 = serveur exposé sur Internet (mode online durci)
 DOMAIN=""                           # nom DNS du serveur (certificat Let's Encrypt)
 EMAIL=""                            # e-mail Let's Encrypt (alertes d'expiration)
+HTTP_PORT=80                        # port LOCAL de la validation Let's Encrypt (la box redirige 80 -> ce port)
 TLS_CERT_SRC=""                     # certificat fourni (au lieu de Let's Encrypt)
 TLS_KEY_SRC=""
 ADMIN_PW=""                         # mot de passe admin (joueur qui règle les options du niveau)
@@ -61,6 +62,8 @@ Options :
                         Exige --domain + --email (certificat Let's Encrypt) ou --tls-cert/--tls-key. Voir docs.
   --domain NOM          nom DNS public du serveur (ex. play.exemple.org) ; les joueurs rejoignent PAR CE NOM
   --email ADRESSE       e-mail Let's Encrypt
+  --http-port N         port LOCAL de validation Let's Encrypt (défaut 80). Si le port 80 est pris (conteneur, proxy),
+                        choisis 8080 et redirige TCP 80 -> N sur ta box. Mémorisé par certbot pour les renouvellements.
   --tls-cert FICHIER    certificat (chaîne complète PEM) fourni par toi, avec --tls-key FICHIER
   --admin-password MDP  mot de passe « admin » : le joueur qui le saisit (menu pause > Level) peut régler les options
                         du niveau (heure, météo…). Vide ("") = aucun admin. Conservé d'une mise à jour à l'autre.
@@ -102,6 +105,7 @@ while [[ $# -gt 0 ]]; do
         --online)       ONLINE=1; shift ;;
         --domain)       DOMAIN="${2:?}"; shift 2 ;;
         --email)        EMAIL="${2:?}"; shift 2 ;;
+        --http-port)    HTTP_PORT="${2:?}"; shift 2 ;;
         --tls-cert)     TLS_CERT_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
         --tls-key)      TLS_KEY_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
         --source)       SOURCE_DIR="$(cd "${2:?}" && pwd)"; shift 2 ;;
@@ -366,8 +370,11 @@ setup_tls() {
                     log "installation de certbot"; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
                 else die "certbot est requis (apt install certbot)"; fi
             }
-            warn "Let's Encrypt va contacter http://$domain/ sur le PORT 80 : il doit être ouvert et redirigé vers ce serveur."
-            certbot certonly --standalone --non-interactive --agree-tos -m "$EMAIL" -d "$domain" \
+            warn "Let's Encrypt va contacter http://$domain/ sur le PORT 80 public : il doit être redirigé vers le port $HTTP_PORT de ce serveur."
+            if [[ "$HTTP_PORT" != 80 ]] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+                ufw allow "$HTTP_PORT/tcp" >/dev/null        # (validation et renouvellements)
+            fi
+            certbot certonly --standalone --http-01-port "$HTTP_PORT" --non-interactive --agree-tos -m "$EMAIL" -d "$domain" \
                 || die "certbot a échoué (nom DNS correct ? port 80 ouvert/redirigé ?)"
         fi
         install_cert_hook "$domain"

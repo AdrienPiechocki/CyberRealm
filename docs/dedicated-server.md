@@ -71,6 +71,10 @@ sudo ./server/install-server.sh install --online --domain play.example.org --ema
      --blob level.crblob --admin-password 'another long secret' --open-firewall
 # the script prints the generated join password (20 chars) — also stored in /opt/cyberrealm-server/server.conf
 ```
+Port 80 already used on the server (a container, a reverse proxy)? Pick another local port for the validation and
+forward public TCP 80 to it on your router: `--http-port 8080` (certbot remembers it for renewals; with ufw the script
+opens it). Other options: DNS-01 validation with your DNS provider's certbot plugin, then `--tls-cert/--tls-key`.
+
 Own certificate instead of Let's Encrypt: `--tls-cert fullchain.pem --tls-key privkey.pem`. Renewals are automatic
 (certbot timer + a deploy hook that copies the certificate and restarts the service).
 
