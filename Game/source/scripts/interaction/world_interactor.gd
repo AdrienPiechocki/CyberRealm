@@ -104,6 +104,10 @@ func resolve_target(ray_origin: Vector3, ray_dir: Vector3) -> Node:
 	var to := ray_origin + ray_dir * REACH
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+	# Jamais le corps du joueur lui-même : avec la caméra à hauteur de tête (full body awareness) elle affleure le
+	# sommet de la capsule, le rayon pouvait la toucher et masquer l'objet visé.
+	if player != null and is_instance_valid(player):
+		params.exclude = [player.get_rid()]
 	params.collide_with_areas = false
 	var hit := space.intersect_ray(params)
 	if hit.is_empty():

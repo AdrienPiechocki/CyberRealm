@@ -517,6 +517,9 @@ func _look_hover() -> bool:
 	var origin := cam.global_position 
 	var dir := -cam.global_transform.basis.z
 	var params := PhysicsRayQueryParameters3D.create(origin, origin + dir * 1000.0)
+	var self_body := get_tree().get_first_node_in_group("player") as CollisionObject3D
+	if self_body != null:
+		params.exclude = [self_body.get_rid()]
 	var hit := get_world_3d().direct_space_state.intersect_ray(params)
 	if hit.is_empty():
 		return false

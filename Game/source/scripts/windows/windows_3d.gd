@@ -1481,6 +1481,9 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 	var to := ray_origin + ray_dir * 1000.0
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+	# Jamais le corps du joueur (la caméra à hauteur de tête affleure le sommet de sa capsule).
+	if player is CollisionObject3D:
+		params.exclude = [(player as CollisionObject3D).get_rid()]
 	# Explicite, alors que c'est déjà le défaut : les zones de collage sont des
 	# Area3D, et si ce rayon les touchait un jour, on saisirait la ZONE au
 	# lieu du corps — le grab viserait à côté de la fenêtre attrapée.

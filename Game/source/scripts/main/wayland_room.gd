@@ -802,6 +802,7 @@ func _raycast_window_target(mouse_pos: Vector2) -> Dictionary:
 	var to = ray_origin + ray_dir * 1000.0
 	var space := get_world_3d().direct_space_state
 	var params := PhysicsRayQueryParameters3D.create(ray_origin, to)
+	params.exclude = [player.get_rid()]     # jamais son propre corps (caméra à hauteur de tête)
 	var hit := space.intersect_ray(params)
 	if hit.is_empty():
 		return {}
