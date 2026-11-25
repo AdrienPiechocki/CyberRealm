@@ -808,10 +808,10 @@ index 0000000..8d4b2a9
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
 new file mode 100644
-index 0000000..d77becc
+index 0000000..5508180
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.cpp
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,518 @@
 +#ifdef KMS_ENABLED
 +
 +#include "kms_input.h"
@@ -1165,9 +1165,11 @@ index 0000000..d77becc
 +
 +void KMSInput::_handle_motion(const Vector2 &p_delta) {
 +	Vector2 old = pointer_pos;
-+	pointer_pos += p_delta;
++	// Mode capturé : le pointeur reste figé (comme sous X11/Wayland), seul le
++	// delta relatif part au jeu. Sinon il dérive hors écran et réapparaît
++	// n'importe où au retour en mode visible.
 +	if (pointer_mode == POINTER_VISIBLE) {
-+		pointer_pos = pointer_pos.clamp(Vector2(), Vector2(bounds) - Vector2(1, 1));
++		pointer_pos = (pointer_pos + p_delta).clamp(Vector2(), Vector2(bounds) - Vector2(1, 1));
 +	}
 +	Ref<InputEventMouseMotion> mm;
 +	mm.instantiate();
@@ -1330,10 +1332,10 @@ index 0000000..d77becc
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.h b/platform/linuxbsd/kms/kms_input.h
 new file mode 100644
-index 0000000..f306d2e
+index 0000000..4cd80ca
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.h
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,99 @@
 +#pragma once
 +
 +#ifdef KMS_ENABLED
@@ -1415,7 +1417,14 @@ index 0000000..f306d2e
 +	void suspend();
 +	void resume();
 +
-+	void set_pointer_mode(PointerMode p_mode) { pointer_mode = p_mode; }
++	// Passage en capturé : pointeur recentré puis figé (comme X11), il
++	// réapparaît au centre au retour en mode visible.
++	void set_pointer_mode(PointerMode p_mode) {
++		if (p_mode == POINTER_CAPTURED && pointer_mode != POINTER_CAPTURED) {
++			pointer_pos = Vector2(bounds) / 2.0;
++		}
++		pointer_mode = p_mode;
++	}
 +	Point2i get_pointer_position() const { return Point2i(pointer_pos); }
 +	// Input.warp_mouse : déplace le pointeur sans émettre de mouvement (comme
 +	// Wayland). Le curseur logiciel lit mouse_get_position() chaque frame.
