@@ -32,6 +32,8 @@ DTLS=""                             # 1 = chiffré (défaut), 0 = --no-dtls
 ONLINE=""                           # 1 = serveur exposé sur Internet (mode online durci)
 DOMAIN=""                           # nom DNS du serveur (certificat Let's Encrypt)
 EMAIL=""                            # e-mail Let's Encrypt (alertes d'expiration)
+PRE_HOOK=""                         # commande certbot avant validation/renouvellement (ex. arrêter le proxy qui prend le port 80)
+POST_HOOK=""                        # commande certbot après (ex. relancer le proxy)
 HTTP_PORT=80                        # port LOCAL de la validation Let's Encrypt (la box redirige 80 -> ce port)
 TLS_CERT_SRC=""                     # certificat fourni (au lieu de Let's Encrypt)
 TLS_KEY_SRC=""
@@ -62,6 +64,9 @@ Options :
                         Exige --domain + --email (certificat Let's Encrypt) ou --tls-cert/--tls-key. Voir docs.
   --domain NOM          nom DNS public du serveur (ex. play.exemple.org) ; les joueurs rejoignent PAR CE NOM
   --email ADRESSE       e-mail Let's Encrypt
+  --pre-hook CMD        commande exécutée par certbot AVANT l'émission et chaque renouvellement (ex. "docker stop traefik")
+  --post-hook CMD       commande exécutée APRÈS (ex. "docker start traefik") : libère puis rend le port 80 le temps de
+                        la validation (quelques secondes tous les ~60 jours). Mémorisé pour les renouvellements.
   --http-port N         port LOCAL de validation Let's Encrypt (défaut 80). Si le port 80 est pris (conteneur, proxy),
                         choisis 8080 et redirige TCP 80 -> N sur ta box. Mémorisé par certbot pour les renouvellements.
   --tls-cert FICHIER    certificat (chaîne complète PEM) fourni par toi, avec --tls-key FICHIER
@@ -106,6 +111,8 @@ while [[ $# -gt 0 ]]; do
         --domain)       DOMAIN="${2:?}"; shift 2 ;;
         --email)        EMAIL="${2:?}"; shift 2 ;;
         --http-port)    HTTP_PORT="${2:?}"; shift 2 ;;
+        --pre-hook)     PRE_HOOK="${2:?}"; shift 2 ;;
+        --post-hook)    POST_HOOK="${2:?}"; shift 2 ;;
         --tls-cert)     TLS_CERT_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
         --tls-key)      TLS_KEY_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
         --source)       SOURCE_DIR="$(cd "${2:?}" && pwd)"; shift 2 ;;
@@ -374,7 +381,11 @@ setup_tls() {
             if [[ "$HTTP_PORT" != 80 ]] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
                 ufw allow "$HTTP_PORT/tcp" >/dev/null        # (validation et renouvellements)
             fi
-            certbot certonly --standalone --http-01-port "$HTTP_PORT" --non-interactive --agree-tos -m "$EMAIL" -d "$domain" \
+            local hooks=()
+            [[ -z "$PRE_HOOK" ]] || hooks+=(--pre-hook "$PRE_HOOK")
+            [[ -z "$POST_HOOK" ]] || hooks+=(--post-hook "$POST_HOOK")
+            certbot certonly --standalone --http-01-port "$HTTP_PORT" "${hooks[@]}" --non-interactive --agree-tos \
+                -m "$EMAIL" -d "$domain" \
                 || die "certbot a échoué (nom DNS correct ? port 80 ouvert/redirigé ?)"
         fi
         install_cert_hook "$domain"

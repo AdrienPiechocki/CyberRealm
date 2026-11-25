@@ -75,6 +75,11 @@ Port 80 already used on the server (a container, a reverse proxy)? Pick another 
 forward public TCP 80 to it on your router: `--http-port 8080` (certbot remembers it for renewals; with ufw the script
 opens it). Other options: DNS-01 validation with your DNS provider's certbot plugin, then `--tls-cert/--tls-key`.
 
+Behind a reverse proxy that owns ports 80/443 (Traefik, nginx…) and public 80 must keep going to it: let certbot
+free the port only while it validates — `--pre-hook "docker stop traefik" --post-hook "docker start traefik"` (a few
+seconds of downtime every ~60 days, stored for the automatic renewals). The cleaner long-term alternative is DNS-01
+validation through your DNS provider's certbot plugin, which needs no open port at all.
+
 Own certificate instead of Let's Encrypt: `--tls-cert fullchain.pem --tls-key privkey.pem`. Renewals are automatic
 (certbot timer + a deploy hook that copies the certificate and restarts the service).
 
