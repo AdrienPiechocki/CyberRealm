@@ -567,10 +567,10 @@ index 0000000..a5309bd
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/display_server_kms.h b/platform/linuxbsd/kms/display_server_kms.h
 new file mode 100644
-index 0000000..dbd2224
+index 0000000..8d4b2a9
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.h
-@@ -0,0 +1,234 @@
+@@ -0,0 +1,235 @@
 +/**************************************************************************/
 +/*  display_server_kms.h                                             */
 +/**************************************************************************/
@@ -774,6 +774,7 @@ index 0000000..dbd2224
 +	DisplayServerEnums::MouseMode mouse_get_mode() const override { return mouse_mode; }
 +	void mouse_set_mode_override(DisplayServerEnums::MouseMode p_mode) override;
 +	void mouse_set_mode_override_enabled(bool p_override_enabled) override;
++	void warp_mouse(const Point2i &p_position) override { input.warp_pointer(p_position); }
 +	Point2i mouse_get_position() const override { return input.get_pointer_position(); }
 +	void clipboard_set(const String &p_text) override {}
 +	void clipboard_set_primary(const String &p_text) override {}
@@ -807,10 +808,10 @@ index 0000000..dbd2224
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.cpp b/platform/linuxbsd/kms/kms_input.cpp
 new file mode 100644
-index 0000000..35a9624
+index 0000000..d77becc
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.cpp
-@@ -0,0 +1,512 @@
+@@ -0,0 +1,516 @@
 +#ifdef KMS_ENABLED
 +
 +#include "kms_input.h"
@@ -1158,6 +1159,10 @@ index 0000000..35a9624
 +	}
 +}
 +
++void KMSInput::warp_pointer(const Point2i &p_pos) {
++	pointer_pos = Vector2(p_pos).clamp(Vector2(), Vector2(bounds) - Vector2(1, 1));
++}
++
 +void KMSInput::_handle_motion(const Vector2 &p_delta) {
 +	Vector2 old = pointer_pos;
 +	pointer_pos += p_delta;
@@ -1325,10 +1330,10 @@ index 0000000..35a9624
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/kms_input.h b/platform/linuxbsd/kms/kms_input.h
 new file mode 100644
-index 0000000..1cea1cf
+index 0000000..f306d2e
 --- /dev/null
 +++ b/platform/linuxbsd/kms/kms_input.h
-@@ -0,0 +1,89 @@
+@@ -0,0 +1,92 @@
 +#pragma once
 +
 +#ifdef KMS_ENABLED
@@ -1412,6 +1417,9 @@ index 0000000..1cea1cf
 +
 +	void set_pointer_mode(PointerMode p_mode) { pointer_mode = p_mode; }
 +	Point2i get_pointer_position() const { return Point2i(pointer_pos); }
++	// Input.warp_mouse : déplace le pointeur sans émettre de mouvement (comme
++	// Wayland). Le curseur logiciel lit mouse_get_position() chaque frame.
++	void warp_pointer(const Point2i &p_pos);
 +	int get_fd() const;
 +
 +	~KMSInput() { finalize(); }
