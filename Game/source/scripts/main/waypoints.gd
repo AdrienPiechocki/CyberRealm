@@ -80,6 +80,14 @@ func add_here() -> bool:
 	_notify("All waypoints are used")
 	return false
 
+## Redéfinit (écrase) un slot à la position actuelle.
+func set_slot(slot: int) -> void:
+	var key := String(level_key.call()) if level_key.is_valid() else ""
+	if key == "":
+		_notify("Waypoints unavailable on this level")
+		return
+	_set_waypoint(key, slot)
+
 func goto_slot(slot: int) -> void:
 	var key := String(level_key.call()) if level_key.is_valid() else ""
 	if key == "":

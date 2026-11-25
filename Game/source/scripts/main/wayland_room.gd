@@ -1674,7 +1674,11 @@ func _on_radial_action(action: String) -> void:
 			$Waypoints.add_here()
 		_:
 			if action.begins_with("waypoint:"):
-				$Waypoints.goto_slot(int(action.substr(9)))
+				radial_menu.show_menu("waypoint_slot", -1, [int(action.substr(9))])
+			elif action.begins_with("waypoint_go:"):
+				$Waypoints.goto_slot(int(action.substr(12)))
+			elif action.begins_with("waypoint_set:"):
+				$Waypoints.set_slot(int(action.substr(13)))
 			elif action.begins_with("bind:"):
 				var cmd := action.substr(5)
 				if not cmd.is_empty():

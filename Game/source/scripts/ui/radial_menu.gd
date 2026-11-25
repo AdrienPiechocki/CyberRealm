@@ -106,6 +106,10 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			_items.append({label = "ADD HERE", emoji = "➕", action = "waypoint_add"})
 			for slot in binds:
 				_items.append({label = "WAYPOINT %d" % int(slot), emoji = "📍", action = "waypoint:%d" % int(slot)})
+		"waypoint_slot":
+			var slot := int(binds[0]) if binds.size() > 0 else 0
+			_items.append({label = "GO TO %d" % slot, emoji = "📍", action = "waypoint_go:%d" % slot})
+			_items.append({label = "REDEFINE %d" % slot, emoji = "🔄", action = "waypoint_set:%d" % slot})
 		"binds":
 			if binds.size() > 0:
 				for bind in binds:
@@ -141,7 +145,7 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 	#
 	# « GRAB GROUP » n'existe que dans le contexte « window » : ailleurs le
 	# radial ne vise aucune fenêtre, l'entrée serait morte.
-	if context != "binds" and context != "waypoints":
+	if context != "binds" and context != "waypoints" and context != "waypoint_slot":
 		_append_group_grab(context)
 		_append_pin_zoom()
 
