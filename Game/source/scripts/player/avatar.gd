@@ -226,22 +226,31 @@ func _process(delta: float) -> void:
 
 ## Mode follow_parent : le pitch de la tête reprend celui de la caméra du joueur
 ## (le parent), comme le fait apply_transform pour un avatar distant. Le pitch
-## est inversé par rapport à l'avatar distant (sens constaté en TPS) et appliqué
-## dès la première frame, sans lissage, pour ne pas voir la tête
-## balayer l'angle à l'entrée en free-cam.
+## est appliqué dès la première frame, sans lissage, pour ne pas voir la tête
+## balayer l'angle à l'entrée en free-cam. En TPS, caméra en orbite devant le
+## joueur, le sens s'inverse pour que la tête regarde la caméra (voir _orbit_pitch_sign).
 func _follow_parent_pitch(delta: float) -> void:
 	if _pitch_cam == null or not is_instance_valid(_pitch_cam):
 		var parent := get_parent()
 		_pitch_cam = parent.get_node_or_null("Camera3D") as Camera3D if parent != null else null
 		if _pitch_cam == null:
 			return
-		_target_pitch = -_pitch_cam.rotation.x * pitch_scale
+		_target_pitch = _pitch_cam.rotation.x * pitch_scale * _orbit_pitch_sign()
 		(_pitch_pivot if _pitch_pivot != null else self).rotation.x = _target_pitch
 		return
-	_target_pitch = -_pitch_cam.rotation.x * pitch_scale
+	_target_pitch = _pitch_cam.rotation.x * pitch_scale * _orbit_pitch_sign()
 	var pitch_node := _pitch_pivot if _pitch_pivot != null else self
 	pitch_node.rotation.x = lerp_angle(pitch_node.rotation.x, _target_pitch,
 		1.0 - exp(-delta * lerp_speed))
+
+## Facteur du pitch selon la position de la caméra TPS autour du joueur : 1 derrière
+## (la tête suit le regard), -1 devant (la tête suit la caméra qui la regarde),
+## transition continue entre les deux (0 de profil).
+func _orbit_pitch_sign() -> float:
+	var par := get_parent()
+	if par != null and par.get(&"tps_active") == true:
+		return cos(float(par.get(&"tps_orbit_yaw")))
+	return 1.0
 
 func _physics_process(delta: float) -> void:
 	if follow_parent:
