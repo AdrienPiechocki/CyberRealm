@@ -338,8 +338,11 @@ func recapture_if_needed() -> void:
 # autre mode reprend la souris (focus, menu pause, menu fenêtres,
 # interact_mode...). Réinitialise l'état même si le joueur n'a pas repassé
 # Tab (layer_interact_manual) : quitter le mode layer doit le désactiver.
-func deactivate_layer_interact() -> void:
-	Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
+# recenter = false : le curseur reste où il est (entrée en focus, qui reprend
+# la souris là où le joueur l'a laissée).
+func deactivate_layer_interact(recenter := true) -> void:
+	if recenter:
+		Input.warp_mouse(get_viewport().get_visible_rect().size / 2.0)
 	layer_interact_active = false
 	layer_interact_manual = false
 	player.layer_pointer_active = false

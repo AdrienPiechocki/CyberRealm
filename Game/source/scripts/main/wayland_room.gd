@@ -1168,7 +1168,9 @@ func _process(delta: float) -> void:
 	# Une fenêtre DISTANTE entre aussi en focus mais en VUE SEULE (aucun
 	# input forwardé, pas de kill).
 	if Input.is_action_just_pressed("focus_window", true) and not interact_mode_active:
-		layers.deactivate_layer_interact()
+		# Pas de recentrage : le focus reprend le curseur là où il est
+		# (sinon il saute au centre au premier mouvement).
+		layers.deactivate_layer_interact(false)
 		var target := _raycast_window_target(_aim_pos())
 		if target.has("local"):
 			focus.enter_focus(target["local"])
