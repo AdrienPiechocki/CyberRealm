@@ -105,6 +105,7 @@ func _ready():
 func respawn() -> void:
 	position = spawn_pos
 	rotation = spawn_rotation
+	tps_orbit_yaw = 0.0
 	velocity = Vector3.ZERO
 
 func _apply_cursor_css() -> void:
@@ -140,6 +141,9 @@ func _physics_process(delta):
 		move_and_slide()
 		return
 	var input := Input.get_vector("left", "right", "forward", "back")
+	# TPS : dès que le personnage bouge, il prend la direction de la caméra (qui ne bouge pas à l'écran).
+	if tps_orbit_yaw != 0.0 and (input != Vector2.ZERO or not is_on_floor()):
+		_commit_tps_orbit()
 	var movement_dir = transform.basis * Vector3(input.x, 0, input.y)
 	var pad_cursor_active := Input.is_action_pressed("layer_interact", true) or layer_pointer_active
 	if not pad_cursor_active:
@@ -158,7 +162,7 @@ func _physics_process(delta):
 		var look := Vector2(Input.get_joy_axis(0, JOY_AXIS_RIGHT_X), Input.get_joy_axis(0, JOY_AXIS_RIGHT_Y)).limit_length(1.0)
 		if look != Vector2.ZERO:
 			var look_amt: Vector2 = look * look.length()
-			rotate_y(-look_amt.x * pad_look_speed * delta)
+			_look_yaw(-look_amt.x * pad_look_speed * delta)
 			$Camera3D.rotation.x = clampf($Camera3D.rotation.x - look_amt.y * pad_look_speed * delta, -deg_to_rad(80), deg_to_rad(80))
 		if gyro_aim_enabled:
 			if _gyro_device >= 0 and not Input.get_connected_joypads().has(_gyro_device):
@@ -206,7 +210,7 @@ func _apply_gyro_aim(gyro: Vector3, sens: float, delta: float) -> void:
 	var scaled := sens * GYRO_BASE_SCALE
 	if absf(gyro.x) <= GYRO_DEADZONE and absf(gyro.y) <= GYRO_DEADZONE:
 		return
-	rotate_y(gyro.y * scaled * delta)
+	_look_yaw(gyro.y * scaled * delta)
 	# Modification directe de rotation.x avec clamp
 	$Camera3D.rotation.x = clampf($Camera3D.rotation.x + gyro.x * scaled * delta, -deg_to_rad(80), deg_to_rad(80))
 
@@ -232,6 +236,21 @@ var tps_active := false
 var tps_distance := TPS_DISTANCE     # distance voulue (réglable)
 var tps_dist_now := 0.0              # distance réelle après collision
 var _tps_cam: Camera3D = null
+var tps_orbit_yaw := 0.0             # angle de la caméra autour du personnage immobile (relatif à son orientation)
+
+## Lacet de la vue : en TPS, personnage immobile au sol, la caméra tourne autour de lui sans le faire pivoter.
+func _look_yaw(angle: float) -> void:
+	var idle := Input.get_vector("left", "right", "forward", "back") == Vector2.ZERO and is_on_floor()
+	if tps_active and idle and not freecam_active:
+		tps_orbit_yaw = wrapf(tps_orbit_yaw + angle, -PI, PI)
+	else:
+		_commit_tps_orbit()
+		rotate_y(angle)
+
+func _commit_tps_orbit() -> void:
+	if tps_orbit_yaw != 0.0:
+		rotate_y(tps_orbit_yaw)
+		tps_orbit_yaw = 0.0
 
 ## Le joueur est-il réellement en l'air (saut, chute) ? Utilisé par l'avatar pour l'animation de saut. S'appuie sur la
 ## physique (is_on_floor + la tolérance de _step_up qui absorbe le clignotement dans les escaliers) : une montée de
@@ -257,6 +276,8 @@ func set_tps(on: bool) -> void:
 	if on == tps_active:
 		return
 	tps_active = on
+	if not on:
+		_commit_tps_orbit()
 	if on:
 		if _tps_cam == null:
 			_tps_cam = Camera3D.new()
@@ -292,7 +313,8 @@ func aim_ray(mouse_pos: Vector2) -> Array:
 func _update_tps_camera(delta: float) -> void:
 	var head := $Camera3D as Camera3D
 	var hp := head.global_position
-	var back := head.global_basis.z
+	var cam_basis := Basis(Vector3.UP, tps_orbit_yaw) * head.global_basis
+	var back := cam_basis.z
 	var want := tps_distance
 	var q := PhysicsRayQueryParameters3D.create(hp, hp + back * (tps_distance + TPS_MARGIN), 1, [get_rid()])
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
@@ -301,7 +323,7 @@ func _update_tps_camera(delta: float) -> void:
 	# Se rapproche vite (pas de traversée de mur), s'éloigne en douceur.
 	tps_dist_now = want if want < tps_dist_now or tps_dist_now == 0.0 \
 			else lerpf(tps_dist_now, want, 1.0 - exp(-8.0 * delta))
-	_tps_cam.global_transform = Transform3D(head.global_basis, hp + back * tps_dist_now)
+	_tps_cam.global_transform = Transform3D(cam_basis, hp + back * tps_dist_now)
 	# Mêmes réglages de rendu que la tête (l'intérieur y pose son propre Environment, interiors.gd).
 	if _tps_cam.environment != head.environment:
 		_tps_cam.environment = head.environment
@@ -440,7 +462,7 @@ func _input(event):
 			return
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		rotate_y(-event.relative.x * mouse_sensitivity)
+		_look_yaw(-event.relative.x * mouse_sensitivity)
 		# Modification directe de rotation.x avec clamp
 		$Camera3D.rotation.x = clampf($Camera3D.rotation.x - event.relative.y * mouse_sensitivity, -deg_to_rad(80), deg_to_rad(80))
 
