@@ -59,6 +59,25 @@ LAN page of the pause menu: enter the server IP and PIN (tick TLS unless started
 
 On a non-x86_64 machine nothing about the `waylandgodot` extension is installed, so Godot never loads it.
 
+## Admin player (level settings)
+
+On a dedicated server nobody is "the host", so the level options (time of day, fog, clouds, rain — pause menu >
+*Level*) would be read-only for everyone. Set an **admin password**:
+
+```sh
+sudo ./server/install-server.sh update --admin-password 'my secret'     # --admin-password "" disables admin
+```
+
+(by hand: environment variable `CYBERREALM_ADMIN_PASSWORD`, or `--admin-password=…` — visible in `ps`). A player then
+opens pause menu > *Level*, types the password and presses *Unlock as admin*; the page becomes editable and every
+change is applied by the server and broadcast to all players. Players who join later receive the current options.
+
+- The password travels inside the DTLS-encrypted session (plaintext only with `--no-dtls`).
+- 3 wrong attempts lock that player out for 30 s. Admin status ends when the player disconnects.
+- Level scripts can reuse it: `lan.is_admin()` (client) / `lan.is_admin(peer)` (server) and the level-message channel.
+  A level script runs on the server only if its node carries the `net_server` metadata (`LevelOptions` does).
+- The re-exported blob and a re-exported game are both required (the game gained `is_admin` / `request_admin`).
+
 ## Server authority over level physics
 
 The server loads the level from the blob (user scripts and assets installed like a client does) and strips every

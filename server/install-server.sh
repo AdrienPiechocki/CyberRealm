@@ -29,6 +29,8 @@ PIN=""
 NAME=""
 MAX_PLAYERS=""
 DTLS=""                             # 1 = chiffré (défaut), 0 = --no-dtls
+ADMIN_PW=""                         # mot de passe admin (joueur qui règle les options du niveau)
+ADMIN_PW_SET=0
 NO_SERVICE=0
 OPEN_FIREWALL=0
 PURGE=0
@@ -50,6 +52,8 @@ Options :
   --max-players N       nombre de joueurs maximum (défaut : 8)
   --no-dtls             désactive le chiffrement DTLS (débogage)
   --dtls                (ré)active le chiffrement DTLS
+  --admin-password MDP  mot de passe « admin » : le joueur qui le saisit (menu pause > Level) peut régler les options
+                        du niveau (heure, météo…). Vide ("") = aucun admin. Conservé d'une mise à jour à l'autre.
   --source DIR          dossier Game/source à installer (défaut : celui de ce dépôt)
   --prefix DIR          dossier d'installation (défaut : /opt/cyberrealm-server)
   --user NOM            utilisateur du service (défaut : cyberrealm)
@@ -84,6 +88,7 @@ while [[ $# -gt 0 ]]; do
         --max-players)  MAX_PLAYERS="${2:?}"; shift 2 ;;
         --no-dtls)      DTLS=0; shift ;;
         --dtls)         DTLS=1; shift ;;
+        --admin-password) ADMIN_PW="${2-}"; ADMIN_PW_SET=1; shift 2 ;;
         --source)       SOURCE_DIR="$(cd "${2:?}" && pwd)"; shift 2 ;;
         --prefix)       PREFIX="${2:?}"; shift 2 ;;
         --user)         SERVICE_USER="${2:?}"; shift 2 ;;
@@ -223,6 +228,8 @@ write_config() {
     maxp="${MAX_PLAYERS:-$(conf_get MAX_PLAYERS)}"; maxp="${maxp:-8}"
     dtls="${DTLS:-$(conf_get DTLS)}"; dtls="${dtls:-1}"
     PIN="$pin"
+    local admin_pw
+    if [[ $ADMIN_PW_SET -eq 1 ]]; then admin_pw="$ADMIN_PW"; else admin_pw="$(conf_get ADMIN_PASSWORD)"; fi
     {
         echo "# Configuration du serveur CyberRealm — relance le service après modification."
         printf 'GODOT=%q\n' "$GODOT_BIN"
@@ -232,6 +239,7 @@ write_config() {
         printf 'NAME=%q\n' "$name"
         printf 'MAX_PLAYERS=%q\n' "$maxp"
         printf 'DTLS=%q\n' "$dtls"
+        printf 'ADMIN_PASSWORD=%q\n' "$admin_pw"
         printf 'EXTRA_ARGS=%q\n' "$(conf_get EXTRA_ARGS)"
         printf 'HOME=%q\n' "$DATA_DIR"
     } > "$CONF"
@@ -245,6 +253,8 @@ CONF="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/server.conf"
 # shellcheck disable=SC1090
 . "$CONF"
 export HOME
+# Par l'environnement (pas en argument : visible dans `ps`).
+export CYBERREALM_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [[ -f "$BLOB" ]] || { echo "niveau introuvable : $BLOB (installe-le : install-server.sh blob FICHIER)" >&2; exit 2; }
 args=("--blob=$BLOB" "--pin=$PIN" "--name=$NAME" "--max-players=$MAX_PLAYERS")
 [[ "${DTLS:-1}" == "0" ]] && args+=("--no-dtls")
@@ -327,7 +337,8 @@ summary() {
     else
         printf '  Lancer     : %s\n' "$RUNNER"
     fi
-    printf '  Config     : %s (PIN, nom, joueurs max, DTLS)\n' "$CONF"
+    printf '  Admin      : %s\n' "$([[ -n "$(conf_get ADMIN_PASSWORD)" ]] && echo "mot de passe défini (voir $CONF)" || echo "désactivé — ajoute --admin-password MDP")"
+    printf '  Config     : %s (PIN, nom, joueurs max, DTLS, admin)\n' "$CONF"
 }
 
 # ── Commandes ────────────────────────────────────────────────────────
@@ -372,7 +383,8 @@ do_status() {
     [[ -f "$CONF" ]] || die "pas d'installation trouvée dans $PREFIX."
     printf 'PIN : %s   nom : %s   joueurs max : %s   DTLS : %s\n' "$(conf_get PIN)" "$(conf_get NAME)" \
         "$(conf_get MAX_PLAYERS)" "$([[ "$(conf_get DTLS)" == 0 ]] && echo non || echo oui)"
-    printf 'Niveau : %s\n' "$([[ -f "$BLOB_DST" ]] && du -h "$BLOB_DST" | cut -f1 || echo absent)"
+    printf 'Niveau : %s   admin : %s\n' "$([[ -f "$BLOB_DST" ]] && du -h "$BLOB_DST" | cut -f1 || echo absent)" \
+        "$([[ -n "$(conf_get ADMIN_PASSWORD)" ]] && echo "mot de passe défini" || echo "désactivé")"
     if command -v systemctl >/dev/null 2>&1 && [[ -f "$UNIT" ]]; then
         systemctl --no-pager --lines=8 status "$SERVICE_NAME" || true
     fi

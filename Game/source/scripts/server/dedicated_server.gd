@@ -8,6 +8,7 @@ extends Node
 ##          -- [res://user/level.tscn] [level.crblob]
 ##   2. Sur le serveur :          godot --headless --path Game/source scenes/dedicated_server.tscn \\
 ##          -- --blob=level.crblob [--pin=1234] [--name=Serveur] [--max-players=8] [--no-dtls]
+##   Admin : variable d'environnement CYBERREALM_ADMIN_PASSWORD (ou --admin-password=…, visible dans `ps`).
 ##
 ## Les clients rejoignent par IP:PIN comme pour un hôte LAN. Arrêt : SIGINT/SIGTERM (Ctrl+C).
 
@@ -36,6 +37,8 @@ func _ready() -> void:
 	lan.forced_pin = String(args.get("pin", ""))
 	lan.max_players = int(args.get("max-players", 8))
 	lan.encryption_enabled = not args.has("no-dtls")
+	# Mot de passe admin : de préférence par l'environnement (un argument de ligne de commande est visible dans `ps`).
+	lan.admin_password = String(args.get("admin-password", OS.get_environment("CYBERREALM_ADMIN_PASSWORD")))
 	var level := _instantiate_level(blob)
 	if level == null:
 		get_tree().quit(5)
@@ -49,6 +52,7 @@ func _ready() -> void:
 		push_error("dedicated_server: host_game() a échoué (port déjà utilisé ?)")
 		get_tree().quit(4)
 		return
+	print("[server] admin : ", "mot de passe défini" if lan.admin_password != "" else "désactivé (pas de mot de passe)")
 	print("[server] PIN: ", lan.get_pin(), " — UDP %d (+%d découverte), TCP %d" % [
 			lan.PORT, lan.DISCOVERY_PORT, lan.LEVEL_TCP_PORT])
 
@@ -93,8 +97,16 @@ func _instantiate_level(blob: Dictionary) -> Node3D:
 	return level
 
 
+# Le retrait d'un script efface aussi ses variables exportées : on les garde dans la méta « script_props » pour que
+# les scripts conservés (ex. options du niveau) puissent lire l'état initial du niveau (heure, brume, nuages…).
 static func _strip_scripts(n: Node) -> void:
 	if n.get_script() != null and not n.has_meta("net_server"):
+		var props := {}
+		for p in n.get_property_list():
+			var usage := int(p.get("usage", 0))
+			if usage & PROPERTY_USAGE_SCRIPT_VARIABLE and usage & PROPERTY_USAGE_STORAGE:
+				props[String(p["name"])] = n.get(String(p["name"]))
+		n.set_meta("script_props", props)
 		n.set_script(null)
 	for c in n.get_children():
 		_strip_scripts(c)

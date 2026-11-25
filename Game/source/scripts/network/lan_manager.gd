@@ -2140,6 +2140,8 @@ func _on_peer_disconnected(id: int) -> void:
 	])
 	if is_host:
 		_players.erase(id)
+		_admins.erase(id)
+		_admin_fails.erase(id)
 		level_peer_left.emit(id)
 		_remove_player.rpc(id)
 		if _level_tcp_server != null:
@@ -4030,6 +4032,11 @@ func _disconnect_session(keep_context := false) -> void:
 	if multiplayer.server_disconnected.is_connected(_on_server_disconnected):
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
 	session_dedicated = false
+	if admin:
+		admin = false
+		admin_changed.emit(false)
+	_admins.clear()
+	_admin_fails.clear()
 	session_active = false
 	is_host = false
 	session_encrypted = false
@@ -4090,6 +4097,47 @@ const LEVEL_MSG_TOPIC_MAX := 48
 func in_dedicated_session() -> bool:
 	return dedicated or session_dedicated
 
+# ── Administrateur (serveur dédié) ───────────────────────────────────
+# Sur un serveur dédié personne n'est « l'hôte » : un joueur devient ADMIN en donnant le mot de passe du serveur
+# (--admin-password / CYBERREALM_ADMIN_PASSWORD). Les scripts de niveau interrogent is_admin() pour réserver des
+# réglages (ex. options du niveau) à ce joueur. Hors serveur dédié, l'hôte LAN est toujours admin de sa session.
+signal admin_changed(is_admin: bool)       # client : mon statut d'admin a changé
+const ADMIN_MAX_FAILS := 3
+const ADMIN_LOCKOUT_MSEC := 30000
+var admin_password := ""                   # serveur : vide = pas d'admin possible
+var admin := false                         # client : suis-je admin sur ce serveur ?
+var _admins: Dictionary = {}               # serveur : peer_id -> true
+var _admin_fails: Dictionary = {}          # serveur : peer_id -> {count, until}
+
+## Serveur : ce pair est-il admin ? Client : suis-je admin ? Hôte LAN classique : toujours.
+func is_admin(peer: int = 0) -> bool:
+	if is_host:
+		return true if not dedicated else _admins.has(peer)
+	return admin
+
+## Client : demande les droits d'admin au serveur (la réponse arrive par admin_changed).
+func request_admin(password: String) -> void:
+	send_level_message("admin_login", password)
+
+func _handle_admin_login(from: int, password: Variant) -> void:
+	var now := Time.get_ticks_msec()
+	var st: Dictionary = _admin_fails.get(from, {"count": 0, "until": 0})
+	var ok := false
+	if admin_password != "" and password is String and now >= int(st["until"]):
+		ok = String(password) == admin_password
+		if not ok:
+			st["count"] = int(st["count"]) + 1
+			if int(st["count"]) >= ADMIN_MAX_FAILS:
+				st["count"] = 0
+				st["until"] = now + ADMIN_LOCKOUT_MSEC
+				_lan_log("admin: %d verrouillé 30 s (échecs répétés)" % from)
+			_admin_fails[from] = st
+	if ok:
+		_admins[from] = true
+		_admin_fails.erase(from)
+		_lan_log("admin: %d est administrateur" % from)
+	send_level_message_to(from, "admin_status", ok)
+
 ## Client -> serveur.
 func send_level_message(topic: String, data: Variant = null, reliable := true) -> void:
 	if not session_active or is_host:
@@ -4127,6 +4175,9 @@ func _accept_level_msg_up(topic: String, data: Variant) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or _pending_auth.has(from) or not _players.has(from):
 		return      # seuls les pairs inscrits (PIN vérifié) parlent au niveau
+	if topic == "admin_login":
+		_handle_admin_login(from, data)
+		return
 	level_message.emit(topic, data, from)
 
 @rpc("authority", "call_remote", "reliable", 1)
@@ -4139,6 +4190,10 @@ func _level_msg_down_u(topic: String, data: Variant) -> void:
 
 func _accept_level_msg_down(topic: String, data: Variant) -> void:
 	if is_host or multiplayer.get_remote_sender_id() != 1 or topic.length() > LEVEL_MSG_TOPIC_MAX:
+		return
+	if topic == "admin_status":
+		admin = data == true
+		admin_changed.emit(admin)
 		return
 	level_message.emit(topic, data, 1)
 
