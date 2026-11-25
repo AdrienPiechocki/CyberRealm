@@ -1072,6 +1072,11 @@ void WlrCompositor::start_headless() {
 
     wlr_data_device_manager_create(display);
     wlr_primary_selection_v1_device_manager_create(display);
+    // Data-control (ext + wlr) : accès au presse-papier pour les clients sans focus (wl-copy/wl-paste,
+    // gestionnaires de presse-papier du shell). Sans ces globals, wl-copy retombe sur une fenêtre 1x1
+    // « wl-clipboard » pour obtenir le focus clavier, qui apparaissait dans la scène à chaque copie.
+    wlr_ext_data_control_manager_v1_create(display, 1);
+    wlr_data_control_manager_v1_create(display);
 
     // Presse-papier fonctionnel entre fenêtres : sans ces deux listeners,
     // les globals ci-dessus sont bien annoncés aux clients mais aucune

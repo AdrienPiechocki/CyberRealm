@@ -42,6 +42,8 @@ extern "C" {
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection.h>
 #include <wlr/types/wlr_primary_selection_v1.h>
+#include <wlr/types/wlr_data_control_v1.h>
+#include <wlr/types/wlr_ext_data_control_v1.h>
 #include <wlr/types/wlr_buffer.h>
 #include <wlr/types/wlr_pointer_constraints_v1.h>
 #include <wlr/types/wlr_relative_pointer_v1.h>
