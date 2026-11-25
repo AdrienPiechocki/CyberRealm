@@ -19,6 +19,7 @@ signal lan_color_changed(color: Color)
 signal accent_color_changed(color: Color)
 signal color_scheme_changed(scheme: String)
 signal lan_avatar_changed(path: String)
+signal level_change_requested(path: String)
 signal lan_name_changed(name: String)
 
 signal graphics_settings_changed(aa_mode: String, fps_limit: int)
@@ -33,6 +34,7 @@ signal gyro_sens_changed(mult: float)
 signal environment_settings_changed(settings: Dictionary)
 
 const LanManagerScript := preload("res://scripts/network/lan_manager.gd")
+const LevelCatalogScript := preload("res://scripts/main/level_catalog.gd")
 
 const SETTINGS_PATH := "user://settings.json"
 
@@ -83,6 +85,15 @@ var _lan: Node = null
 func set_lan_ref(lan: Node) -> void:
 	_lan = lan
 
+# Page « Worlds » : WaylandRoom (niveau courant, chargement en cours) et
+# dernier message d'état, conservé si la page est reconstruite.
+var _level_room: Node = null
+var _level_status_text := ""
+var _level_status_label: Label = null
+
+func set_level_ref(room: Node) -> void:
+	_level_room = room
+
 # Pages du menu (catégories + sous-pages). La catégorie "main" est le hub.
 var _current_view := "main"
 
@@ -94,6 +105,7 @@ const _PARENT_VIEW := {
 	"graphics": "main",
 	"controls": "main",
 	"lan": "main",
+	"levels": "main",
 	"startup": "general",
 	"polkit": "general",
 	"screenshots": "general",
@@ -134,6 +146,7 @@ var _lan_pin_toggle_btn: Button = null
 var _lan_ip_edit: LineEdit = null
 var _lan_pin_edit: LineEdit = null
 var _lan_encryption_btn: CheckButton = null
+var _lan_disconnect_btn: Button = null
 
 func _can_stick_input() -> bool:
 	if _keyboard != null and _keyboard.visible:
@@ -252,11 +265,7 @@ func _restore_popup_nav_focus() -> void:
 func _ready() -> void:
 	visible = false
 	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
-	container = VBoxContainer.new()
-	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	container.add_theme_constant_override("separation", 6)
-	add_child(container)
+	_build_shell()
 	_apply_styling()
 	UITheme.stylesheet_reloaded.connect(_on_stylesheet_reloaded)
 	_settings = _load_settings()
@@ -266,21 +275,21 @@ func _ready() -> void:
 func _apply_styling() -> void:
 	theme = UITheme.theme
 	set_meta("ui_class", "menu-panel pause-menu")
-	UITheme.apply_class(self, "menu-panel pause-menu")
+	# Toute la coque (en-tête, sidebar, contenu) porte des classes CSS.
+	UITheme.apply_css(self)
 
 func _on_stylesheet_reloaded() -> void:
 	theme = UITheme.theme
 	UITheme.apply_css(self)
 
 func _clear() -> void:
-	_quit_btn = null
 	_waiting_action = ""
 	_waiting_gamepad = false
 	for c in container.get_children():
 		c.queue_free()
-	# Focus pad : différé, donc exécuté APRÈS la fin de construction de la
-	# page par le _show_* appelant.
-	_focus_first_deferred.call_deferred()
+	# Focus pad + habillage (fil d'Ariane, sidebar, scroll) : différés, donc
+	# exécutés APRÈS la fin de construction de la page par le _show_* appelant.
+	_after_page_built.call_deferred()
 
 func _make_spacer() -> Control:
 	var s := Control.new()
@@ -297,20 +306,71 @@ func _make_btn(text: String, klass := "") -> Button:
 		UITheme.apply_class(btn, klass)
 	return btn
 
+## Titre de page : affiché en tête du panneau de contenu. Les titres
+## historiques « GRAPHICS — GENERAL » sont réduits à leur dernier segment
+## (« General ») : la catégorie parente est déjà dans le fil d'Ariane.
 func _make_title(text: String) -> Label:
+	var t := text
+	var dash := t.rfind("—")
+	if dash >= 0:
+		t = t.substr(dash + 1)
 	var lbl := Label.new()
-	lbl.text = text
-	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	lbl.set_meta("ui_class", "title")
-	UITheme.apply_class(lbl, "title")
-	lbl.custom_minimum_size = Vector2(0, 50)
+	lbl.text = _title_case(t.strip_edges())
+	lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	lbl.set_meta("ui_class", "page-title")
+	UITheme.apply_class(lbl, "page-title")
+	lbl.custom_minimum_size = Vector2(0, 40)
 	lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	return lbl
 
+static func _title_case(t: String) -> String:
+	var words: PackedStringArray = []
+	for w in t.split(" ", false):
+		words.append(w.substr(0, 1).to_upper() + w.substr(1).to_lower())
+	return " ".join(words)
+
+## Bouton retour des sous-pages. Sur une page de premier niveau (parent =
+## accueil), la sidebar fait office de navigation : bouton masqué (rendu
+## quand même, les appelants l'ajoutent tous à la page).
 func _make_back_btn() -> Button:
-	var back := _make_btn("Back", "back-button")
+	var back := _make_btn("‹  Back", "back-button")
+	back.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	back.custom_minimum_size = Vector2(140, 38)
 	back.pressed.connect(_go_back)
+	if String(_PARENT_VIEW.get(_current_view, "main")) == "main":
+		back.visible = false
 	return back
+
+## Ligne de navigation vers une sous-page (« Startup Apps  › »), avec un
+## sous-titre optionnel décrivant ce qu'on y règle.
+func _make_nav_row(text: String, subtitle: String, target: Callable) -> Button:
+	var btn := _make_btn(text, "nav-row")
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	btn.custom_minimum_size = Vector2(0, 56 if subtitle != "" else 44)
+	if subtitle != "":
+		btn.text = text + "\n" + subtitle
+		btn.add_theme_font_size_override("font_size", 14)
+	var chevron := Label.new()
+	chevron.text = "›"
+	chevron.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	chevron.set_anchors_and_offsets_preset(Control.PRESET_RIGHT_WIDE)
+	chevron.offset_left = -32
+	chevron.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	chevron.set_meta("ui_class", "nav-chevron")
+	UITheme.apply_class(chevron, "nav-chevron")
+	btn.add_child(chevron)
+	btn.pressed.connect(target)
+	return btn
+
+## Intertitre de section dans une page (« EFFECTS », « COLOR ADJUSTMENTS »).
+func _make_section(text: String) -> Label:
+	var lbl := Label.new()
+	lbl.text = text.to_upper()
+	lbl.set_meta("ui_class", "section-title")
+	UITheme.apply_class(lbl, "section-title")
+	lbl.custom_minimum_size = Vector2(0, 30)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	return lbl
 
 # Retour à la page parente (catégorie), ou fermeture du menu depuis le hub.
 func _go_back() -> void:
@@ -350,9 +410,11 @@ func _focus_first_deferred() -> void:
 			continue
 		for c in n.get_children():
 			stack.push_back(c)
-		if n is BaseButton or n is OptionButton or n is CheckBox:
+		if (n is BaseButton or n is OptionButton or n is CheckBox) and (n as Control).visible:
 			n.grab_focus()
 			return
+	# Page sans contrôle (accueil) : focus sur la sidebar.
+	_focus_sidebar_active()
 
 func setup_keyboard(kb: VirtualKeyboard) -> void:
 	_keyboard = kb
@@ -388,49 +450,28 @@ func _show_main() -> void:
 	_current_view = "main"
 	_editing_index = -1
 
-	container.add_child(_make_title("MAIN MENU"))
+	container.add_child(_make_title("Paused"))
 
-	var general_btn := _make_btn("General")
-	general_btn.pressed.connect(_show_general)
-	container.add_child(general_btn)
+	var hint := Label.new()
+	hint.text = "Pick a category on the left.  Esc / B goes back, LB / RB switches category."
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.set_meta("ui_class", "hint")
+	UITheme.apply_class(hint, "hint")
+	container.add_child(hint)
 
-	var graphics_btn := _make_btn("Graphics")
-	graphics_btn.pressed.connect(_show_graphics)
-	container.add_child(graphics_btn)
+	# Cartes d'état : monde courant et session multijoueur (lecture seule —
+	# les actions sont dans la sidebar).
+	var cards := HBoxContainer.new()
+	cards.add_theme_constant_override("separation", 12)
+	container.add_child(cards)
+	cards.add_child(_make_card("WORLD", _world_label(),
+		"Locked during a multiplayer session" if _lan_connected else "Change it in Worlds"))
+	var players := _lan_roster.size()
+	cards.add_child(_make_card("MULTIPLAYER",
+		("Connected" if _lan_connected else "Offline"),
+		("%d player%s" % [players, "" if players == 1 else "s"]) if _lan_connected else "Host or join in Multiplayer"))
 
-	var controls_btn := _make_btn("Controls")
-	controls_btn.pressed.connect(_show_controls)
-	container.add_child(controls_btn)
-
-	var lan_btn := _make_btn("Multiplayer")
-	lan_btn.pressed.connect(_show_lan)
-	container.add_child(lan_btn)
-
-	var tutorial_btn := _make_btn("Tutorial")
-	tutorial_btn.pressed.connect(func():
-		hide_menu()
-		tutorial_requested.emit()
-	)
-	container.add_child(tutorial_btn)
-
-	var respawn_btn := _make_btn("Respawn")
-	respawn_btn.pressed.connect(func():
-		hide_menu()
-		respawn_requested.emit()
-	)
-	container.add_child(respawn_btn)
-	
 	container.add_child(_make_spacer())
-	
-	var back_btn := _make_btn("Back")
-	back_btn.pressed.connect(hide_menu)
-	container.add_child(back_btn)
-
-	var quit_btn := _make_btn("Quit", "quit-button")
-	quit_btn.pressed.connect(_quit_game)
-	quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
-	container.add_child(quit_btn)
-	_quit_btn = quit_btn
 
 # ── Pages catégories du hub ───────────────────────────────────────────
 
@@ -442,23 +483,13 @@ func _show_general() -> void:
 
 	container.add_child(_make_title("GENERAL"))
 
-	var startup_btn := _make_btn("Startup Apps")
-	startup_btn.pressed.connect(_show_startup_apps)
-	container.add_child(startup_btn)
+	container.add_child(_make_nav_row("Startup Apps", "Apps launched with the game", _show_startup_apps))
+	container.add_child(_make_nav_row("Polkit Agent", "Authentication dialog used in game", _show_polkit))
+	container.add_child(_make_nav_row("Screenshot Folder", "Where captures are saved", _show_screenshots))
 
-	var polkit_btn := _make_btn("Polkit Agent")
-	polkit_btn.pressed.connect(_show_polkit)
-	container.add_child(polkit_btn)
-
-	var screenshots_btn := _make_btn("Screenshot Folder")
-	screenshots_btn.pressed.connect(_show_screenshots)
-	container.add_child(screenshots_btn)
-
+	container.add_child(_make_section("Performance"))
 	# ── Max FPS (appliqué immédiatement) ──
-	var fps_label := Label.new()
-	fps_label.text = "Max FPS"
-	fps_label.add_theme_font_size_override("font_size", 14)
-	fps_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	var fps_label := _make_row_label("Max FPS")
 	container.add_child(fps_label)
 
 	var fps_slider := HSlider.new()
@@ -486,6 +517,7 @@ func _show_general() -> void:
 	)
 
 
+	container.add_child(_make_section("Behaviour"))
 	# ── Collage des fenêtres ──
 	# Appliqué comme le Max FPS ci-dessus : cette page n'a pas de bouton Apply,
 	# la case est donc pré-appliquée dès qu'on la coche.
@@ -544,14 +576,10 @@ func _show_graphics() -> void:
 
 	container.add_child(_make_title("GRAPHICS"))
 
-	var general_btn := _make_btn("General")
-	general_btn.pressed.connect(_show_graphics_general)
-	container.add_child(general_btn)
+	container.add_child(_make_nav_row("General", "Anti-aliasing, effects, color adjustments", _show_graphics_general))
+	container.add_child(_make_nav_row("Pinned Windows", "Layer, opacity, position and size of pins", _show_pins))
 
-	var pins_btn := _make_btn("Pinned Windows")
-	pins_btn.pressed.connect(_show_pins)
-	container.add_child(pins_btn)
-
+	container.add_child(_make_section("Appearance"))
 	_add_appearance_rows()
 
 	container.add_child(_make_spacer())
@@ -566,21 +594,10 @@ func _show_controls() -> void:
 
 	container.add_child(_make_title("CONTROLS"))
 
-	var general_btn := _make_btn("General")
-	general_btn.pressed.connect(_show_controls_general)
-	container.add_child(general_btn)
-
-	var keybinds_btn := _make_btn("Remap Keybinds")
-	keybinds_btn.pressed.connect(_show_keybinds)
-	container.add_child(keybinds_btn)
-
-	var custom_btn := _make_btn("Custom Binds")
-	custom_btn.pressed.connect(_show_custom_binds)
-	container.add_child(custom_btn)
-
-	var kb_btn := _make_btn("Keyboard Layout")
-	kb_btn.pressed.connect(_show_keyboard_layout)
-	container.add_child(kb_btn)
+	container.add_child(_make_nav_row("General", "Mouse, stick and gyro sensitivity", _show_controls_general))
+	container.add_child(_make_nav_row("Remap Keybinds", "Keyboard and gamepad bindings", _show_keybinds))
+	container.add_child(_make_nav_row("Custom Binds", "Shortcuts that run your own commands", _show_custom_binds))
+	container.add_child(_make_nav_row("Keyboard Layout", "Layout used by in-game apps", _show_keyboard_layout))
 
 	container.add_child(_make_spacer())
 
@@ -1390,11 +1407,7 @@ func _show_graphics_general() -> void:
 	container.add_child(aa_opt)
 
 	# ── Environment (WorldEnvironment du niveau courant) ──
-	var env_title := Label.new()
-	env_title.text = "Effects"
-	env_title.add_theme_font_size_override("font_size", 16)
-	env_title.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
-	container.add_child(env_title)
+	container.add_child(_make_section("Effects"))
 
 	var env_btns := {}
 	for pair in ENVIRONMENT_TOGGLES:
@@ -1407,11 +1420,7 @@ func _show_graphics_general() -> void:
 		container.add_child(env_btn)
 		env_btns[String(pair[0])] = env_btn
 
-	var adj_title := Label.new()
-	adj_title.text = "Color Adjustments"
-	adj_title.add_theme_font_size_override("font_size", 16)
-	adj_title.add_theme_color_override("font_color", Color(0.9, 0.92, 0.95))
-	container.add_child(adj_title)
+	container.add_child(_make_section("Color Adjustments"))
 
 	var brightness_s := _make_env_slider("Brightness", "adjustment_brightness")
 	var contrast_s := _make_env_slider("Contrast", "adjustment_contrast")
@@ -1717,6 +1726,74 @@ func _search_world_environment(node: Node) -> WorldEnvironment:
 			return found
 	return null
 
+# ── Worlds : choix du niveau (environnement) ─────────────────────────
+# Liste le niveau par défaut et tous les level.tscn de res://user/. Le choix
+# est appliqué à chaud et persisté (rechargé au prochain démarrage). Verrouillé
+# pendant une session multijoueur : seul le niveau sélectionné au moment
+# d'héberger est baké et envoyé, il ne change pas en cours de partie.
+func _show_levels() -> void:
+	_clear()
+	_waiting_action = ""
+	_current_view = "levels"
+
+	container.add_child(_make_title("WORLDS"))
+
+	var locked := _lan_connected
+	var loading := _level_room != null and bool(_level_room.call("is_level_loading"))
+	var current := String(_level_room.call("get_current_level_path")) if _level_room != null else ""
+
+	var hint := Label.new()
+	if locked:
+		hint.text = "Locked during a multiplayer session: everyone plays the level\nselected when the game was hosted. Disconnect to change it."
+	else:
+		hint.text = "Pick the environment to play in. The choice is remembered.\nIn multiplayer, only the selected level is sent to other players."
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(hint)
+
+	for lv in LevelCatalogScript.list_levels():
+		var path := String(lv["path"])
+		var is_current := path == current
+		var btn := _make_btn(String(lv["name"]) + ("   — current" if is_current else ""), "nav-row")
+		btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		btn.tooltip_text = path
+		btn.disabled = locked or loading or is_current
+		btn.pressed.connect(func():
+			if _lan_connected:
+				_show_levels()
+				return
+			set_level_status("Loading %s…" % String(lv["name"]))
+			level_change_requested.emit(path)
+		)
+		container.add_child(btn)
+
+	_level_status_label = Label.new()
+	_level_status_label.text = _level_status_text
+	_level_status_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_level_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_level_status_label.add_theme_font_size_override("font_size", 13)
+	_level_status_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
+	container.add_child(_level_status_label)
+
+	container.add_child(_make_spacer())
+	container.add_child(_make_back_btn())
+
+func set_level_status(text: String) -> void:
+	_level_status_text = text
+	if _level_status_label != null and is_instance_valid(_level_status_label):
+		_level_status_label.text = text
+
+## Appelé par WaylandRoom une fois le nouveau niveau appliqué : persiste le
+## choix et rafraîchit la page si elle est ouverte.
+func on_level_changed(path: String) -> void:
+	_settings[LevelCatalogScript.SETTING_KEY] = path
+	_save_settings()
+	set_level_status("%s loaded." % LevelCatalogScript.display_name(path))
+	_refresh_header()
+	if visible and _current_view == "levels":
+		_show_levels()
+
 func _show_lan() -> void:
 	_clear()
 	_waiting_action = ""
@@ -1734,6 +1811,7 @@ func _show_lan() -> void:
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
 	container.add_child(hint)
 
+	container.add_child(_make_section("Profile"))
 	var name_label := Label.new()
 	name_label.text = "Player name"
 	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -1816,6 +1894,7 @@ func _show_lan() -> void:
 		avatar_row.queue_free()
 	container.add_child(avatar_row)
 
+	container.add_child(_make_section("Session"))
 	var host_btn := _make_btn("Host Game")
 	host_btn.pressed.connect(func():
 		_save_lan_name(name_edit)
@@ -1829,7 +1908,7 @@ func _show_lan() -> void:
 	pin_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	pin_row.alignment = BoxContainer.ALIGNMENT_CENTER
 	_lan_pin_label = Label.new()
-	_lan_pin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_lan_pin_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
 	_lan_pin_label.add_theme_font_size_override("font_size", 16)
 	_lan_pin_label.add_theme_color_override("font_color", Color(1.0, 0.85, 0.2))
 	_lan_pin_label.visible = false
@@ -1902,11 +1981,7 @@ func _show_lan() -> void:
 	container.add_child(_lan_players_label)
 	_update_lan_players_label()
 	
-	var video_title := Label.new()
-	video_title.text = "Video share"
-	video_title.add_theme_font_size_override("font_size", 16)
-	video_title.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
-	container.add_child(video_title)
+	container.add_child(_make_section("Video share"))
 
 	var codec_row := HBoxContainer.new()
 	codec_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -1973,7 +2048,9 @@ func _show_lan() -> void:
 	disconnect_btn.pressed.connect(func():
 		lan_disconnect_requested.emit()
 	)
+	disconnect_btn.visible = _lan_connected
 	container.add_child(disconnect_btn)
+	_lan_disconnect_btn = disconnect_btn
 
 	container.add_child(_make_back_btn())
 
@@ -1981,13 +2058,22 @@ func set_lan_status(text: String) -> void:
 	_lan_status_text = text
 	if _lan_status_label:
 		_lan_status_label.text = text
+	_refresh_header()
 
 func set_lan_players(roster: Array) -> void:
 	_lan_roster = roster
 	_update_lan_players_label()
+	_refresh_header()
 
 func set_lan_connected(connected: bool) -> void:
+	var changed := connected != _lan_connected
 	_lan_connected = connected
+	# Page Worlds ouverte : (dé)verrouiller la liste dès que la session change.
+	if changed and visible and _current_view == "levels":
+		_show_levels.call_deferred()
+	if _lan_disconnect_btn != null and is_instance_valid(_lan_disconnect_btn):
+		_lan_disconnect_btn.visible = connected
+	_refresh_header()
 
 func set_lan_pin(pin: String) -> void:
 	_lan_pin_value = pin
@@ -2458,6 +2544,481 @@ func _remove_events_of_class(action: String, cls: String) -> void:
 	for ev in kept:
 		InputMap.action_add_event(action, ev)
 
+# ── Coque : en-tête + sidebar + panneau de contenu ───────────────────
+# Le menu est un panneau large : catégories toujours visibles à gauche, page
+# courante à droite. Toutes les pages (_show_*) construisent toujours leur
+# contenu dans `container`, désormais le panneau de droite ; les pages ajoutées
+# par un niveau (add_menu_page) aussi.
+
+const SIDEBAR_WIDTH := 230
+const CONTENT_MAX_WIDTH := 820
+
+## Catégories de la sidebar : [vue, libellé]. Les pages de niveau
+## (add_menu_page) s'insèrent après « Worlds ».
+const _CATEGORIES := [
+	["general", "General"],
+	["graphics", "Graphics"],
+	["controls", "Controls"],
+	["lan", "Multiplayer"],
+	["levels", "Worlds"],
+]
+
+var _header_status: Label = null
+var _crumb: Label = null
+var _sidebar: VBoxContainer = null
+var _content_root: Control = null
+var _content_margin: MarginContainer = null
+var _scroll: ScrollContainer = null
+var _nav_buttons: Dictionary = {}       # vue -> Button de la sidebar
+var _resume_btn: Button = null
+var _extra_pages: Array = []            # [{id, label, show}] — pages ajoutées par le niveau
+var _nav_scope: Node = null             # restreint _get_focusable (navigation pad par colonne)
+
+func _build_shell() -> void:
+	var root := VBoxContainer.new()
+	root.add_theme_constant_override("separation", 0)
+	add_child(root)
+
+	# En-tête : marque + état (monde, session).
+	var header := PanelContainer.new()
+	header.set_meta("ui_class", "pm-header")
+	root.add_child(header)
+	var hrow := HBoxContainer.new()
+	hrow.add_theme_constant_override("separation", 16)
+	header.add_child(hrow)
+	var brand := Label.new()
+	brand.text = "CYBERREALM"
+	brand.set_meta("ui_class", "pm-brand")
+	hrow.add_child(brand)
+	_header_status = Label.new()
+	_header_status.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_header_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	_header_status.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_header_status.set_meta("ui_class", "pm-status")
+	hrow.add_child(_header_status)
+
+	var body := HBoxContainer.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 0)
+	root.add_child(body)
+
+	# Sidebar (persistante : seuls ses états changent d'une page à l'autre).
+	var side_panel := PanelContainer.new()
+	side_panel.custom_minimum_size = Vector2(SIDEBAR_WIDTH, 0)
+	side_panel.set_meta("ui_class", "pm-sidebar")
+	body.add_child(side_panel)
+	_sidebar = VBoxContainer.new()
+	_sidebar.add_theme_constant_override("separation", 2)
+	side_panel.add_child(_sidebar)
+	_rebuild_sidebar()
+
+	# Contenu : fil d'Ariane + page défilante, largeur bornée et centrée.
+	_content_root = VBoxContainer.new()
+	_content_root.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_content_root.add_theme_constant_override("separation", 0)
+	body.add_child(_content_root)
+	_content_margin = MarginContainer.new()
+	_content_margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_content_root.add_child(_content_margin)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 4)
+	_content_margin.add_child(col)
+	_crumb = Label.new()
+	_crumb.set_meta("ui_class", "pm-crumb")
+	_crumb.custom_minimum_size = Vector2(0, 18)
+	col.add_child(_crumb)
+	_scroll = ScrollContainer.new()
+	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_scroll.follow_focus = true
+	col.add_child(_scroll)
+	container = VBoxContainer.new()
+	container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	container.add_theme_constant_override("separation", 8)
+	_scroll.add_child(container)
+	_content_root.resized.connect(_layout_content)
+
+## Marges du panneau de contenu : la page garde une largeur lisible
+## (CONTENT_MAX_WIDTH) même sur un très grand écran.
+func _layout_content() -> void:
+	if _content_margin == null:
+		return
+	var side := maxi(28, int((_content_root.size.x - CONTENT_MAX_WIDTH) * 0.5))
+	_content_margin.add_theme_constant_override("margin_left", side)
+	_content_margin.add_theme_constant_override("margin_right", side)
+	_content_margin.add_theme_constant_override("margin_top", 18)
+	_content_margin.add_theme_constant_override("margin_bottom", 18)
+
+func _rebuild_sidebar() -> void:
+	if _sidebar == null:
+		return
+	for c in _sidebar.get_children():
+		_sidebar.remove_child(c)
+		c.queue_free()
+	_nav_buttons.clear()
+
+	_resume_btn = _make_side_btn("▶  Resume", "nav-item nav-resume")
+	_resume_btn.pressed.connect(hide_menu)
+	_sidebar.add_child(_resume_btn)
+
+	_sidebar.add_child(_make_side_section("Settings"))
+	for cat in _CATEGORIES:
+		_add_category_btn(String(cat[0]), String(cat[1]), _show_category.bind(String(cat[0])))
+		if String(cat[0]) == "controls":
+			_sidebar.add_child(_make_side_section("Session"))
+	for page in _extra_pages:
+		_add_category_btn(String(page["id"]), String(page["label"]), page["show"])
+
+	var spacer := Control.new()
+	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_sidebar.add_child(spacer)
+
+	var tutorial_btn := _make_side_btn("Tutorial", "nav-item")
+	tutorial_btn.pressed.connect(func():
+		hide_menu()
+		tutorial_requested.emit()
+	)
+	_sidebar.add_child(tutorial_btn)
+	var respawn_btn := _make_side_btn("Respawn", "nav-item")
+	respawn_btn.pressed.connect(func():
+		hide_menu()
+		respawn_requested.emit()
+	)
+	_sidebar.add_child(respawn_btn)
+	_quit_btn = _make_side_btn("Quit", "nav-item nav-quit")
+	_quit_btn.pressed.connect(_quit_game)
+	_quit_btn.disabled = _play_time < QUIT_GAMEPLAY_DELAY
+	_sidebar.add_child(_quit_btn)
+	_refresh_sidebar()
+
+func _add_category_btn(view: String, label: String, show: Callable) -> void:
+	var btn := _make_side_btn(label, "nav-item")
+	btn.pressed.connect(func(): show.call())
+	_sidebar.add_child(btn)
+	_nav_buttons[view] = btn
+
+func _make_side_btn(text: String, klass: String) -> Button:
+	var btn := Button.new()
+	btn.text = text
+	btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	btn.custom_minimum_size = Vector2(0, 40)
+	btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	btn.set_meta("ui_class", klass)
+	UITheme.apply_class(btn, klass)
+	btn.add_theme_stylebox_override("disabled", btn.get_theme_stylebox("normal"))
+	return btn
+
+func _make_side_section(text: String) -> Label:
+	var lbl := Label.new()
+	lbl.text = text.to_upper()
+	lbl.custom_minimum_size = Vector2(0, 30)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+	lbl.set_meta("ui_class", "nav-section")
+	UITheme.apply_class(lbl, "nav-section")
+	return lbl
+
+func _show_category(view: String) -> void:
+	match view:
+		"general": _show_general()
+		"graphics": _show_graphics()
+		"controls": _show_controls()
+		"lan": _show_lan()
+		"levels": _show_levels()
+		_:
+			for page in _extra_pages:
+				if String(page["id"]) == view:
+					(page["show"] as Callable).call()
+					return
+			_show_main()
+
+## Catégorie de premier niveau d'une vue (remonte _PARENT_VIEW jusqu'à
+## l'accueil). Une page de niveau (add_menu_page) est sa propre catégorie.
+func _category_of(view: String) -> String:
+	var v := view
+	for _i in 8:
+		var parent := String(_PARENT_VIEW.get(v, "main"))
+		if parent == "main":
+			return v
+		v = parent
+	return v
+
+func _category_label(view: String) -> String:
+	for cat in _CATEGORIES:
+		if String(cat[0]) == view:
+			return String(cat[1])
+	for page in _extra_pages:
+		if String(page["id"]) == view:
+			return String(page["label"])
+	return ""
+
+## Catégories ordonnées (sidebar), pour LB / RB.
+func _category_order() -> Array:
+	var out: Array = []
+	for cat in _CATEGORIES:
+		out.append(String(cat[0]))
+	for page in _extra_pages:
+		out.append(String(page["id"]))
+	return out
+
+func _refresh_sidebar() -> void:
+	var active := _category_of(_current_view)
+	for view in _nav_buttons:
+		var btn: Button = _nav_buttons[view]
+		if not is_instance_valid(btn):
+			continue
+		var klass := "nav-item-selected" if view == active and _current_view != "main" else "nav-item"
+		btn.set_meta("ui_class", klass)
+		UITheme.apply_class(btn, klass)
+
+## Fil d'Ariane au-dessus du titre de page : « GRAPHICS › » sur une sous-page.
+func _refresh_crumb() -> void:
+	if _crumb == null:
+		return
+	var parent := String(_PARENT_VIEW.get(_current_view, "main"))
+	if _current_view == "main":
+		_crumb.text = ""
+	elif parent == "main":
+		_crumb.text = ""
+	else:
+		var lbl := _category_label(_category_of(_current_view))
+		_crumb.text = (lbl.to_upper() + "  ›") if lbl != "" else ""
+
+func _world_label() -> String:
+	if _level_room != null and _level_room.has_method("get_current_level_label"):
+		return String(_level_room.call("get_current_level_label"))
+	return "—"
+
+func _refresh_header() -> void:
+	if _header_status == null:
+		return
+	var parts: PackedStringArray = ["World: " + _world_label()]
+	if _lan_connected:
+		var n := _lan_roster.size()
+		parts.append("Multiplayer: %d player%s" % [n, "" if n == 1 else "s"])
+	else:
+		parts.append("Offline")
+	_header_status.text = "   ·   ".join(parts)
+
+func _make_card(caption: String, value: String, detail: String) -> PanelContainer:
+	var card := PanelContainer.new()
+	card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	card.set_meta("ui_class", "pm-card")
+	UITheme.apply_class(card, "pm-card")
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 2)
+	card.add_child(v)
+	for pair in [[caption, "card-caption"], [value, "card-value"], [detail, "hint"]]:
+		var l := Label.new()
+		l.text = String(pair[0])
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.set_meta("ui_class", String(pair[1]))
+		UITheme.apply_class(l, String(pair[1]))
+		v.add_child(l)
+	return card
+
+## Après construction d'une page : état de la sidebar, fil d'Ariane, en-tête,
+## et mode de défilement. Une page qui gère son propre ScrollContainer (listes
+## de raccourcis, d'apps…) remplit le panneau sans défilement externe, sinon
+## le panneau défile.
+func _after_page_built() -> void:
+	_normalize_page_layout()
+	_focus_first_deferred()
+	_refresh_sidebar()
+	_refresh_crumb()
+	_refresh_header()
+	if _scroll == null:
+		return
+	var inner := _find_live_scroll(container)
+	_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED if inner != null \
+			else ScrollContainer.SCROLL_MODE_AUTO
+	_scroll.scroll_vertical = 0
+	_layout_content()
+
+const ROW_LABEL_WIDTH := 230
+
+## Mise en forme commune des pages, appliquée après leur construction (y
+## compris les pages ajoutées par un niveau) : les pages empilent souvent
+## « libellé / curseur / valeur » ou « libellé / champ » sur plusieurs lignes ;
+## ils sont regroupés sur UNE ligne (libellé à gauche, contrôle à droite).
+## Les libellés courts centrés sont réalignés à gauche, comme les lignes
+## centrées commençant par un libellé.
+func _normalize_page_layout() -> void:
+	var kids: Array = []
+	for c in container.get_children():
+		if not c.is_queued_for_deletion():
+			kids.append(c)
+	var i := 0
+	while i < kids.size():
+		var n: Node = kids[i]
+		var next: Node = kids[i + 1] if i + 1 < kids.size() else null
+		if n is Label and _is_short_label(n as Label) and next != null \
+				and (next is HSlider or next is LineEdit or next is OptionButton):
+			var value: Label = null
+			if next is HSlider and i + 2 < kids.size() and kids[i + 2] is Label \
+					and (kids[i + 2] as Label).text.length() <= 12:
+				value = kids[i + 2]
+			_make_row_from(n as Label, next as Control, value)
+			i += 3 if value != null else 2
+			continue
+		if n is Label and (n as Label).horizontal_alignment == HORIZONTAL_ALIGNMENT_CENTER \
+				and not (n as Label).has_meta("ui_keep_center"):
+			(n as Label).horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+		elif n is HBoxContainer and n.get_child_count() > 1 and n.get_child(0) is Label \
+				and _is_short_label(n.get_child(0) as Label):
+			# Ligne « libellé + contrôle » déjà construite par la page : même
+			# colonne de libellés que les lignes regroupées ci-dessus.
+			if (n as HBoxContainer).alignment == BoxContainer.ALIGNMENT_CENTER:
+				(n as HBoxContainer).alignment = BoxContainer.ALIGNMENT_BEGIN
+			var lbl := n.get_child(0) as Label
+			lbl.custom_minimum_size.x = ROW_LABEL_WIDTH
+			lbl.add_theme_font_size_override("font_size", 14)
+		i += 1
+
+func _is_short_label(l: Label) -> bool:
+	return not l.text.contains("\n") and l.text.length() <= 40 \
+			and l.autowrap_mode == TextServer.AUTOWRAP_OFF
+
+func _make_row_from(label: Label, ctrl: Control, value: Label) -> void:
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 14)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	container.add_child(row)
+	container.move_child(row, label.get_index())
+	for n: Node in [label, ctrl, value]:
+		if n != null:
+			n.reparent(row, false)
+	label.custom_minimum_size.x = ROW_LABEL_WIDTH
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ctrl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ctrl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	if value != null:
+		value.custom_minimum_size.x = 56
+		value.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+		value.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+
+func _find_live_scroll(node: Node) -> ScrollContainer:
+	for c in node.get_children():
+		if c.is_queued_for_deletion():
+			continue
+		if c is ScrollContainer:
+			return c
+		var found := _find_live_scroll(c)
+		if found != null:
+			return found
+	return null
+
+## Pages ajoutées par le niveau courant (ex. options Morrowind) : entrée dans
+## la sidebar, construite par `show` dans `container` comme les autres pages.
+## `id` doit être la valeur que `show` donne à _current_view.
+func add_menu_page(id: String, label: String, show: Callable) -> void:
+	remove_menu_page(id, false)
+	_extra_pages.append({"id": id, "label": label, "show": show})
+	_rebuild_sidebar()
+
+func remove_menu_page(id: String, rebuild := true) -> void:
+	for i in range(_extra_pages.size() - 1, -1, -1):
+		if String(_extra_pages[i]["id"]) == id:
+			_extra_pages.remove_at(i)
+	if rebuild:
+		_rebuild_sidebar()
+		if _current_view == id and visible:
+			_show_main()
+
+# ── Navigation manette par colonnes ──────────────────────────────────
+# Haut/bas restent dans la colonne courante (sidebar ou contenu). Droite
+# depuis la sidebar entre dans la page ; gauche depuis la page revient sur la
+# catégorie active quand il n'y a plus rien à gauche sur la même ligne.
+
+func _get_focusable(_action: String) -> Array:
+	var items: Array = []
+	_collect_focusable(_nav_scope if _nav_scope != null else self, items)
+	return items
+
+func _move_focus(action: String) -> void:
+	var cur := get_viewport().gui_get_focus_owner()
+	if cur == null or _sidebar == null or not is_ancestor_of(cur):
+		_nav_scope = null
+		super(action)
+		return
+	var in_side := _sidebar.is_ancestor_of(cur)
+	if cur is HSlider and action in ["ui_left", "ui_right"]:
+		_nav_scope = null
+		super(action)
+		return
+	if action in ["ui_up", "ui_down"]:
+		_nav_scope = _sidebar if in_side else _content_root
+		super(action)
+		_nav_scope = null
+		return
+	if in_side:
+		if action == "ui_right":
+			_focus_content_first()
+		return
+	# Contenu : voisin sur la même ligne, sinon la sidebar (gauche).
+	if _has_row_neighbor(cur, action):
+		_nav_scope = _content_root
+		super(action)
+		_nav_scope = null
+	elif action == "ui_left":
+		_focus_sidebar_active()
+
+func _has_row_neighbor(cur: Control, action: String) -> bool:
+	var items: Array = []
+	_collect_focusable(_content_root, items)
+	var cp := cur.global_position + cur.size * 0.5
+	for item in items:
+		if item == cur:
+			continue
+		var ic: Vector2 = (item as Control).global_position + (item as Control).size * 0.5
+		if absf(ic.y - cp.y) >= cur.size.y * 0.6:
+			continue
+		if (action == "ui_left" and ic.x < cp.x - 2.0) or (action == "ui_right" and ic.x > cp.x + 2.0):
+			return true
+	return false
+
+func _focus_sidebar_active() -> void:
+	var active := _category_of(_current_view)
+	var btn: Button = _nav_buttons.get(active, null)
+	if btn == null or not is_instance_valid(btn):
+		btn = _resume_btn
+	if btn != null:
+		btn.grab_focus()
+
+func _focus_content_first() -> void:
+	var items: Array = []
+	_collect_focusable(_content_root, items)
+	for it in items:
+		if not (it as Node).is_queued_for_deletion() and not (it is LineEdit):
+			(it as Control).grab_focus()
+			return
+
+## LB / RB : catégorie précédente / suivante.
+func _cycle_category(step: int) -> void:
+	var order := _category_order()
+	if order.is_empty():
+		return
+	var idx := order.find(_category_of(_current_view))
+	idx = (idx + step) % order.size() if idx >= 0 else (0 if step > 0 else order.size() - 1)
+	if idx < 0:
+		idx += order.size()
+	_show_category(String(order[idx]))
+
+## Le stick droit fait défiler la liste interne d'une page quand le panneau
+## lui-même ne défile pas.
+func _scroll_visible_container(amount: int) -> void:
+	if _scroll != null and _scroll.vertical_scroll_mode == ScrollContainer.SCROLL_MODE_DISABLED:
+		var inner := _find_live_scroll(container)
+		if inner != null:
+			inner.scroll_vertical += amount
+			return
+	if _scroll != null:
+		_scroll.scroll_vertical += amount
+		return
+	super(amount)
+
 # ── Persistance ──────────────────────────────────────────────────────
 
 func _load_settings() -> Dictionary:
@@ -2497,6 +3058,15 @@ func _input(event: InputEvent) -> void:
 			_keyboard.show_menu(focus_owner)
 			get_viewport().set_input_as_handled()
 			return
+
+	# LB / RB : catégorie précédente / suivante (hors capture de touche).
+	if event is InputEventJoypadButton and event.pressed \
+			and event.button_index in [JOY_BUTTON_LEFT_SHOULDER, JOY_BUTTON_RIGHT_SHOULDER] \
+			and _waiting_action == "" and not _custom_key_waiting and not _is_popup_open() \
+			and not (_keyboard != null and _keyboard.visible):
+		_cycle_category(-1 if event.button_index == JOY_BUTTON_LEFT_SHOULDER else 1)
+		get_viewport().set_input_as_handled()
+		return
 
 	# B : pendant un rebind manette, laissé capturable (fall-through à la
 	# capture ci-dessous). Pendant un rebind clavier, consommé sans modifier

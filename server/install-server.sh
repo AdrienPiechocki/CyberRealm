@@ -11,7 +11,7 @@
 #   sudo ./server/install-server.sh uninstall [--purge]
 #
 # Le blob se produit sur une machine de jeu :
-#   godot --headless --path Game/source --script scripts/tools/export_level_blob.gd -- res://user/level.tscn level.crblob
+#   godot --headless --path Game/source --script scripts/tools/export_level_blob.gd -- res://user/Levels/Morrowind/level.tscn level.crblob
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

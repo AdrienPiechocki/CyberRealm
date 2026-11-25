@@ -10,7 +10,7 @@ The server serves a **pre-baked level blob** (the same self-contained payload a 
 
 ```sh
 godot --headless --path Game/source --script scripts/tools/export_level_blob.gd -- \
-    res://user/level.tscn level.crblob
+    res://user/Levels/Morrowind/level.tscn level.crblob
 ```
 
 Without arguments it exports `res://user/level.tscn` if present, else `res://scenes/level.tscn`, to `level.crblob`.

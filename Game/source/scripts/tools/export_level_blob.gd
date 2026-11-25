@@ -3,12 +3,13 @@ extends SceneTree
 ##
 ##   godot --headless --path Game/source --script scripts/tools/export_level_blob.gd -- [niveau.tscn] [sortie.crblob]
 ##
-## Défaut : res://user/level.tscn s'il existe, sinon res://scenes/level.tscn ; sortie : level.crblob.
+## Défaut : le premier niveau custom (res://user/level.tscn, sinon res://user/**/level.tscn),
+## sinon res://scenes/level.tscn ; sortie : level.crblob.
 
 func _init() -> void:
 	var args := OS.get_cmdline_user_args()
-	var level_path := String(args[0]) if args.size() > 0 else (
-			"res://user/level.tscn" if ResourceLoader.exists("res://user/level.tscn") else "res://scenes/level.tscn")
+	var level_path := String(args[0]) if args.size() > 0 else \
+			preload("res://scripts/main/level_catalog.gd").first_custom_level()
 	var out_path := String(args[1]) if args.size() > 1 else "level.crblob"
 	await process_frame
 	var scene := load(level_path) as PackedScene

@@ -72,7 +72,59 @@ radial   { ring-radius: 180px; ring-width: 50px; center-radius: 100px; gap-size:
 tutorial { dim-color: rgba(5,5,8,.9); }
 
 
-panel.pause-menu    { margin: 25% 35%; }
+panel.pause-menu    { margin: 9% 14%; padding: 0; }
 panel.window-menu   { margin: 18% 25%; }
 panel.capture-menu  { margin: 30% 33%; }
 panel.keyboard-menu { margin: 78% 35% 0% 35%; }
+
+/* ── Menu pause : en-tête, sidebar, panneau de contenu ───────────────── */
+panel.pm-header  { background-color: rgba(20,23,34,.95); border-color: rgba(77,102,153,.35);
+                   border-width: 0 0 1px 0; corner-radius: 0;
+                   corner-top-left-radius: 10px; corner-top-right-radius: 10px;
+                   padding: 14px 22px; }
+panel.pm-sidebar { background-color: rgba(11,12,17,.75); border-color: rgba(77,102,153,.35);
+                   border-width: 0 1px 0 0; corner-radius: 0;
+                   corner-bottom-left-radius: 10px; padding: 10px 0 14px 0; }
+panel.pm-card    { background-color: rgba(26,30,44,.8); border-color: rgba(77,102,153,.35);
+                   border-width: 1px; corner-radius: 8px; padding: 14px 18px; }
+
+label.pm-brand      { font-size: 15px; color: accent; }
+label.pm-status     { font-size: 12px; color: rgba(153,160,185,.9); }
+label.pm-crumb      { font-size: 11px; color: accent(.85); }
+label.page-title    { font-size: 26px; color: rgba(236,240,247,.98); }
+label.section-title { font-size: 11px; color: rgba(128,140,175,.9); }
+label.nav-section   { font-size: 11px; color: rgba(110,120,150,.85); background-color: rgba(0,0,0,0);
+                      border-width: 0; corner-radius: 0; padding: 0 20px; }
+label.nav-chevron   { font-size: 22px; color: rgba(128,140,175,.9); }
+label.card-caption  { font-size: 11px; color: rgba(128,140,175,.9); }
+label.card-value    { font-size: 20px; color: rgba(236,240,247,.98); }
+
+button.nav-item          { background-color: rgba(0,0,0,0); border-color: rgba(0,0,0,0);
+                           border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px;
+                           font-size: 15px; color: rgba(200,206,222,.95); }
+button.nav-item:hover    { background-color: rgba(46,56,89,.45); border-color: rgba(0,0,0,0);
+                           border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px; }
+button.nav-item:pressed  { background-color: rgba(51,77,128,.6); border-color: accent(.6);
+                           border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px; }
+button.nav-item:focus    { background-color: rgba(46,56,89,.35); border-color: accent(.9);
+                           border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px; }
+button.nav-item-selected         { background-color: rgba(38,56,102,.7); border-color: accent;
+                                   border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px;
+                                   font-size: 15px; color: #f0f4fa; }
+button.nav-item-selected:hover   { background-color: rgba(46,64,112,.8); border-color: accent;
+                                   border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px; }
+button.nav-item-selected:pressed { background-color: rgba(51,77,128,.85); border-color: accent;
+                                   border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px; }
+button.nav-item-selected:focus   { background-color: rgba(46,64,112,.8); border-color: accent;
+                                   border-width: 0 0 0 3px; corner-radius: 0; padding: 8px 20px; }
+button.nav-resume        { color: accent; }
+button.nav-quit          { color: rgba(240,130,130,.95); }
+
+button.nav-row         { background-color: rgba(31,36,51,.55); border-color: rgba(77,102,153,.3);
+                         border-width: 1px; corner-radius: 8px; padding: 8px 44px 8px 16px; }
+button.nav-row:hover   { background-color: rgba(46,56,89,.8); border-color: accent(.6);
+                         border-width: 1px; corner-radius: 8px; padding: 8px 44px 8px 16px; }
+button.nav-row:pressed { background-color: rgba(51,77,128,.9); border-color: accent(.8);
+                         border-width: 1px; corner-radius: 8px; padding: 8px 44px 8px 16px; }
+button.nav-row:focus   { background-color: rgba(46,56,89,.6); border-color: accent(.9);
+                         border-width: 1px; corner-radius: 8px; padding: 8px 44px 8px 16px; }

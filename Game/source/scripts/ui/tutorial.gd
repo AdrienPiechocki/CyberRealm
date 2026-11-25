@@ -199,8 +199,8 @@ open windows.\n\n(Image: the window menu)",
 	_pages.append(_page(
 		"Pause menu",
 		"Press Esc to open the Pause menu: remap keybinds, startup apps, custom \
-binds, keyboard layout, polkit agent, pinned windows settings, setup LAN game and this \
-tutorial.\n\n(Image: the pause menu)",
+binds, keyboard layout, polkit agent, pinned windows settings, multiplayer, worlds and this \
+tutorial. Categories are on the left (LB / RB on a gamepad).\n\n(Image: the pause menu)",
 		[_key("pause_menu")],
 		1, "pause"))
 	_pages.append(_page(
@@ -216,9 +216,9 @@ to send them over the LAN (rsync, no password transmitted).",
 		[]))
 	_pages.append(_page(
 		"LAN multiplayer",
-		"From the Pause menu > LAN Game: Host a room (a PIN is shown) or Join by \
+		"From the Pause menu > Multiplayer: Host a room (a PIN is shown) or Join by \
 IP with the PIN. Friends can share windows, audio and your map.",
-		[_key("pause_menu") + " → LAN Game"]))
+		[_key("pause_menu") + " → Multiplayer"]))
 	_pages.append(_page(
 		"Enjoy!",
 		"You now know the essentials. Reopen this guide anytime from the Pause \

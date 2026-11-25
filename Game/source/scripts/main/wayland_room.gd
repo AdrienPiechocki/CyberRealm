@@ -72,10 +72,14 @@ var _host_session_bus := ""
 var _host_wayland_display := ""
 var _host_agent_stopped := false
 
-# Niveaux : on charge d'abord le level custom de l'utilisateur s'il existe
-# (res://user/level.tscn), sinon on retombe sur le level par défaut.
-const DEFAULT_LEVEL_PATH := "res://scenes/level.tscn"
-const CUSTOM_LEVEL_PATH := "res://user/level.tscn"
+# Niveaux : le niveau choisi dans le menu (Worlds, persisté) s'il existe
+# encore, sinon le premier level custom de res://user/, sinon le défaut.
+const LEVEL_CATALOG := preload("res://scripts/main/level_catalog.gd")
+const DEFAULT_LEVEL_PATH := LEVEL_CATALOG.DEFAULT_LEVEL_PATH
+const CUSTOM_LEVEL_PATH := LEVEL_CATALOG.CUSTOM_LEVEL_PATH
+const SETTINGS_PATH := "user://settings.json"
+# Chargement en cours d'un niveau choisi dans le menu ("" = aucun).
+var _level_loading_path := ""
 
 var _level_path := ""
 var _menu_just_closed := false
@@ -113,14 +117,16 @@ var _last_pinch_time_msec := -1
 const PINCH_DEDUP_WINDOW_MS := 100
 
 func _load_level() -> void:
-	# Chargement du niveau custom (res://user/level.tscn) si présent, sinon le
-	# niveau par défaut. Les assets du niveau custom doivent avoir été importés
+	# Niveau choisi dans le menu Worlds (persisté), sinon le premier niveau
+	# custom (res://user/level.tscn, puis res://user/**/level.tscn), sinon le défaut. Les assets des niveaux custom doivent avoir été importés
 	# par l'éditeur Godot (dossier res://user/) pour être chargés au runtime.
-	var level_path := DEFAULT_LEVEL_PATH
-	if ResourceLoader.exists(CUSTOM_LEVEL_PATH):
-		level_path = CUSTOM_LEVEL_PATH
-	_level_path = level_path
+	var level_path := LEVEL_CATALOG.resolve_startup_level(LEVEL_CATALOG.read_saved_level(SETTINGS_PATH))
 	var scene: PackedScene = load(level_path)
+	if scene == null and level_path != DEFAULT_LEVEL_PATH:
+		push_error("Unable to load the level '%s', falling back to the default level" % level_path)
+		level_path = DEFAULT_LEVEL_PATH
+		scene = load(level_path)
+	_level_path = level_path
 	if scene == null:
 		push_error("Unable to load the level '%s'" % level_path)
 		return
@@ -167,6 +173,70 @@ func restore_local_level() -> bool:
 		_level_swapped = false
 		return true
 	return false
+
+# Changement d'environnement à la volée (menu pause → Worlds). Refusé pendant
+# une session multijoueur : le niveau baké et envoyé aux autres joueurs est
+# celui sélectionné au moment d'héberger, il ne doit pas changer sous eux.
+# Chargement en thread (un gros niveau prend plusieurs secondes) puis échange
+# via _swap_level, en réutilisant le Player local ; le joueur apparaît au
+# spawn du Player embarqué dans la nouvelle scène.
+func change_level(path: String) -> void:
+	if not LEVEL_CATALOG.is_valid_level_path(path) or not ResourceLoader.exists(path):
+		pause_menu.set_level_status("Level not found: %s" % path)
+		return
+	if lan != null and lan.is_session_active():
+		pause_menu.set_level_status("Can't change level during a multiplayer session.")
+		return
+	if _level_loading_path != "":
+		pause_menu.set_level_status("Already loading %s…" % LEVEL_CATALOG.display_name(_level_loading_path))
+		return
+	if path == _level_path and not _level_swapped:
+		pause_menu.set_level_status("%s is already loaded." % LEVEL_CATALOG.display_name(path))
+		return
+	var err := ResourceLoader.load_threaded_request(path, "PackedScene", true)
+	if err != OK:
+		pause_menu.set_level_status("Unable to load %s (%s)" % [path, error_string(err)])
+		return
+	_level_loading_path = path
+	var label := LEVEL_CATALOG.display_name(path)
+	var progress := []
+	while true:
+		var st := ResourceLoader.load_threaded_get_status(path, progress)
+		if st != ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+			break
+		pause_menu.set_level_status("Loading %s… %d%%" % [label, int(float(progress[0]) * 100.0)])
+		await get_tree().process_frame
+	var scene := ResourceLoader.load_threaded_get(path) as PackedScene
+	_level_loading_path = ""
+	if scene == null:
+		pause_menu.set_level_status("Unable to load %s" % label)
+		return
+	# Une session a pu démarrer pendant le chargement : ne rien changer.
+	if lan != null and lan.is_session_active():
+		pause_menu.set_level_status("Multiplayer session started — level change cancelled.")
+		return
+	if not _swap_level(scene, Vector3.ZERO, Vector3.ZERO, Vector3.ONE, true):
+		pause_menu.set_level_status("Unable to apply %s" % label)
+		return
+	_level_path = path
+	_level_swapped = false
+	# Nouveau spawn de référence (retour après une session LAN rejointe).
+	_local_spawn_transform = {"pos": player.position, "rot": player.rotation, "scale": player.scale}
+	pause_menu.on_level_changed(path)
+	print("[level] switched to %s" % path)
+
+func get_current_level_path() -> String:
+	return _level_path
+
+## Nom du monde affiché par le menu pause (« Host's world » quand on joue sur
+## le niveau reçu d'un hôte LAN).
+func get_current_level_label() -> String:
+	if _level_swapped:
+		return "Host's world"
+	return LEVEL_CATALOG.display_name(_level_path) if _level_path != "" else "—"
+
+func is_level_loading() -> bool:
+	return _level_loading_path != ""
 
 # Remplace le niveau courant par `scene` en réutilisant le Player local, puis
 # le repositionne au transform transmis. `use_scene_player_spawn` : si vrai et
@@ -615,6 +685,8 @@ func _ready() -> void:
 	lan.local_level_restore_requested.connect(restore_local_level)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_avatar_changed.connect(lan.set_selected_avatar)
+	pause_menu.level_change_requested.connect(change_level)
+	pause_menu.set_level_ref(self)
 	pause_menu.lan_name_changed.connect(lan.update_local_name)
 	# Avatar choisi au menu LAN (persisté) : appliqué avant tout host/join.
 	lan.set_selected_avatar(pause_menu.get_lan_avatar_path())

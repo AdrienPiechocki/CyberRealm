@@ -1,7 +1,7 @@
 class_name OcclusionBaker
 extends RefCounted
 ## Génère au runtime un occludeur basé sur la GÉOMÉTRIE RÉELLE du niveau :
-## maps custom `res://user/level.tscn` ET maps reçues en LAN (blob baked),
+## maps custom `res://user/**/level.tscn` ET maps reçues en LAN (blob baked),
 ## qui ne peuvent pas être pré-bakées dans l'éditeur côté client.
 ##
 ## Pour chaque MeshInstance3D opaque, les triangles du mesh sont copiés

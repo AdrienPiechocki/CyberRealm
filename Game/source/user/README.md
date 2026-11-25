@@ -9,17 +9,45 @@ content at startup.
 1. Put your assets (`.glb`, `.fbx`, `.png`, …) into `res://user/assets/`.
 2. Open the project in the Godot 4.7 editor: assets are imported
    automatically.
-3. Create your scene:
-   - either copy `res://scenes/level.tscn` to `res://user/level.tscn` and
-     edit it (move the walls, add your assets),
-   - or create a new 3D scene under `res://user/` and save it with the exact
-     name `level.tscn`.
-4. Run the game: if it finds `res://user/level.tscn`, it loads it instead of
-   the default level. Otherwise it falls back to `res://scenes/level.tscn`.
+3. Create your scene in its own folder, `res://user/Levels/<Name>/`:
+   - either copy `res://scenes/level.tscn` to
+     `res://user/Levels/<Name>/level.tscn` and edit it (move the walls, add
+     your assets),
+   - or create a new 3D scene there and save it with the exact name
+     `level.tscn`.
+4. Run the game and pick it in **pause menu → Worlds** (see below). Until a
+   level has been picked there, the first custom level found is loaded
+   instead of the default one.
+
+## Several levels: the Worlds menu
+
+You can keep several levels side by side and switch between them in game:
+**pause menu → Worlds** lists the default level plus every file named
+`level.tscn` found anywhere under `res://user/`, for example:
+
+| File | Shown as |
+|---|---|
+| `res://scenes/level.tscn` | Default |
+| `res://user/Levels/Morrowind/level.tscn` | Morrowind |
+| `res://user/Levels/Station/level.tscn` | Station |
+| `res://user/level.tscn` (legacy single-level location) | Custom |
+
+Entries are named after the folder that holds the file. Picking one loads it
+in the background (progress is shown under the list) and swaps the
+environment on the fly: you keep your player, menus and open windows, and
+reappear at the new level's player spawn. The choice is remembered and loaded
+at the next start (if the file disappears, the game falls back to the first
+custom level, then to the default level).
+
+In multiplayer, **only the selected level is baked** and sent to the other
+players, when you host. The Worlds page is **locked during a multiplayer
+session** (hosting or joined): disconnect first to change level.
 
 ## Rules
 
-- The file must be named **exactly** `res://user/level.tscn`.
+- The file must be named **exactly** `level.tscn` and live under
+  `res://user/`, ideally in its own folder `res://user/Levels/<Name>/` (the
+  folder name is what the Worlds menu shows).
 - The root node can be any `Node3D` (the game instantiates it as a child of
   the `WaylandRoom` scene).
 - The scene must contain a player. Use the one from
@@ -240,9 +268,8 @@ Rules:
 
 ## Level options (pause menu)
 
-A level can add its own settings to the pause menu: a **Level** button appears
-on the main page (between *Tutorial* and *Back*) and opens a **LEVEL OPTIONS**
-page. This is done by the level itself (see `Levels/Morrowind/scripts/level_options.gd`),
+A level can add its own settings to the pause menu: a **Level** entry appears
+in the menu's left sidebar (after *Worlds*) and opens its options page. This is done by the level itself (see `Levels/Morrowind/scripts/level_options.gd`),
 not by the game: levels without such a script simply have no **Level** button.
 
 The Morrowind level provides:
@@ -276,10 +303,18 @@ keep applying to them.
 
 ### Adding your own options
 
-The pause menu has no extension point, so `level_options.gd` hooks into it at
-runtime: it adds the **Level** button each time the main page is rebuilt and
-builds its own page with the menu's helpers. It removes everything when the
-level is replaced. To add an option to this level, edit that script (it is
+`level_options.gd` registers its page with the pause menu's extension point:
+
+```gdscript
+pause_menu.add_menu_page("level_options", "Level", _show_page)   # sidebar entry
+pause_menu.remove_menu_page("level_options")                     # in _exit_tree()
+```
+
+`_show_page` calls `_clear()`, sets `_current_view` to the same id and fills
+`container` with the menu's helpers (`_make_title`, `_make_row_label`,
+`_make_btn`…). A label followed by a slider (and its value label), a line edit
+or a dropdown is laid out on one row automatically. The entry is removed when
+the level is replaced. To add an option to this level, edit that script (it is
 never overwritten by `Levels/Morrowind/integrate.py`): read and write the
 state on the level's nodes (so late joiners get it through the baked level)
 and send changes with the existing `authority` RPC. Reuse the same pattern
@@ -287,8 +322,7 @@ for another level.
 
 ## Back to the default level
 
-Delete (or rename) `res://user/level.tscn`. The game then uses
-`res://scenes/level.tscn`.
+Pick **Default** in the pause menu's **Worlds** page.
 
 ## Back to the default avatar
 
@@ -380,8 +414,8 @@ Limitations to know:
   `owner`) are not transmitted — only the scene contents are.
 - The **player** (`Player`) is not transmitted: each machine keeps its own
   player; the host's spawn point is applied on the client.
-- The level is sent when a player joins. If you change levels, later joiners
-  receive the new one.
+- The level is sent when a player joins. It is the level selected in the
+  Worlds menu when you hosted; it cannot be changed during the session.
 - **The client loads the map BEFORE entering the game**: after connecting,
   it receives and applies the host's level while frozen and invisible to
   other players (progress shown: "Loading host map… X%"). It only becomes

@@ -5,7 +5,7 @@ extends Node
 ## n'instancie ni compositeur Wayland ni joueur ni fenêtre — il sert un NIVEAU PRÉBAKÉ (blob) produit par le jeu :
 ##
 ##   1. Sur une machine de jeu :  godot --headless --path Game/source --script scripts/tools/export_level_blob.gd \\
-##          -- [res://user/level.tscn] [level.crblob]
+##          -- [res://user/Levels/<Nom>/level.tscn] [level.crblob]
 ##   2. Sur le serveur :          godot --headless --path Game/source scenes/dedicated_server.tscn \\
 ##          -- --blob=level.crblob [--pin=1234] [--name=Serveur] [--max-players=8] [--no-dtls]
 ##   Online (Internet) : ... -- --online --tls-cert=fullchain.pem --tls-key=privkey.pem  (mot de passe >= 12 caractères,
