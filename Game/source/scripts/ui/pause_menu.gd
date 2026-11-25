@@ -402,7 +402,7 @@ func _show_main() -> void:
 	controls_btn.pressed.connect(_show_controls)
 	container.add_child(controls_btn)
 
-	var lan_btn := _make_btn("Local Multiplayer")
+	var lan_btn := _make_btn("Multiplayer")
 	lan_btn.pressed.connect(_show_lan)
 	container.add_child(lan_btn)
 
@@ -1722,7 +1722,7 @@ func _show_lan() -> void:
 	_waiting_action = ""
 	_current_view = "lan"
 
-	container.add_child(_make_title("LOCAL MULTIPLAYER"))
+	container.add_child(_make_title("MULTIPLAYER"))
 
 	var hint := Label.new()
 	if _lan_connected:
