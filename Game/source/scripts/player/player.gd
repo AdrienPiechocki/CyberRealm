@@ -283,7 +283,11 @@ func set_tps(on: bool) -> void:
 		return
 	tps_active = on
 	if not on:
-		_commit_tps_orbit()
+		# Retour en 1ère personne : on reprend le regard de l'avatar, pas celui de la caméra en orbite. Le corps
+		# ne pivote pas, et le pitch suit la tête (même facteur que l'avatar : inversé si la caméra était devant).
+		var head := $Camera3D as Camera3D
+		head.rotation.x *= cos(tps_orbit_yaw)
+		tps_orbit_yaw = 0.0
 	if on:
 		if _tps_cam == null:
 			_tps_cam = Camera3D.new()
