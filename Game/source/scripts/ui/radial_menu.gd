@@ -84,6 +84,7 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			_items.append({label = "MOUSE MODE", emoji = "🖱️", action = "layer_interact"})
 			_items.append({label = "KEYBOARD MODE", emoji = "⌨️", action = "interact"})
 			_items.append({label = "BINDS", emoji = "🎮", action = "binds"})
+			_items.append({label = "WAYPOINTS", emoji = "📍", action = "waypoints"})
 		"window":
 			_items.append({label = "WINDOW MENU", emoji = "🪟", action = "window_menu"})
 			_items.append({label = "MOUSE MODE", emoji = "🖱️", action = "layer_interact"})
@@ -95,10 +96,16 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			_items.append({label = "KILL", emoji = "💀", action = "kill"})
 			_items.append({label = "PIN", emoji = "📌", action = "pin"})
 			_items.append({label = "SHARE", emoji = "🔗", action = "share"})
+			_items.append({label = "WAYPOINTS", emoji = "📍", action = "waypoints"})
 		"focus":
 			_items.append({label = "EXIT FOCUS", emoji = "↩️", action = "exit_focus"})
 			_items.append({label = "VIRTUAL KEYBOARD", emoji = "⌨️", action = "keyboard"})
 			_items.append({label = "KILL", emoji = "💀", action = "kill_focused"})
+		"waypoints":
+			# `binds` = numéros des slots enregistrés (wayland_room les fournit).
+			_items.append({label = "ADD HERE", emoji = "➕", action = "waypoint_add"})
+			for slot in binds:
+				_items.append({label = "WAYPOINT %d" % int(slot), emoji = "📍", action = "waypoint:%d" % int(slot)})
 		"binds":
 			if binds.size() > 0:
 				for bind in binds:
@@ -134,7 +141,7 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 	#
 	# « GRAB GROUP » n'existe que dans le contexte « window » : ailleurs le
 	# radial ne vise aucune fenêtre, l'entrée serait morte.
-	if context != "binds":
+	if context != "binds" and context != "waypoints":
 		_append_group_grab(context)
 		_append_pin_zoom()
 

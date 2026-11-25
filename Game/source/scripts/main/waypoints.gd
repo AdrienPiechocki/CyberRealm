@@ -57,6 +57,36 @@ func _input(event: InputEvent) -> void:
 	else:
 		_goto_waypoint(key, slot)
 
+## API du menu radial (manette). Slots enregistrés du niveau courant, triés.
+func used_slots() -> Array:
+	var key := String(level_key.call()) if level_key.is_valid() else ""
+	var out: Array = []
+	for k in (_data.get(key, {}) as Dictionary):
+		out.append(int(k))
+	out.sort()
+	return out
+
+## Enregistre la position dans le premier slot libre (0..9). Faux si niveau sans waypoints ou tout est pris.
+func add_here() -> bool:
+	var key := String(level_key.call()) if level_key.is_valid() else ""
+	if key == "":
+		_notify("Waypoints unavailable on this level")
+		return false
+	var used := used_slots()
+	for i in 10:
+		if not used.has(i):
+			_set_waypoint(key, i)
+			return true
+	_notify("All waypoints are used")
+	return false
+
+func goto_slot(slot: int) -> void:
+	var key := String(level_key.call()) if level_key.is_valid() else ""
+	if key == "":
+		_notify("Waypoints unavailable on this level")
+		return
+	_goto_waypoint(key, slot)
+
 func _set_waypoint(key: String, slot: int) -> void:
 	var p := player.global_position
 	var cam := player.get_node_or_null("Camera3D") as Camera3D

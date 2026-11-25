@@ -1668,8 +1668,14 @@ func _on_radial_action(action: String) -> void:
 			var binds: Array = pause_menu.get_custom_binds()
 			if binds.size() > 0:
 				radial_menu.show_menu("binds", -1, binds)
+		"waypoints":
+			radial_menu.show_menu("waypoints", -1, $Waypoints.used_slots())
+		"waypoint_add":
+			$Waypoints.add_here()
 		_:
-			if action.begins_with("bind:"):
+			if action.begins_with("waypoint:"):
+				$Waypoints.goto_slot(int(action.substr(9)))
+			elif action.begins_with("bind:"):
 				var cmd := action.substr(5)
 				if not cmd.is_empty():
 					compositor.launch_app(cmd)
