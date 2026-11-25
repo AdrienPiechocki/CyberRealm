@@ -127,3 +127,24 @@ func test_grab_then_hide_keeps_occluder_hidden() -> Variant:
 		return ok
 	_teardown()
 	return true
+## Grab depuis le window_menu : la fenêtre, même lointaine, est ramenée à la
+## distance de spawn ; un grab ordinaire garde la distance actuelle.
+func test_menu_grab_uses_spawn_distance() -> Variant:
+	var build: Variant = _build_world()
+	if build != true:
+		return build
+	var quad: Node3D = win3d.quads[7]
+	var cam_pos: Vector3 = (player.get_node("Camera3D") as Camera3D).global_position
+	quad.global_position = cam_pos + Vector3(0.0, 0.0, -15.0)
+	win3d.toggle_grab_window(7, true)
+	if absf(win3d.move_depth - Windows3DScript.SPAWN_DISTANCE) > 0.001:
+		_teardown()
+		return "grab menu : move_depth %.2f, attendu %.2f" % [win3d.move_depth, Windows3DScript.SPAWN_DISTANCE]
+	win3d.release_window_grab(7)
+	win3d.toggle_grab_window(7)
+	if absf(win3d.move_depth - 15.0) > 0.001:
+		_teardown()
+		return "grab ordinaire : move_depth %.2f, attendu 15.00" % win3d.move_depth
+	win3d.release_window_grab(7)
+	_teardown()
+	return true

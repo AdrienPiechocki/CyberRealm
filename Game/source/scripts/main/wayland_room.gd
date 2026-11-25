@@ -1427,9 +1427,10 @@ func _open_window_menu() -> void:
 	window_menu.show_menu()
 
 func _on_window_menu_grab(wid: int) -> void:
-	# Toggle ON/OFF : grab ON → fermer le menu pour déplacer la fenêtre à la
-	# caméra ; grab OFF → relâcher la prise, le menu reste ouvert.
-	win3d.toggle_grab_window(wid)
+	# Toggle ON/OFF : grab ON → fermer le menu et amener la fenêtre à la
+	# distance de spawn (elle peut être loin ou hors de vue) ; grab OFF →
+	# relâcher la prise, le menu reste ouvert.
+	win3d.toggle_grab_window(wid, true)
 	window_menu.hide_menu()
 
 func _on_window_menu_focus(wid: int) -> void:

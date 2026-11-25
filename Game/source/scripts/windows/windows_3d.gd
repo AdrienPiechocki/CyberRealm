@@ -51,6 +51,9 @@ const SNAP_ZONE_NAME := "Snap"
 # ne s'empilent pas au même endroit. Même empilement qu'à la sortie du mode
 # focus (voir focus_mode.gd).
 const STACK_Z_OFFSET := 0.1 # m entre deux fenêtres empilées
+## Distance (m) devant la caméra où apparaissent les nouvelles fenêtres ; aussi
+## celle où arrive une fenêtre saisie depuis le window_menu.
+const SPAWN_DISTANCE := 2.0
 const SPAWN_STACK_RADIUS := 0.5 # m, portée de détection des fenêtres déjà empilées au point de spawn
 
 # ── Collage (snap) entre fenêtres ───────────────────────────────────────
@@ -372,8 +375,8 @@ func next_spawn_pos() -> Vector3:
 	var camera: Camera3D = _camera()
 	var cam_pos: Vector3 = camera.global_position
 	var cam_forward: Vector3 = -camera.global_basis.z
-	# Position de base : 2 m devant la caméra.
-	var base_pos := cam_pos + cam_forward * 2.0
+	# Position de base : SPAWN_DISTANCE devant la caméra.
+	var base_pos := cam_pos + cam_forward * SPAWN_DISTANCE
 	# Compter les fenêtres visibles déjà à cet endroit : chaque fenêtre dans
 	# le rayon SPAWN_STACK_RADIUS du point de spawn décale la nouvelle de
 	# STACK_Z_OFFSET derrière la précédente.
@@ -620,7 +623,10 @@ func _set_window_occluder_active(wid: int, active: bool) -> void:
 
 # Toggle grab depuis le menu fenêtres : reprend une fenêtre déjà en cours de
 # déplacement (is_moving) ou lâche la prise et la pose à sa position actuelle.
-func toggle_grab_window(wid: int) -> void:
+## `at_spawn_distance` : la fenêtre saisie est amenée à SPAWN_DISTANCE du joueur
+## (grab depuis le window_menu, où la fenêtre peut être loin ou hors de vue) au
+## lieu de garder sa distance actuelle.
+func toggle_grab_window(wid: int, at_spawn_distance := false) -> void:
 	if is_window_grabbed(wid):
 		release_window_grab(wid)
 		return
@@ -631,7 +637,7 @@ func toggle_grab_window(wid: int) -> void:
 	active_window_id = wid
 	is_moving = true
 	_set_window_occluder_active(wid, false)
-	move_depth = cam.global_position.distance_to(quad.global_position)
+	move_depth = SPAWN_DISTANCE if at_spawn_distance else cam.global_position.distance_to(quad.global_position)
 	windows_state_changed.emit()
 
 func toggle_hide(id: int) -> void:
