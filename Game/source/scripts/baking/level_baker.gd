@@ -464,6 +464,8 @@ static func _embed(r: Resource, cache: Dictionary) -> Resource:
 	if r is Texture2D:
 		var converted = _convert_texture(r, cache)
 		return converted
+	if r is MultiMesh:
+		return _embed_multimesh(r as MultiMesh, cache)
 	var dup := r.duplicate(true)
 	cache[r] = dup
 	if dup != null:
@@ -475,6 +477,35 @@ static func _embed(r: Resource, cache: Dictionary) -> Resource:
 		# le pair). Balayage récursif : tout ce qui traîne est embed à son tour.
 		_embed_nested(dup, cache)
 	return dup
+
+# MultiMesh : duplicate() recopie les propriétés dans l'ordre de la liste, donc le buffer AVANT instance_count — Godot
+# refuse alors le buffer (« different size ») et toutes les instances (flore, rochers des farlands…) se retrouvent
+# à zéro. On reconstruit dans le bon ordre : taille d'abord, puis buffer.
+# Sans moteur de rendu (export headless : rasterizer « dummy ») le buffer est vide et ne peut être ni lu ni écrit :
+# la copie CPU éventuelle (méta « cpu_buffer », posée par le script qui a rempli le MultiMesh) est alors conservée en
+# méta sur la ressource copiée, pour que le script du niveau la réapplique au chargement.
+static func _embed_multimesh(src: MultiMesh, cache: Dictionary) -> MultiMesh:
+	var mm := MultiMesh.new()
+	mm.transform_format = src.transform_format
+	mm.use_colors = src.use_colors
+	mm.use_custom_data = src.use_custom_data
+	mm.instance_count = src.instance_count
+	if src.mesh != null:
+		mm.mesh = _embed(src.mesh, cache) as Mesh
+	var stride := (12 if src.transform_format == MultiMesh.TRANSFORM_3D else 8) \
+			+ (4 if src.use_colors else 0) + (4 if src.use_custom_data else 0)
+	var expected := src.instance_count * stride
+	var buf := src.buffer
+	if buf.size() == expected and expected > 0:
+		mm.buffer = buf
+	elif src.has_meta("cpu_buffer"):
+		mm.set_meta("cpu_buffer", src.get_meta("cpu_buffer"))
+	if src.has_meta("cpu_buffer") and not mm.has_meta("cpu_buffer"):
+		mm.set_meta("cpu_buffer", src.get_meta("cpu_buffer"))
+	mm.visible_instance_count = src.visible_instance_count
+	mm.custom_aabb = src.custom_aabb
+	cache[src] = mm
+	return mm
 
 # Embed récursivement les ressources référencées par une ressource dupliquée :
 # propriétés directes, éléments de Array et valeurs de Dictionary. Les scripts
