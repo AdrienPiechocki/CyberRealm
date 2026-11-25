@@ -1850,12 +1850,13 @@ func _show_lan() -> void:
 	var join_row := HBoxContainer.new()
 	join_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_lan_ip_edit = _make_line_edit()
-	_lan_ip_edit.placeholder_text = "Host IP (ex: 192.168.1.5)"
+	_lan_ip_edit.placeholder_text = "Host IP or name (ex: 192.168.1.5 / play.example.org)"
 	join_row.add_child(_lan_ip_edit)
 	_lan_pin_edit = _make_line_edit()
-	_lan_pin_edit.placeholder_text = "PIN"
-	_lan_pin_edit.custom_minimum_size = Vector2(80, 36)
-	_lan_pin_edit.max_length = 4
+	_lan_pin_edit.placeholder_text = "PIN / password"
+	_lan_pin_edit.custom_minimum_size = Vector2(150, 36)
+	_lan_pin_edit.secret = true
+	_lan_pin_edit.max_length = 64          # PIN (4 chiffres) en LAN, mot de passe long pour un serveur en ligne
 	join_row.add_child(_lan_pin_edit)
 	_lan_encryption_btn = CheckButton.new()
 	_lan_encryption_btn.text = "TLS"

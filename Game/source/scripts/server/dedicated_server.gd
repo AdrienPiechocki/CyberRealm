@@ -8,6 +8,8 @@ extends Node
 ##          -- [res://user/level.tscn] [level.crblob]
 ##   2. Sur le serveur :          godot --headless --path Game/source scenes/dedicated_server.tscn \\
 ##          -- --blob=level.crblob [--pin=1234] [--name=Serveur] [--max-players=8] [--no-dtls]
+##   Online (Internet) : ... -- --online --tls-cert=fullchain.pem --tls-key=privkey.pem  (mot de passe >= 12 caractères,
+##   de préférence via CYBERREALM_PASSWORD) — voir docs/dedicated-server.md.
 ##   Admin : variable d'environnement CYBERREALM_ADMIN_PASSWORD (ou --admin-password=…, visible dans `ps`).
 ##
 ## Les clients rejoignent par IP:PIN comme pour un hôte LAN. Arrêt : SIGINT/SIGTERM (Ctrl+C).
@@ -34,7 +36,11 @@ func _ready() -> void:
 	lan.set_script(LanScript)
 	add_child(lan)
 	lan.dedicated = true
-	lan.forced_pin = String(args.get("pin", ""))
+	# Mot de passe / PIN : de préférence par l'environnement (un argument est visible dans `ps`).
+	lan.forced_pin = String(args.get("pin", OS.get_environment("CYBERREALM_PASSWORD")))
+	lan.online = args.has("online")
+	lan.tls_cert_path = String(args.get("tls-cert", ""))
+	lan.tls_key_path = String(args.get("tls-key", ""))
 	lan.max_players = int(args.get("max-players", 8))
 	lan.encryption_enabled = not args.has("no-dtls")
 	# Mot de passe admin : de préférence par l'environnement (un argument de ligne de commande est visible dans `ps`).
@@ -52,9 +58,14 @@ func _ready() -> void:
 		push_error("dedicated_server: host_game() a échoué (port déjà utilisé ?)")
 		get_tree().quit(4)
 		return
-	print("[server] admin : ", "mot de passe défini" if lan.admin_password != "" else "désactivé (pas de mot de passe)")
-	print("[server] PIN: ", lan.get_pin(), " — UDP %d (+%d découverte), TCP %d" % [
-			lan.PORT, lan.DISCOVERY_PORT, lan.LEVEL_TCP_PORT])
+	if lan.online:
+		print("[server] MODE ONLINE : TLS réel, authentification moteur, découverte désactivée — UDP %d, TCP %d" % [lan.PORT, lan.LEVEL_TCP_PORT])
+		print("[server] mot de passe défini (%d caractères) ; admin : %s" % [lan.get_pin().length(),
+				"mot de passe défini" if lan.admin_password != "" else "désactivé"])
+	else:
+		print("[server] admin : ", "mot de passe défini" if lan.admin_password != "" else "désactivé (pas de mot de passe)")
+		print("[server] PIN: ", lan.get_pin(), " — UDP %d (+%d découverte), TCP %d" % [
+				lan.PORT, lan.DISCOVERY_PORT, lan.LEVEL_TCP_PORT])
 
 
 func _notification(what: int) -> void:

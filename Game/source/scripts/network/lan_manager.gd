@@ -57,6 +57,24 @@ var _pending_auth: Dictionary = {}
 # Serveur dédié (headless, sans joueur) : l'hôte n'est PAS un joueur — ni roster, ni avatar, ni synchro de transform ;
 # il porte le niveau (blob prébaké), le PIN et le relais. Voir scripts/server/dedicated_server.gd.
 var dedicated := false
+## MODE ONLINE (serveur dédié exposé sur Internet). Durcit tout : certificat TLS réel (--tls-cert/--tls-key, p. ex.
+## Let's Encrypt) au lieu de la clé embarquée ; authentification par mot de passe au niveau MOTEUR (aucun RPC n'est
+## accepté d'un pair non authentifié) avec verrouillage progressif par IP ; pas de découverte UDP ; scripts d'avatar
+## refusés ; partage de fenêtres/audio/vidéo/fichiers coupé ; intégrité du niveau vérifiée (SHA-256).
+var online := false
+var tls_cert_path := ""
+var tls_key_path := ""
+## Client : session « en ligne » (hôte joint par NOM, certificat vérifié, authentification moteur). Mêmes restrictions.
+var session_online := false
+const ONLINE_MIN_PASSWORD := 12
+const ONLINE_LOCK_BASE_MSEC := 30000
+const ONLINE_LOCK_MAX_MSEC := 3600000
+const ONLINE_GLOBAL_ATTEMPTS := 40          # tentatives d'authentification max par minute, tous pairs confondus
+const NAME_MAX_LEN := 24
+var _online_fail: Dictionary = {}           # ip -> {count, level, until}
+var _online_attempts: Array = []            # horodatages (ms) des tentatives récentes
+var _level_sha256 := PackedByteArray()      # serveur : empreinte du blob compressé envoyé
+var _level_expect_sha := PackedByteArray()  # client : empreinte annoncée par le serveur (canal authentifié)
 ## Client : la session a un serveur dédié (renseigné par le serveur à l'inscription). Le décor physique est alors
 ## simulé par le SERVEUR (autorité) ; le client n'envoie que des demandes (toucher, prendre, lancer…).
 var session_dedicated := false
@@ -537,6 +555,7 @@ func _broadcast_player_info() -> void:
 
 @rpc("any_peer", "reliable", "call_local")
 func _update_player_info(target_id: int, pname: String, color: Color) -> void:
+	pname = pname.substr(0, NAME_MAX_LEN)
 	# Si target_id == 0, c'est une diffusion de TOUS les joueurs (snapshot).
 	if target_id == 0:
 		return
@@ -701,13 +720,28 @@ func host_game() -> bool:
 	if session_active:
 		_set_status("Already in a LAN session")
 		return false
+	if online:
+		var why := _online_preflight()
+		if why != "":
+			_set_status("Online mode refused: " + why)
+			push_error("LAN online: " + why)
+			return false
 	var peer := ENetMultiplayerPeer.new()
 	var err := peer.create_server(PORT, max_players, 8)
 	if err != OK:
 		_set_status("Host error: " + error_string(err))
 		return false
 	session_encrypted = false
-	if encryption_enabled:
+	if online:
+		var tls := _load_online_tls_options()
+		if tls == null or peer.host.dtls_server_setup(tls) != OK:
+			peer.close()
+			_set_status("Online mode refused: TLS certificate/key unusable")
+			push_error("LAN online: TLS certificate/key unusable (%s, %s)" % [tls_cert_path, tls_key_path])
+			return false
+		session_encrypted = true
+		_lan_log("DTLS: certificat réel chargé (online)")
+	elif encryption_enabled:
 		var dtls := _load_dtls_options()
 		if dtls != null:
 			if peer.host.dtls_server_setup(dtls) != OK:
@@ -715,13 +749,15 @@ func host_game() -> bool:
 			else:
 				session_encrypted = true
 				_lan_log("DTLS: session encrypted (server)")
+	if online:
+		_setup_engine_auth()
 	multiplayer.multiplayer_peer = peer
 	session_active = true
 	is_host = true
 	_refresh_level_sync()
 	_pin = forced_pin if forced_pin != "" else _generate_pin()
 	pin_changed.emit(_pin)
-	_lan_log("host PIN: " + _pin)
+	_lan_log("host password set" if online else "host PIN: " + _pin)
 	# Miroir des scripts utilisateur reparti à zéro pour cette session (les
 	# manifests reçus — avatars des clients — réinstallent leurs lots).
 	UserScriptMirror.clear()
@@ -740,7 +776,8 @@ func host_game() -> bool:
 		_players[multiplayer.get_unique_id()] = {"name": player_name, "color": player_color}
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-	_start_responder()
+	if not online:
+		_start_responder()      # la découverte UDP n'a pas sa place sur Internet (et divulgue nom/adresses)
 	_announced = false
 	_avatar_sent_to.clear()
 	_avatar_send_cache = PackedByteArray()
@@ -778,7 +815,19 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 	if err != OK:
 		_set_status("Connection error: " + error_string(err))
 		return false
-	if encrypted:
+	# Un NOM d'hôte (pas une IP) = serveur en ligne : certificat vérifié OBLIGATOIRE, pas de repli vers le mode
+	# non vérifié, authentification par le moteur. Une IP reste le mode LAN historique (chiffrement sans identité).
+	var online_join := _is_hostname(ip)
+	if online_join:
+		if peer.host.dtls_client_setup(ip, _verified_client_options()) != OK:
+			peer.close()
+			_set_status("Cannot start a verified TLS session with %s" % ip)
+			return false
+		session_encrypted = true
+		session_online = true
+		_setup_engine_auth()
+		_lan_log("DTLS: certificat vérifié exigé (client → %s)" % ip)
+	elif encrypted:
 		var dtls := _dtls_client_options()
 		if dtls != null:
 			if peer.host.dtls_client_setup(ip, dtls) != OK:
@@ -824,6 +873,168 @@ func session_closed() -> void:
 	_session_closed_received = true
 	_lan_log("session_closed received from host")
 
+# ── Mode online : TLS réel, authentification moteur, verrouillage ────
+
+## Avatar reçu d'un autre joueur, en session en ligne : accepté seulement s'il n'embarque AUCUN code. Autorisés :
+## le script d'avatar du jeu (res://scripts/player/avatar.gd) sur ses nœuds ; ni autre script, ni ressource scriptée,
+## ni sous-scène instanciée, ni connexion de signaux. Le contrôle est fait AVANT instanciation (rien ne s'exécute).
+static func avatar_scene_safe(scene: PackedScene) -> bool:
+	if scene == null:
+		return false
+	var st := scene.get_state()
+	if st.get_connection_count() > 0:
+		return false
+	for i in st.get_node_count():
+		if st.get_node_instance(i) != null:
+			return false
+		for j in st.get_node_property_count(i):
+			var v: Variant = st.get_node_property_value(i, j)
+			if st.get_node_property_name(i, j) == &"script":
+				if v == null:
+					continue
+				if not (v is Script) or String((v as Script).resource_path) != "res://scripts/player/avatar.gd":
+					return false
+			elif v is Resource and (v as Resource).get_script() != null:
+				return false
+			elif v is Array:
+				for e in v:
+					if e is Resource and (e as Resource).get_script() != null:
+						return false
+	return true
+
+static func _sha256_of(bytes: PackedByteArray) -> PackedByteArray:
+	var ctx := HashingContext.new()
+	ctx.start(HashingContext.HASH_SHA256)
+	var step := 4 * 1024 * 1024
+	var i := 0
+	while i < bytes.size():
+		ctx.update(bytes.slice(i, mini(i + step, bytes.size())))
+		i += step
+	return ctx.finish()
+
+## Nom d'hôte « public » (play.exemple.org) = serveur en ligne ; IP, nom court (raspberrypi) ou nom du réseau local
+## (.local, .lan…) = LAN, mode historique. « localhost » compte comme en ligne (essais avec un vrai certificat).
+static func _is_hostname(addr: String) -> bool:
+	var a := addr.strip_edges().to_lower()
+	if a == "" or ":" in a:
+		return false                      # IPv6 littérale
+	if a == "localhost":
+		return true
+	var all_ip := true
+	for part in a.split("."):
+		if not part.is_valid_int():
+			all_ip = false
+	if all_ip or not "." in a:
+		return false
+	for suffix in [".local", ".lan", ".home", ".internal", ".localdomain", ".home.arpa"]:
+		if a.ends_with(suffix):
+			return false
+	return true
+
+## Raisons pour lesquelles le serveur refuse de démarrer en mode online ("" = ok).
+func _online_preflight() -> String:
+	if not dedicated:
+		return "le mode online est réservé au serveur dédié"
+	if forced_pin.length() < ONLINE_MIN_PASSWORD:
+		return "mot de passe trop court (%d caractères minimum)" % ONLINE_MIN_PASSWORD
+	if tls_cert_path == "" or tls_key_path == "":
+		return "certificat TLS manquant (--tls-cert / --tls-key)"
+	if not FileAccess.file_exists(tls_cert_path) or not FileAccess.file_exists(tls_key_path):
+		return "fichiers TLS introuvables"
+	return ""
+
+func _load_online_tls_options() -> TLSOptions:
+	var cert := X509Certificate.new()
+	var key := CryptoKey.new()
+	if cert.load(tls_cert_path) != OK or key.load(tls_key_path) != OK:
+		return null
+	return TLSOptions.server(key, cert)
+
+## Client : validation complète de la chaîne et du nom d'hôte (autorités du système / de Godot). Une autorité
+## privée peut être ajoutée dans user://server_ca.crt (serveur avec CA maison).
+func _verified_client_options() -> TLSOptions:
+	var extra := "user://server_ca.crt"
+	if FileAccess.file_exists(extra):
+		var ca := X509Certificate.new()
+		if ca.load(extra) == OK:
+			return TLSOptions.client(ca)
+	return TLSOptions.client()
+
+func _setup_engine_auth() -> void:
+	var smp := multiplayer as SceneMultiplayer
+	if smp == null:
+		return
+	smp.auth_callback = _auth_callback
+	smp.auth_timeout = 8.0
+	if not smp.peer_authenticating.is_connected(_on_peer_authenticating):
+		smp.peer_authenticating.connect(_on_peer_authenticating)
+	if not smp.peer_authentication_failed.is_connected(_on_peer_auth_failed):
+		smp.peer_authentication_failed.connect(_on_peer_auth_failed)
+
+func _teardown_engine_auth() -> void:
+	var smp := multiplayer as SceneMultiplayer
+	if smp == null:
+		return
+	smp.auth_callback = Callable()
+	if smp.peer_authenticating.is_connected(_on_peer_authenticating):
+		smp.peer_authenticating.disconnect(_on_peer_authenticating)
+	if smp.peer_authentication_failed.is_connected(_on_peer_auth_failed):
+		smp.peer_authentication_failed.disconnect(_on_peer_auth_failed)
+
+func _on_peer_authenticating(id: int) -> void:
+	if is_host:
+		return                       # le serveur attend les identifiants du client
+	# Client : envoie le mot de passe (dans la session TLS dont le certificat a été vérifié).
+	(multiplayer as SceneMultiplayer).send_auth(id, _pin.to_utf8_buffer())
+
+func _on_peer_auth_failed(id: int) -> void:
+	_lan_log("auth moteur échouée / expirée pour %d" % id)
+
+# Appelé par le moteur à la réception des données d'auth d'un pair, AVANT qu'il n'existe pour les RPC.
+func _auth_callback(id: int, data: PackedByteArray) -> void:
+	var smp := multiplayer as SceneMultiplayer
+	if not is_host:
+		smp.complete_auth(id)        # client : confirmation du serveur reçue
+		return
+	var ip := _remote_ip(id)
+	var now := Time.get_ticks_msec()
+	# Limite globale (anti credential-stuffing distribué) puis verrou par IP.
+	while not _online_attempts.is_empty() and now - int(_online_attempts[0]) > 60000:
+		_online_attempts.pop_front()
+	if _online_attempts.size() >= ONLINE_GLOBAL_ATTEMPTS:
+		_lan_log("auth: limite globale atteinte — %s refusé" % ip)
+		smp.disconnect_peer(id)
+		return
+	_online_attempts.append(now)
+	var st: Dictionary = _online_fail.get(ip, {"count": 0, "level": 0, "until": 0})
+	if now < int(st["until"]):
+		_lan_log("auth: %s verrouillé — refusé" % ip)
+		smp.disconnect_peer(id)
+		return
+	if data.size() > 128:
+		smp.disconnect_peer(id)
+		return
+	# Comparaison des empreintes (pas du texte brut) : temps indépendant du contenu.
+	var given := data.get_string_from_utf8().sha256_buffer()
+	var expected := _pin.sha256_buffer()
+	var ok := given == expected and _pin != ""
+	if ok:
+		_online_fail.erase(ip)
+		smp.send_auth(id, PackedByteArray([1]))
+		smp.complete_auth(id)
+		_lan_log("auth OK pour %d (%s)" % [id, ip])
+		return
+	st["count"] = int(st["count"]) + 1
+	if int(st["count"]) >= PIN_FAIL_LIMIT:
+		st["level"] = int(st["level"]) + 1
+		st["count"] = 0
+		var lock := mini(ONLINE_LOCK_BASE_MSEC * (1 << (int(st["level"]) - 1)), ONLINE_LOCK_MAX_MSEC)
+		st["until"] = now + lock
+		_lan_log("auth: %s verrouillé %d s (niveau %d)" % [ip, lock / 1000, int(st["level"])])
+	_online_fail[ip] = st
+	_lan_log("auth ÉCHEC pour %d (%s)" % [id, ip])
+	smp.disconnect_peer(id)
+
 func _on_connected_to_server() -> void:
 	session_active = true
 	is_host = false
@@ -857,6 +1068,11 @@ func _on_connected_to_server() -> void:
 	# L'hôte répondra par auth_result ; _announce_self() partira uniquement
 	# si le PIN est valide.
 	_pending_join = true
+	if session_online:
+		# Déjà authentifié par le moteur avant que peer_connected n'existe : on s'annonce directement.
+		_auth_request_sent_msec = 0
+		_announce_self()
+		return
 	_auth_request_sent_msec = Time.get_ticks_msec()
 	auth_request.rpc_id(1, _pin)
 
@@ -892,7 +1108,7 @@ func auth_request(pin: String) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
 		return
-	_lan_log("auth_request from %d — PIN=%s (expected=%s)" % [from, pin, _pin])
+	_lan_log("auth_request from %d" % from)
 	if pin == _pin:
 		_pending_auth.erase(from)
 		# PIN valide → réarme l'anti brute-force pour cette adresse.
@@ -939,6 +1155,9 @@ func auth_result(ok: bool) -> void:
 func _on_connection_failed() -> void:
 	if _should_attempt_reconnect():
 		_begin_reconnect()
+	elif session_online:
+		_disconnect_session()
+		_set_status("Connection failed — server unreachable, or its TLS certificate is not valid for this name (the name must match the certificate).")
 	else:
 		_disconnect_session()
 		var tls_hint := " TLS était activé sur le Join — si l'hôte ne chiffre pas, retentez sans TLS." if _last_join_encrypted else ""
@@ -1002,6 +1221,7 @@ func _begin_reconnect() -> void:
 # converge vers le même état.
 @rpc("any_peer", "reliable")
 func _register_player(pname: String, color: Color) -> void:
+	pname = pname.substr(0, NAME_MAX_LEN)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or not is_host:
 		return
@@ -1069,6 +1289,10 @@ func _roster_snapshot(entries: Array) -> void:
 # Chaque pair saute son propre peer_id (il a déjà son joueur local).
 @rpc("any_peer", "reliable", "call_local")
 func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != 1:
+		return      # seul le serveur annonce des joueurs
+	pname = pname.substr(0, NAME_MAX_LEN)
 	if peer_id == multiplayer.get_unique_id() or dedicated:
 		return      # (serveur dédié : pas de rendu, le roster vient de _register_player)
 	if _remote_players.has(peer_id):
@@ -1102,6 +1326,8 @@ func _spawn_player(peer_id: int, pname: String, color: Color) -> void:
 			f.store_buffer(_avatar_blobs[peer_id])
 			f.close()
 			var loaded: PackedScene = ResourceLoader.load(tmp, "", ResourceLoader.CACHE_MODE_REPLACE) as PackedScene
+			if loaded != null and online_restricted() and not avatar_scene_safe(loaded):
+				loaded = null       # avatar d'un autre joueur contenant du code : on garde l'avatar par défaut
 			if loaded != null:
 				scene = loaded
 				_avatar_scene_cache[peer_id] = loaded
@@ -1215,6 +1441,9 @@ func mark_level_stable() -> void:
 
 @rpc("any_peer", "reliable", "call_local")
 func _remove_player(peer_id: int) -> void:
+	var sender := multiplayer.get_remote_sender_id()
+	if sender != 0 and sender != 1:
+		return      # seul le serveur retire des joueurs
 	if _remote_players.has(peer_id):
 		_remote_players[peer_id].queue_free()
 		_remote_players.erase(peer_id)
@@ -1233,6 +1462,8 @@ func _on_peer_connected(id: int) -> void:
 		# de quelques secondes ne doit pas faire tomber la session (défaut ENet :
 		# déconnexion après ~5 s sans ACK).
 		_set_peer_timeout(id)
+		if online:
+			return      # déjà authentifié par le moteur (_auth_callback) : aucune étape PIN par RPC
 		_pending_auth[id] = true
 		# PAS d'envoi de niveau/avatar ici : attendre la registration du pair
 		# (voir _register_player). Les paquets de contrôle (snapshot roster,
@@ -1286,6 +1517,7 @@ func _prepare_level_send_cache() -> bool:
 			_level_compressed_cache = payload
 		_lan_log("level compress in %d ms — %d KB → %d KB" % [Time.get_ticks_msec() - tc,
 			payload.size() / 1024, _level_compressed_cache.size() / 1024])
+		_level_sha256 = _sha256_of(_level_compressed_cache)
 	return true
 
 # Vide les deux caches (bake + compressé) : le niveau a changé ou la session
@@ -1335,9 +1567,11 @@ func _send_level_to(id: int) -> void:
 	_level_tcp_server.set_payload(_level_compressed_cache)
 	var token := LevelTcp.new_token()
 	_level_tcp_server.add_token(id, ip, token)
+	if _level_sha256.is_empty():
+		_level_sha256 = _sha256_of(_level_compressed_cache)
 	_receive_level_baked.rpc_id(id, LEVEL_TCP_PORT, token, _level_compressed_cache.size(),
 			int(data.get("payload_size", 0)), data.get("spawn", Vector3.ZERO),
-			data.get("spawn_rotation", Vector3.ZERO), data.get("spawn_scale", Vector3.ONE))
+			data.get("spawn_rotation", Vector3.ZERO), data.get("spawn_scale", Vector3.ONE), _level_sha256)
 	push_warning("LAN: level offered to peer %d — raw %d KB, compressed %d KB (TCP %d)" % [id,
 		int(data.get("bytes", PackedByteArray()).size()) / 1024,
 		_level_compressed_cache.size() / 1024, LEVEL_TCP_PORT])
@@ -1461,7 +1695,7 @@ static func bake_recv_needs_init(state: Dictionary, total: int, index: int) -> b
 # seulement le jeton d'accès au canal TCP dédié (chiffré avec la session DTLS).
 # L'adresse TCP est celle du pair ENet de l'hôte, jamais une valeur du RPC.
 @rpc("any_peer", "call_remote", "reliable", 6)
-func _receive_level_baked(port: int, token: PackedByteArray, wire_size: int, uncompressed_size: int, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3) -> void:
+func _receive_level_baked(port: int, token: PackedByteArray, wire_size: int, uncompressed_size: int, spawn: Vector3, spawn_rotation: Vector3, spawn_scale: Vector3, sha256: PackedByteArray) -> void:
 	if is_host or multiplayer.get_remote_sender_id() != 1:
 		return
 	if port < 1 or port > 65535 or token.size() != LevelTcp.TOKEN_SIZE \
@@ -1477,6 +1711,7 @@ func _receive_level_baked(port: int, token: PackedByteArray, wire_size: int, unc
 	_stop_level_tcp_rx()
 	_level_tcp_rx_meta = {"size": uncompressed_size, "spawn": spawn,
 			"rotation": spawn_rotation, "scale": spawn_scale}
+	_level_expect_sha = sha256
 	_last_level_chunk_msec = Time.get_ticks_msec()
 	var rx := LevelTcp.Receiver.new()
 	var err := rx.start(host_ip, port, token, wire_size)
@@ -1512,6 +1747,13 @@ func _poll_level_tcp_rx() -> void:
 	if not bool(res.get("ok", false)):
 		_lan_log("level tcp: transfer failed — %s" % String(res.get("err", "?")))
 		_set_status("Host level transfer failed — kept local level")
+		_finalize_join()
+		return
+	# Intégrité : le canal TCP n'est pas chiffré, l'empreinte arrive par le canal authentifié (RPC, TLS). Un blob
+	# altéré en route (scripts de niveau !) est refusé.
+	if _level_expect_sha.size() == 32 and _sha256_of(res["raw"]) != _level_expect_sha:
+		_lan_log("level tcp: EMPREINTE INVALIDE — blob rejeté")
+		_set_status("Host level rejected (integrity check failed) — kept local level")
 		_finalize_join()
 		return
 	_last_level_chunk_msec = Time.get_ticks_msec()
@@ -1679,6 +1921,11 @@ func _poll_pending_scene_loads() -> void:
 			_lan_log("avatar[%d]: decode failed (null scene)" % peer_id)
 			continue
 		_lan_log("avatar[%d]: decoded (%d KB)" % [peer_id, _avatar_blobs.get(peer_id, PackedByteArray()).size() / 1024])
+		if online_restricted() and not avatar_scene_safe(loaded):
+			_lan_log("avatar[%d]: REFUSÉ (scripts / ressources actives) — avatar par défaut" % peer_id)
+			_avatar_blobs.erase(peer_id)
+			_finish_avatar_decode(peer_id)
+			continue
 		_avatar_scene_cache[peer_id] = loaded
 		_finish_avatar_decode(peer_id)
 
@@ -2044,6 +2291,8 @@ func _drain_avatar_send() -> void:
 func _avatar_scripts(from_id: int, manifest: Dictionary) -> void:
 	if multiplayer.get_remote_sender_id() != from_id:
 		return
+	if dedicated or online_restricted():
+		return      # jamais de scripts venant d'un autre joueur sur un serveur / une session en ligne
 	if manifest.is_empty() or not UserScriptMirror.valid(manifest):
 		return
 	var count := UserScriptMirror.install(manifest)
@@ -2054,6 +2303,8 @@ func _avatar_scripts(from_id: int, manifest: Dictionary) -> void:
 # tout le transfert (ordre fiable du canal 0).
 @rpc("any_peer", "call_remote", "reliable", 1)
 func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size: int, chunk: PackedByteArray) -> void:
+	if dedicated or multiplayer.get_remote_sender_id() != from_id:
+		return      # le serveur dédié ne décode aucun avatar ; l'émetteur annoncé doit être l'émetteur réel
 	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
 		return
 	# Nouveau transfert de cet émetteur : repart de zéro.
@@ -2140,6 +2391,7 @@ func _on_peer_disconnected(id: int) -> void:
 	])
 	if is_host:
 		_players.erase(id)
+		_msg_budget.erase(id)
 		_admins.erase(id)
 		_admin_fails.erase(id)
 		level_peer_left.emit(id)
@@ -2350,6 +2602,8 @@ func _sync_windows_state(delta: float) -> void:
 
 @rpc("any_peer", "unreliable")
 func _sync_windows(windows: Array) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -2792,6 +3046,8 @@ func _debug_dump_once(key: int) -> bool:
 # Canal 2 séparé : la sync des avatars (canal 0) n'est jamais retardée.
 @rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_window_texture(wid: int, version: int, bytes: PackedByteArray) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	_receive_share_frame(wid, version, bytes, false)
 
 # Keyframe (seek / saut de contenu / keyframe périodique) : canal 4 fiable,
@@ -2800,6 +3056,8 @@ func _sync_window_texture(wid: int, version: int, bytes: PackedByteArray) -> voi
 # ignore alors toute frame de version antérieure encore en file de décodage.
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _sync_window_keyframe(wid: int, version: int, bytes: PackedByteArray) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	_receive_share_frame(wid, version, bytes, true)
 
 func _receive_share_frame(wid: int, version: int, bytes: PackedByteArray, is_keyframe: bool) -> void:
@@ -2839,6 +3097,8 @@ func _receive_share_frame(wid: int, version: int, bytes: PackedByteArray, is_key
 # du canal 0 (niveau, états) qui pourraient retarder le flow control.
 @rpc("any_peer", "call_remote", "reliable", 5)
 func _ack_window_versions(versions: Dictionary) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -2937,6 +3197,8 @@ func _sync_audio_state() -> void:
 # le flux ne bloque jamais (fiable re-séquencerait tout derrière la perte).
 @rpc("any_peer", "call_remote", "unreliable", 3)
 func _sync_audio(bytes: PackedByteArray) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -3226,12 +3488,16 @@ func _send_video_packet(pid: int, wid: int, seq: int, keyframe: bool, data: Pack
 # que le JPEG par-frame, et l'encode tourne déjà sur un thread worker C++.
 @rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_video_frame(wid: int, seq: int, index: int, total: int, bytes: PackedByteArray) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	_receive_video_frame(wid, seq, index, total, bytes, false)
 
 # Keyframe : canal 4 fiable (comme le JPEG) → ne se met PAS en file derrière
 # le backlog du canal 2 → le récepteur se recalibre immédiatement.
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _sync_video_keyframe(wid: int, seq: int, index: int, total: int, bytes: PackedByteArray) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	_receive_video_frame(wid, seq, index, total, bytes, true)
 
 # Config du flux (codec + dimensions pixels) d'une fenêtre d'un peer : permet
@@ -3239,6 +3505,8 @@ func _sync_video_keyframe(wid: int, seq: int, index: int, total: int, bytes: Pac
 # redémarrage du flux émetteur (les seq repartent de 0) → reset du décodeur.
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _sync_video_config(wid: int, codec: String, width: int, height: int) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -3264,6 +3532,8 @@ func _sync_video_config(wid: int, codec: String, width: int, height: int) -> voi
 # (récepteur pas encore synchronisé, décodeur désynchronisé, config changée).
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _video_need_keyframe(wid: int) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -3274,6 +3544,8 @@ func _video_need_keyframe(wid: int) -> void:
 # canal 5 dédié comme l'ACK JPEG → pas de file derrière les gros RPC).
 @rpc("any_peer", "call_remote", "reliable", 5)
 func _ack_video_seq(seqs: Dictionary) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -3854,6 +4126,8 @@ func _sync_cursor_state(delta: float) -> void:
 # minuscule.
 @rpc("any_peer", "unreliable")
 func _sync_window_pointer(wid: int, inside: bool, captured: bool, x: float, y: float) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -3880,6 +4154,8 @@ func _sync_window_pointer(wid: int, inside: bool, captured: bool, x: float, y: f
 # custom, ex. curseur système). Rare (≈ curseur posé une fois par app).
 @rpc("any_peer", "reliable")
 func _sync_window_cursor_image(wid: int, serial: int, hidden: bool, hx: int, hy: int, w: int, h: int, bytes: PackedByteArray) -> void:
+	if online_restricted():
+		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -4032,6 +4308,8 @@ func _disconnect_session(keep_context := false) -> void:
 	if multiplayer.server_disconnected.is_connected(_on_server_disconnected):
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
 	session_dedicated = false
+	session_online = false
+	_teardown_engine_auth()
 	if admin:
 		admin = false
 		admin_changed.emit(false)
@@ -4096,6 +4374,10 @@ const LEVEL_MSG_TOPIC_MAX := 48
 
 func in_dedicated_session() -> bool:
 	return dedicated or session_dedicated
+
+## true en mode online (serveur ou client) : fonctions entre joueurs coupées (fenêtres, audio, vidéo, fichiers).
+func online_restricted() -> bool:
+	return online or session_online
 
 # ── Administrateur (serveur dédié) ───────────────────────────────────
 # Sur un serveur dédié personne n'est « l'hôte » : un joueur devient ADMIN en donnant le mot de passe du serveur
@@ -4169,12 +4451,51 @@ func _level_msg_up(topic: String, data: Variant) -> void:
 func _level_msg_up_u(topic: String, data: Variant) -> void:
 	_accept_level_msg_up(topic, data)
 
+# Borne la forme d'un message de niveau (jamais confiance au réseau) : profondeur, tailles, types simples.
+static func _msg_ok(v: Variant, depth := 0) -> bool:
+	if depth > 3:
+		return false
+	match typeof(v):
+		TYPE_NIL, TYPE_BOOL, TYPE_INT, TYPE_FLOAT, TYPE_VECTOR2, TYPE_VECTOR3, TYPE_COLOR:
+			return true
+		TYPE_STRING, TYPE_STRING_NAME:
+			return String(v).length() <= 256
+		TYPE_ARRAY:
+			if (v as Array).size() > 32:
+				return false
+			for e in v:
+				if not _msg_ok(e, depth + 1):
+					return false
+			return true
+		TYPE_DICTIONARY:
+			if (v as Dictionary).size() > 16:
+				return false
+			for k in v:
+				if typeof(k) != TYPE_STRING and typeof(k) != TYPE_STRING_NAME:
+					return false
+				if not _msg_ok(v[k], depth + 1):
+					return false
+			return true
+		TYPE_TRANSFORM3D, TYPE_BASIS, TYPE_QUATERNION:
+			return true
+	return false
+
+var _msg_budget: Dictionary = {}            # peer -> {t, n} : cadence max des messages de niveau
+
 func _accept_level_msg_up(topic: String, data: Variant) -> void:
-	if not is_host or topic.length() > LEVEL_MSG_TOPIC_MAX:
+	if not is_host or topic.length() > LEVEL_MSG_TOPIC_MAX or not _msg_ok(data):
 		return
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or _pending_auth.has(from) or not _players.has(from):
 		return      # seuls les pairs inscrits (PIN vérifié) parlent au niveau
+	var now := Time.get_ticks_msec()
+	var b: Dictionary = _msg_budget.get(from, {"t": now, "n": 0})
+	if now - int(b["t"]) >= 1000:
+		b = {"t": now, "n": 0}
+	b["n"] = int(b["n"]) + 1
+	_msg_budget[from] = b
+	if int(b["n"]) > 120:
+		return      # > 120 messages / s : ignoré
 	if topic == "admin_login":
 		_handle_admin_login(from, data)
 		return

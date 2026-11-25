@@ -59,6 +59,41 @@ LAN page of the pause menu: enter the server IP and PIN (tick TLS unless started
 
 On a non-x86_64 machine nothing about the `waylandgodot` extension is installed, so Godot never loads it.
 
+## Online mode (Internet)
+
+`--online` hardens the server for the public Internet. Players join **by name** (`play.example.org`); joining by IP
+keeps the old LAN behaviour and **cannot** reach an online server.
+
+```sh
+# 1. a DNS name pointing at your box (a free DDNS name works), and on the box forward to the server:
+#    UDP 7777 (game), TCP 7778 (level), TCP 80 (Let's Encrypt, at issue and every renewal)
+sudo ./server/install-server.sh install --online --domain play.example.org --email you@example.org \
+     --blob level.crblob --admin-password 'another long secret' --open-firewall
+# the script prints the generated join password (20 chars) — also stored in /opt/cyberrealm-server/server.conf
+```
+Own certificate instead of Let's Encrypt: `--tls-cert fullchain.pem --tls-key privkey.pem`. Renewals are automatic
+(certbot timer + a deploy hook that copies the certificate and restarts the service).
+
+What online mode changes:
+
+| | LAN | Online |
+|---|---|---|
+| Server identity | embedded key (public in the repo), not verified | **real certificate, fully verified** by the client (chain + name); no downgrade |
+| Login | 4-digit PIN over an RPC | **long password (12+), checked by the engine before the peer can send any RPC**; 8 s to authenticate |
+| Brute force | 30 s per-IP lock | per-IP lock **doubling** 30 s → 1 h, plus a global cap of 40 attempts/min; password compared as SHA-256 |
+| Discovery (UDP 9999) | on | **off** |
+| Custom avatars | scripts travel and run | **no code accepted**: an avatar carrying scripts/scripted resources/sub-scenes is replaced by the default one; the server decodes no avatar |
+| Window/audio/video/file sharing | on | **off** (RPCs ignored) |
+| Level download | integrity by TCP only | **SHA-256 announced over the authenticated channel and checked** before the level is used |
+| Messages | — | shape/size-checked, 120 msg/s per peer |
+| systemd | — | sandboxed (no new privileges, read-only system, private /tmp, minimal capabilities) |
+
+Players can also trust a private CA by dropping its certificate in `user://server_ca.crt`.
+
+Remaining limits, honestly: a flood of UDP packets can still saturate the Pi's link (use your router/ISP protections);
+the server is as trustworthy as the level you export (players run its scripts); the engine's own parsers (images,
+meshes) handle data from other players' avatars.
+
 ## Admin player (level settings)
 
 On a dedicated server nobody is "the host", so the level options (time of day, fog, clouds, rain — pause menu >
@@ -97,8 +132,8 @@ props in server mode: no weather, day/night, windows or player). Then:
 
 ## Current limits
 
-- LAN / VPN only for now: the PIN and DTLS protect the session, but no Internet hardening (rate limits per IP, bans)
-  has been reviewed for exposure.
+- Exposing a server without `--online` (LAN mode) on the Internet is **not safe**: the 4-digit PIN and the unverified
+  DTLS key do not protect it. Use `--online`.
 - Late joiners receive the level as exported: props moved or broken before they joined are not replayed yet.
 - Basic validation only (message sizes, impulse/throw speed clamps): a modified client could still ask to grab a
   prop from anywhere. Distance checks against the player's synced position are a possible next step.

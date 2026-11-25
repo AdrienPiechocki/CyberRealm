@@ -544,6 +544,8 @@ func _on_roster_changed(roster: Array) -> void:
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
 func _announce_contact(ip: String, pubkey: String, fingerprint: String,
 		host_keys: PackedStringArray) -> void:
+	if lan != null and lan.has_method("online_restricted") and lan.online_restricted():
+		return      # partage de fichiers coupé en session en ligne
 	_apply_contact(multiplayer.get_remote_sender_id(), ip, pubkey, fingerprint, host_keys)
 
 
@@ -570,6 +572,8 @@ func _local_ip() -> String:
 
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
 func _offer_files(offer_id: int, names: PackedStringArray, total_bytes: int) -> void:
+	if lan != null and lan.has_method("online_restricted") and lan.online_restricted():
+		return      # partage de fichiers coupé en session en ligne
 	_apply_offer(multiplayer.get_remote_sender_id(), offer_id, names, total_bytes)
 
 
@@ -599,6 +603,8 @@ func _apply_offer(sender: int, offer_id: int, names: PackedStringArray, total_by
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
 func _offer_answer(offer_id: int, accepted: bool, username: String,
 		dest_dir: String = "") -> void:
+	if lan != null and lan.has_method("online_restricted") and lan.online_restricted():
+		return      # partage de fichiers coupé en session en ligne
 	_apply_answer(multiplayer.get_remote_sender_id(), offer_id, accepted,
 		username, dest_dir)
 
@@ -802,6 +808,8 @@ static func _err_hint(err_tail: String) -> String:
 
 @rpc("any_peer", "call_remote", "unreliable", CHANNEL)
 func _transfer_progress(offer_id: int, pct: int) -> void:
+	if lan != null and lan.has_method("online_restricted") and lan.online_restricted():
+		return      # partage de fichiers coupé en session en ligne
 	_apply_progress(multiplayer.get_remote_sender_id(), offer_id, pct)
 
 
@@ -816,6 +824,8 @@ func _apply_progress(sender: int, offer_id: int, pct: int) -> void:
 
 @rpc("any_peer", "call_remote", "reliable", CHANNEL)
 func _transfer_done(offer_id: int, ok: bool, message: String) -> void:
+	if lan != null and lan.has_method("online_restricted") and lan.online_restricted():
+		return      # partage de fichiers coupé en session en ligne
 	_apply_done(multiplayer.get_remote_sender_id(), offer_id, ok, message)
 
 

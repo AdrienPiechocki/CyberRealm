@@ -29,6 +29,11 @@ PIN=""
 NAME=""
 MAX_PLAYERS=""
 DTLS=""                             # 1 = chiffré (défaut), 0 = --no-dtls
+ONLINE=""                           # 1 = serveur exposé sur Internet (mode online durci)
+DOMAIN=""                           # nom DNS du serveur (certificat Let's Encrypt)
+EMAIL=""                            # e-mail Let's Encrypt (alertes d'expiration)
+TLS_CERT_SRC=""                     # certificat fourni (au lieu de Let's Encrypt)
+TLS_KEY_SRC=""
 ADMIN_PW=""                         # mot de passe admin (joueur qui règle les options du niveau)
 ADMIN_PW_SET=0
 NO_SERVICE=0
@@ -52,6 +57,11 @@ Options :
   --max-players N       nombre de joueurs maximum (défaut : 8)
   --no-dtls             désactive le chiffrement DTLS (débogage)
   --dtls                (ré)active le chiffrement DTLS
+  --online              serveur sur INTERNET : TLS réel, mot de passe long, découverte coupée, partages coupés.
+                        Exige --domain + --email (certificat Let's Encrypt) ou --tls-cert/--tls-key. Voir docs.
+  --domain NOM          nom DNS public du serveur (ex. play.exemple.org) ; les joueurs rejoignent PAR CE NOM
+  --email ADRESSE       e-mail Let's Encrypt
+  --tls-cert FICHIER    certificat (chaîne complète PEM) fourni par toi, avec --tls-key FICHIER
   --admin-password MDP  mot de passe « admin » : le joueur qui le saisit (menu pause > Level) peut régler les options
                         du niveau (heure, météo…). Vide ("") = aucun admin. Conservé d'une mise à jour à l'autre.
   --source DIR          dossier Game/source à installer (défaut : celui de ce dépôt)
@@ -89,6 +99,11 @@ while [[ $# -gt 0 ]]; do
         --no-dtls)      DTLS=0; shift ;;
         --dtls)         DTLS=1; shift ;;
         --admin-password) ADMIN_PW="${2-}"; ADMIN_PW_SET=1; shift 2 ;;
+        --online)       ONLINE=1; shift ;;
+        --domain)       DOMAIN="${2:?}"; shift 2 ;;
+        --email)        EMAIL="${2:?}"; shift 2 ;;
+        --tls-cert)     TLS_CERT_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
+        --tls-key)      TLS_KEY_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
         --source)       SOURCE_DIR="$(cd "${2:?}" && pwd)"; shift 2 ;;
         --prefix)       PREFIX="${2:?}"; shift 2 ;;
         --user)         SERVICE_USER="${2:?}"; shift 2 ;;
@@ -110,8 +125,9 @@ GODOT_DIR="$PREFIX/godot"
 RUNNER="$PREFIX/run-server.sh"
 UNIT="/etc/systemd/system/$SERVICE_NAME.service"
 BLOB_DST="$DATA_DIR/level.crblob"
+TLS_DIR="$PREFIX/tls"
+GENERATED_PASSWORD=""
 
-if [[ -n "$PIN" && ! "$PIN" =~ ^[0-9]{4}$ ]]; then die "le PIN doit faire 4 chiffres"; fi
 if [[ -n "$MAX_PLAYERS" && ! "$MAX_PLAYERS" =~ ^[0-9]+$ ]]; then die "--max-players : nombre attendu"; fi
 
 # ── Utilitaires ──────────────────────────────────────────────────────
@@ -221,9 +237,24 @@ install_blob() {
 }
 
 write_config() {
-    local pin name maxp dtls
+    local pin name maxp dtls online domain
+    online="${ONLINE:-$(conf_get ONLINE)}"; online="${online:-0}"
+    domain="${DOMAIN:-$(conf_get DOMAIN)}"
     pin="${PIN:-$(conf_get PIN)}"
-    [[ -n "$pin" ]] || pin="$(printf '%04d' $((RANDOM % 10000)))"
+    if [[ "$online" == 1 ]]; then
+        # Online : mot de passe long (12+). Généré (aléatoire, 20 caractères) s'il n'est pas fourni ou trop court.
+        if [[ ${#pin} -lt 12 ]]; then
+            [[ -z "$PIN" ]] || die "mot de passe trop court : 12 caractères minimum en mode --online"
+            pin="$(LC_ALL=C tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 20 || true)"
+            GENERATED_PASSWORD="$pin"
+        fi
+    else
+        if [[ -z "$pin" ]]; then pin="$(printf '%04d' $((RANDOM % 10000)))"; fi
+        if [[ ! "$pin" =~ ^[0-9]{4}$ ]]; then
+            [[ -z "$PIN" ]] || die "le PIN doit faire 4 chiffres (mot de passe long : mode --online)"
+            pin="$(printf '%04d' $((RANDOM % 10000)))"
+        fi
+    fi
     name="${NAME:-$(conf_get NAME)}"; name="${name:-CyberRealm Server}"
     maxp="${MAX_PLAYERS:-$(conf_get MAX_PLAYERS)}"; maxp="${maxp:-8}"
     dtls="${DTLS:-$(conf_get DTLS)}"; dtls="${dtls:-1}"
@@ -240,6 +271,10 @@ write_config() {
         printf 'MAX_PLAYERS=%q\n' "$maxp"
         printf 'DTLS=%q\n' "$dtls"
         printf 'ADMIN_PASSWORD=%q\n' "$admin_pw"
+        printf 'ONLINE=%q\n' "$online"
+        printf 'DOMAIN=%q\n' "$domain"
+        printf 'TLS_CERT=%q\n' "$TLS_DIR/fullchain.pem"
+        printf 'TLS_KEY=%q\n' "$TLS_DIR/privkey.pem"
         printf 'EXTRA_ARGS=%q\n' "$(conf_get EXTRA_ARGS)"
         printf 'HOME=%q\n' "$DATA_DIR"
     } > "$CONF"
@@ -256,8 +291,15 @@ export HOME
 # Par l'environnement (pas en argument : visible dans `ps`).
 export CYBERREALM_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [[ -f "$BLOB" ]] || { echo "niveau introuvable : $BLOB (installe-le : install-server.sh blob FICHIER)" >&2; exit 2; }
-args=("--blob=$BLOB" "--pin=$PIN" "--name=$NAME" "--max-players=$MAX_PLAYERS")
-[[ "${DTLS:-1}" == "0" ]] && args+=("--no-dtls")
+args=("--blob=$BLOB" "--name=$NAME" "--max-players=$MAX_PLAYERS")
+if [[ "${ONLINE:-0}" == "1" ]]; then
+    # Mode Internet : TLS réel, mot de passe par l'environnement (jamais en argument), chiffrement toujours actif.
+    export CYBERREALM_PASSWORD="$PIN"
+    args+=("--online" "--tls-cert=$TLS_CERT" "--tls-key=$TLS_KEY")
+else
+    args+=("--pin=$PIN")
+    [[ "${DTLS:-1}" == "0" ]] && args+=("--no-dtls")
+fi
 # shellcheck disable=SC2086
 exec "$GODOT" --headless --path "$APP" scenes/dedicated_server.tscn -- "${args[@]}" ${EXTRA_ARGS:-}
 EOF
@@ -281,6 +323,19 @@ ExecStart=$RUNNER
 Restart=on-failure
 RestartSec=5
 LimitNOFILE=65536
+# Durcissement : le serveur n'a besoin que de son dossier et du réseau.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=$PREFIX
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictRealtime=yes
+LockPersonality=yes
+CapabilityBoundingSet=
 # Le niveau complet (Morrowind) occupe ~1,5 Go : marge large sur un Pi 5 16 Go, plafond de sécurité.
 MemoryMax=8G
 
@@ -291,13 +346,75 @@ EOF
     systemctl enable "$SERVICE_NAME" >/dev/null 2>&1
 }
 
+# Mode online : certificat TLS. Let's Encrypt (certbot standalone, port 80 joignable depuis Internet) ou fichiers fournis.
+setup_tls() {
+    local online="${ONLINE:-$(conf_get ONLINE)}"
+    [[ "$online" == 1 ]] || return 0
+    [[ "${DTLS:-1}" != 0 ]] || die "--online est incompatible avec --no-dtls"
+    local domain="${DOMAIN:-$(conf_get DOMAIN)}"
+    mkdir -p "$TLS_DIR"
+    if [[ -n "$TLS_CERT_SRC" || -n "$TLS_KEY_SRC" ]]; then
+        [[ -f "$TLS_CERT_SRC" && -f "$TLS_KEY_SRC" ]] || die "--tls-cert et --tls-key doivent désigner deux fichiers existants"
+        log "certificat fourni : installation dans $TLS_DIR"
+        install -m 0644 "$TLS_CERT_SRC" "$TLS_DIR/fullchain.pem"
+        install -m 0600 "$TLS_KEY_SRC" "$TLS_DIR/privkey.pem"
+    elif [[ -n "$domain" ]]; then
+        [[ -n "$EMAIL" || -f "$TLS_DIR/fullchain.pem" ]] || die "--email requis pour obtenir le certificat Let's Encrypt"
+        if [[ ! -f "$TLS_DIR/fullchain.pem" ]]; then
+            command -v certbot >/dev/null 2>&1 || {
+                if [[ $EUID -eq 0 ]] && command -v apt-get >/dev/null 2>&1; then
+                    log "installation de certbot"; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
+                else die "certbot est requis (apt install certbot)"; fi
+            }
+            warn "Let's Encrypt va contacter http://$domain/ sur le PORT 80 : il doit être ouvert et redirigé vers ce serveur."
+            certbot certonly --standalone --non-interactive --agree-tos -m "$EMAIL" -d "$domain" \
+                || die "certbot a échoué (nom DNS correct ? port 80 ouvert/redirigé ?)"
+        fi
+        install_cert_hook "$domain"
+        copy_letsencrypt "$domain"
+    else
+        [[ -f "$TLS_DIR/fullchain.pem" && -f "$TLS_DIR/privkey.pem" ]] \
+            || die "mode online : fournis --domain NOM --email ADRESSE (Let's Encrypt) ou --tls-cert/--tls-key"
+    fi
+    if [[ $NO_SERVICE -eq 0 ]]; then
+        chown -R "root:$SERVICE_USER" "$TLS_DIR"; chmod 0750 "$TLS_DIR"
+        chmod 0640 "$TLS_DIR/privkey.pem"; chmod 0644 "$TLS_DIR/fullchain.pem"
+    fi
+}
+
+copy_letsencrypt() {
+    local domain="$1" live="/etc/letsencrypt/live/$1"
+    [[ -f "$live/fullchain.pem" ]] || return 0
+    install -m 0644 "$live/fullchain.pem" "$TLS_DIR/fullchain.pem"
+    install -m 0640 "$live/privkey.pem" "$TLS_DIR/privkey.pem"
+}
+
+# Renouvellement automatique (certbot.timer) : recopie le certificat et redémarre le serveur pour le recharger.
+install_cert_hook() {
+    local domain="$1" hook="/etc/letsencrypt/renewal-hooks/deploy/cyberrealm-server.sh"
+    [[ $EUID -eq 0 && -d /etc/letsencrypt ]] || return 0
+    mkdir -p "$(dirname "$hook")"
+    cat > "$hook" <<EOF
+#!/usr/bin/env bash
+# CyberRealm : après renouvellement, installer le nouveau certificat et redémarrer le serveur.
+set -e
+[[ "\$RENEWED_LINEAGE" == "/etc/letsencrypt/live/$domain" ]] || exit 0
+install -m 0644 "\$RENEWED_LINEAGE/fullchain.pem" "$TLS_DIR/fullchain.pem"
+install -m 0640 "\$RENEWED_LINEAGE/privkey.pem" "$TLS_DIR/privkey.pem"
+chown root:$SERVICE_USER "$TLS_DIR/fullchain.pem" "$TLS_DIR/privkey.pem"
+systemctl restart $SERVICE_NAME
+EOF
+    chmod 0755 "$hook"
+}
+
 open_firewall() {
     [[ $OPEN_FIREWALL -eq 1 ]] || return 0
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
         log "ouverture des ports dans ufw"
         ufw allow "$PORT_GAME/udp" >/dev/null
-        ufw allow "$PORT_DISCOVERY/udp" >/dev/null
         ufw allow "$PORT_LEVEL/tcp" >/dev/null
+        # La découverte UDP (9999) n'existe pas en mode online : port à ne PAS ouvrir.
+        if [[ "${ONLINE:-$(conf_get ONLINE)}" != 1 ]]; then ufw allow "$PORT_DISCOVERY/udp" >/dev/null; fi
     else
         warn "ufw absent ou inactif : ouvre toi-même UDP $PORT_GAME et $PORT_DISCOVERY, TCP $PORT_LEVEL si besoin."
     fi
@@ -328,8 +445,22 @@ summary() {
     echo
     log "installation terminée"
     printf '  Adresse(s) : %s\n' "$(lan_ips)"
-    printf '  PIN        : %s\n' "$(conf_get PIN)"
-    printf '  Ports      : UDP %s (jeu), UDP %s (découverte), TCP %s (niveau)\n' "$PORT_GAME" "$PORT_DISCOVERY" "$PORT_LEVEL"
+    if [[ "$(conf_get ONLINE)" == 1 ]]; then
+        printf '  MODE       : ONLINE (Internet) — les joueurs rejoignent par le NOM : %s\n' "$(conf_get DOMAIN)"
+        if [[ -n "$GENERATED_PASSWORD" ]]; then
+            printf '  Mot de passe généré (à donner aux joueurs, noté dans %s) : %s\n' "$CONF" "$GENERATED_PASSWORD"
+        else
+            printf '  Mot de passe : défini (voir %s)\n' "$CONF"
+        fi
+        printf '  Redirige sur ta box : UDP %s et TCP %s vers ce serveur (+ TCP 80 pour Let'"'"'s Encrypt)\n' "$PORT_GAME" "$PORT_LEVEL"
+    else
+        printf '  PIN        : %s\n' "$(conf_get PIN)"
+    fi
+    if [[ "$(conf_get ONLINE)" == 1 ]]; then
+        printf '  Ports      : UDP %s (jeu), TCP %s (niveau) — pas de découverte\n' "$PORT_GAME" "$PORT_LEVEL"
+    else
+        printf '  Ports      : UDP %s (jeu), UDP %s (découverte), TCP %s (niveau)\n' "$PORT_GAME" "$PORT_DISCOVERY" "$PORT_LEVEL"
+    fi
     printf '  Niveau     : %s\n' "$([[ -f "$BLOB_DST" ]] && echo "$BLOB_DST" || echo "AUCUN (voir : $0 blob FICHIER)")"
     if [[ $NO_SERVICE -eq 0 ]]; then
         printf '  Journal    : journalctl -u %s -f\n' "$SERVICE_NAME"
@@ -350,11 +481,19 @@ do_install() {
     install_godot
     sync_project
     install_blob
+    setup_tls_early
     write_config
+    setup_tls
     write_service
     open_firewall
     start_service
     summary
+}
+
+# DOMAIN/ONLINE doivent être connus de write_config avant setup_tls (qui lit la config) : rien à faire ici sauf
+# refuser les combinaisons incohérentes tôt.
+setup_tls_early() {
+    if [[ "$ONLINE" == 1 && "$DTLS" == 0 ]]; then die "--online est incompatible avec --no-dtls"; fi
 }
 
 do_update() {
@@ -365,7 +504,10 @@ do_update() {
     install_godot
     sync_project
     install_blob
+    setup_tls_early
     write_config
+    setup_tls
+    write_service
     open_firewall
     start_service
     summary
