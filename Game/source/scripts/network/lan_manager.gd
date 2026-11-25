@@ -4299,7 +4299,10 @@ func _disconnect_session(keep_context := false) -> void:
 	_video_ack_pending.clear()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
-		multiplayer.multiplayer_peer = null
+		# Retour à l'état « hors ligne » PAR DÉFAUT du moteur (OfflineMultiplayerPeer : is_server() = true, id 1). Avec
+		# null, is_server() devenait false et get_unique_id() 0 : le joueur solo n'était plus « l'hôte » de son propre
+		# niveau (options du niveau verrouillées après une déconnexion).
+		multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	_clear_remote_players()
 	_clear_all_remote_windows()
 	_last_texture_versions.clear()
