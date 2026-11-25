@@ -75,6 +75,11 @@ Port 80 already used on the server (a container, a reverse proxy)? Pick another 
 forward public TCP 80 to it on your router: `--http-port 8080` (certbot remembers it for renewals; with ufw the script
 opens it). Other options: DNS-01 validation with your DNS provider's certbot plugin, then `--tls-cert/--tls-key`.
 
+**Best when a proxy (Traefik…) owns ports 80/443 — DNS-01, no port at all**: with a Cloudflare zone, create an API token
+(*Edit zone DNS* on your zone), put `dns_cloudflare_api_token = <token>` in a file, then
+`install-server.sh update --online --domain play.example.org --email you@example.org --dns-plugin cloudflare --dns-credentials FILE`.
+The record of the game name must be **DNS only** (grey cloud): Cloudflare cannot proxy UDP.
+
 Behind a reverse proxy that owns ports 80/443 (Traefik, nginx…) and public 80 must keep going to it: let certbot
 free the port only while it validates — `--pre-hook "docker stop traefik" --post-hook "docker start traefik"` (a few
 seconds of downtime every ~60 days, stored for the automatic renewals). The cleaner long-term alternative is DNS-01

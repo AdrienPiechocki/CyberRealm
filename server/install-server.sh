@@ -32,6 +32,8 @@ DTLS=""                             # 1 = chiffré (défaut), 0 = --no-dtls
 ONLINE=""                           # 1 = serveur exposé sur Internet (mode online durci)
 DOMAIN=""                           # nom DNS du serveur (certificat Let's Encrypt)
 EMAIL=""                            # e-mail Let's Encrypt (alertes d'expiration)
+DNS_PLUGIN=""                       # validation DNS-01 (cloudflare, ovh, …) : aucun port ouvert nécessaire
+DNS_CRED_SRC=""
 PRE_HOOK=""                         # commande certbot avant validation/renouvellement (ex. arrêter le proxy qui prend le port 80)
 POST_HOOK=""                        # commande certbot après (ex. relancer le proxy)
 HTTP_PORT=80                        # port LOCAL de la validation Let's Encrypt (la box redirige 80 -> ce port)
@@ -64,6 +66,10 @@ Options :
                         Exige --domain + --email (certificat Let's Encrypt) ou --tls-cert/--tls-key. Voir docs.
   --domain NOM          nom DNS public du serveur (ex. play.exemple.org) ; les joueurs rejoignent PAR CE NOM
   --email ADRESSE       e-mail Let's Encrypt
+  --dns-plugin NOM      validation Let's Encrypt par l'API DNS de ton hébergeur (cloudflare, ovh, digitalocean…) :
+                        AUCUN port à ouvrir ni à libérer, renouvellements compris. Avec --dns-credentials.
+  --dns-credentials F   fichier d'identifiants du plugin (ex. cloudflare : dns_cloudflare_api_token = ...). Copié en 0600
+                        dans /etc/letsencrypt pour les renouvellements.
   --pre-hook CMD        commande exécutée par certbot AVANT l'émission et chaque renouvellement (ex. "docker stop traefik")
   --post-hook CMD       commande exécutée APRÈS (ex. "docker start traefik") : libère puis rend le port 80 le temps de
                         la validation (quelques secondes tous les ~60 jours). Mémorisé pour les renouvellements.
@@ -111,6 +117,8 @@ while [[ $# -gt 0 ]]; do
         --domain)       DOMAIN="${2:?}"; shift 2 ;;
         --email)        EMAIL="${2:?}"; shift 2 ;;
         --http-port)    HTTP_PORT="${2:?}"; shift 2 ;;
+        --dns-plugin)   DNS_PLUGIN="${2:?}"; shift 2 ;;
+        --dns-credentials) DNS_CRED_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
         --pre-hook)     PRE_HOOK="${2:?}"; shift 2 ;;
         --post-hook)    POST_HOOK="${2:?}"; shift 2 ;;
         --tls-cert)     TLS_CERT_SRC="$(readlink -f "${2:?}")"; shift 2 ;;
@@ -377,6 +385,22 @@ setup_tls() {
                     log "installation de certbot"; DEBIAN_FRONTEND=noninteractive apt-get install -y -qq certbot
                 else die "certbot est requis (apt install certbot)"; fi
             }
+            if [[ -n "$DNS_PLUGIN" ]]; then
+                [[ -f "$DNS_CRED_SRC" ]] || die "--dns-plugin exige --dns-credentials FICHIER"
+                [[ "$DNS_PLUGIN" =~ ^[a-z0-9-]+$ ]] || die "nom de plugin DNS invalide : $DNS_PLUGIN"
+                if ! certbot plugins 2>/dev/null | grep -q "dns-$DNS_PLUGIN"; then
+                    if [[ $EUID -eq 0 ]] && command -v apt-get >/dev/null 2>&1; then
+                        log "installation du plugin certbot DNS « $DNS_PLUGIN »"
+                        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "python3-certbot-dns-$DNS_PLUGIN" \
+                            || die "paquet python3-certbot-dns-$DNS_PLUGIN introuvable"
+                    else die "plugin certbot DNS manquant (python3-certbot-dns-$DNS_PLUGIN)"; fi
+                fi
+                local cred="/etc/letsencrypt/cyberrealm-dns-$DNS_PLUGIN.ini"
+                install -m 0600 "$DNS_CRED_SRC" "$cred"
+                certbot certonly "--dns-$DNS_PLUGIN" "--dns-$DNS_PLUGIN-credentials" "$cred" --non-interactive \
+                    --agree-tos -m "$EMAIL" -d "$domain" \
+                    || die "certbot (DNS-01) a échoué : jeton valide ? droits « Edit zone DNS » sur la zone ?"
+            else
             warn "Let's Encrypt va contacter http://$domain/ sur le PORT 80 public : il doit être redirigé vers le port $HTTP_PORT de ce serveur."
             if [[ "$HTTP_PORT" != 80 ]] && command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
                 ufw allow "$HTTP_PORT/tcp" >/dev/null        # (validation et renouvellements)
@@ -387,6 +411,7 @@ setup_tls() {
             certbot certonly --standalone --http-01-port "$HTTP_PORT" "${hooks[@]}" --non-interactive --agree-tos \
                 -m "$EMAIL" -d "$domain" \
                 || die "certbot a échoué (nom DNS correct ? port 80 ouvert/redirigé ?)"
+            fi
         fi
         install_cert_hook "$domain"
         copy_letsencrypt "$domain"
