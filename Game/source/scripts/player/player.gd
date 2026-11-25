@@ -492,15 +492,17 @@ func _push_rigid_bodies() -> void:
 		var rb := col.get_collider() as RigidBody3D
 		if rb == null:
 			continue
-		if rb.freeze:       # objet de décor encore figé : le contact enclenche sa physique
-			if rb.has_method("touch"):
-				rb.touch()
-			continue
 		var push := -col.get_normal()
 		push.y = 0.0
 		var spd := Vector3(velocity.x, 0.0, velocity.z).length()
-		if spd < 0.1 or push == Vector3.ZERO:
+		var impulse := Vector3.ZERO
+		if spd >= 0.1 and push != Vector3.ZERO:
+			impulse = push.normalized() * minf(spd, 4.0) * minf(rb.mass, 3.0) * 0.5
+		if rb.freeze:       # objet de décor encore figé : le contact enclenche sa physique (ou la demande au serveur)
+			if rb.has_method("touch"):
+				rb.touch(impulse)
+			continue
+		if impulse == Vector3.ZERO:
 			continue
 		rb.sleeping = false
-		rb.apply_impulse(push.normalized() * minf(spd, 4.0) * minf(rb.mass, 3.0) * 0.5,
-				col.get_position() - rb.global_position)
+		rb.apply_impulse(impulse, col.get_position() - rb.global_position)

@@ -58,11 +58,29 @@ Restart=on-failure
 WantedBy=multi-user.target
 ```
 
+## Server authority over level physics
+
+The server loads the level from the blob (user scripts and assets installed like a client does) and strips every
+script except the nodes tagged with the `net_server` metadata (the Morrowind level tags `Interiors`, which runs the
+props in server mode: no weather, day/night, windows or player). Then:
+
+- A client **touching/pushing, grabbing, holding, throwing or dropping** a prop sends a *level message*
+  (`prop_touch`, `prop_grab`, `prop_hold`, `prop_throw`, `prop_drop`) to the server, which simulates the body.
+- Moving props are streamed to clients through the existing level sync (`lan_sync` transforms, ~20 Hz); clients keep
+  a kinematic mirror body glued to the mesh for collisions and aiming.
+- **Breakage** is decided by the server (impact speed); it broadcasts `prop_break` and clients play the shards.
+- The generic channel lives in `lan_manager.gd`: `send_level_message()` (client -> server),
+  `broadcast_level_message()` / `send_level_message_to()` (server -> clients), signal `level_message`, plus
+  `register_level_sync()` / `unregister_level_sync()` for nodes that move at runtime (clients accept updates only for
+  nodes carrying the `lan_sync_dynamic` metadata).
+- Solo and LAN-host play are unchanged: props stay local (`CYBERREALM_LOCAL_PROPS=1` forces this on a client).
+
 ## Current limits
 
 - LAN / VPN only for now: the PIN and DTLS protect the session, but no Internet hardening (rate limits per IP, bans)
   has been reviewed for exposure.
-- The server relays players and serves the level; it does not simulate it yet. Level physics (props, breakage) stays
-  local to each client until server-side authority is added.
+- Late joiners receive the level as exported: props moved or broken before they joined are not replayed yet.
+- Basic validation only (message sizes, impulse/throw speed clamps): a modified client could still ask to grab a
+  prop from anywhere. Distance checks against the player's synced position are a possible next step.
 - The RPC node path is identical on server and clients (`/root/WaylandRoom/LAN`): `scenes/dedicated_server.tscn`'s root
   must keep the name `WaylandRoom`.

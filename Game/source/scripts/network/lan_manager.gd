@@ -57,6 +57,9 @@ var _pending_auth: Dictionary = {}
 # Serveur dédié (headless, sans joueur) : l'hôte n'est PAS un joueur — ni roster, ni avatar, ni synchro de transform ;
 # il porte le niveau (blob prébaké), le PIN et le relais. Voir scripts/server/dedicated_server.gd.
 var dedicated := false
+## Client : la session a un serveur dédié (renseigné par le serveur à l'inscription). Le décor physique est alors
+## simulé par le SERVEUR (autorité) ; le client n'envoie que des demandes (toucher, prendre, lancer…).
+var session_dedicated := false
 var forced_pin := ""                 # PIN imposé (sinon tiré au sort)
 var max_players := MAX_PLAYERS
 # Chiffrement DTLS de la session (toggle pause_menu). Exposé en var publique.
@@ -1023,8 +1026,16 @@ func _register_player(pname: String, color: Color) -> void:
 	_emit_players()
 	# Contrôle parti depuis un tube vide (snapshot + broadcasts ci-dessus) →
 	# SEULEMENT MAINTENANT démarrer les transferts lourds vers ce pair.
+	_session_info.rpc_id(from, dedicated)
 	_send_level_to(from)
 	_send_avatar_to(from)
+
+# Le client apprend s'il joue sur un serveur dédié (autorité serveur sur la physique du décor).
+@rpc("authority", "call_remote", "reliable", 1)
+func _session_info(is_dedicated: bool) -> void:
+	if is_host or multiplayer.get_remote_sender_id() != 1:
+		return
+	session_dedicated = is_dedicated
 
 # Roster complet envoyé par l'hôte dès la registration du client : peuplé
 # AVANT tout transfert lourd, il permet au différé de niveau de connaître
@@ -2129,6 +2140,7 @@ func _on_peer_disconnected(id: int) -> void:
 	])
 	if is_host:
 		_players.erase(id)
+		level_peer_left.emit(id)
 		_remove_player.rpc(id)
 		if _level_tcp_server != null:
 			_level_tcp_server.revoke(id)
@@ -4005,6 +4017,7 @@ func _disconnect_session(keep_context := false) -> void:
 		multiplayer.connection_failed.disconnect(_on_connection_failed)
 	if multiplayer.server_disconnected.is_connected(_on_server_disconnected):
 		multiplayer.server_disconnected.disconnect(_on_server_disconnected)
+	session_dedicated = false
 	session_active = false
 	is_host = false
 	session_encrypted = false
@@ -4054,6 +4067,87 @@ func _exit_tree() -> void:
 	_clear_all_remote_windows()
 	if multiplayer.multiplayer_peer != null:
 		multiplayer.multiplayer_peer.close()
+
+# ── Messages de niveau (scripts du niveau <-> serveur) ───────────────
+# Canal générique pour la logique d'un niveau sous autorité serveur (ex. physique du décor) : un client envoie une
+# demande au serveur, le serveur diffuse le résultat. Les scripts du niveau écoutent `level_message`.
+signal level_message(topic: String, data: Variant, from_peer: int)
+signal level_peer_left(peer: int)       # serveur : un client est parti (libérer ses objets en main…)
+const LEVEL_MSG_TOPIC_MAX := 48
+
+func in_dedicated_session() -> bool:
+	return dedicated or session_dedicated
+
+## Client -> serveur.
+func send_level_message(topic: String, data: Variant = null, reliable := true) -> void:
+	if not session_active or is_host:
+		return
+	if reliable:
+		_level_msg_up.rpc_id(1, topic, data)
+	else:
+		_level_msg_up_u.rpc_id(1, topic, data)
+
+## Serveur -> tous les clients.
+func broadcast_level_message(topic: String, data: Variant = null, reliable := true) -> void:
+	if not session_active or not is_host:
+		return
+	if reliable:
+		_level_msg_down.rpc(topic, data)
+	else:
+		_level_msg_down_u.rpc(topic, data)
+
+## Serveur -> un client.
+func send_level_message_to(peer: int, topic: String, data: Variant = null) -> void:
+	if session_active and is_host:
+		_level_msg_down.rpc_id(peer, topic, data)
+
+@rpc("any_peer", "call_remote", "reliable", 1)
+func _level_msg_up(topic: String, data: Variant) -> void:
+	_accept_level_msg_up(topic, data)
+
+@rpc("any_peer", "call_remote", "unreliable", 3)
+func _level_msg_up_u(topic: String, data: Variant) -> void:
+	_accept_level_msg_up(topic, data)
+
+func _accept_level_msg_up(topic: String, data: Variant) -> void:
+	if not is_host or topic.length() > LEVEL_MSG_TOPIC_MAX:
+		return
+	var from := multiplayer.get_remote_sender_id()
+	if from == 0 or _pending_auth.has(from) or not _players.has(from):
+		return      # seuls les pairs inscrits (PIN vérifié) parlent au niveau
+	level_message.emit(topic, data, from)
+
+@rpc("authority", "call_remote", "reliable", 1)
+func _level_msg_down(topic: String, data: Variant) -> void:
+	_accept_level_msg_down(topic, data)
+
+@rpc("authority", "call_remote", "unreliable", 3)
+func _level_msg_down_u(topic: String, data: Variant) -> void:
+	_accept_level_msg_down(topic, data)
+
+func _accept_level_msg_down(topic: String, data: Variant) -> void:
+	if is_host or multiplayer.get_remote_sender_id() != 1 or topic.length() > LEVEL_MSG_TOPIC_MAX:
+		return
+	level_message.emit(topic, data, 1)
+
+## Serveur : ajoute / retire un Node3D (mesh d'un objet en mouvement) de la synchro de transformations. Côté client,
+## un nœud n'est mis à jour que s'il porte la méta « lan_sync_dynamic » (voir _resolve_dynamic_sync).
+func register_level_sync(n: Node3D) -> void:
+	if is_host and _level_root != null and n.is_inside_tree():
+		_level_sync_by_path[str(_level_root.get_path_to(n))] = n
+
+func unregister_level_sync(n: Node3D) -> void:
+	if is_host and _level_root != null and n.is_inside_tree():
+		_level_sync_by_path.erase(str(_level_root.get_path_to(n)))
+
+func _resolve_dynamic_sync(path: String) -> Node3D:
+	if _level_root == null:
+		return null
+	var n := _level_root.get_node_or_null(NodePath(path)) as Node3D
+	if n != null and n.has_meta("lan_sync_dynamic"):
+		_level_sync_by_path[path] = n
+		return n
+	return null
 
 const LEVEL_SYNC_GAP := 0.05
 var _level_sync_by_path: Dictionary = {}  # chemin relatif -> Node3D
@@ -4107,6 +4201,8 @@ func _sync_level_state(delta: float) -> void:
 	var t := 1.0 - exp(-delta * 12.0)
 	for path in _level_sync_target:
 		var n := _level_sync_by_path.get(path) as Node3D
+		if n == null:
+			n = _resolve_dynamic_sync(String(path))
 		if n == null or not is_instance_valid(n):
 			continue
 		var target: Transform3D = _level_sync_target[path]

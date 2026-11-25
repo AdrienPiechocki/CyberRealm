@@ -27,9 +27,7 @@ func _ready() -> void:
 		get_tree().quit(3)
 		return
 
-	var level := Node3D.new()
-	level.name = "Level"
-	add_child(level)
+	# LAN créé AVANT le niveau : ses scripts (interiors.gd…) le retrouvent pour savoir qu'ils tournent sur un serveur.
 	lan = Node.new()
 	lan.name = "LAN"
 	lan.set_script(LanScript)
@@ -38,6 +36,11 @@ func _ready() -> void:
 	lan.forced_pin = String(args.get("pin", ""))
 	lan.max_players = int(args.get("max-players", 8))
 	lan.encryption_enabled = not args.has("no-dtls")
+	var level := _instantiate_level(blob)
+	if level == null:
+		get_tree().quit(5)
+		return
+	add_child(level)
 	lan.setup(level, String(args.get("name", "CyberRealm Server")), Color.WHITE)
 	lan.level_bake_provider = func() -> Dictionary: return blob
 	lan.status_changed.connect(func(t: String): print("[server] ", t))
@@ -54,6 +57,47 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
 		if lan != null and is_instance_valid(lan) and lan.has_method("disconnect_session"):
 			lan.disconnect_session()
+
+
+## Instancie le niveau du blob POUR LA SIMULATION : scripts utilisateur et assets installés comme chez un client,
+## puis tous les scripts retirés sauf ceux des nœuds marqués `net_server` (la physique du décor) — ni météo, ni
+## cycle jour/nuit, ni fenêtres sur un serveur. Le Player embarqué est supprimé.
+func _instantiate_level(blob: Dictionary) -> Node3D:
+	var manifest: Dictionary = blob.get("scripts", {})
+	if not manifest.is_empty() and UserScriptMirror.valid(manifest):
+		UserScriptMirror.install(manifest)
+	var assets: Dictionary = blob.get("assets", {})
+	for p in assets:
+		UserScriptMirror.write_bytes(String(p), assets[p])
+	var path := "user://dedicated_level.scn"
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		push_error("dedicated_server: impossible d'écrire " + path)
+		return null
+	f.store_buffer(blob["bytes"])
+	f.close()
+	var t0 := Time.get_ticks_msec()
+	var scene := ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE) as PackedScene
+	if scene == null:
+		push_error("dedicated_server: niveau illisible")
+		return null
+	var level := scene.instantiate() as Node3D
+	if level == null:
+		return null
+	var player := level.find_child("Player", true, false)
+	if player != null:
+		player.get_parent().remove_child(player)
+		player.free()
+	_strip_scripts(level)
+	print("[server] niveau instancié en %d ms" % (Time.get_ticks_msec() - t0))
+	return level
+
+
+static func _strip_scripts(n: Node) -> void:
+	if n.get_script() != null and not n.has_meta("net_server"):
+		n.set_script(null)
+	for c in n.get_children():
+		_strip_scripts(c)
 
 
 static func _parse_args(argv: PackedStringArray) -> Dictionary:
