@@ -166,6 +166,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("ime_commit_string", "text"), &WlrCompositor::ime_commit_string);
     ClassDB::bind_method(D_METHOD("has_input_method"), &WlrCompositor::has_input_method);
     ClassDB::bind_method(D_METHOD("get_text_input_state"), &WlrCompositor::get_text_input_state);
+    ClassDB::bind_method(D_METHOD("get_explicit_sync_info"), &WlrCompositor::get_explicit_sync_info);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
     ClassDB::bind_method(D_METHOD("set_cpu_capture_requested", "requested"), &WlrCompositor::set_cpu_capture_requested);
     ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
@@ -458,6 +459,7 @@ WlrCompositor::~WlrCompositor() {
             shortcuts_inhibit_listening = false;
         }
         teardown_text_input_listeners();
+        teardown_explicit_sync_listeners();
 
         // Détruire le curseur AVANT le display (wlr_cursor/wlr_cursor_manager
         // dépendent du display pour leurs ressources internes).
@@ -1204,6 +1206,8 @@ void WlrCompositor::start_headless() {
 
     // Saisie de texte : text_input_v3 / input_method_v2 / virtual_keyboard_v1 (text_input.cpp).
     setup_text_input();
+    // linux_drm_syncobj_v1 derrière CYBERREALM_EXPLICIT_SYNC=1 (explicit_sync.cpp).
+    setup_explicit_sync();
 
     // wp_cursor_shape_v1 : curseur demandé par forme (cursor_shape.cpp).
     cursor_shape_manager = wlr_cursor_shape_manager_v1_create(display, 1);

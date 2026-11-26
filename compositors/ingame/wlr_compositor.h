@@ -71,6 +71,7 @@ extern "C" {
 #include <wlr/types/wlr_cursor_shape_v1.h>
 #include <wlr/types/wlr_foreign_toplevel_management_v1.h>
 #include <wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h>
+#include <wlr/types/wlr_linux_drm_syncobj_v1.h>
 }
 
 namespace godot {
@@ -682,7 +683,20 @@ class WlrCompositor : public Node {
     // Grab clavier de l'input method : true si la touche lui a été envoyée (le seat ne la reçoit pas).
     bool text_input_grab_key(uint32_t time_msec, uint32_t keycode, uint32_t state);
     bool text_input_grab_modifiers();
+
+    // ── Synchronisation explicite (lot M, explicit_sync.cpp) ────────────
+    wlr_linux_drm_syncobj_manager_v1 *syncobj_manager = nullptr;
+    bool explicit_sync = false;
+    Dictionary explicit_sync_info;
+    wl_listener new_surface_sync_listener{};
+    bool new_surface_sync_listening = false;
+    static void on_new_surface_for_sync(wl_listener *listener, void *data);
+    void setup_explicit_sync();
+    void teardown_explicit_sync_listeners();
+    bool surface_uses_syncobj(wlr_surface *surface);
+    void apply_syncobj_wait(wlr_surface *surface, wlr_render_texture_options &opts);
 public:
+    Dictionary get_explicit_sync_info();
     bool ime_commit_string(const String &text);
     bool has_input_method() const;
     Dictionary get_text_input_state();

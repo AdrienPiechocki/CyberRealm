@@ -74,6 +74,14 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   apps in the game (it serves `org.freedesktop.Notifications` there if no other
   server does) and of the desktop (read-only). Each player sees their own data;
   General → *Notifications in the world*: full / app only / count only.
+- **Explicit sync (experimental)** — `wp_linux_drm_syncobj_v1`, announced only
+  with `CYBERREALM_EXPLICIT_SYNC=1` and when the wlroots renderer supports
+  timelines (never with the pixman fallback). Captures wait for each client
+  buffer's acquire point; release points are signaled when wlroots releases the
+  buffer; such surfaces skip the zero-copy focus path (Godot cannot wait on an
+  external semaphore). The log line `explicit sync — renderer timeline=…` tells
+  what the machine supports. Useful mostly for NVIDIA; on Mesa (RADV), implicit
+  sync already works.
 - **Sharp windows up close** (pause menu → General → *Window sharpness*, default
   *up to ×1.5*) — a window you look at from near gets a higher scale through
   `wp_fractional_scale_v1` (×1.25, ×1.5 or ×2): the app renders more pixels for

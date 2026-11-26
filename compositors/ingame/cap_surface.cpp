@@ -570,6 +570,7 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         // ni de transparent overlay.
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
+        apply_syncobj_wait(inst.surface, opts);      // synchronisation explicite (explicit_sync.cpp)
         opts.dst_box.x = (int)std::lround((inst.sx - geo_x) * cap_scale);
         opts.dst_box.y = (int)std::lround((inst.sy - geo_y) * cap_scale);
         opts.dst_box.width = (int)std::lround(sub_w * cap_scale);
@@ -929,6 +930,7 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
+        apply_syncobj_wait(inst.surface, opts);      // synchronisation explicite (explicit_sync.cpp)
         opts.dst_box.x = (int)std::lround((inst.sx - geo_x) * cap_scale);
         opts.dst_box.y = (int)std::lround((inst.sy - geo_y) * cap_scale);
         opts.dst_box.width = (int)std::lround(sub_w * cap_scale);
@@ -1119,6 +1121,7 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         // render pass.
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
+        apply_syncobj_wait(inst.surface, opts);      // synchronisation explicite (explicit_sync.cpp)
         opts.dst_box.x = (int)std::lround((inst.sx - geo_x) * cap_scale);
         opts.dst_box.y = (int)std::lround((inst.sy - geo_y) * cap_scale);
         opts.dst_box.width = (int)std::lround(sub_w * cap_scale);
@@ -1304,6 +1307,12 @@ bool WlrCompositor::capture_surface_zero_copy(wlr_surface *surface, Ref<Texture2
     // de layer/session-lock/drag dont wid reste à -1 par défaut quand aucun
     // focus prioritaire n'est actif.
     if (cache.wid != focus_capture_priority_window_id || cache.wid < 0) {
+        return false;
+    }
+    // Synchronisation explicite : le BO serait affiché sans attendre le point d'acquisition du client (Godot ne
+    // sait pas attendre un sémaphore externe) ; le chemin vulkan, rendu par wlroots, l'attend (explicit_sync.cpp).
+    if (surface_uses_syncobj(surface)) {
+        diag_focus("fallback(synchronisation explicite)");
         return false;
     }
     // Pas de partage LAN ni de readback CPU : le zéro-copy n'expose ni mmap
