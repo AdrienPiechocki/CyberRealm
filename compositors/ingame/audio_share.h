@@ -118,6 +118,8 @@ public:
 	static void registry_global_remove_cb(void *user_data, uint32_t id);
 	static void node_info_cb(void *user_data, const struct pw_node_info *info);
 	static void client_info_cb(void *user_data, const struct pw_client_info *info);
+	static int metadata_property_cb(void *user_data, uint32_t subject, const char *key, const char *type,
+			const char *value);
 
 private:
 	void on_registry_global(uint32_t id, const char *type, const struct ::spa_dict *props);
@@ -166,6 +168,22 @@ private:
 	std::unordered_map<uint32_t, std::string> node_names;      // node_id -> node.name
 	std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> links; // link_id -> (nœud de sortie, nœud d'entrée)
 	void *spatial_sink_proxy = nullptr; // pw_proxy* de la sortie muette
+	std::string spatial_sink_name;
+
+	// Retour automatique des apps vers la sortie muette quand on la recrée. Quand elle disparaît (option coupée),
+	// WirePlumber renvoie leurs flux sur la sortie par défaut puis pose `target.node = -1` (« suivre la sortie par
+	// défaut », comme PulseAudio) dans la métadonnée « default » ; cette clé l'emporte ensuite sur leur
+	// `target.object` et elles ne reviendraient plus d'elles-mêmes. Tant que la sortie existe, on efface ce -1 pour
+	// les flux de sortie qui la visent : WirePlumber relance le routage et les y ramène. Effacer n'ajoute rien à son
+	// état mémorisé (stream-properties) : -1 y est déjà enregistré comme « pas de cible ».
+	void *metadata = nullptr;      // pw_metadata* « default »
+	void *metadata_hook = nullptr; // spa_hook*
+	uint32_t metadata_id = 0;
+	std::unordered_map<uint32_t, std::string> node_targets; // node_id -> target.object (props du node)
+	std::unordered_map<uint32_t, uint8_t> follow_default;   // node_id -> clés à -1 (1 : target.node, 2 : target.object)
+	std::unordered_map<uint32_t, int> released;             // node_id -> effacements depuis la création de la sortie
+	void release_spatial_targets();
+	void on_metadata_property(uint32_t subject, const char *key, const char *value);
 	struct KeyEncoder {
 		void *enc = nullptr;           // OpusEncoder*
 		std::vector<float> pending;    // stéréo entrelacé, < 20 ms

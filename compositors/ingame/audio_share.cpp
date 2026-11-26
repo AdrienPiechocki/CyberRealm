@@ -4,6 +4,7 @@
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <pipewire/pipewire.h>
+#include <pipewire/extensions/metadata.h>
 #include <spa/param/audio/format-utils.h>
 #include <spa/pod/builder.h>
 #include <spa/utils/type.h>
@@ -66,6 +67,15 @@ static const struct pw_client_events g_client_events = {
 	.version = PW_VERSION_CLIENT_EVENTS,
 	.info = AudioShare::client_info_cb,
 };
+
+static const struct pw_metadata_events g_metadata_events = {
+	.version = PW_VERSION_METADATA_EVENTS,
+	.property = AudioShare::metadata_property_cb,
+};
+
+// Garde-fou : si WirePlumber ne peut pas relier une app à la sortie muette, il la remet sur la sortie par défaut et
+// repose -1 ; on n'insiste pas au-delà.
+static constexpr int MAX_TARGET_RELEASES = 2;
 
 static void stream_state_changed_cb(void *user_data, enum pw_stream_state old_state,
 		enum pw_stream_state state, const char *error);
@@ -194,6 +204,16 @@ void AudioShare::stop() {
 		}
 		streams.clear();
 	}
+	if (metadata) {
+		pw_proxy_destroy((pw_proxy *)metadata);
+		metadata = nullptr;
+	}
+	free(metadata_hook);
+	metadata_hook = nullptr;
+	metadata_id = 0;
+	node_targets.clear();
+	follow_default.clear();
+	released.clear();
 	if (registry) {
 		pw_proxy_destroy((pw_proxy *)registry);
 		registry = nullptr;
@@ -272,6 +292,20 @@ void AudioShare::on_registry_global(uint32_t id, const char *type, const struct 
 			links[id] = {(uint32_t)strtoul(o, nullptr, 10), (uint32_t)strtoul(i, nullptr, 10)};
 		}
 	}
+	// Métadonnée « default » de WirePlumber : cibles des flux (voir release_spatial_targets).
+	if (strcmp(type, PW_TYPE_INTERFACE_Metadata) == 0 && props && !metadata) {
+		const char *name = spa_dict_lookup(props, "metadata.name");
+		if (name && strcmp(name, "default") == 0) {
+			metadata = pw_registry_bind((pw_registry *)registry, id, PW_TYPE_INTERFACE_Metadata,
+					PW_VERSION_METADATA, 0);
+			if (metadata) {
+				metadata_id = id;
+				metadata_hook = calloc(1, sizeof(struct spa_hook));
+				pw_metadata_add_listener((pw_metadata *)metadata, (struct spa_hook *)metadata_hook,
+						&g_metadata_events, this);
+			}
+		}
+	}
 	// Les clients : leur event info porte application.process.id (fixé par le
 	// core, fiable). On les bind tous — c'est le chemin fiable pour retrouver
 	// le PID d'un node externe (node → client.id → client → pid).
@@ -306,6 +340,10 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 		}
 		if (node_name) {
 			node_names[id] = node_name;
+		}
+		const char *target_object = spa_dict_lookup(info->props, "target.object");
+		if (target_object) {
+			node_targets[id] = target_object;
 		}
 		// Le PID direct (application.process.id) n'est PAS fiable pour les
 		// apps externes (absentes de haruna/cava). On lit client.id puis on
@@ -352,6 +390,7 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 		// (crash juste après le connect). Le bind reste en vie, libéré par
 		// on_registry_global_remove ou stop().
 		apply_targets();
+		release_spatial_targets();
 	}
 }
 
@@ -420,6 +459,16 @@ void AudioShare::on_registry_global_remove(uint32_t id) {
 	node_names.erase(id);
 	links.erase(id);
 	node_clients.erase(id);
+	node_targets.erase(id);
+	follow_default.erase(id);
+	released.erase(id);
+	if (metadata && id == metadata_id) {
+		pw_proxy_destroy((pw_proxy *)metadata);
+		metadata = nullptr;
+		free(metadata_hook);
+		metadata_hook = nullptr;
+		metadata_id = 0;
+	}
 	auto it = pending_node_binds.find(id);
 	if (it != pending_node_binds.end()) {
 		NodeBind *nb = it->second;
@@ -843,6 +892,9 @@ bool AudioShare::set_spatial_sink(bool on, const String &name) {
 		pw_properties_free(p);
 		ok = spatial_sink_proxy != nullptr;
 		UtilityFunctions::print("waylandgodot: audio: spatial sink ", name, ok ? " created" : " creation FAILED");
+		spatial_sink_name = n.get_data();
+		released.clear();
+		release_spatial_targets();
 	} else if (!on && spatial_sink_proxy) {
 		pw_proxy_destroy((pw_proxy *)spatial_sink_proxy);
 		spatial_sink_proxy = nullptr;
@@ -850,6 +902,70 @@ bool AudioShare::set_spatial_sink(bool on, const String &name) {
 	}
 	pw_thread_loop_unlock((pw_thread_loop *)thread_loop);
 	return ok;
+}
+
+int AudioShare::metadata_property_cb(void *user_data, uint32_t subject, const char *key, const char *type,
+		const char *value) {
+	static_cast<AudioShare *>(user_data)->on_metadata_property(subject, key, value);
+	return 0;
+}
+
+void AudioShare::on_metadata_property(uint32_t subject, const char *key, const char *value) {
+	uint8_t bit = 0;
+	if (key == nullptr) {
+		follow_default.erase(subject); // toutes les clés du sujet effacées
+		return;
+	}
+	if (strcmp(key, "target.node") == 0) {
+		bit = 1;
+	} else if (strcmp(key, "target.object") == 0) {
+		bit = 2;
+	} else {
+		return;
+	}
+	if (value && strcmp(value, "-1") == 0) {
+		follow_default[subject] |= bit;
+	} else {
+		auto it = follow_default.find(subject);
+		if (it != follow_default.end() && (it->second &= ~bit) == 0) {
+			follow_default.erase(it);
+		}
+	}
+	release_spatial_targets();
+}
+
+// Thread de la boucle PW (callbacks) ou sous son lock (set_spatial_sink).
+void AudioShare::release_spatial_targets() {
+	if (!metadata || !spatial_sink_proxy || spatial_sink_name.empty()) {
+		return;
+	}
+	std::vector<std::pair<uint32_t, uint8_t>> todo;
+	for (const auto &kv : follow_default) {
+		auto t = node_targets.find(kv.first);
+		auto c = node_classes.find(kv.first);
+		if (t == node_targets.end() || t->second != spatial_sink_name
+				|| c == node_classes.end() || c->second != "Stream/Output/Audio") {
+			continue;
+		}
+		int &n = released[kv.first];
+		if (n >= MAX_TARGET_RELEASES) {
+			continue;
+		}
+		n++;
+		todo.push_back(kv);
+	}
+	for (const auto &kv : todo) {
+		follow_default.erase(kv.first);
+		if (kv.second & 1) {
+			pw_metadata_set_property((pw_metadata *)metadata, kv.first, "target.node", nullptr, nullptr);
+		}
+		if (kv.second & 2) {
+			pw_metadata_set_property((pw_metadata *)metadata, kv.first, "target.object", nullptr, nullptr);
+		}
+		auto nm = node_names.find(kv.first);
+		UtilityFunctions::print("waylandgodot: audio: node ", kv.first, " (",
+			nm != node_names.end() ? nm->second.c_str() : "?", ") back to ", spatial_sink_name.c_str());
+	}
 }
 
 PackedInt32Array AudioShare::audio_pids() {
