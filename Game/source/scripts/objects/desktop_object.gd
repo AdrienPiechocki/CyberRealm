@@ -6,6 +6,27 @@ extends Node3D
 
 const DesktopButton := preload("res://scripts/objects/desktop_button.gd")
 
+const GROUP := "desktop_object"
+var _bridge_attached := false
+
+## À appeler à la fin de _ready() : se branche sur le pont s'il existe déjà, sinon le pont appellera
+## attach_bridge() au démarrage (le niveau du lancement est créé AVANT lui).
+func connect_bridge() -> void:
+	add_to_group(GROUP)
+	var b := bridge()
+	if b != null:
+		attach_bridge(b)
+
+func attach_bridge(b: Node) -> void:
+	if _bridge_attached or b == null:
+		return
+	_bridge_attached = true
+	_on_bridge(b)
+
+## À redéfinir : connexion aux signaux du pont, premier affichage.
+func _on_bridge(_b: Node) -> void:
+	pass
+
 func bridge() -> Node:
 	return get_tree().get_first_node_in_group("desktop_bridge") if is_inside_tree() else null
 

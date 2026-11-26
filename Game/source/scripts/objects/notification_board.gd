@@ -20,10 +20,12 @@ func _ready() -> void:
 		var l := make_label("", Vector2(-SIZE.x / 2.0 + 0.035, y + 0.03), 24, Color(0.9, 0.92, 0.95), SIZE.x - 0.07)
 		l.position.z = 0.032
 		_rows.append([b, l])
-	var br := bridge()
-	if br != null:
-		br.notification_received.connect(func(_n): _refresh())
-		br.notification_closed.connect(func(_b, _i): _refresh())
+	_refresh()
+	connect_bridge()
+
+func _on_bridge(br: Node) -> void:
+	br.notification_received.connect(func(_n): _refresh())
+	br.notification_closed.connect(func(_b, _i): _refresh())
 	_refresh()
 
 static func row_text(n: Dictionary, privacy: String) -> String:

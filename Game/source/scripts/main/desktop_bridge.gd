@@ -58,6 +58,10 @@ func start(host_bus: String) -> void:
 	running = not _proc.is_empty()
 	if not running:
 		push_warning("desktop_bridge: lancement impossible (python3 / PyGObject ?)")
+		return
+	# Objets déjà présents (niveau chargé avant le pont, au lancement du jeu) : ils se branchent maintenant.
+	if is_inside_tree():
+		get_tree().call_group("desktop_object", "attach_bridge", self)
 
 func _exit_tree() -> void:
 	stop()

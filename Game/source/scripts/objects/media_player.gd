@@ -31,10 +31,12 @@ func _ready() -> void:
 	make_button("⏮", Vector2(x + 0.06, -0.135), Vector2(0.08, 0.05), _cmd.bind("previous"), "Left click: previous")
 	_play = make_button("⏯", Vector2(x + 0.2, -0.135), Vector2(0.08, 0.05), _cmd.bind("play_pause"), "Left click: play / pause")
 	make_button("⏭", Vector2(x + 0.34, -0.135), Vector2(0.08, 0.05), _cmd.bind("next"), "Left click: next")
-	var b := bridge()
-	if b != null:
-		b.media_changed.connect(func(_p): _refresh())
-		b.media_removed.connect(func(_id): _refresh())
+	_refresh()
+	connect_bridge()
+
+func _on_bridge(b: Node) -> void:
+	b.media_changed.connect(func(_p): _refresh())
+	b.media_removed.connect(func(_id): _refresh())
 	_refresh()
 
 func interact(player_id: int) -> void:
