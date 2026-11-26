@@ -757,6 +757,9 @@ func _apply_remote_windows(peer_id: int, windows: Array) -> void:
 			_set_remote_quad_texture(quad, null)
 			lan.video_share._reset_video_stream(peer_id, wid)
 			_erase_remote_cursor_state(peer_id, wid)
+			# Partage arrêté pendant qu'on la regardait en focus : on sort (il n'y a plus rien à voir).
+			if lan.focus != null:
+				lan.focus.handle_remote_window_removed(peer_id, wid)
 		else:
 			# Course 1re frame vs état : si une texture a déjà été reçue,
 			# l'appliquer maintenant (le quad vient peut-être d'être recréé).

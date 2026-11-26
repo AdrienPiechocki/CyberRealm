@@ -84,9 +84,10 @@ func _on_requested(peer: int, wid: int) -> void:
 	_refuse.grab_focus()
 
 func _answer(ok: bool) -> void:
-	if _wid != -1 and remote_control != null:
-		remote_control.answer(_wid, ok)
-	_close()
+	var wid := _wid
+	_close()        # AVANT la réponse : elle peut afficher aussitôt la demande suivante de la file
+	if wid != -1 and remote_control != null:
+		remote_control.answer(wid, ok)
 
 func _close() -> void:
 	_wid = -1
@@ -98,7 +99,7 @@ func _process(_delta: float) -> void:
 	if not _root.visible:
 		return
 	# Refus automatique (ou demande annulée) : la demande n'est plus en attente dans le module.
-	if remote_control == null or not remote_control._pending.has(_wid):
+	if remote_control == null or not remote_control.is_pending(_wid):
 		_close()
 		return
 	var left := maxi(0, (remote_control.REQUEST_TIMEOUT_MSEC - (Time.get_ticks_msec() - _shown_at)) / 1000)

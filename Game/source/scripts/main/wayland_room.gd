@@ -1346,8 +1346,12 @@ func _process(delta: float) -> void:
 			focus.enter_focus(target["local"])
 			return
 		if target.has("remote_peer"):
-			focus.enter_remote_focus(target["remote_peer"], target["remote_wid"],
-				lan.get_remote_window_texture(target["remote_peer"], target["remote_wid"]))
+			# Fenêtre d'un autre joueur : seulement si elle est partagée (sinon il n'y a rien à voir, quad noir).
+			if lan.is_remote_window_shared(target["remote_peer"], target["remote_wid"]):
+				focus.enter_remote_focus(target["remote_peer"], target["remote_wid"],
+					lan.get_remote_window_texture(target["remote_peer"], target["remote_wid"]))
+			else:
+				chat_box.add_system("This window isn't shared")
 			return
 
 	# P en visant une fenêtre → pin/unpin PiP
@@ -1975,9 +1979,12 @@ func _on_radial_action(action: String) -> void:
 				layers.deactivate_layer_interact()
 				focus.enter_focus(target["local"])
 			elif target.has("remote_peer"):
-				layers.deactivate_layer_interact()
-				focus.enter_remote_focus(target["remote_peer"], target["remote_wid"],
-					lan.get_remote_window_texture(target["remote_peer"], target["remote_wid"]))
+				if lan.is_remote_window_shared(target["remote_peer"], target["remote_wid"]):
+					layers.deactivate_layer_interact()
+					focus.enter_remote_focus(target["remote_peer"], target["remote_wid"],
+						lan.get_remote_window_texture(target["remote_peer"], target["remote_wid"]))
+				else:
+					chat_box.add_system("This window isn't shared")
 		"kill":
 			var target := _raycast_window_target(_aim_pos())
 			if target.has("local"):

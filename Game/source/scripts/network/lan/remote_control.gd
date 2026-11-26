@@ -249,6 +249,10 @@ func _on_request(from: int, wid: Variant) -> void:
 	if _pending.size() == 1:
 		control_requested.emit(from, wid)
 
+## La demande affichée (tête de la file) porte-t-elle sur `wid` ? (boîte de dialogue, scripts/ui/control_request.gd)
+func is_pending(wid: int) -> bool:
+	return not _pending.is_empty() and int(_pending[0]["wid"]) == wid
+
 ## Réponse du propriétaire (boîte de dialogue) ou refus automatique, pour la demande affichée.
 func answer(wid: int, accepted: bool) -> void:
 	if _pending.is_empty() or int(_pending[0]["wid"]) != wid:

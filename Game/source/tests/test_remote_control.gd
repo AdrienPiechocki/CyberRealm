@@ -64,6 +64,8 @@ func test_request_answer_and_inputs():
 	rc._on_request(8, 5)                             # deuxième demande pendant la première : elle attend son tour
 	r = Runner.assert_true(rc._pending.size() == 2 and asked.size() == 1, "une boîte de dialogue à la fois")
 	if r is String: return _done(r)
+	r = Runner.assert_true(rc.is_pending(5) and not rc.is_pending(6), "demande affichée : fenêtre 5")
+	if r is String: return _done(r)
 	rc.answer(5, true)
 	r = Runner.assert_eq(rc.controller_of(5), 7, "contrôle accordé")
 	if r is String: return _done(r)
@@ -153,3 +155,22 @@ func test_last_action_takes_the_seat():
 	if r is String: return _done(r)
 	rc.revoke_peer(5, 7, false)                      # l'invité 7 rend la main
 	return _done(Runner.assert_eq(rc.controllers_of(5), [8], "l'invité 7 rend la main, 8 la garde"))
+
+func test_dialog_stays_open_and_shows_the_next_request():
+	var rc := _make()
+	var dlg: CanvasLayer = load("res://scripts/ui/control_request.gd").new()
+	add_child(dlg)                                   # _ready construit la boîte
+	_n.append(dlg)
+	dlg.setup(rc, func(p): return "P%d" % p, func(w): return "W%d" % w)
+	rc._on_request(7, 5)
+	rc._on_request(8, 5)
+	dlg._process(0.016)
+	var r: Variant = Runner.assert_true(dlg._root.visible and dlg._wid == 5, "demande affichée, pas refermée d'office")
+	if r is String: return _done(r)
+	dlg._answer(true)                                # accepte 7 : la demande de 8 s'affiche
+	dlg._process(0.016)
+	r = Runner.assert_true(rc.has_control(5, 7) and dlg._root.visible and rc.is_pending(5), "demande suivante visible")
+	if r is String: return _done(r)
+	dlg._answer(false)
+	dlg._process(0.016)
+	return _done(Runner.assert_true(not dlg._root.visible and not rc.has_control(5, 8), "refus : boîte fermée"))
