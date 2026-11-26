@@ -1025,7 +1025,7 @@ func test_slider_range_matches_the_pin_clamp() -> Variant:
 	res = Runner.assert_approx(PauseMenu.PIN_SIZE_DIVISOR_MAX,
 		Pins.PIN_DIVISOR_MAX, 0.001, "le maximum du slider doit être celui du clamp")
 	if _fail(res): return res
-	res = Runner.assert_approx(PauseMenu.PIN_SIZE_DIVISOR_STEP, 0.1, 0.001,
+	res = Runner.assert_approx(PauseMenu.PageGeneralModule.PIN_SIZE_DIVISOR_STEP, 0.1, 0.001,
 		"le pas du slider doit être de 0.1")
 	return res
 
