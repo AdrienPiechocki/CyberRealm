@@ -531,7 +531,8 @@ func _update_all_labels(layout_data: Dictionary) -> void:
 		if not is_instance_valid(btn):
 			continue
 		var kc: int = btn.get_meta("keycode", -1)
-		if kc in MODIFIER_KEYS or SPECIAL_LABELS.has(kc):
+		# keycode -1 : rangée d'emoji / symboles (EXTRA_CHARS), étiquette fixe indépendante de la disposition.
+		if kc == -1 or kc in MODIFIER_KEYS or SPECIAL_LABELS.has(kc):
 			continue
 		var entry: Dictionary = layout_data.get(kc, {})
 		if _shift_locked:

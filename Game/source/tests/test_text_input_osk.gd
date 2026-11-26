@@ -39,3 +39,16 @@ func test_auto_open_and_close_without_cutting_interact():
 	r = Runner.assert_true(kb.visible and kb.refreshed == 3, "clavier ouvert à la main : jamais refermé par le script")
 	kb.free(); st.free(); o.free()
 	return r
+
+func test_extra_row_labels_survive_layout_refresh():
+
+	var vk: Node = preload("res://scripts/ui/virtual_keyboard.gd").new()
+	add_child(vk)
+	vk._update_all_labels(vk._get_current_layout())
+	var labels: Array = []
+	for b in vk._key_buttons:
+		if is_instance_valid(b) and b.get_meta("keycode", 0) == -1:
+			labels.append(b.text)
+	var r: Variant = Runner.assert_eq(labels, vk.EXTRA_CHARS, "emoji gardés après mise à jour des étiquettes")
+	vk.free()
+	return r
