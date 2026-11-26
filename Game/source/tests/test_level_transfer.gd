@@ -324,3 +324,24 @@ func _concat(chunks: Array[PackedByteArray]) -> PackedByteArray:
 	for c in chunks:
 		out.append_array(c)
 	return out
+
+## Reconnexion au même niveau : reconnu à son empreinte, il est gardé (pas de retéléchargement ni de seconde copie).
+func test_reconnect_keeps_the_same_level() -> Variant:
+	var lan: Node = LANManager.new()
+	var lt = lan.level_transfer
+	var level := Node3D.new()
+	var sha := PackedByteArray(); sha.resize(32); sha.fill(7)
+	var other := PackedByteArray(); other.resize(32); other.fill(9)
+	lan._level_root = level
+	lt._incoming_level_sha = sha                     # niveau de l'hôte reçu et vérifié…
+	lt.on_level_swapped()                            # …puis appliqué
+	var r: Variant = Runner.assert_true(lt.level_already_applied(sha) and not lt.level_already_applied(other),
+			"même empreinte : niveau gardé ; autre empreinte : téléchargé")
+	if r is String: level.free(); lan.free(); return r
+	r = Runner.assert_true(not lt.level_already_applied(PackedByteArray()), "pas d'empreinte : téléchargé")
+	if r is String: level.free(); lan.free(); return r
+	lt.on_level_swapped()                            # retour au niveau personnel (aucun niveau d'hôte en cours)
+	r = Runner.assert_true(not lt.level_already_applied(sha), "niveau local réappliqué : plus de raccourci")
+	level.free()
+	lan.free()
+	return r

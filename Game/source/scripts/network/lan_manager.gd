@@ -277,6 +277,7 @@ func _local_peer_id() -> int:
 # est sur le point d'être libéré).
 func on_level_swapped(new_level_root: Node3D) -> void:
 	level_transfer._invalidate_level_send_cache()
+	level_transfer.on_level_swapped()
 	_level_root = new_level_root
 	_players_container = Node3D.new()
 	_players_container.name = "Players"
@@ -482,6 +483,7 @@ func _disconnect_session(keep_context := false) -> void:
 	level_transfer._level_decode_mutex.unlock()
 	level_transfer._invalidate_level_send_cache()
 	level_transfer._host_spawn_transform.clear()
+	level_transfer._incoming_level_sha = PackedByteArray()   # (_applied_level_sha reste : reconnexion au même niveau)
 	players._avatar_send_queue.clear()
 	players._avatar_receive_slots.clear()
 	if compositor != null and compositor.has_method("video_decoder_clear_all"):

@@ -9,6 +9,11 @@ var lan: LanManager = null
 
 var _level_sha256 := PackedByteArray()      # serveur : empreinte du blob compressé envoyé
 var _level_expect_sha := PackedByteArray()  # client : empreinte annoncée par le serveur (canal authentifié)
+# Client : empreinte du niveau de l'hôte en cours de chargement (vérifiée), puis du niveau effectivement appliqué
+# (on_level_swapped). Une reconnexion au même niveau garde celui qui est affiché : pas de retéléchargement, pas de
+# seconde copie de 400+ Mo à côté de la première (processus tué faute de mémoire sur le niveau Morrowind).
+var _incoming_level_sha := PackedByteArray()
+var _applied_level_sha := PackedByteArray()
 # Chargements threadés en cours côté client. Le sync `load()` du niveau et
 # des avatars bloquait le thread principal pendant 12-45 ms (repris → plusieurs
 # secondes sur les machines lentes) : les ACK/heartbeats ENet n'étaient plus
@@ -153,6 +158,16 @@ func _send_level_to(id: int) -> void:
 		_level_compressed_cache.size() / 1024, LanManager.LEVEL_TCP_PORT])
 	lan._set_status("Sending host level to %d (%d KB)…" % [id, _level_compressed_cache.size() / 1024])
 
+## Client : le niveau offert (empreinte `sha256`) est-il celui qui est déjà affiché ?
+func level_already_applied(sha256: PackedByteArray) -> bool:
+	return sha256.size() == 32 and sha256 == _applied_level_sha and lan._level_root != null \
+			and is_instance_valid(lan._level_root)
+
+## Niveau remplacé (wayland_room._swap_level) : celui de l'hôte s'il vient d'être chargé, sinon un niveau local.
+func on_level_swapped() -> void:
+	_applied_level_sha = _incoming_level_sha
+	_incoming_level_sha = PackedByteArray()
+
 func _ensure_level_tcp_server() -> bool:
 	if _level_tcp_server != null and _level_tcp_server.is_running():
 		return true
@@ -283,6 +298,14 @@ func _receive_level_baked(port: int, token: PackedByteArray, wire_size: int, unc
 	if host_ip == "":
 		lan._lan_log("level tcp: host address unknown — offer dropped")
 		return
+	# Reconnexion au MÊME niveau (même empreinte que celui affiché) : on le garde, sans transfert ni rechargement.
+	if level_already_applied(sha256):
+		_stop_level_tcp_rx()
+		_host_spawn_transform = {"pos": spawn, "rot": spawn_rotation, "scale": spawn_scale}
+		lan._lan_log("level unchanged (same SHA-256) — current level kept, no download")
+		lan._set_status("Host level unchanged — kept")
+		lan.mark_level_stable()          # entrée dans la session + état courant du décor (instantané)
+		return
 	# Nouvelle offre (ex. double _register_player) : l'ancien récepteur est coupé.
 	_stop_level_tcp_rx()
 	_level_tcp_rx_meta = {"size": uncompressed_size, "spawn": spawn,
@@ -333,6 +356,7 @@ func _poll_level_tcp_rx() -> void:
 		lan.session._finalize_join()
 		return
 	lan._last_level_chunk_msec = Time.get_ticks_msec()
+	_incoming_level_sha = _level_expect_sha if _level_expect_sha.size() == 32 else PackedByteArray()
 	if not _begin_level_decode(res["raw"], int(meta["size"]), meta["spawn"],
 			meta["rotation"], meta["scale"]):
 		lan._lan_log("level decode already in flight — dropped")
