@@ -630,8 +630,7 @@ func _finalize_join() -> void:
 		lan.local_player.input_locked = false
 	lan._set_status("Joined session")
 	_announce_self()
-	# Niveau chargé : l'hôte envoie l'état courant du décor (objets déplacés, cassés…), cf. level_sync.gd.
-	lan.level_sync.request_snapshot()
+	# (L'état courant du décor est demandé à l'application du niveau de l'hôte : LanManager.mark_level_stable.)
 
 # Annonce au serveur : registration (l'hôte re-broadcaste le spawn de tous)
 # + envoi de notre avatar. Idempotent sur toute la session.

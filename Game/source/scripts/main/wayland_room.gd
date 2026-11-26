@@ -273,6 +273,19 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 		spawn_rotation = scene_player.rotation
 		spawn_scale = scene_player.scale
 	if old_player != null:
+		# Enfants du Player apportés par le niveau (lampe…) : ceux de l'ancien niveau partent, ceux du nouveau
+		# (embarqués dans le blob de l'hôte, ou présents dans la scène locale) sont reportés sur le Player local.
+		# Sans cela chaque joueur gardait la lampe de SON niveau local, pas celle du niveau joué.
+		for c in old_player.get_children():
+			if LEVEL_BAKER.is_level_player_child(old_player, c):
+				old_player.remove_child(c)
+				c.queue_free()
+		if scene_player != null:
+			for c in scene_player.get_children():
+				if LEVEL_BAKER.is_level_player_child(scene_player, c):
+					scene_player.remove_child(c)
+					c.set_meta(LEVEL_BAKER.LEVEL_PLAYER_CHILD_META, true)
+					old_player.add_child(c)
 		var new_parent: Node = new_level
 		var idx := -1
 		if scene_player != null:

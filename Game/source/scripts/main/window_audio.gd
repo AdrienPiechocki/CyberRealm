@@ -84,7 +84,7 @@ func _process(delta: float) -> void:
 			lan.audio_share.send_window_audio(wid, compositor.audio_encode(wid, frames))
 
 func _share_ok() -> bool:
-	return lan != null and lan.is_session_active() and not lan.online_restricted()
+	return lan != null and lan.is_session_active() and not lan.window_view_restricted()
 
 func _visible(wid: int) -> bool:
 	var q = win3d.quads.get(wid)

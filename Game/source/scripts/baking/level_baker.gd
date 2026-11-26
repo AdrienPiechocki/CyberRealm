@@ -23,6 +23,15 @@ const MAX_ASSET_BYTES := 256 * 1024 * 1024
 const PACK_MAGIC := "CRPK"
 
 const BAKE_TMP_PATH := "user://lan_bake.scn"
+## Méta des enfants du Player apportés par le niveau (voir is_level_player_child).
+const LEVEL_PLAYER_CHILD_META := "level_player_child"
+
+## Enfant du Player ajouté par la scène du NIVEAU (ex. la lampe « Light » du niveau Morrowind) et non par la scène du
+## joueur (caméra, UI…) ni à l'exécution (owner nul) — ou déjà reporté d'un niveau précédent (méta).
+static func is_level_player_child(player: Node, child: Node) -> bool:
+	if child.has_meta(LEVEL_PLAYER_CHILD_META):
+		return true
+	return child.owner != null and child.owner == player.owner
 
 # Taille max des textures embarquées (0 = pas de limite). Positionné par
 # l'appelant avant le bake (ex: avatar = 64, level = 0).
@@ -394,6 +403,14 @@ static func _clone(orig: Node, exclude: Node, cache: Dictionary) -> Node:
 				(ph as Node3D).transform = (c as Node3D).transform
 			node.add_child(ph)
 			cache[c] = ph
+			# Enfants ajoutés au Player PAR LE NIVEAU (lampe portée par le joueur…), pas ceux de la scène du joueur :
+			# ils voyagent avec le niveau, le client les reporte sur son Player local (wayland_room._swap_level).
+			for pc in c.get_children():
+				if is_level_player_child(c, pc):
+					var sub := _clone(pc, exclude, cache)
+					if sub != null:
+						sub.set_meta(LEVEL_PLAYER_CHILD_META, true)
+						ph.add_child(sub)
 			continue
 		var sub := _clone(c, exclude, cache)
 		if sub != null:

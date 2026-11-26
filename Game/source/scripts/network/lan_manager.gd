@@ -617,9 +617,15 @@ func peer_within(peer: int, pos: Vector3, radius: float) -> bool:
 func in_dedicated_session() -> bool:
 	return dedicated or session_dedicated
 
-## true en mode online (serveur ou client) : fonctions entre joueurs coupées (fenêtres, audio, vidéo, fichiers).
+## true en mode online (serveur ou client) : fonctions entre joueurs coupées (fichiers, prise de contrôle, annotations).
 func online_restricted() -> bool:
 	return online or session_online or (invite_session() and not invite_trusted)
+
+## true quand la VUE des fenêtres des autres joueurs est coupée (disposition, contenu partagé, curseur, son des
+## fenêtres) : seulement dans une session par code d'invitation non approuvée. Sur un serveur online, les joueurs sont
+## authentifiés par le mot de passe du serveur : ils voient les fenêtres les uns des autres.
+func window_view_restricted() -> bool:
+	return invite_session() and not invite_trusted
 
 ## true pendant une session ouverte par code d'invitation (hôte invite_mode, ou client qui a rejoint avec un code).
 func invite_session() -> bool:
@@ -662,8 +668,14 @@ func set_selected_avatar(path: String) -> void:
 func spawn_freecam_avatar(player: Node3D) -> Node:
 	return players.spawn_freecam_avatar(player)
 
+## Appelé par wayland_room._swap_level, une fois le nouveau niveau dans l'arbre (scripts du niveau prêts).
 func mark_level_stable() -> void:
 	players.mark_level_stable()
+	# Client : c'est le niveau de l'hôte qui vient d'être appliqué -> état courant du décor (objets déplacés, cassés…),
+	# cf. level_sync.gd. Pas dans _finalize_join : un gros niveau (> 10 s de téléchargement) passe par le filet de
+	# sécurité du join AVANT d'arriver, l'instantané tombait alors sur le niveau local, puis plus jamais redemandé.
+	if session_active and not is_host and not _pending_join:
+		level_sync.request_snapshot()
 
 static func list_avatars() -> Array[Dictionary]:
 	return PlayersModule.list_avatars()

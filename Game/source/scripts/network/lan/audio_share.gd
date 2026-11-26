@@ -19,7 +19,7 @@ var _audio_received_count := 0
 
 ## Envoie les paquets d'une fenêtre partagée locale à tous les autres joueurs.
 func send_window_audio(wid: int, packets: Array) -> void:
-	if packets.is_empty() or not lan.is_session_active() or lan.online_restricted():
+	if packets.is_empty() or not lan.is_session_active() or lan.window_view_restricted():
 		return
 	if not is_inside_tree() or not multiplayer.has_multiplayer_peer():
 		return
@@ -33,7 +33,7 @@ func send_window_audio(wid: int, packets: Array) -> void:
 
 @rpc("any_peer", "call_remote", "unreliable", 3)
 func _sync_window_audio(wid: Variant, bytes: Variant) -> void:
-	if lan.online_restricted() or not wid is int or not bytes is PackedByteArray:
+	if lan.window_view_restricted() or not wid is int or not bytes is PackedByteArray:
 		return
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id() or (bytes as PackedByteArray).size() > MAX_PACKET:

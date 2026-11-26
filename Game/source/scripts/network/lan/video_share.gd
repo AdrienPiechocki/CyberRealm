@@ -290,16 +290,16 @@ func _send_video_packet(pid: int, wid: int, seq: int, keyframe: bool, data: Pack
 # que le JPEG par-frame, et l'encode tourne déjà sur un thread worker C++.
 @rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_video_frame(wid: int, seq: int, index: int, total: int, bytes: PackedByteArray) -> void:
-	if lan.online_restricted():
-		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
+	if lan.window_view_restricted():
+		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	_receive_video_frame(wid, seq, index, total, bytes, false)
 
 # Keyframe : canal 4 fiable (comme le JPEG) → ne se met PAS en file derrière
 # le backlog du canal 2 → le récepteur se recalibre immédiatement.
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _sync_video_keyframe(wid: int, seq: int, index: int, total: int, bytes: PackedByteArray) -> void:
-	if lan.online_restricted():
-		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
+	if lan.window_view_restricted():
+		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	_receive_video_frame(wid, seq, index, total, bytes, true)
 
 # Config du flux (codec + dimensions pixels) d'une fenêtre d'un peer : permet
@@ -307,8 +307,8 @@ func _sync_video_keyframe(wid: int, seq: int, index: int, total: int, bytes: Pac
 # redémarrage du flux émetteur (les seq repartent de 0) → reset du décodeur.
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _sync_video_config(wid: int, codec: String, width: int, height: int) -> void:
-	if lan.online_restricted():
-		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
+	if lan.window_view_restricted():
+		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -334,8 +334,8 @@ func _sync_video_config(wid: int, codec: String, width: int, height: int) -> voi
 # (récepteur pas encore synchronisé, décodeur désynchronisé, config changée).
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _video_need_keyframe(wid: int) -> void:
-	if lan.online_restricted():
-		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
+	if lan.window_view_restricted():
+		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return
@@ -346,8 +346,8 @@ func _video_need_keyframe(wid: int) -> void:
 # canal 5 dédié comme l'ACK JPEG → pas de file derrière les gros RPC).
 @rpc("any_peer", "call_remote", "reliable", 5)
 func _ack_video_seq(seqs: Dictionary) -> void:
-	if lan.online_restricted():
-		return      # partage de fenêtres / audio / vidéo coupé en session en ligne
+	if lan.window_view_restricted():
+		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
 		return

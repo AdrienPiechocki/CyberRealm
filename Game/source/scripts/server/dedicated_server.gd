@@ -69,9 +69,17 @@ func _ready() -> void:
 		return
 	add_child(level)
 	lan.setup(level, String(args.get("name", "CyberRealm Server")), Color.WHITE)
+	# Relais des clics « interact » des joueurs (world_interactor.gd, RPC sur /root/WaylandRoom/Interactor, même chemin
+	# que dans le jeu) : sans ce nœud chaque clic d'un joueur remplissait le journal de « Node not found ». Les
+	# scripts du niveau étant retirés ici, il n'agit sur rien ; le relais vers les autres joueurs est fait par le moteur.
+	var interactor := Node3D.new()
+	interactor.name = "Interactor"
+	interactor.set_script(preload("res://scripts/interaction/world_interactor.gd"))
+	add_child(interactor)
+	interactor.set("lan", lan)
 	# État sauvegardé : appliqué une fois les scripts du niveau prêts (objets créés à leur _ready), AVANT host_game :
 	# aucun joueur ne voit le monde d'origine.
-	state_path = String(args.get("state", blob_path + ".state")) if args.get("state", null) != true else ""
+	state_path = String(args.get("state", blob_path + ".state")) if not (args.get("state", null) is bool) else ""
 	_blob_sha = _sha256_hex(blob["bytes"])
 	for _i in 2:
 		await get_tree().physics_frame
