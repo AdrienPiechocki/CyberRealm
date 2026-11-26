@@ -286,7 +286,7 @@ transform = Transform3D(-8.742278e-08, 0, 2, 0, 2, 0, -2, 0, -8.742278e-08, 4.7,
 transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 0, -1.5, -3.6)
 
 [node name="computer-wide" parent="Space Station/ROOM" unique_id=1981448542 instance=ExtResource("15_82cfe")]
-transform = Transform3D(-0.0783099, 0, -0.996929, 0, 1, 0, 0.996929, 0, -0.0783099, 4.681176, -0.5, -1.1282816)
+transform = Transform3D(-0.0783099, 0, -0.99692893, 0, 1, 0, 0.99692893, 0, -0.0783099, 4.681176, -0.5, -1.1282816)
 
 [node name="pipe-bend" parent="Space Station/ROOM" unique_id=1752647524 instance=ExtResource("16_gunhw")]
 transform = Transform3D(-4.371139e-08, 0, 1, 0, 1, 0, -1, 0, -4.371139e-08, 4.75, -1.3, -0.0039720535)
@@ -324,16 +324,16 @@ transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 0, -2.5, -1.5)
 [node name="floor4" parent="Space Station/ROOM" unique_id=446538686 instance=ExtResource("3_m0xki")]
 transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 4, -2.5, -1.5)
 
-[node name="DesktopObjects" type="Node3D" parent="."]
+[node name="DesktopObjects" type="Node3D" parent="." unique_id=711275411]
 
-[node name="MediaPlayer" parent="DesktopObjects" instance=ExtResource("obj_media_player")]
-transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -10.8007, 0.2, 0.3515)
+[node name="MediaPlayer" parent="DesktopObjects" unique_id=667109120 instance=ExtResource("obj_media_player")]
+transform = Transform3D(-4.3711385e-08, 0, 0.99999994, 0, 1, 0, -0.99999994, 0, -4.3711385e-08, -12.562, 0.2, 1.5)
 
-[node name="NotificationBoard" parent="DesktopObjects" instance=ExtResource("obj_notification_board")]
-transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -10.0936, 0.15, -0.3556)
+[node name="NotificationBoard" parent="DesktopObjects" unique_id=83530422 instance=ExtResource("obj_notification_board")]
+transform = Transform3D(-4.3711385e-08, 0, 0.99999994, 0, 1, 0, -0.99999994, 0, -4.3711385e-08, -12.5, 0.2, 0.75)
 
-[node name="SystemMonitor" parent="DesktopObjects" instance=ExtResource("obj_system_monitor")]
-transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -9.3865, 0.2, -1.0627)
+[node name="SystemMonitor" parent="DesktopObjects" unique_id=1440606241 instance=ExtResource("obj_system_monitor")]
+transform = Transform3D(-4.3711385e-08, 0, 0.99999994, 0, 1, 0, -0.99999994, 0, -4.3711385e-08, -12.5, 0.2, 0)
 
-[node name="WallClock" parent="DesktopObjects" instance=ExtResource("obj_wall_clock")]
-transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -10.0936, 0.82, -0.3556)
+[node name="WallClock" parent="DesktopObjects" unique_id=1982584548 instance=ExtResource("obj_wall_clock")]
+transform = Transform3D(-4.3711385e-08, 0, 0.99999994, 0, 1, 0, -0.99999994, 0, -4.3711385e-08, -12.5, 1, 0.75)
