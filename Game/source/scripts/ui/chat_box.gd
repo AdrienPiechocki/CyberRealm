@@ -1,7 +1,7 @@
 extends Control
 ## Boîte de chat (bas gauche de l'écran) : messages des joueurs, emotes et messages système.
 ##
-## L'action « chat » (T ou Entrée, remappable) ouvre la saisie, Échap la ferme, Entrée envoie. Fermée, la boîte ne
+## L'action « chat » (Super+T, remappable) ouvre la saisie, Échap la ferme, Entrée envoie. Fermée, la boîte ne
 ## montre que les messages récents, qui s'estompent après `fade-delay` secondes ; ouverte, tout l'historique
 ## (HISTORY lignes). Une ligne « /wave », « /dance »… joue une emote. Texte toujours affiché sans BBCode.
 ## Thème CSS : élément `chat` (background-color, color, font-size, fade-delay).

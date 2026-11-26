@@ -159,10 +159,10 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   node; default first). Your choice is persisted and the actual scene is baked
   with embedded assets and streamed to peers — everyone sees your real model,
   animations included.
-- **Text chat & emotes** — press `T` (or `Enter`, remappable *chat*) to type,
+- **Text chat & emotes** — press `SUPER+T` (remappable *chat*) to type,
   `Esc` to cancel, `Enter` to send; on a gamepad, **CHAT** in the radial menu
-  opens it with the virtual keyboard. Messages fade after 10 s (`T` shows the
-  last 50) and appear as bubbles above the speaker (Multiplayer page). `/wave`,
+  opens it with the virtual keyboard. Messages fade after 10 s (opening the
+  chat shows the last 50) and appear as bubbles above the speaker (Multiplayer page). `/wave`,
   `/point`, `/clap`, `/thumbsup`, `/laugh`, `/dance`, `/sit`, `/shrug` (or the
   radial **EMOTES** sub-menu, or the optional *emote_…* keybinds) show an emoji
   above your head and play the avatar's `emote_<id>` animation when it has one
@@ -461,7 +461,7 @@ networks. Full details: `Game/source/user/README.md`.
 | `SUPER+SHIFT+Esc`    | Take back the shortcuts captured by a VM / remote desktop in focus mode |
 | `Print Screen`       | Take a full-screen screenshot                     |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
-| `T` / `Enter`        | Open the chat (multiplayer)                       |
+| `SUPER+T`            | Open the chat (multiplayer)                       |
 
 All keybinds can be remapped from the pause menu — each action has an
 independent keyboard/mouse and gamepad binding, both editable.
