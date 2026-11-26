@@ -205,3 +205,23 @@ func test_avatar_without_emote_animation_only_shows_emoji():
 	var r: Variant = Runner.assert_true(av._emote_anim == &"" and av._emote_icon.text == "👏", "repli : emoji seul")
 	av.free()
 	return r
+
+func test_chat_avoids_bottom_and_left_bars():
+	var vp := Vector2(1920, 1080)
+	var rects := [
+		# DankMaterialShell : barre en bas sur toute la largeur (calque top)
+		{"rect": Rect2(0, 1032, 1920, 48), "layer": 2, "anchor": 2 | 4 | 8},
+		# dock centré en bas, hors de la colonne du chat : ignoré
+		{"rect": Rect2(800, 980, 320, 100), "layer": 2, "anchor": 2},
+		# barre verticale à gauche sur toute la hauteur
+		{"rect": Rect2(0, 0, 60, 1080), "layer": 2, "anchor": 1 | 2 | 4},
+		# lanceur (calque overlay) : ignoré
+		{"rect": Rect2(0, 600, 1920, 480), "layer": 3, "anchor": 2},
+		# barre du haut : ignorée
+		{"rect": Rect2(0, 0, 1920, 40), "layer": 2, "anchor": 1 | 4 | 8},
+	]
+	var res: Vector2 = ChatBox.reserved_margins(rects, vp, 580.0)
+	var r: Variant = Runner.assert_eq(res, Vector2(60, 48), "au-dessus de la barre du bas, à droite de la barre gauche")
+	if r is String: return r
+	var dock_wide := [{"rect": Rect2(400, 980, 1120, 100), "layer": 2, "anchor": 2}]
+	return Runner.assert_eq(ChatBox.reserved_margins(dock_wide, vp, 580.0), Vector2(0, 100), "dock qui chevauche la colonne du chat")

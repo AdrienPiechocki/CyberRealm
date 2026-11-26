@@ -9,11 +9,21 @@ extends Control
 signal typing_changed(typing: bool)
 
 const HISTORY := 50
+const MARGIN := 20.0                     # écart au bord de l'écran (et aux barres des layer surfaces)
+const PANEL_WIDTH := 560.0
+# Calques / ancrages wlr-layer-shell (mêmes valeurs que scripts/windows/layer_surfaces.gd).
+const LAYER_BOTTOM := 1
+const LAYER_TOP := 2
+const ANCHOR_TOP := 1
+const ANCHOR_BOTTOM := 2
+const ANCHOR_LEFT := 4
+const ANCHOR_RIGHT := 8
 const SYSTEM_COLOR := Color(0.65, 0.7, 0.8)
 
 var lan: Node = null
 var keyboard: Node = null                # clavier virtuel (manette)
 var avatar_for := Callable()             # Callable(peer_id) -> Node (avatar) ou null
+var layers: Node = null                  # layer_surfaces.gd : barres et docks (waybar, DankMaterialShell…) à éviter
 var bubbles_enabled := Callable()        # Callable() -> bool : bulles au-dessus des avatars
 
 var input: LineEdit = null
@@ -27,12 +37,14 @@ var _roster_primed := false
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
-	set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_LEFT)
-	position = Vector2(20, -20)
-	grow_vertical = Control.GROW_DIRECTION_BEGIN
+	# Plein écran : le panneau est placé à la main (_layout) en bas à gauche, à côté des barres.
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	# Au-dessus des barres et docks (calques bottom/top des layer surfaces, z = 1000 + calque × 100), sous les
+	# overlays (lanceurs, notifications : calque overlay) et leurs popups.
+	z_index = 1250
 	_panel = PanelContainer.new()
 	_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_panel.custom_minimum_size = Vector2(560, 0)
+	_panel.custom_minimum_size = Vector2(PANEL_WIDTH, 0)
 	add_child(_panel)
 	var v := VBoxContainer.new()
 	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -174,6 +186,47 @@ func _add_line(who: String, color: Color, text: String) -> void:
 func _process(_delta: float) -> void:
 	if not _typing:
 		_refresh_visibility()
+	_layout()
+
+## Panneau en bas à gauche, décalé pour ne pas passer sous une barre (layer surface) ancrée en bas ou à gauche.
+func _layout() -> void:
+	var vp := get_viewport_rect().size
+	var res := reserved_margins(_layer_rects(), vp, PANEL_WIDTH + MARGIN)
+	_panel.size = _panel.get_combined_minimum_size()
+	_panel.position = Vector2(MARGIN + res.x, vp.y - MARGIN - res.y - _panel.size.y)
+
+func _layer_rects() -> Array:
+	var out: Array = []
+	if layers == null or not is_instance_valid(layers):
+		return out
+	for id in layers.layer_rects:
+		var e: Dictionary = layers.layer_rects[id]
+		var r: Control = e.get("rect")
+		if r == null or not is_instance_valid(r) or not r.visible:
+			continue
+		out.append({"rect": Rect2(r.position, r.size), "layer": int(e.get("layer", 0)), "anchor": int(e.get("anchor", 0))})
+	return out
+
+## Place à laisser en bas (y) et à gauche (x) : barres des calques bottom/top ancrées en bas qui chevauchent la
+## colonne du chat (largeur `span` depuis le bord gauche), et barres verticales ancrées à gauche sur toute la hauteur.
+static func reserved_margins(rects: Array, vp: Vector2, span: float) -> Vector2:
+	var left := 0.0
+	for e in rects:
+		var r: Rect2 = e["rect"]
+		var a: int = e["anchor"]
+		if e["layer"] != LAYER_BOTTOM and e["layer"] != LAYER_TOP:
+			continue
+		if a & ANCHOR_LEFT and a & ANCHOR_TOP and a & ANCHOR_BOTTOM and not a & ANCHOR_RIGHT:
+			left = maxf(left, r.end.x)
+	var bottom := 0.0
+	for e in rects:
+		var r: Rect2 = e["rect"]
+		var a: int = e["anchor"]
+		if e["layer"] != LAYER_BOTTOM and e["layer"] != LAYER_TOP:
+			continue
+		if a & ANCHOR_BOTTOM and not a & ANCHOR_TOP and r.position.x < left + span:
+			bottom = maxf(bottom, vp.y - r.position.y)
+	return Vector2(left, bottom)
 
 ## Ouverte : tout l'historique et le fond. Fermée : seulement les lignes récentes, estompées après fade-delay.
 func _refresh_visibility() -> void:

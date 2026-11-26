@@ -746,6 +746,7 @@ func _ready() -> void:
 	ui.add_child(chat_box)
 	chat_box.setup(lan, keyboard)
 	chat_box.avatar_for = _avatar_for_peer
+	chat_box.layers = layers
 	chat_box.bubbles_enabled = Callable(pause_menu, "is_chat_bubbles_enabled")
 	chat_box.typing_changed.connect(func(typing: bool): player.chat_typing = typing)
 	lan.session_state_changed.connect(func(active: bool): radial_menu.social_available = active)
