@@ -66,8 +66,8 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   close button, then apps still running get SIGTERM (5 s each step) — so they
   save their own state: Firefox offers to restore its tabs (History → *Restore
   previous session*, or automatically with *Open previous windows and tabs*).
-  Not restored: apps closed during the game, dialogs, the polkit agent;
-  terminal tabs become separate windows only for the first tab of each window.
+  Not restored: apps closed during the game, dialogs, the polkit agent, and
+  terminal tabs beyond the first one of each window.
   Stored in `user://window_layouts.json`; per level, inactive on a level
   received from a LAN host (apps are still relaunched). One switch in the
   pause menu (General → *Restore the previous session (apps and window
