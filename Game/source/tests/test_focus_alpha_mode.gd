@@ -40,12 +40,12 @@ func test_opaque_mode_reflects_occluder_suspended() -> Variant:
 	if _setup() != true:
 		return "setup"
 	var rect := _make_overlay()
-	focus._occluder_suspended = false
-	focus._apply_focus_alpha_mode()
+	focus.occlusion._occluder_suspended = false
+	focus.occlusion._apply_focus_alpha_mode()
 	if rect.material.get_shader_parameter("opaque_mode") != true:
 		return "fenêtre probe-opaque → opaque_mode devrait être vrai"
-	focus._occluder_suspended = true
-	focus._apply_focus_alpha_mode()
+	focus.occlusion._occluder_suspended = true
+	focus.occlusion._apply_focus_alpha_mode()
 	if rect.material.get_shader_parameter("opaque_mode") != false:
 		return "fenêtre translucide (occludeur suspendu) → opaque_mode devrait être faux"
 	_teardown()
@@ -54,11 +54,11 @@ func test_opaque_mode_reflects_occluder_suspended() -> Variant:
 func test_focus_window_alpha_mode() -> Variant:
 	if _setup() != true:
 		return "setup"
-	focus._occluder_suspended = false
-	if focus._focus_window_alpha_mode() != true:
+	focus.occlusion._occluder_suspended = false
+	if focus.occlusion._focus_window_alpha_mode() != true:
 		return "alpha mode devrait être opaque tant que l'occludeur n'est pas suspendu"
-	focus._occluder_suspended = true
-	if focus._focus_window_alpha_mode() != false:
+	focus.occlusion._occluder_suspended = true
+	if focus.occlusion._focus_window_alpha_mode() != false:
 		return "alpha mode devrait être brut quand l'occludeur est suspendu"
 	_teardown()
 	return true
@@ -108,9 +108,9 @@ func _run_maximized_focus(frames: int) -> bool:
 	focus.focus_fullscreen_id = -1
 	focus.focus_rects[7] = TextureRect.new()
 	_cpu_calls.clear()
-	focus._start_alpha_probe()
+	focus.occlusion._start_alpha_probe()
 	for _i in frames:
-		focus._update_occluder_for_alpha(0.016)
+		focus.occlusion._update_occluder_for_alpha(0.016)
 	var released := false
 	for c in _cpu_calls:
 		if c[0] == "focus" and c[1] == false:

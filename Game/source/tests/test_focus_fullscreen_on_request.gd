@@ -306,7 +306,7 @@ func _enter_initial_stack(ids: Array) -> void:
 	focus.focus_opened_during.clear()
 	for id: int in ids:
 		if id != ids[-1]:
-			focus._ensure_title_bar(id)
+			focus.titlebar._ensure_title_bar(id)
 	focus._activate_window(ids[-1])
 
 func _has_bar(id: int) -> bool:
@@ -414,12 +414,12 @@ func test_centrage_compense_seulement_si_barre() -> Variant:
 	# Position de la fenêtre ACTIVE (sans barre, centrée sur son contenu seul).
 	# Une fenêtre ouverte pendant le focus reçoit sa barre à l'activation : on
 	# l'ôte pour mesurer la référence.
-	focus._remove_title_bar(id)
+	focus.titlebar._remove_title_bar(id)
 	focus._refresh_rect_layout(id)
 	var y_sans_barre: float = focus.focus_rects[id].position.y
 	# On lui donne une barre et on relayout : le compensation doit la remonter
 	# d'exactement une demi-hauteur de barre.
-	focus._ensure_title_bar(id)
+	focus.titlebar._ensure_title_bar(id)
 	focus._refresh_rect_layout(id)
 	var y_avec_barre: float = focus.focus_rects[id].position.y
 	# Le code ajoute la demi-hauteur (rect.position.y += titlebar_h * 0.5).
@@ -428,7 +428,7 @@ func test_centrage_compense_seulement_si_barre() -> Variant:
 		"avec barre, le contenu doit être remonté d'une demi-hauteur exacte")
 	if _fail(r): return r
 	# Et l'inverse : retirer la barre doit supprimer le décalage, pas le garder.
-	focus._remove_title_bar(id)
+	focus.titlebar._remove_title_bar(id)
 	focus._refresh_rect_layout(id)
 	var y_retour: float = focus.focus_rects[id].position.y
 	r = Runner.assert_approx(y_retour, y_sans_barre, 0.001,

@@ -90,7 +90,7 @@ func test_sans_asset_la_barre_retombe_sur_l_aplat() -> Variant:
 		"sans asset, la barre doit rester un StyleBoxFlat")
 	if _fail(r):
 		return r
-	r = Runner.assert_eq((sb as StyleBoxFlat).bg_color, FocusScript.FOCUS_TITLEBAR_BG,
+	r = Runner.assert_eq((sb as StyleBoxFlat).bg_color, FocusScript.TitlebarModule.FOCUS_TITLEBAR_BG,
 		"et garder la couleur historique")
 	if _fail(r):
 		return r
@@ -128,7 +128,7 @@ func _mount_stack(id: int, tex_size: Vector2) -> Panel:
 	focus.windows = WindowsStub.new()
 	focus.windows.window_titles[id] = "Une fenetre"
 	focus.windows.window_server_side[id] = true
-	focus._ensure_title_bar(id)
+	focus.titlebar._ensure_title_bar(id)
 	return focus.focus_title_bars[id] as Panel
 
 func test_le_stylebox_suit_la_sync_pour_voir_un_asset_reedite() -> Variant:
@@ -143,7 +143,7 @@ func test_le_stylebox_suit_la_sync_pour_voir_un_asset_reedite() -> Variant:
 	# Stylebar typiquement perime : on force un aplat, comme si le SVG avait ete
 	# remplace (ou supprime) depuis la creation de la barre.
 	bar.add_theme_stylebox_override("panel", StyleBoxFlat.new())
-	focus._sync_title_bar(1)
+	focus.titlebar._sync_title_bar(1)
 	# Sans asset, le repli doit rester un StyleBoxFlat : le test accepte les
 	# deux, il verifie surtout que la sync RAFRAICHIT le stylebox au lieu de
 	# laisser un aplat perime en place indefiniment.
