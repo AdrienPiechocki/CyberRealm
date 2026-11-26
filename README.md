@@ -51,6 +51,13 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
+- **Windows remember their place** — when an app opens again, its window
+  goes back where you left it on that level: position, orientation, the size
+  you gave it, hidden / pinned / `force_game` state. Windows are matched by
+  app id, then by the closest title (two terminals get two places); dialogs are
+  ignored. Stored in `user://window_layouts.json` (64 windows per level),
+  inactive on a level received from a LAN host. Toggle it in the pause menu
+  (General → *Remember window positions*).
 - **Taskbars** — implements `zwlr_foreign_toplevel_management_v1`, so a taskbar
   launched inside the game (waybar's `wlr/taskbar` module, `lswt`…) lists the
   windows and drives them: clicking a window un-hides it, gives it the keyboard

@@ -675,6 +675,14 @@ bool WlrCompositor::is_window_fullscreen_requested(int window_id) {
     return ws->toplevel->requested.fullscreen;
 }
 
+int WlrCompositor::get_window_parent_id(int window_id) {
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel || !ws->toplevel->parent) {
+        return -1;
+    }
+    return find_window_id_by_surface(ws->toplevel->parent->base->surface);
+}
+
 Dictionary WlrCompositor::get_window_geometry(int window_id) {
     Dictionary result;
     WindowState *ws = find_window(window_id);

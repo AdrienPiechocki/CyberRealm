@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var window_layouts: Node # disposition des fenêtres retrouvée, cf. scripts/main/window_layouts.gd
 var toplevel_bridge: Node # barres de tâches + raccourcis capturés par une fenêtre, cf. scripts/main/toplevel_bridge.gd
 var global_shortcuts: Node # raccourcis globaux (portail GlobalShortcuts), cf. scripts/input/global_shortcuts.gd
 var lan: Node # multijoueur LAN (hôte/join, avatars)
@@ -476,6 +477,20 @@ func _ready() -> void:
 	pins.zoom_changed.connect(_on_pin_zoom_changed)
 	fx.setup(win3d)
 	presenter.setup(compositor)
+
+	# Disposition des fenêtres retrouvée d'une session à l'autre (scripts/main/window_layouts.gd).
+	# window_unmapped est branché AVANT les autres gestionnaires : l'état épinglé / focus de la
+	# fenêtre doit être relevé avant que pins et focus ne le défassent.
+	window_layouts = Node.new()
+	window_layouts.name = "WindowLayouts"
+	window_layouts.set_script(preload("res://scripts/main/window_layouts.gd"))
+	add_child(window_layouts)
+	window_layouts.setup(compositor, win3d, focus, pins)
+	window_layouts.level_key = Callable(self, "_waypoint_level_key")
+	window_layouts.enabled = Callable(pause_menu, "is_window_layout_enabled")
+	compositor.window_unmapped.connect(window_layouts.on_window_unmapped)
+	win3d.window_created.connect(window_layouts.on_window_created)
+	compositor.window_texture_updated.connect(window_layouts.on_window_texture_updated)
 
 	compositor.window_mapped.connect(_on_window_mapped)
 	compositor.window_unmapped.connect(focus.on_window_unmapped)

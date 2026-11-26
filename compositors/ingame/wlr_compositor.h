@@ -957,6 +957,8 @@ class WlrCompositor : public Node {
     void set_window_size(int window_id, int width, int height);
     void set_window_fullscreen(int window_id, bool fullscreen);
     bool is_window_fullscreen_requested(int window_id);
+    // Fenêtre parente (xdg_toplevel.set_parent : boîte de dialogue…), -1 si aucune.
+    int get_window_parent_id(int window_id);
 
     void set_x11_display(const String &display_name);
 

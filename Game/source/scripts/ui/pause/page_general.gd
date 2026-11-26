@@ -143,6 +143,20 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
+	# Disposition des fenêtres retrouvée d'une session à l'autre (lu par window_layouts.gd).
+	var layout_check := CheckButton.new()
+	layout_check.text = "Remember window positions (per level)"
+	layout_check.button_pressed = menu.is_window_layout_enabled()
+	layout_check.custom_minimum_size = Vector2(0, 36)
+	layout_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	layout_check.add_theme_font_size_override("font_size", 14)
+	menu.container.add_child(layout_check)
+
+	layout_check.toggled.connect(func(on: bool):
+		menu._settings["remember_window_layout"] = on
+		menu._save_settings()
+	)
+
 	menu.container.add_child(menu._make_spacer())
 	menu.container.add_child(menu._make_back_btn())
 

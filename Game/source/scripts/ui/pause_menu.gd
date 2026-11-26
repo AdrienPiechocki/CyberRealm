@@ -561,6 +561,10 @@ func is_fullbody_enabled() -> bool:
 func is_shortcut_inhibit_allowed() -> bool:
 	return bool(_settings.get("allow_shortcut_inhibit", true))
 
+# Les fenêtres retrouvent-elles leur place d'une session à l'autre (window_layouts.gd) ? (GENERAL). Défaut : oui.
+func is_window_layout_enabled() -> bool:
+	return bool(_settings.get("remember_window_layout", true))
+
 # ── LAN multiplayer ──────────────────────────────────────────────────
 
 func get_tutorial_seen() -> bool:

@@ -945,6 +945,19 @@ func in_game() -> bool:
 ## et bloque l'auto-set pointer-lock (is_game_overridden) pour que le reset
 ## tienne tant que la session de focus reste active. Retourne le nouvel état
 ## de is_game (true si la fenêtre est traitée comme un jeu).
+## Marque force_game d'une fenêtre : -1 = jamais forcée, 0 = forcée « pas un jeu », 1 = forcée « jeu ».
+func get_force_game(id: int) -> int:
+	var st: Dictionary = focus_states.get(id, {})
+	if not bool(st.get("is_game_overridden", false)):
+		return -1
+	return 1 if bool(st.get("is_game", false)) else 0
+
+## Repose une marque force_game (fenêtre retrouvée d'une session précédente).
+func set_force_game(id: int, is_game: bool) -> void:
+	var st := _state(id)
+	st["is_game_overridden"] = true
+	st["is_game"] = is_game
+
 func toggle_force_game() -> bool:
 	var id := _active_id()
 	if id == -1:

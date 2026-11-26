@@ -455,6 +455,38 @@ func get_quad_info(id: int) -> Dictionary:
 	info["content_size"] = body.get_meta("content_size", Vector2(1, 1))
 	return info
 
+## État de disposition d'une fenêtre, pour la retrouver à la prochaine session
+## (scripts/main/window_layouts.gd). Vide si la fenêtre est inconnue.
+func get_window_layout(id: int) -> Dictionary:
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return {}
+	var quad: MeshInstance3D = quads[id]
+	var body: StaticBody3D = quad.get_child(0)
+	return {
+		"transform": Transform3D(snap._stored_basis(id), quad.global_position),
+		"size": (quad.mesh as QuadMesh).size,
+		"user_sized": bool(body.get_meta("user_sized", false)),
+		"surface_size": body.get_meta("surface_size", Vector2(1, 1)),
+		"hidden": not quad.visible,
+	}
+
+## Replace une fenêtre qui vient d'être mappée là où elle était à la session précédente.
+## `user_sized` : la taille monde choisie par le joueur est conservée (l'aspect suit le client).
+func apply_saved_layout(id: int, xform: Transform3D, size: Vector2, user_sized: bool) -> void:
+	if not quads.has(id) or not is_instance_valid(quads[id]):
+		return
+	var quad: MeshInstance3D = quads[id]
+	quad.global_position = xform.origin
+	snap._store_basis(id, xform.basis.orthonormalized())
+	if user_sized and size.x > 0.0 and size.y > 0.0:
+		var body: StaticBody3D = quad.get_child(0)
+		body.set_meta("user_sized", true)
+		(quad.mesh as QuadMesh).size = size
+		var shape: BoxShape3D = (body.get_child(0) as CollisionShape3D).shape
+		shape.size = Vector3(size.x, size.y, shape.size.z)
+		_sync_decorations(quad)
+	windows_state_changed.emit()
+
 func set_quad_visible(id: int, visible: bool) -> void:
 	if quads.has(id) and is_instance_valid(quads[id]):
 		var quad: MeshInstance3D = quads[id]
