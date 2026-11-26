@@ -64,3 +64,64 @@ func test_net_interaction_rejected_from_too_far():
 	root.free()
 	lan.free()
 	return r
+
+# ── Instantané du niveau (arrivants, persistance) ──────────────────────────
+
+const LevelSync = preload("res://scripts/network/lan/level_sync.gd")
+
+class Snap extends Node3D:
+	var applied: Array = []
+	func net_snapshot() -> Array: return [["b", 3], ["m", 4, Transform3D(Basis.IDENTITY, Vector3(1, 2, 3))]]
+	func net_apply_snapshot(e: Array) -> void: applied = e
+
+func test_snapshot_validation_and_chunks():
+	var r: Variant = Runner.assert_eq(LevelSync.chunk_entries(range(600), 256).map(func(c): return c.size()), [256, 256, 88], "découpage")
+	if r is String: return r
+	r = Runner.assert_eq(LevelSync.chunk_entries([], 256), [[]], "partie vide : un morceau vide")
+	if r is String: return r
+	r = Runner.assert_true(LevelSync.snapshot_part_ok("sync") and LevelSync.snapshot_part_ok("Interiors/Props"), "parties valides")
+	if r is String: return r
+	r = Runner.assert_true(not LevelSync.snapshot_part_ok("../../LAN") and not LevelSync.snapshot_part_ok("/root/X"), "pas de sortie du niveau")
+	if r is String: return r
+	r = Runner.assert_true(LevelSync.snapshot_entry_ok(["m", 4, Transform3D()]), "entrée simple")
+	if r is String: return r
+	return Runner.assert_true(not LevelSync.snapshot_entry_ok([[[["trop profond"]]]]) and not LevelSync.snapshot_entry_ok([Object.new()]),
+		"entrées refusées (profondeur, objets)")
+
+func _world(is_host: bool) -> Array:
+	var lan: Node = LANManager.new()
+	add_child(lan)
+	var level := Node3D.new()
+	level.name = "Level"
+	add_child(level)
+	var crate := Node3D.new()
+	crate.name = "Crate"
+	level.add_child(crate)
+	var props := Snap.new()
+	props.name = "Props"
+	level.add_child(props)
+	props.add_to_group("net_snapshot")
+	lan._level_root = level
+	lan.is_host = is_host
+	return [lan, level, crate, props]
+
+func test_snapshot_build_on_host_and_apply_on_client():
+	var host := _world(true)
+	host[2].position = Vector3(5, 0, 0)
+	host[0].level_sync._level_sync_by_path["Crate"] = host[2]
+	var parts: Dictionary = host[0].level_sync.build_snapshot()
+	var r: Variant = Runner.assert_eq(parts.keys(), ["sync", "Props"], "parties : sync + nœud du groupe net_snapshot")
+	if r is String: host[0].free(); host[1].free(); return r
+	var client := _world(false)
+	var ls: Node = client[0].level_sync
+	ls.request_snapshot.call()       # remise à zéro du compteur (l'envoi est ignoré hors session)
+	for part in parts:
+		var chunks: Array = LevelSync.chunk_entries(parts[part], 1)       # morceaux d'une entrée : réassemblage
+		for i in chunks.size():
+			ls._receive_snapshot_chunk(1, part, i, chunks.size(), chunks[i])
+	ls._receive_snapshot_chunk(42, "Props", 0, 1, [["b", 9]])           # pas le serveur : ignoré
+	r = Runner.assert_eq(client[3].applied, parts["Props"], "net_apply_snapshot reçoit les entrées du serveur")
+	if r is String: host[0].free(); host[1].free(); client[0].free(); client[1].free(); return r
+	r = Runner.assert_eq(ls._level_sync_target.get("Crate"), host[2].transform, "transformation du décor à appliquer")
+	host[0].free(); host[1].free(); client[0].free(); client[1].free()
+	return r
