@@ -231,12 +231,13 @@ func _update_prompt() -> void:
 		_prompt.text = txt
 		_prompt.visible = true
 
-## Premier objet du groupe HELD_GROUP encore valide (null si aucun).
+## Premier objet du groupe HELD_GROUP encore valide et actif (null si aucun).
 func _held_target() -> Node:
 	if not is_inside_tree():
 		return null
 	for n in get_tree().get_nodes_in_group(HELD_GROUP):
-		if is_instance_valid(n) and n.is_inside_tree():
+		# Objet figé (sa scène désactivée : intérieur quitté…) : il ne gère plus rien, son texte n'a plus lieu d'être.
+		if is_instance_valid(n) and n.is_inside_tree() and n.can_process():
 			return n
 	return null
 
