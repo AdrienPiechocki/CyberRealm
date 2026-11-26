@@ -310,3 +310,37 @@ func test_session_tracked_even_when_layout_disabled():
 	_map(l, 1, "kitty", "zsh")
 	l.freeze_session()
 	return Runner.assert_eq(l._session.size(), 1, "app suivie pour la reprise de session")
+
+func test_relaunched_app_gets_its_own_entries_whatever_its_title():
+	# Session 1 : Firefox épinglée sur un onglet précis ; une autre fenêtre Firefox, plus récente et non
+	# épinglée, a existé entre-temps (entrée concurrente).
+	var l := _session()
+	l.reopen = func() -> bool: return true
+	l.compositor.pids[1] = 100
+	l.compositor.procs[100] = {"argv": PackedStringArray(["firefox"]), "cwd": "", "exe": "/usr/lib/firefox/firefox", "comm": "firefox"}
+	_map(l, 1, "firefox", "Galino - Twitch — Mozilla Firefox")
+	l.win3d.layouts[1] = _layout(Vector3(7, 0, 0))
+	l.pins.pinned[1] = true
+	l._snapshot(1)
+	l.compositor.pids[2] = 101
+	l.compositor.procs[101] = {"argv": PackedStringArray(["firefox", "--new-window"]), "cwd": "", "exe": "/usr/lib/firefox/firefox", "comm": "firefox"}
+	_map(l, 2, "firefox", "Galino - Twitch — Mozilla Firefox")
+	l.win3d.layouts[2] = _layout(Vector3(1, 0, 0))
+	l.on_window_unmapped(2)         # fermée pendant la partie, mais son entrée est la plus récente
+	var e2: Dictionary = l._data["lvl"][1]
+	e2["last_seen"] = int(e2.get("last_seen", 0)) + 1000
+	l.freeze_session()
+	_cleanup_nodes_only()
+
+	var l2 := _session()
+	l2.reopen = func() -> bool: return true
+	l2.restore_session([])
+	_map(l2, 9, "firefox", "Mozilla Firefox")    # titre de démarrage, avant restauration des onglets
+	var applied: Array = l2.win3d.applied.get(9, [])
+	var r: Variant = Runner.assert_true(not applied.is_empty() and (applied[0] as Transform3D).origin.is_equal_approx(Vector3(7, 0, 0)),
+		"la fenêtre relancée reprend SA place, pas celle de l'entrée la plus récente")
+	if r is String: _cleanup(); return r
+	l2.on_window_texture_updated(9, ImageTexture.new(), 10, 10)
+	r = Runner.assert_true(l2.pins.pinned.has(9), "et son épinglage")
+	_cleanup()
+	return r

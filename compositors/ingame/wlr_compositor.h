@@ -1123,6 +1123,11 @@ public:
     String get_wayland_socket_name() const;
     void launch_app(const String &command);
     void shutdown_apps();
+    // Fermeture propre des applications qui possèdent une fenêtre (SIGTERM à
+    // elles seules, protocole Wayland servi pendant l'attente), avant l'arrêt
+    // du reste de l'arbre par shutdown_apps().
+    static constexpr int APP_CLOSE_GRACE_MS = 10000;
+    void terminate_window_apps(int timeout_ms);
     void set_portal_backend(const String &backend);
     String get_portal_backend() const;
 

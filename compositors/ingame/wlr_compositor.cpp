@@ -2037,12 +2037,68 @@ static void reap_zombies() {
 // aux groupes des enfants directs — des daemons lancés par un script comme
 // `dms run` font setsid()/setpgid() et échappent à leur groupe), période de
 // grâce de 2 s pour laisser un arrêt propre, puis SIGKILL aux survivants.
+void WlrCompositor::terminate_window_apps(int timeout_ms) {
+    // Depuis le destructeur : ne plus servir le protocole (les callbacks
+    // émettraient des signaux vers un objet Godot à demi détruit).
+    if (!alive_guard || !alive_guard->load()) {
+        return;
+    }
+    std::vector<pid_t> apps;
+    pid_t self_pid = getpid();
+    for (auto &pair : windows) {
+        WindowState &ws = pair.second;
+        // X11 : PID réel de l'app (le client Wayland est le satellite, qui
+        // doit rester en vie tant que les apps X11 se ferment).
+        pid_t pid = ws.xwayland ? (pid_t)get_window_pid(pair.first) : ws.pid;
+        if (pid <= 0 || pid == self_pid) {
+            continue;
+        }
+        if (std::find(apps.begin(), apps.end(), pid) == apps.end()) {
+            apps.push_back(pid);
+        }
+    }
+    if (apps.empty()) {
+        return;
+    }
+    for (pid_t pid : apps) {
+        kill(pid, SIGTERM);
+    }
+    UtilityFunctions::print("waylandgodot: closing ", (int)apps.size(), " app(s) cleanly...");
+    uint32_t start = get_time_msec();
+    while ((int)(uint32_t)(get_time_msec() - start) < timeout_ms) {
+        reap_zombies();
+        if (!any_alive(apps)) {
+            break;
+        }
+        // Continuer de répondre aux clients (destructions de surfaces,
+        // allers-retours, presse-papiers…) pendant leur fermeture.
+        if (display && event_loop) {
+            wl_display_flush_clients(display);
+            wl_event_loop_dispatch(event_loop, 50);
+        } else {
+            usleep(50 * 1000);
+        }
+    }
+    UtilityFunctions::print("waylandgodot: apps closed after ", (int)(uint32_t)(get_time_msec() - start), " ms",
+        any_alive(apps) ? " (some still running, terminating the rest)" : "");
+}
+
 // Appelé par le script Godot juste avant get_tree().quit() et par le
 // destructeur.
 void WlrCompositor::shutdown_apps() {
     if (child_pids.empty() && dbus_daemon_pid <= 0) {
         return;
     }
+
+    // 0. Fermeture PROPRE des applications qui ont une fenêtre : SIGTERM à
+    // elles seules (pas à leurs sous-processus, ni au bus D-Bus, ni à
+    // xwayland-satellite, dont elles ont besoin pour se fermer), puis on
+    // continue de servir le protocole Wayland pendant qu'elles enregistrent
+    // leur état (Firefox : sa session et ses onglets). Sans ça, tout l'arbre
+    // recevait SIGTERM d'un coup puis SIGKILL après 2 s, et une app qui fait
+    // un aller-retour Wayland en quittant restait bloquée : elle était tuée
+    // comme après un crash.
+    terminate_window_apps(APP_CLOSE_GRACE_MS);
 
     // 1. SIGTERM à tous les descendants (via la chaîne PPID dans /proc).
     std::vector<pid_t> descendants;

@@ -40,6 +40,7 @@ var _live: Dictionary = {}     # window_id -> {"key": clé de niveau, "uid": uid
 var _pending_pin: Dictionary = {} # window_id -> true : à épingler dès la première image
 var _session: Array = []       # [{pid, cmd, bin, app_id}] : apps ouvertes (dernière écriture / session précédente)
 var _frozen := false           # le jeu quitte : la liste de session n'est plus reconstruite
+var _expected: Dictionary = {} # app_id -> [uid…] : entrées des fenêtres des apps relancées par la reprise de session
 var _dirty := false
 var _save_cd := 0.0
 var _poll_cd := 0.0
@@ -90,7 +91,11 @@ func on_window_created(id: int, _quad: Node) -> void:
 	var key := _key()
 	var entries: Array = _data.get(key, [])
 	var title := String(win3d.window_titles.get(id, ""))
-	var idx := match_entry(entries, app_id, title, _consumed)
+	# App relancée par la reprise de session : elle reprend les entrées de SES fenêtres de la session précédente,
+	# quel que soit son titre au démarrage (Firefox s'ouvre sur « Mozilla Firefox » avant de restaurer ses onglets).
+	var idx := take_expected(_expected, entries, app_id, _consumed)
+	if idx == -1:
+		idx = match_entry(entries, app_id, title, _consumed)
 	var entry: Dictionary
 	if idx == -1:
 		entry = {"uid": _new_uid(), "app_id": app_id, "title": title}
@@ -201,14 +206,17 @@ func _resolve_launch(id: int) -> void:
 
 func _session_from_live() -> Array:
 	var out: Array = []
-	var seen := {}
+	var by_pid := {}
 	for id in _live:
 		var live: Dictionary = _live[id]
-		if not live.has("cmd") or seen.has(live["pid"]):
+		if not live.has("cmd"):
 			continue
-		seen[live["pid"]] = true
-		out.append({"pid": live["pid"], "cmd": live["cmd"], "bin": live["bin"],
-			"app_id": String(win3d.window_app_ids.get(id, ""))})
+		if not by_pid.has(live["pid"]):
+			by_pid[live["pid"]] = {"pid": live["pid"], "cmd": live["cmd"], "bin": live["bin"],
+				"app_id": String(win3d.window_app_ids.get(id, "")), "uids": []}
+			out.append(by_pid[live["pid"]])
+		if String(live["uid"]) != "":
+			by_pid[live["pid"]]["uids"].append(live["uid"])
 	return out
 
 ## Le jeu quitte : fige la liste des apps ouvertes AVANT que shutdown_apps() ne les ferme, et l'écrit.
@@ -224,7 +232,13 @@ func freeze_session() -> void:
 func restore_session(startup_commands: Array) -> Array:
 	if reopen.is_valid() and not bool(reopen.call()):
 		return []
-	var cmds := session_commands(_session, startup_commands)
+	var items := session_items(_session, startup_commands)
+	var cmds: Array = items.map(func(e): return String(e["cmd"]))
+	for item in items:
+		var uids: Variant = item.get("uids", [])
+		if uids is Array and not (uids as Array).is_empty():
+			var app := String(item.get("app_id", ""))
+			_expected[app] = _expected.get(app, []) + uids
 	for cmd in cmds:
 		compositor.launch_app(cmd)
 	if not cmds.is_empty():
@@ -362,6 +376,22 @@ static func launch_bin(info: Dictionary) -> String:
 
 ## Commandes à relancer : une par processus de la session, sauf les exécutables déjà lancés comme startup apps.
 static func session_commands(session: Array, startup_commands: Array) -> Array:
+	return session_items(session, startup_commands).map(func(e): return String(e["cmd"]))
+
+## Index de la première entrée attendue (app relancée) pour cet app_id, retirée de la liste ; -1 si aucune.
+static func take_expected(expected: Dictionary, entries: Array, app_id: String, consumed: Dictionary) -> int:
+	var uids: Array = expected.get(app_id, [])
+	while not uids.is_empty():
+		var uid := String(uids.pop_front())
+		if consumed.has(uid):
+			continue
+		for i in entries.size():
+			if String(entries[i].get("uid", "")) == uid:
+				return i
+	return -1
+
+## Entrées de session à relancer (voir session_commands).
+static func session_items(session: Array, startup_commands: Array) -> Array:
 	var startup_bins := {}
 	for c in startup_commands:
 		var first := String(c).strip_edges().split(" ", false)
@@ -378,7 +408,7 @@ static func session_commands(session: Array, startup_commands: Array) -> Array:
 		if seen_pid.has(pid) or startup_bins.has(String(e.get("bin", ""))):
 			continue
 		seen_pid[pid] = true
-		out.append(String(e["cmd"]))
+		out.append(e)
 	return out
 
 static func vec2_to_array(v: Vector2) -> Array:
