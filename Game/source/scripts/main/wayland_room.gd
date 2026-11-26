@@ -488,6 +488,7 @@ func _ready() -> void:
 	window_layouts.setup(compositor, win3d, focus, pins)
 	window_layouts.level_key = Callable(self, "_waypoint_level_key")
 	window_layouts.enabled = Callable(pause_menu, "is_window_layout_enabled")
+	window_layouts.reopen = Callable(pause_menu, "is_session_restore_enabled")
 	compositor.window_unmapped.connect(window_layouts.on_window_unmapped)
 	win3d.window_created.connect(window_layouts.on_window_created)
 	compositor.window_texture_updated.connect(window_layouts.on_window_texture_updated)
@@ -587,6 +588,9 @@ func _ready() -> void:
 	# Apps à lancer automatiquement au démarrage (configurées depuis le menu pause)
 	for cmd in pause_menu.get_startup_apps():
 		compositor.launch_app(cmd)
+	# Reprise de session : les apps encore ouvertes à la dernière fermeture du jeu.
+	# L'agent polkit est lancé par le jeu lui-même : jamais relancé par la reprise.
+	window_layouts.restore_session(pause_menu.get_startup_apps() + [_find_polkit_agent()])
 	# Setup du menu de navigation entre fenêtres
 	window_menu.setup(compositor, _get_window_texture, _get_window_shared, win3d.get_grabbed_window_id)
 	window_menu.action_grab.connect(_on_window_menu_grab)
@@ -1959,6 +1963,8 @@ func _on_quit_requested() -> void:
 	# Ferme d'abord toutes les apps lancées dans le jeu (SIGTERM + grâce +
 	# SIGKILL) puis quitte Godot ; le destructeur de WlrCompositor termine
 	# xwayland-satellite et le bus D-Bus privé.
+	# Avant : retenir les apps ouvertes (reprise de session au prochain démarrage).
+	window_layouts.freeze_session()
 	compositor.shutdown_apps()
 	# L'agent polkit du jeu vient d'être tué par shutdown_apps() : relancer
 	# l'agent KDE hôte (dans le sens inverse, sa ré-inscription échouerait
@@ -1969,6 +1975,7 @@ func _on_quit_requested() -> void:
 func _notification(what: int) -> void:
 	# Fermeture de la fenêtre hors menu pause : même shutdown propre.
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		window_layouts.freeze_session()
 		compositor.shutdown_apps()
 		_restore_host_polkit_agent()
 

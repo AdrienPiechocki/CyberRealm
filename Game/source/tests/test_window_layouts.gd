@@ -12,6 +12,12 @@ class FakeCompositor extends Node:
 	var sizes: Dictionary = {}
 	func get_window_parent_id(id: int) -> int: return int(parents.get(id, -1))
 	func set_window_size(id: int, w: int, h: int) -> void: sizes[id] = Vector2i(w, h)
+	var pids: Dictionary = {}          # window_id -> pid
+	var procs: Dictionary = {}         # pid -> process info
+	var launched: Array = []
+	func get_window_pid(id: int) -> int: return int(pids.get(id, -1))
+	func get_process_info(pid: int) -> Dictionary: return procs.get(pid, {})
+	func launch_app(cmd: String) -> void: launched.append(cmd)
 
 class FakeWin3D extends Node:
 	var window_app_ids: Dictionary = {}
@@ -157,7 +163,8 @@ func test_two_windows_same_app_get_distinct_entries():
 	return r
 
 func test_ignored_windows_and_inactive_cases():
-	# Boîte de dialogue, app_id vide, niveau sans clé, option désactivée : rien n'est suivi.
+	# Boîte de dialogue, app_id vide : rien n'est suivi. Niveau sans clé, option désactivée : pas de disposition
+	# (la fenêtre reste suivie pour la reprise de session, cf. test_session_tracked_even_when_layout_disabled).
 	var l := _session()
 	l.compositor.parents[2] = 1
 	_map(l, 2, "firefox", "Open file")
@@ -166,12 +173,12 @@ func test_ignored_windows_and_inactive_cases():
 	if r is String: _cleanup(); return r
 	var l_lan := _session("")
 	_map(l_lan, 4, "kitty", "zsh")
-	r = Runner.assert_true(l_lan._live.is_empty(), "niveau reçu d'un hôte LAN : inactif")
+	r = Runner.assert_true(l_lan._data.is_empty(), "niveau reçu d'un hôte LAN : aucune disposition enregistrée")
 	if r is String: _cleanup(); return r
 	var l_off := _session()
 	l_off.enabled = func() -> bool: return false
 	_map(l_off, 5, "kitty", "zsh")
-	r = Runner.assert_true(l_off._live.is_empty(), "option désactivée : inactif")
+	r = Runner.assert_true(l_off._data.is_empty(), "option désactivée : aucune disposition enregistrée")
 	_cleanup()
 	return r
 
@@ -227,3 +234,79 @@ func test_windows_3d_layout_round_trip():
 	player.free()
 	w3d.free()
 	return r
+
+# ── Reprise de session ──────────────────────────────────────────────────────
+
+func test_build_command_quotes_and_cwd():
+	var cmd := Layouts.build_command({"argv": PackedStringArray(["kitty", "--title", "it's me"]), "cwd": "/home/a b"})
+	var r: Variant = Runner.assert_eq(cmd, "cd '/home/a b' 2>/dev/null; exec 'kitty' '--title' 'it'\\''s me'", "guillemets et dossier")
+	if r is String: return r
+	var out := []
+	OS.execute("sh", ["-c", "printf '%s|' " + cmd.split("exec ")[1]], out)
+	r = Runner.assert_eq(out[0], "kitty|--title|it's me|", "le shell retrouve l'argv exact")
+	if r is String: return r
+	r = Runner.assert_eq(Layouts.build_command({"argv": PackedStringArray(["/app/bin/x"]), "flatpak_id": "org.x.Y", "cwd": ""}),
+		"exec flatpak run 'org.x.Y'", "Flatpak relancé par son identifiant")
+	return r
+
+func test_launchable_excludes_satellite_and_game():
+	var r: Variant = Runner.assert_true(Layouts.launchable({"argv": PackedStringArray(["kitty"]), "comm": "kitty", "exe": "/usr/bin/kitty"}, "/game"), "app normale")
+	if r is String: return r
+	r = Runner.assert_true(not Layouts.launchable({"argv": PackedStringArray(["xwayland-satellite", ":1"]), "comm": "xwayland-satell"}, "/game"), "satellite exclu")
+	if r is String: return r
+	r = Runner.assert_true(not Layouts.launchable({"argv": PackedStringArray(["/game"]), "exe": "/game"}, "/game"), "le jeu lui-même exclu")
+	if r is String: return r
+	return Runner.assert_true(not Layouts.launchable({}, "/game"), "processus disparu")
+
+func test_session_commands_one_per_process_and_skip_startup():
+	var session := [
+		{"pid": 10, "cmd": "exec 'firefox'", "bin": "firefox"},
+		{"pid": 10, "cmd": "exec 'firefox'", "bin": "firefox"},     # 2e fenêtre du même processus
+		{"pid": 11, "cmd": "exec 'kitty'", "bin": "kitty"},
+		{"pid": 12, "cmd": "exec 'kitty'", "bin": "kitty"},         # 2e processus kitty
+		{"pid": 13, "cmd": "exec 'waybar'", "bin": "waybar"},
+		{"pid": 14, "cmd": "exec flatpak run 'org.x.Y'", "bin": "org.x.Y"},
+	]
+	var cmds := Layouts.session_commands(session, ["waybar -c /x", "flatpak run org.x.Y"])
+	return Runner.assert_eq(cmds, ["exec 'firefox'", "exec 'kitty'", "exec 'kitty'"],
+		"un lancement par processus, startup apps non doublées")
+
+func test_session_survives_quit_and_is_restored():
+	var l := _session()
+	l.reopen = func() -> bool: return true
+	l.compositor.pids[1] = 100
+	l.compositor.procs[100] = {"argv": PackedStringArray(["kitty"]), "cwd": "/tmp", "exe": "/usr/bin/kitty", "comm": "kitty"}
+	_map(l, 1, "kitty", "zsh")
+	l.compositor.pids[2] = 200
+	l.compositor.procs[200] = {"argv": PackedStringArray(["firefox"]), "cwd": "", "exe": "/usr/lib/firefox/firefox", "comm": "firefox"}
+	_map(l, 2, "firefox", "Mozilla Firefox")
+	l.win3d.layouts[1] = _layout(Vector3(1, 0, 0))
+	l.win3d.layouts[2] = _layout(Vector3(2, 0, 0))
+	# Fermée PENDANT la partie : ne doit pas revenir.
+	l.on_window_unmapped(2)
+	# Le jeu quitte : session figée, puis shutdown_apps ferme kitty (unmap) sans la retirer.
+	l.freeze_session()
+	l.on_window_unmapped(1)
+	l.save_now()
+	_cleanup_nodes_only()
+
+	var l2 := _session()
+	l2.reopen = func() -> bool: return true
+	var cmds: Array = l2.restore_session([])
+	var r: Variant = Runner.assert_eq(cmds, ["cd '/tmp' 2>/dev/null; exec 'kitty'"], "seule kitty (ouverte à la fermeture) revient")
+	if r is String: _cleanup(); return r
+	r = Runner.assert_eq(l2.compositor.launched, cmds, "lancée par le compositeur")
+	if r is String: _cleanup(); return r
+	var l3 := _session()
+	l3.reopen = func() -> bool: return false
+	r = Runner.assert_eq(l3.restore_session([]), [], "option coupée : rien n'est relancé")
+	_cleanup()
+	return r
+
+func test_session_tracked_even_when_layout_disabled():
+	var l := _session("")                 # niveau d'hôte LAN : pas de disposition
+	l.compositor.pids[1] = 100
+	l.compositor.procs[100] = {"argv": PackedStringArray(["kitty"]), "cwd": "", "exe": "/usr/bin/kitty", "comm": "kitty"}
+	_map(l, 1, "kitty", "zsh")
+	l.freeze_session()
+	return Runner.assert_eq(l._session.size(), 1, "app suivie pour la reprise de session")

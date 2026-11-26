@@ -157,6 +157,20 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
+	# Reprise de session : relancer au démarrage les apps encore ouvertes à la fermeture du jeu.
+	var reopen_check := CheckButton.new()
+	reopen_check.text = "Reopen the apps of the previous session at startup"
+	reopen_check.button_pressed = menu.is_session_restore_enabled()
+	reopen_check.custom_minimum_size = Vector2(0, 36)
+	reopen_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	reopen_check.add_theme_font_size_override("font_size", 14)
+	menu.container.add_child(reopen_check)
+
+	reopen_check.toggled.connect(func(on: bool):
+		menu._settings["reopen_last_session"] = on
+		menu._save_settings()
+	)
+
 	menu.container.add_child(menu._make_spacer())
 	menu.container.add_child(menu._make_back_btn())
 

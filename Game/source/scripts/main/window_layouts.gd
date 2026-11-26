@@ -11,6 +11,12 @@ extends Node
 ## niveau reçu d'un hôte LAN elle est vide et la fonction est inactive. Ignorées : fenêtres sans app_id, boîtes de
 ## dialogue (fenêtre parente).
 ##
+## Reprise de session : les applications encore ouvertes quand le jeu s'arrête sont relancées au démarrage suivant
+## (restore_session), avec leur ligne de commande et leur dossier courant (Flatpak : `flatpak run <id>`), une fois
+## par processus (Firefox et ses deux fenêtres = un seul lancement). La liste est reconstruite à chaque écriture du
+## fichier et figée par freeze_session() juste avant que le jeu ne ferme les apps en quittant. Les apps déjà
+## présentes dans les « startup apps » (même exécutable) ne sont pas relancées une seconde fois.
+##
 ## Créé par wayland_room.gd, qui lui branche window_created (après la création du quad), window_unmapped (AVANT les
 ## autres gestionnaires, pour relever l'état épinglé / focus avant qu'il ne soit défait) et window_texture_updated.
 
@@ -25,12 +31,15 @@ var focus: Node = null
 var pins: Node = null
 var level_key := Callable()    # -> String ("" = disposition indisponible)
 var enabled := Callable()      # -> bool (option du menu pause)
+var reopen := Callable()       # -> bool : relancer les apps de la session précédente (option du menu pause)
 var save_path := SAVE_PATH
 
 var _data: Dictionary = {}     # clé de niveau -> Array[Dictionary]
 var _consumed: Dictionary = {} # uid -> true : entrées déjà attribuées pendant cette session
 var _live: Dictionary = {}     # window_id -> {"key": clé de niveau, "uid": uid de l'entrée}
 var _pending_pin: Dictionary = {} # window_id -> true : à épingler dès la première image
+var _session: Array = []       # [{pid, cmd, bin, app_id}] : apps ouvertes (dernière écriture / session précédente)
+var _frozen := false           # le jeu quitte : la liste de session n'est plus reconstruite
 var _dirty := false
 var _save_cd := 0.0
 var _poll_cd := 0.0
@@ -68,10 +77,15 @@ func _key() -> String:
 # ── Cycle de vie des fenêtres ──────────────────────────────────────────
 
 func on_window_created(id: int, _quad: Node) -> void:
-	if not _active():
-		return
 	var app_id := String(win3d.window_app_ids.get(id, ""))
 	if app_id == "" or compositor.get_window_parent_id(id) != -1:
+		return
+	# Disposition inactive (option coupée, niveau d'hôte LAN) : la fenêtre est quand même suivie pour la
+	# reprise de session, sans entrée de disposition (uid vide).
+	if not _active():
+		_live[id] = {"key": "", "uid": ""}
+		_resolve_launch(id)
+		_mark_dirty()
 		return
 	var key := _key()
 	var entries: Array = _data.get(key, [])
@@ -87,11 +101,15 @@ func on_window_created(id: int, _quad: Node) -> void:
 		_apply(id, entry)
 	_consumed[entry["uid"]] = true
 	_live[id] = {"key": key, "uid": entry["uid"]}
+	_resolve_launch(id)
+	_mark_dirty()
 
 func on_window_unmapped(id: int) -> void:
 	if _live.has(id):
 		_snapshot(id)
-		_live.erase(id)
+		if not _frozen:
+			_live.erase(id)
+			_mark_dirty()
 	_pending_pin.erase(id)
 
 func on_window_texture_updated(id: int, texture: Texture2D, _w: int, _h: int) -> void:
@@ -122,6 +140,8 @@ func _snapshot(id: int) -> void:
 	var live: Dictionary = _live.get(id, {})
 	if live.is_empty():
 		return
+	if not live.has("cmd"):
+		_resolve_launch(id)      # X11 : le PID réel n'est parfois connu qu'après le map
 	if focus.is_active() and focus.focus_stack.has(id):
 		return
 	if bool(win3d.get("is_moving")) or bool(win3d.get("is_resizing")):
@@ -162,10 +182,61 @@ func _mark_dirty() -> void:
 		_save_cd = SAVE_DEBOUNCE
 	_dirty = true
 
+# ── Reprise de session ─────────────────────────────────────────────────
+
+## Retient comment relancer l'application de la fenêtre (une fois connu son PID).
+func _resolve_launch(id: int) -> void:
+	var live: Dictionary = _live.get(id, {})
+	if live.is_empty() or live.has("cmd"):
+		return
+	var pid := int(compositor.get_window_pid(id))
+	if pid <= 0:
+		return
+	var info: Dictionary = compositor.get_process_info(pid)
+	if not launchable(info, OS.get_executable_path()):
+		return
+	live["pid"] = pid
+	live["cmd"] = build_command(info)
+	live["bin"] = launch_bin(info)
+
+func _session_from_live() -> Array:
+	var out: Array = []
+	var seen := {}
+	for id in _live:
+		var live: Dictionary = _live[id]
+		if not live.has("cmd") or seen.has(live["pid"]):
+			continue
+		seen[live["pid"]] = true
+		out.append({"pid": live["pid"], "cmd": live["cmd"], "bin": live["bin"],
+			"app_id": String(win3d.window_app_ids.get(id, ""))})
+	return out
+
+## Le jeu quitte : fige la liste des apps ouvertes AVANT que shutdown_apps() ne les ferme, et l'écrit.
+func freeze_session() -> void:
+	for id in _live.keys():
+		_snapshot(int(id))
+	_session = _session_from_live()
+	_frozen = true
+	save_now()
+
+## Démarrage : relance les apps ouvertes à la fin de la session précédente (sauf celles des startup apps).
+## Renvoie les commandes lancées.
+func restore_session(startup_commands: Array) -> Array:
+	if reopen.is_valid() and not bool(reopen.call()):
+		return []
+	var cmds := session_commands(_session, startup_commands)
+	for cmd in cmds:
+		compositor.launch_app(cmd)
+	if not cmds.is_empty():
+		print("window_layouts: reprise de session, %d app(s) relancée(s)" % cmds.size())
+	return cmds
+
 # ── Persistance ────────────────────────────────────────────────────────
 
 func save_now() -> void:
 	_dirty = false
+	if not _frozen:
+		_session = _session_from_live()
 	var out := {}
 	for key in _data:
 		var kept := trim_entries(_data[key], MAX_ENTRIES)
@@ -177,7 +248,7 @@ func save_now() -> void:
 	if f == null:
 		push_warning("window_layouts: impossible d'écrire %s" % save_path)
 		return
-	f.store_string(JSON.stringify(out, "\t"))
+	f.store_string(JSON.stringify({"version": 2, "levels": out, "session": _session}, "\t"))
 
 func _load() -> void:
 	_data = {}
@@ -187,6 +258,12 @@ func _load() -> void:
 	if not parsed is Dictionary:
 		push_warning("window_layouts: %s illisible, ignoré" % save_path)
 		return
+	# Version 2 : {version, levels, session} ; version 1 : directement les niveaux.
+	if parsed.has("levels") and parsed["levels"] is Dictionary:
+		var sess: Variant = parsed.get("session", [])
+		if sess is Array:
+			_session = (sess as Array).filter(func(e): return e is Dictionary and e.get("cmd") is String)
+		parsed = parsed["levels"]
 	for key in parsed:
 		if parsed[key] is Array:
 			var entries: Array = []
@@ -246,6 +323,63 @@ static func array_to_transform(a: Variant) -> Variant:
 	if is_zero_approx(b.determinant()):
 		return null
 	return Transform3D(b, Vector3(a[9], a[10], a[11]))
+
+## Une app relançable : un argv, et ni le satellite XWayland (PID non résolu) ni le jeu lui-même.
+static func launchable(info: Dictionary, game_exe: String) -> bool:
+	var argv: Variant = info.get("argv", PackedStringArray())
+	if not (argv is PackedStringArray or argv is Array) or argv.is_empty():
+		return false
+	if String(info.get("comm", "")).begins_with("xwayland-satel"):
+		return false
+	return String(info.get("exe", "")) != game_exe
+
+static func shell_quote(s: String) -> String:
+	return "'" + s.replace("'", "'\\''") + "'"
+
+## Commande shell qui relance l'app dans son dossier courant (Flatpak : par son identifiant).
+static func build_command(info: Dictionary) -> String:
+	var run := ""
+	var flatpak := String(info.get("flatpak_id", ""))
+	if flatpak != "":
+		run = "flatpak run " + shell_quote(flatpak)
+	else:
+		var parts: Array = []
+		for a in info.get("argv", []):
+			parts.append(shell_quote(String(a)))
+		run = " ".join(parts)
+	var cwd := String(info.get("cwd", ""))
+	if cwd != "":
+		return "cd %s 2>/dev/null; exec %s" % [shell_quote(cwd), run]
+	return "exec " + run
+
+## Nom de l'exécutable (pour ne pas doubler une startup app).
+static func launch_bin(info: Dictionary) -> String:
+	var flatpak := String(info.get("flatpak_id", ""))
+	if flatpak != "":
+		return flatpak
+	var argv: Variant = info.get("argv", [])
+	return String(argv[0]).get_file() if not argv.is_empty() else ""
+
+## Commandes à relancer : une par processus de la session, sauf les exécutables déjà lancés comme startup apps.
+static func session_commands(session: Array, startup_commands: Array) -> Array:
+	var startup_bins := {}
+	for c in startup_commands:
+		var first := String(c).strip_edges().split(" ", false)
+		if not first.is_empty():
+			startup_bins[first[0].get_file()] = true
+		if String(c).strip_edges().begins_with("flatpak run "):
+			var p := String(c).strip_edges().split(" ", false)
+			if p.size() >= 3:
+				startup_bins[p[2]] = true
+	var out: Array = []
+	var seen_pid := {}
+	for e in session:
+		var pid: Variant = e.get("pid", -1)
+		if seen_pid.has(pid) or startup_bins.has(String(e.get("bin", ""))):
+			continue
+		seen_pid[pid] = true
+		out.append(String(e["cmd"]))
+	return out
 
 static func vec2_to_array(v: Vector2) -> Array:
 	return [v.x, v.y]

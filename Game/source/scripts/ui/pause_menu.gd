@@ -565,6 +565,10 @@ func is_shortcut_inhibit_allowed() -> bool:
 func is_window_layout_enabled() -> bool:
 	return bool(_settings.get("remember_window_layout", true))
 
+# Les apps encore ouvertes à la fermeture du jeu sont-elles relancées au démarrage suivant ? (GENERAL). Défaut : oui.
+func is_session_restore_enabled() -> bool:
+	return bool(_settings.get("reopen_last_session", true))
+
 # ── LAN multiplayer ──────────────────────────────────────────────────
 
 func get_tutorial_seen() -> bool:

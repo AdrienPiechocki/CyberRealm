@@ -58,6 +58,13 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   ignored. Stored in `user://window_layouts.json` (64 windows per level),
   inactive on a level received from a LAN host. Toggle it in the pause menu
   (General → *Remember window positions*).
+- **Session restore** — the apps still open when you quit the game come back
+  by themselves at the next launch (same command line and working directory;
+  Flatpak apps through `flatpak run <id>`), then take their place as above.
+  One launch per process: Firefox with two windows is started once and
+  restores its own windows. Apps closed during the game, dialogs, startup apps
+  and the polkit agent are not relaunched. Toggle it in the pause menu
+  (General → *Reopen the apps of the previous session at startup*).
 - **Taskbars** — implements `zwlr_foreign_toplevel_management_v1`, so a taskbar
   launched inside the game (waybar's `wlr/taskbar` module, `lswt`…) lists the
   windows and drives them: clicking a window un-hides it, gives it the keyboard

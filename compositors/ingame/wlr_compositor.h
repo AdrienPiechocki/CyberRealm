@@ -959,6 +959,9 @@ class WlrCompositor : public Node {
     bool is_window_fullscreen_requested(int window_id);
     // Fenêtre parente (xdg_toplevel.set_parent : boîte de dialogue…), -1 si aucune.
     int get_window_parent_id(int window_id);
+    // Comment relancer le processus `pid` (reprise de session) : argv, cwd, exe,
+    // comm, flatpak_id ("" hors Flatpak). Vide si le processus n'existe plus.
+    Dictionary get_process_info(int pid);
 
     void set_x11_display(const String &display_name);
 
