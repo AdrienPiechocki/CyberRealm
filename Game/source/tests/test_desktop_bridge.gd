@@ -34,3 +34,13 @@ func test_privacy_and_time_format():
 		"« application seulement » cache le résumé")
 	if r is String: return r
 	return Runner.assert_eq([Media.fmt_time(0), Media.fmt_time(185000000)], ["0:00", "3:05"], "format du temps")
+
+func test_cover_from_bytes():
+	var img := Image.create(8, 8, false, Image.FORMAT_RGB8)
+	img.fill(Color.RED)
+	var png := img.save_png_to_buffer()
+	var jpg := img.save_jpg_to_buffer()
+	var r: Variant = Runner.assert_true(Media.texture_from_bytes(png) != null and Media.texture_from_bytes(jpg) != null,
+		"PNG et JPEG reconnus par leur contenu")
+	if r is String: return r
+	return Runner.assert_true(Media.texture_from_bytes("pas une image du tout".to_utf8_buffer()) == null, "contenu inconnu : rien")

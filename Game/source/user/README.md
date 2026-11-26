@@ -282,7 +282,7 @@ the editor, then place and scale them like any node; their front faces +Z):
 
 | Scene | Shows | Click |
 |---|---|---|
-| `media_player.tscn` | cover, title, artist, progress of the current media player (MPRIS) | play / pause; ⏮ ⏭ buttons |
+| `media_player.tscn` | cover (local file, embedded image as with mpv, or web address), title, artist, progress of the current media player (MPRIS) | play / pause; ⏮ ⏭ buttons |
 | `notification_board.tscn` | the last notifications (time, app, summary) | a row: its default action |
 | `system_monitor.tscn` | CPU, RAM, GPU, temperature | — |
 | `wall_clock.tscn` | real time and date | — |

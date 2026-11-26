@@ -97,23 +97,75 @@ func _process(delta: float) -> void:
 		if not p.is_empty() and p.get("status") == "Playing":
 			_update_progress(p)
 
-## Pochette : fichier local seulement (file://), image de taille raisonnable.
+## Pochette : fichier local (file://, y compris celles qu'a extraites le pont depuis une image intégrée data:, ex.
+## mpv) ou adresse web (http(s)://, téléchargée une fois, taille limitée, gardée en cache pour tous les lecteurs du
+## niveau). Le format est reconnu d'après le contenu (PNG, JPEG, WebP, BMP).
+const WEB_TIMEOUT_SEC := 10.0
+const WEB_CACHE_MAX := 32
+static var _web_art: Dictionary = {}     # url -> Texture2D (null : échec, pas de nouvel essai)
+var _http: HTTPRequest = null
+var _pending_url := ""
+
 func _set_art(url: String) -> void:
 	if url == _art_url:
 		return
 	_art_url = url
 	_cover.texture = null
-	if not url.begins_with("file://"):
+	if url.begins_with("file://"):
+		var path := url.substr(7).uri_decode()
+		var f := FileAccess.open(path, FileAccess.READ)
+		if f == null or f.get_length() > ART_MAX_BYTES:
+			return
+		var bytes := f.get_buffer(f.get_length())
+		f.close()
+		_cover.texture = texture_from_bytes(bytes)
+	elif url.begins_with("https://") or url.begins_with("http://"):
+		_fetch(url)
+
+func _fetch(url: String) -> void:
+	if _web_art.has(url):
+		_cover.texture = _web_art[url]
 		return
-	var path := url.substr(7).uri_decode()
-	if not path.get_extension().to_lower() in ["png", "jpg", "jpeg", "webp", "bmp"]:
-		return
-	var f := FileAccess.open(path, FileAccess.READ)
-	if f == null or f.get_length() > ART_MAX_BYTES:
-		return
-	f.close()
-	var img := Image.load_from_file(path)
-	if img == null or img.is_empty():
-		return
+	if _http == null:
+		_http = HTTPRequest.new()
+		_http.timeout = WEB_TIMEOUT_SEC
+		_http.body_size_limit = ART_MAX_BYTES
+		_http.max_redirects = 3
+		add_child(_http)
+		_http.request_completed.connect(_on_art_downloaded)
+	_http.cancel_request()
+	_pending_url = url
+	if _http.request(url) != OK:
+		_remember(url, null)
+
+func _on_art_downloaded(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+	var tex: Texture2D = null
+	if result == HTTPRequest.RESULT_SUCCESS and code == 200:
+		tex = texture_from_bytes(body)
+	_remember(_pending_url, tex)
+	if _pending_url == _art_url:
+		_cover.texture = tex
+
+static func _remember(url: String, tex: Texture2D) -> void:
+	if _web_art.size() >= WEB_CACHE_MAX:
+		_web_art.erase(_web_art.keys()[0])
+	_web_art[url] = tex
+
+## Image (PNG, JPEG, WebP, BMP) reconnue par ses premiers octets, réduite pour la pochette ; null sinon.
+static func texture_from_bytes(b: PackedByteArray) -> Texture2D:
+	if b.size() < 12 or b.size() > ART_MAX_BYTES:
+		return null
+	var img := Image.new()
+	var err := ERR_FILE_UNRECOGNIZED
+	if b[0] == 0x89 and b[1] == 0x50 and b[2] == 0x4E and b[3] == 0x47:
+		err = img.load_png_from_buffer(b)
+	elif b[0] == 0xFF and b[1] == 0xD8:
+		err = img.load_jpg_from_buffer(b)
+	elif b.slice(0, 4).get_string_from_ascii() == "RIFF" and b.slice(8, 12).get_string_from_ascii() == "WEBP":
+		err = img.load_webp_from_buffer(b)
+	elif b[0] == 0x42 and b[1] == 0x4D:
+		err = img.load_bmp_from_buffer(b)
+	if err != OK or img.is_empty():
+		return null
 	img.resize(220, 220)
-	_cover.texture = ImageTexture.create_from_image(img)
+	return ImageTexture.create_from_image(img)

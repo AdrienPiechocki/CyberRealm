@@ -27,7 +27,7 @@ Notifications :
   -> {"type": "notification_closed", "bus", "id"}
   <- {"cmd": "notification_action", "id", "action"}   (seulement les notifications servies par le pont)
 """
-import json, os, sys, time
+import base64, binascii, hashlib, json, os, sys, time
 
 import gi
 gi.require_version("Gio", "2.0")
@@ -39,6 +39,9 @@ PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 NOTIF_NAME = "org.freedesktop.Notifications"
 NOTIF_PATH = "/org/freedesktop/Notifications"
 MAX_TEXT = 512
+MAX_ART_BYTES = 8 * 1024 * 1024
+ART_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/jpg": "jpg", "image/webp": "webp", "image/bmp": "bmp"}
+_art_cache = {}           # empreinte -> file://…
 SERVE_GRACE_SEC = 20       # délai laissé aux apps de démarrage (barre, démon de notifications) pour prendre le nom
 
 NOTIF_XML = """<node>
@@ -73,6 +76,49 @@ def log(msg):
 
 def short(s):
     return str(s)[:MAX_TEXT] if s is not None else ""
+
+
+def art_url(url):
+    """Pochette : une image intégrée (data:image/…;base64,…, ex. mpv-mpris) est décodée dans un fichier privé de
+    $XDG_RUNTIME_DIR/cyberrealm-art et transmise en file:// (une ligne JSON reste courte) ; file:// et http(s) passent
+    tels quels (le jeu télécharge les adresses web) ; le reste est ignoré."""
+    url = str(url or "")
+    if url.startswith(("file://", "http://", "https://")):
+        return url[:4096]
+    if not url.startswith("data:"):
+        return ""
+    head, _, data = url.partition(",")
+    mime = head[5:].split(";")[0].lower()
+    ext = ART_TYPES.get(mime)
+    if not ext or ";base64" not in head or len(data) > MAX_ART_BYTES * 4 // 3 + 4:
+        return ""
+    key = hashlib.sha1(data.encode("ascii", "ignore")).hexdigest()
+    if key in _art_cache:
+        return _art_cache[key]
+    try:
+        raw = base64.b64decode(data, validate=False)
+    except (binascii.Error, ValueError):
+        return ""
+    rt = os.environ.get("XDG_RUNTIME_DIR", "")
+    if not rt or not raw or len(raw) > MAX_ART_BYTES:
+        return ""
+    folder = os.path.join(rt, "cyberrealm-art")
+    os.makedirs(folder, mode=0o700, exist_ok=True)
+    path = os.path.join(folder, f"{key}.{ext}")
+    if not os.path.exists(path):
+        # Garde au plus ~32 pochettes : les plus anciennes sont supprimées.
+        olds = sorted((os.path.join(folder, f) for f in os.listdir(folder)), key=os.path.getmtime)
+        for old in olds[:-31]:
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+        tmp = path + ".tmp"
+        with open(tmp, "wb") as f:
+            f.write(raw)
+        os.replace(tmp, path)
+    _art_cache[key] = "file://" + path
+    return _art_cache[key]
 
 
 class Bus:
@@ -145,7 +191,7 @@ class Bus:
             artist = md.get("xesam:artist", [])
             st["artist"] = short(", ".join(artist) if isinstance(artist, (list, tuple)) else artist)
             st["album"] = short(md.get("xesam:album", ""))
-            st["art"] = short(md.get("mpris:artUrl", ""))
+            st["art"] = art_url(md.get("mpris:artUrl", ""))
             st["length"] = int(md.get("mpris:length", 0) or 0)
         if "Position" in props:
             st["position"] = int(props["Position"] or 0)
