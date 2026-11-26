@@ -149,6 +149,13 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("is_window_fullscreen_requested", "window_id"), &WlrCompositor::is_window_fullscreen_requested);
     ClassDB::bind_method(D_METHOD("get_window_parent_id", "window_id"), &WlrCompositor::get_window_parent_id);
     ClassDB::bind_method(D_METHOD("get_process_info", "pid"), &WlrCompositor::get_process_info);
+    ClassDB::bind_method(D_METHOD("voice_start", "target"), &WlrCompositor::voice_start);
+    ClassDB::bind_method(D_METHOD("voice_stop"), &WlrCompositor::voice_stop);
+    ClassDB::bind_method(D_METHOD("voice_is_active"), &WlrCompositor::voice_is_active);
+    ClassDB::bind_method(D_METHOD("voice_poll"), &WlrCompositor::voice_poll);
+    ClassDB::bind_method(D_METHOD("voice_decode", "peer", "seq", "data"), &WlrCompositor::voice_decode);
+    ClassDB::bind_method(D_METHOD("voice_forget", "peer"), &WlrCompositor::voice_forget);
+    ClassDB::bind_method(D_METHOD("voice_feed_samples", "samples"), &WlrCompositor::voice_feed_samples);
     ClassDB::bind_method(D_METHOD("get_terminal_jobs", "pid"), &WlrCompositor::get_terminal_jobs);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);

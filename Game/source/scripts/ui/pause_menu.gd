@@ -42,6 +42,8 @@ var container: VBoxContainer
 
 var _settings: Dictionary = {}
 var _lan: Node = null
+## Chat vocal (voice_manager.gd) : volume et sourdine par joueur depuis la page Multiplayer. Posé par wayland_room.
+var voice_manager: Node = null
 
 # ── Modules (nœuds enfants, créés dans _init : mêmes chemins de RPC chez le serveur et les clients) ──
 const ShellModule := preload("res://scripts/ui/pause/shell.gd")
@@ -564,6 +566,24 @@ func is_shortcut_inhibit_allowed() -> bool:
 # Reprise de la session précédente (window_layouts.gd) : les apps encore ouvertes à la fermeture du jeu sont
 # relancées et les fenêtres retrouvent leur place. (GENERAL). Défaut : oui. Sans réglage enregistré, on reprend les
 # deux anciennes options séparées (remember_window_layout / reopen_last_session) : décochée si l'une l'était.
+# Chat vocal (MULTIPLAYER, voice_manager.gd). Mode : "off" (défaut : le micro n'est jamais ouvert), "ptt"
+# (appuyer pour parler, action push_to_talk) ou "vad" (activation vocale au-dessus du seuil).
+func get_voice_mode() -> String:
+	var m := String(_settings.get("voice_mode", "off"))
+	return m if m in ["off", "ptt", "vad"] else "off"
+
+func get_voice_vad_threshold() -> float:
+	return float(_settings.get("voice_vad_threshold", 0.02))
+
+func is_voice_spatial() -> bool:
+	return bool(_settings.get("voice_spatial", true))
+
+func is_voice_echo_cancel() -> bool:
+	return bool(_settings.get("voice_echo_cancel", false))
+
+func get_voice_volume() -> float:
+	return float(_settings.get("voice_volume", 1.0))
+
 # Bulles de chat au-dessus des avatars (MULTIPLAYER). Défaut : oui.
 func is_chat_bubbles_enabled() -> bool:
 	return bool(_settings.get("chat_bubbles", true))

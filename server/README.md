@@ -108,6 +108,12 @@ Remaining limits, honestly: a flood of UDP packets can still saturate the Pi's l
 the server is as trustworthy as the level you export (players run its scripts); the engine's own parsers (images,
 meshes) handle data from other players' avatars.
 
+## Voice chat
+
+The server relays players' voice (20 ms OPUS frames, checked for size, rate and sender), in LAN and online mode. To
+turn it off: `sudo ./server/install-server.sh update --no-voice` (`--voice` turns it back on; by hand: `--no-voice`).
+The server never decodes nor records audio.
+
 ## Admin player (level settings)
 
 On a dedicated server nobody is "the host", so the level options (time of day, fog, clouds, rain — pause menu >

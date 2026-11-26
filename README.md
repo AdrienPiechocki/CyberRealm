@@ -171,6 +171,19 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   / s) and relays it; text is never interpreted as markup. Mute a player from
   the Multiplayer page (local only). Allowed in online mode; the dedicated
   server writes the chat to its log.
+- **Voice chat** — off by default: pick *Push to talk* (`V`, remappable
+  *push_to_talk*) or *Voice activation* (adjustable threshold, 300 ms hangover)
+  in the Multiplayer page. The microphone (PipeWire default source, or the
+  `echo-cancel-source` of PipeWire's echo-cancel module when that option is on)
+  is only opened during a multiplayer session; speech is encoded as 20 ms OPUS
+  frames (24 kb/s, in-band FEC, DTX) and relayed by the host or dedicated
+  server, which checks size, rate (60 frames/s) and sender. Voices come from
+  the speaker's avatar (3D, fading out by 25 m) unless *Spatial voice* is off;
+  a 🔊 appears before the name of who is talking; per-player mute and volume,
+  global voice volume (`Voice` audio bus). Use a headset, or the echo-cancel
+  module, so others don't hear themselves. Allowed in online mode; a dedicated
+  server started with `--no-voice` does not relay voice. `CYBERREALM_VOICE_DEBUG=1`
+  prints frames sent / relayed / received every second.
 - **Window sharing** — select a window in the navigation menu and hit **SHARE**:
   its live content is streamed (H.264/AV1 inter-frame through a VAAPI hardware
   encoder, with a JPEG-per-frame fallback) and shown on a real quad in the other

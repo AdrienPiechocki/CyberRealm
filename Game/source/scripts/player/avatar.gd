@@ -736,6 +736,22 @@ func play_emote(id: String, emoji: String, looping: bool) -> void:
 		_anim_player.play(anim, 0.25)
 		_current_anim = anim
 
+## Chat vocal : 🔊 devant le nom tant que le joueur parle (voice_manager.gd).
+func set_speaking(on: bool) -> void:
+	if _label == null or not is_instance_valid(_label):
+		return
+	if on and _label.font == null:
+		var font := SystemFont.new()
+		font.font_names = PackedStringArray(["Noto Sans", "DejaVu Sans", "Noto Color Emoji"])
+		_label.font = font
+	_label.text = ("🔊 " + player_name) if on else player_name
+
+## Point d'où sort la voix du joueur (repère de l'avatar) : un peu sous le nom, à hauteur de tête.
+func voice_anchor() -> Vector3:
+	if _label != null and is_instance_valid(_label) and _label.is_inside_tree() and is_inside_tree():
+		return to_local(_label.global_position) - Vector3(0, 0.3, 0)
+	return Vector3(0, 1.5, 0)
+
 ## Bulle de chat au-dessus de la tête (dernier message, BUBBLE_SEC secondes).
 func show_chat_bubble(text: String) -> void:
 	if _bubble == null:

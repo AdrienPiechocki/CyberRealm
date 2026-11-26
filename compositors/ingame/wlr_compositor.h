@@ -20,6 +20,7 @@
 
 #include "vulkan_dmauf.h"
 #include "audio_share.h"
+#include "voice_chat.h"
 #include "video_share.h"
 #include "x11_pid_resolver.h"
 
@@ -989,6 +990,7 @@ class WlrCompositor : public Node {
     // partage LAN. Encodage OPUS à la demande (poll_opus_packet) et décodage
     // côté récepteur.
     AudioShare audio_share;
+    VoiceChat voice_chat;     // chat vocal (micro -> OPUS, décodage par interlocuteur)
 
     // Résolution du vrai PID des fenêtres X11 (xwayland-satellite) pour le
     // partage audio : interroge le serveur X du satellite (_NET_WM_PID) sur
@@ -1241,6 +1243,14 @@ public:
     // OPUS de 20 ms dès qu'il est disponible (sinon null) ; audio_decode()
     // décode un paquet OPUS reçu ([seq][payload]) → PCM s16 interleaved
     // stéréo 48 kHz, avec concealment des pertes (suivi par sender_id).
+    // Chat vocal (voice_chat.cpp) : micro, trames OPUS de 20 ms, décodage par interlocuteur.
+    bool voice_start(const String &target) { return voice_chat.start(target); }
+    void voice_stop() { voice_chat.stop(); }
+    bool voice_is_active() const { return voice_chat.is_active(); }
+    Array voice_poll() { return voice_chat.poll(); }
+    PackedVector2Array voice_decode(int peer, int seq, const PackedByteArray &data) { return voice_chat.decode(peer, seq, data); }
+    void voice_forget(int peer) { voice_chat.forget(peer); }
+    void voice_feed_samples(const PackedFloat32Array &s) { voice_chat.feed(s.ptr(), (int)s.size()); }
     bool start_audio_share();
     void stop_audio_share();
     Dictionary poll_audio_packet();

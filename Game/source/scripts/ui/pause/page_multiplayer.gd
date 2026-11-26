@@ -144,6 +144,8 @@ func _show_lan() -> void:
 		menu._settings["chat_bubbles"] = on
 		menu._save_settings()
 	)
+
+	_add_voice_settings()
 	
 	menu.container.add_child(menu._make_section("Video share"))
 
@@ -278,7 +280,7 @@ func _update_lan_players_label() -> void:
 		parts.append("• %s (%d)" % [String(p.get("name", "?")), int(p.get("id", 0))])
 	_lan_players_label.text = "Players:\n" + "\n".join(parts)
 
-## Une case « Mute » par autre joueur : ses messages et emotes ne s'affichent plus (local, non transmis).
+## Une ligne par autre joueur : sourdine du chat, sourdine et volume de sa voix (local, rien n'est transmis).
 func _rebuild_mute_box() -> void:
 	if _lan_mute_box == null or not is_instance_valid(_lan_mute_box):
 		return
@@ -287,17 +289,113 @@ func _rebuild_mute_box() -> void:
 	var lan: Node = menu._lan
 	if lan == null or not ("chat" in lan) or lan.chat == null or not lan.multiplayer.has_multiplayer_peer():
 		return
+	var vm: Node = menu.voice_manager
 	var me: int = lan.multiplayer.get_unique_id()
 	for p in menu._lan_roster:
 		var id := int(p.get("id", 0))
 		if id == me or id == 0:
 			continue
+		var row := HBoxContainer.new()
+		var name_lbl := Label.new()
+		name_lbl.text = String(p.get("name", "?"))
+		name_lbl.custom_minimum_size = Vector2(140, 0)
+		row.add_child(name_lbl)
+		var chat_cb := CheckButton.new()
+		chat_cb.text = "Mute chat"
+		chat_cb.button_pressed = lan.chat.is_muted(id)
+		chat_cb.add_theme_font_size_override("font_size", 13)
+		chat_cb.toggled.connect(func(on: bool): lan.chat.set_muted(id, on))
+		row.add_child(chat_cb)
+		if vm != null:
+			var voice_cb := CheckButton.new()
+			voice_cb.text = "Mute voice"
+			voice_cb.button_pressed = vm.muted.has(id)
+			voice_cb.add_theme_font_size_override("font_size", 13)
+			voice_cb.toggled.connect(func(on: bool): vm.set_muted(id, on))
+			row.add_child(voice_cb)
+			var vol := HSlider.new()
+			vol.min_value = 0.0
+			vol.max_value = 2.0
+			vol.step = 0.05
+			vol.value = float(vm.volumes.get(id, 1.0))
+			vol.custom_minimum_size = Vector2(120, 0)
+			vol.tooltip_text = "Voice volume"
+			vol.value_changed.connect(func(v: float): vm.set_volume(id, v))
+			row.add_child(vol)
+		_lan_mute_box.add_child(row)
+
+## Chat vocal : mode du micro (désactivé par défaut), seuil de l'activation vocale, voix spatialisée,
+## annulation d'écho de PipeWire, volume général. Lus à chaque frame par voice_manager.gd.
+func _add_voice_settings() -> void:
+	menu.container.add_child(menu._make_section("Voice chat"))
+	var mode_row := HBoxContainer.new()
+	mode_row.add_child(menu._make_row_label("Microphone"))
+	var mode := OptionButton.new()
+	var modes := ["off", "ptt", "vad"]
+	mode.add_item("Off")
+	mode.add_item("Push to talk (%s)" % _action_key_text("push_to_talk"))
+	mode.add_item("Voice activation")
+	mode.selected = modes.find(menu.get_voice_mode())
+	mode.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	mode_row.add_child(mode)
+	menu.container.add_child(mode_row)
+
+	var vad_row := HBoxContainer.new()
+	vad_row.add_child(menu._make_row_label("Activation threshold"))
+	var vad := HSlider.new()
+	vad.min_value = 0.002
+	vad.max_value = 0.2
+	vad.step = 0.002
+	vad.value = menu.get_voice_vad_threshold()
+	vad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vad_row.add_child(vad)
+	vad_row.visible = menu.get_voice_mode() == "vad"
+	menu.container.add_child(vad_row)
+	mode.item_selected.connect(func(i: int):
+		menu._settings["voice_mode"] = modes[i]
+		menu._save_settings()
+		vad_row.visible = modes[i] == "vad"
+	)
+	vad.value_changed.connect(func(v: float):
+		menu._settings["voice_vad_threshold"] = v
+		menu._save_settings()
+	)
+
+	var vol_row := HBoxContainer.new()
+	vol_row.add_child(menu._make_row_label("Voice volume"))
+	var vol := HSlider.new()
+	vol.min_value = 0.0
+	vol.max_value = 2.0
+	vol.step = 0.05
+	vol.value = menu.get_voice_volume()
+	vol.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	vol_row.add_child(vol)
+	menu.container.add_child(vol_row)
+	vol.value_changed.connect(func(v: float):
+		menu._settings["voice_volume"] = v
+		menu._save_settings()
+	)
+
+	for spec in [["voice_spatial", "Spatial voice (comes from the player's avatar)", menu.is_voice_spatial()],
+			["voice_echo_cancel", "Use PipeWire echo cancellation (needs the echo-cancel module)", menu.is_voice_echo_cancel()]]:
 		var cb := CheckButton.new()
-		cb.text = "Mute %s" % String(p.get("name", "?"))
-		cb.button_pressed = lan.chat.is_muted(id)
-		cb.add_theme_font_size_override("font_size", 13)
-		cb.toggled.connect(func(on: bool): lan.chat.set_muted(id, on))
-		_lan_mute_box.add_child(cb)
+		cb.text = String(spec[1])
+		cb.button_pressed = bool(spec[2])
+		cb.add_theme_font_size_override("font_size", 14)
+		var key := String(spec[0])
+		cb.toggled.connect(func(on: bool):
+			menu._settings[key] = on
+			menu._save_settings()
+		)
+		menu.container.add_child(cb)
+
+static func _action_key_text(action: String) -> String:
+	if not InputMap.has_action(action):
+		return "?"
+	for ev in InputMap.action_get_events(action):
+		if ev is InputEventKey:
+			return (ev as InputEventKey).as_text().replace(" (Physical)", "")
+	return "unbound"
 
 func set_lan_discovery_results(results: Array) -> void:
 	if menu._current_view != "lan" or _lan_results_box == null:

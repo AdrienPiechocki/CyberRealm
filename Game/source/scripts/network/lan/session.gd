@@ -728,6 +728,8 @@ func _on_peer_connected(id: int) -> void:
 # thread principal pendant un stream partagé. Défaut ENet (5000/30000 ms)
 # coupe la session après ~5 s sans ACK, trop juste quand l'encodage/décodage
 # JPEG vidéo monopolise le thread principal.
+const ENET_THROTTLE_INTERVAL_MSEC := 5000   # valeurs par défaut d'ENet
+const ENET_THROTTLE_ACCELERATION := 2
 const ENET_TIMEOUT_LIMIT := 64
 const ENET_TIMEOUT_MIN := 15000
 const ENET_TIMEOUT_MAX := 90000
@@ -740,9 +742,15 @@ func _set_peer_timeout(id: int) -> void:
 	if peer == null:
 		return
 	peer.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN, ENET_TIMEOUT_MAX)
+	# Limiteur d'ENet (« packet throttle ») : il jette volontairement des paquets NON FIABLES dès que le temps
+	# d'aller-retour varie, ce qui arrive en continu quand le thread principal du jeu a des à-coups (chargements,
+	# captures). Mesuré : 15 à 30 % seulement des trames de voix arrivaient. Décélération 0 = jamais de rejet
+	# volontaire ; le débit non fiable reste faible (voix ~24 kb/s, audio partagé), la vidéo passe en fiable.
+	peer.throttle_configure(ENET_THROTTLE_INTERVAL_MSEC, ENET_THROTTLE_ACCELERATION, 0)
 
 func _on_peer_disconnected(id: int) -> void:
 	lan.chat.forget_peer(id)
+	lan.voice.forget_peer(id)
 	lan.players._avatar_blobs.erase(id)
 	lan.players._avatar_send_queue.erase(id)
 	_pending_auth.erase(id)

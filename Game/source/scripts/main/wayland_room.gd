@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var voice_manager: Node # chat vocal, cf. scripts/main/voice_manager.gd
 var chat_box: Control # chat textuel et emotes (multijoueur), cf. scripts/ui/chat_box.gd
 var window_layouts: Node # disposition des fenêtres retrouvée, cf. scripts/main/window_layouts.gd
 var toplevel_bridge: Node # barres de tâches + raccourcis capturés par une fenêtre, cf. scripts/main/toplevel_bridge.gd
@@ -750,6 +751,23 @@ func _ready() -> void:
 	chat_box.bubbles_enabled = Callable(pause_menu, "is_chat_bubbles_enabled")
 	chat_box.typing_changed.connect(func(typing: bool): player.chat_typing = typing)
 	lan.session_state_changed.connect(func(active: bool): radial_menu.social_available = active)
+	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
+	voice_manager = Node.new()
+	voice_manager.name = "VoiceManager"
+	voice_manager.set_script(preload("res://scripts/main/voice_manager.gd"))
+	add_child(voice_manager)
+	voice_manager.setup(compositor, lan, pause_menu)
+	voice_manager.avatar_for = _avatar_for_peer
+	voice_manager.can_push_to_talk = func() -> bool:
+		return not chat_box.is_typing() and not focus.is_active() and not pause_menu.visible
+	pause_menu.voice_manager = voice_manager
+	lan.players_changed.connect(func(roster: Array):
+		var ids := {}
+		for p in roster:
+			ids[int(p.get("id", 0))] = true
+		for peer in voice_manager._players.keys():
+			if not ids.has(int(peer)):
+				voice_manager.forget_peer(int(peer)))
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
 	lan.pin_changed.connect(pause_menu.set_lan_pin)
 	lan.windows_provider = win3d.get_windows_state

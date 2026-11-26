@@ -7,7 +7,7 @@ extends Node
 ##   1. Sur une machine de jeu :  godot --headless --path Game/source --script scripts/tools/export_level_blob.gd \\
 ##          -- [res://user/Levels/<Nom>/level.tscn] [level.crblob]
 ##   2. Sur le serveur :          godot --headless --path Game/source scenes/dedicated_server.tscn \\
-##          -- --blob=level.crblob [--pin=1234] [--name=Serveur] [--max-players=8] [--no-dtls]
+##          -- --blob=level.crblob [--pin=1234] [--name=Serveur] [--max-players=8] [--no-dtls] [--no-voice]
 ##   Online (Internet) : ... -- --online --tls-cert=fullchain.pem --tls-key=privkey.pem  (mot de passe >= 12 caractères,
 ##   de préférence via CYBERREALM_PASSWORD) — voir docs/dedicated-server.md.
 ##   Admin : variable d'environnement CYBERREALM_ADMIN_PASSWORD (ou --admin-password=…, visible dans `ps`).
@@ -43,6 +43,8 @@ func _ready() -> void:
 	lan.tls_key_path = String(args.get("tls-key", ""))
 	lan.max_players = int(args.get("max-players", 8))
 	lan.encryption_enabled = not args.has("no-dtls")
+	# Chat vocal : relayé par défaut (y compris en online) ; --no-voice coupe le relais.
+	lan.voice.disabled = args.has("no-voice")
 	# Mot de passe admin : de préférence par l'environnement (un argument de ligne de commande est visible dans `ps`).
 	lan.admin_password = String(args.get("admin-password", OS.get_environment("CYBERREALM_ADMIN_PASSWORD")))
 	var level := _instantiate_level(blob)

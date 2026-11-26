@@ -29,6 +29,7 @@ PIN=""
 NAME=""
 MAX_PLAYERS=""
 DTLS=""                             # 1 = chiffré (défaut), 0 = --no-dtls
+VOICE=""                            # 1 = chat vocal relayé (défaut), 0 = --no-voice
 ONLINE=""                           # 1 = serveur exposé sur Internet (mode online durci)
 DOMAIN=""                           # nom DNS du serveur (certificat Let's Encrypt)
 EMAIL=""                            # e-mail Let's Encrypt (alertes d'expiration)
@@ -62,6 +63,8 @@ Options :
   --max-players N       nombre de joueurs maximum (défaut : 8)
   --no-dtls             désactive le chiffrement DTLS (débogage)
   --dtls                (ré)active le chiffrement DTLS
+  --no-voice            ne relaie pas le chat vocal entre joueurs
+  --voice               (ré)active le relais du chat vocal
   --online              serveur sur INTERNET : TLS réel, mot de passe long, découverte coupée, partages coupés.
                         Exige --domain + --email (certificat Let's Encrypt) ou --tls-cert/--tls-key. Voir docs.
   --domain NOM          nom DNS public du serveur (ex. play.exemple.org) ; les joueurs rejoignent PAR CE NOM
@@ -112,6 +115,8 @@ while [[ $# -gt 0 ]]; do
         --max-players)  MAX_PLAYERS="${2:?}"; shift 2 ;;
         --no-dtls)      DTLS=0; shift ;;
         --dtls)         DTLS=1; shift ;;
+        --no-voice)     VOICE=0; shift ;;
+        --voice)        VOICE=1; shift ;;
         --admin-password) ADMIN_PW="${2-}"; ADMIN_PW_SET=1; shift 2 ;;
         --online)       ONLINE=1; shift ;;
         --domain)       DOMAIN="${2:?}"; shift 2 ;;
@@ -277,6 +282,7 @@ write_config() {
     name="${NAME:-$(conf_get NAME)}"; name="${name:-CyberRealm Server}"
     maxp="${MAX_PLAYERS:-$(conf_get MAX_PLAYERS)}"; maxp="${maxp:-8}"
     dtls="${DTLS:-$(conf_get DTLS)}"; dtls="${dtls:-1}"
+    voice="${VOICE:-$(conf_get VOICE)}"; voice="${voice:-1}"
     PIN="$pin"
     local admin_pw
     if [[ $ADMIN_PW_SET -eq 1 ]]; then admin_pw="$ADMIN_PW"; else admin_pw="$(conf_get ADMIN_PASSWORD)"; fi
@@ -289,6 +295,7 @@ write_config() {
         printf 'NAME=%q\n' "$name"
         printf 'MAX_PLAYERS=%q\n' "$maxp"
         printf 'DTLS=%q\n' "$dtls"
+        printf 'VOICE=%q\n' "$voice"
         printf 'ADMIN_PASSWORD=%q\n' "$admin_pw"
         printf 'ONLINE=%q\n' "$online"
         printf 'DOMAIN=%q\n' "$domain"
@@ -311,6 +318,7 @@ export HOME
 export CYBERREALM_ADMIN_PASSWORD="${ADMIN_PASSWORD:-}"
 [[ -f "$BLOB" ]] || { echo "niveau introuvable : $BLOB (installe-le : install-server.sh blob FICHIER)" >&2; exit 2; }
 args=("--blob=$BLOB" "--name=$NAME" "--max-players=$MAX_PLAYERS")
+[[ "${VOICE:-1}" == "0" ]] && args+=("--no-voice")
 if [[ "${ONLINE:-0}" == "1" ]]; then
     # Mode Internet : TLS réel, mot de passe par l'environnement (jamais en argument), chiffrement toujours actif.
     export CYBERREALM_PASSWORD="$PIN"
