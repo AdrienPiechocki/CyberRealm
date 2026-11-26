@@ -69,6 +69,7 @@ func _process(delta: float) -> void:
 	var in_session: bool = lan.is_session_active() and mode != "off" and not lan.voice.disabled
 	var testing: bool = mic_test and bool(settings.get("visible"))
 	var want := in_session or testing
+	_apply_gain()
 	var target := _voice_target() if want else _mic_target
 	if want and _mic_target != target:
 		_close_mic()
@@ -137,6 +138,15 @@ func _dbg_print(mode: String) -> void:
 				AudioServer.get_bus_volume_db(bus) if bus >= 0 else 0.0, AudioServer.is_bus_mute(bus) if bus >= 0 else false,
 				get_tree().paused if is_inside_tree() else false])
 	_dbg_rx.clear()
+
+var _gain_db := -1.0
+## Gain du micro (menu) transmis au compositeur quand il change : appliqué avant l'encodage, il compte aussi pour
+## l'activation vocale et l'indicateur de niveau (rms des trames après gain).
+func _apply_gain() -> void:
+	var db := float(settings.get_voice_mic_gain_db()) if settings.has_method("get_voice_mic_gain_db") else 0.0
+	if db != _gain_db and compositor.has_method("voice_set_gain_db"):
+		compositor.voice_set_gain_db(db)
+		_gain_db = db
 
 ## Cible du micro (MicSources.voice_target), recalculée quand les réglages changent et au plus toutes les 5 s (la
 ## liste des sources vient de pw-dump : jamais à chaque frame).

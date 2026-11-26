@@ -460,26 +460,39 @@ func _add_voice_settings() -> void:
 	mode_row.add_child(mode)
 	menu.container.add_child(mode_row)
 
+	# Micro, gain, niveau en direct (avec le trait du seuil), puis le seuil d'activation EN dB, sur la même échelle.
+	var bar: ProgressBar = _add_mic_device_row()
 	var vad_row := HBoxContainer.new()
 	vad_row.add_child(menu._make_row_label("Activation threshold"))
 	var vad := HSlider.new()
-	vad.min_value = 0.002
-	vad.max_value = 0.2
-	vad.step = 0.002
-	vad.value = menu.get_voice_vad_threshold()
+	vad.min_value = VAD_MIN_DB
+	vad.max_value = VAD_MAX_DB
+	vad.step = 1.0
+	vad.value = clampf(linear_to_db(menu.get_voice_vad_threshold()), VAD_MIN_DB, VAD_MAX_DB)
 	vad.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vad_row.add_child(vad)
+	var vad_label := Label.new()
+	vad_label.custom_minimum_size = Vector2(64, 0)
+	vad_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	vad_label.add_theme_font_size_override("font_size", 12)
+	vad_label.text = "%d dB" % roundi(vad.value)
+	vad_row.add_child(vad_label)
 	vad_row.visible = menu.get_voice_mode() == "vad"
 	menu.container.add_child(vad_row)
+	var marker := bar.get_node_or_null("Threshold") as Control if bar != null else null
+	if marker != null:
+		marker.visible = vad_row.visible
 	mode.item_selected.connect(func(i: int):
 		menu._settings["voice_mode"] = modes[i]
 		menu._save_settings()
 		vad_row.visible = modes[i] == "vad"
+		if marker != null:
+			marker.visible = vad_row.visible
 	)
-	_add_mic_device_row()
 	vad.value_changed.connect(func(v: float):
-		menu._settings["voice_vad_threshold"] = v
+		menu._settings["voice_vad_threshold"] = db_to_linear(v)
 		menu._save_settings()
+		vad_label.text = "%d dB" % roundi(v)
 	)
 
 	var vol_row := HBoxContainer.new()
@@ -522,9 +535,13 @@ func _add_voice_settings() -> void:
 	menu.container.add_child(echo_warn)
 	refresh_echo_warn.call()
 
-## Choix du micro (sources PipeWire, défaut en tête) et niveau en direct : tant que cette page est affichée, le micro
-## est ouvert en test (rien n'est envoyé hors session, voice_manager.mic_test).
-func _add_mic_device_row() -> void:
+const VAD_MIN_DB := -60.0      # seuil d'activation vocale, même échelle que la barre de niveau
+const VAD_MAX_DB := -10.0
+
+## Choix du micro (sources PipeWire, défaut en tête), gain et niveau en direct : tant que cette page est affichée, le
+## micro est ouvert en test (rien n'est envoyé hors session, voice_manager.mic_test). Renvoie la barre de niveau (son
+## enfant « Threshold » marque le seuil d'activation), null sans gestionnaire de voix.
+func _add_mic_device_row() -> ProgressBar:
 	var row := HBoxContainer.new()
 	row.add_child(menu._make_row_label("Input device"))
 	var dev := OptionButton.new()
@@ -563,6 +580,28 @@ func _add_mic_device_row() -> void:
 	row.add_child(dev)
 	menu.container.add_child(row)
 
+	var gain_row := HBoxContainer.new()
+	gain_row.add_child(menu._make_row_label("Microphone gain"))
+	var gain := HSlider.new()
+	gain.min_value = 0.0
+	gain.max_value = 24.0
+	gain.step = 1.0
+	gain.value = menu.get_voice_mic_gain_db()
+	gain.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	gain_row.add_child(gain)
+	var gain_label := Label.new()
+	gain_label.custom_minimum_size = Vector2(64, 0)
+	gain_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	gain_label.add_theme_font_size_override("font_size", 12)
+	gain_label.text = "+%d dB" % roundi(gain.value)
+	gain_row.add_child(gain_label)
+	gain.value_changed.connect(func(v: float):
+		menu._settings["voice_mic_gain_db"] = v
+		menu._save_settings()
+		gain_label.text = "+%d dB" % roundi(v)
+	)
+	menu.container.add_child(gain_row)
+
 	var level_row := HBoxContainer.new()
 	level_row.add_child(menu._make_row_label("Input level"))
 	var bar := ProgressBar.new()
@@ -579,11 +618,18 @@ func _add_mic_device_row() -> void:
 	db_label.add_theme_font_size_override("font_size", 12)
 	level_row.add_child(db_label)
 	menu.container.add_child(level_row)
+	# Trait du seuil d'activation vocale sur la barre : la voix doit le dépasser pour être envoyée.
+	var marker := ColorRect.new()
+	marker.name = "Threshold"
+	marker.color = Color(1.0, 0.75, 0.3)
+	marker.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	marker.size = Vector2(2, 14)
+	bar.add_child(marker)
 	var vm: Node = menu.voice_manager
 	if vm == null:
 		bar.visible = false
 		db_label.text = "—"
-		return
+		return null
 	vm.set("mic_test", true)
 	var timer := Timer.new()
 	timer.wait_time = 0.05
@@ -593,9 +639,12 @@ func _add_mic_device_row() -> void:
 		var db := linear_to_db(maxf(lvl, 0.00001))
 		bar.value = level_bar_value(lvl)
 		db_label.text = "%d dB" % roundi(db) if lvl > 0.00001 else "silent"
+		marker.size = Vector2(2, bar.size.y)
+		marker.position = Vector2(level_bar_value(menu.get_voice_vad_threshold()) * bar.size.x - 1.0, 0)
 	)
 	level_row.add_child(timer)
 	level_row.tree_exiting.connect(func(): vm.set("mic_test", false))
+	return bar
 
 ## Niveau linéaire (rms) -> barre 0..1 sur une échelle de -60 dB à 0 dB.
 static func level_bar_value(rms: float) -> float:

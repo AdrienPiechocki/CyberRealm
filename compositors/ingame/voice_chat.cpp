@@ -193,6 +193,23 @@ void VoiceChat::push_samples(const float *samples, uint32_t n, uint32_t stride_f
 	}
 }
 
+// Écrêtage doux : linéaire jusqu'à ±0,8, puis courbe tanh vers ±1 (un gain fort sur un éclat de voix ne sature pas
+// brutalement le signal envoyé).
+static inline float soft_clip(float x) {
+	const float knee = 0.8f;
+	float a = std::fabs(x);
+	if (a <= knee) {
+		return x;
+	}
+	float y = knee + (1.0f - knee) * std::tanh((a - knee) / (1.0f - knee));
+	return x < 0.0f ? -y : y;
+}
+
+void VoiceChat::set_gain_db(float db) {
+	gain_db = std::fmin(std::fmax(db, 0.0f), MAX_GAIN_DB);
+	gain = std::pow(10.0f, gain_db / 20.0f);
+}
+
 Array VoiceChat::poll() {
 	Array out;
 	if (!encoder) {
@@ -214,6 +231,9 @@ Array VoiceChat::poll() {
 		}
 		double sum = 0.0;
 		for (int i = 0; i < FRAME; i++) {
+			if (gain != 1.0f) {
+				frame[i] = soft_clip(frame[i] * gain);
+			}
 			sum += (double)frame[i] * frame[i];
 		}
 		int len = opus_encode_float(static_cast<OpusEncoder *>(encoder), frame, FRAME, packet, MAX_PACKET);

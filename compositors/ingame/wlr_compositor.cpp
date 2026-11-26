@@ -156,6 +156,8 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("voice_poll"), &WlrCompositor::voice_poll);
     ClassDB::bind_method(D_METHOD("voice_decode", "peer", "seq", "data"), &WlrCompositor::voice_decode);
     ClassDB::bind_method(D_METHOD("voice_forget", "peer"), &WlrCompositor::voice_forget);
+    ClassDB::bind_method(D_METHOD("voice_set_gain_db", "db"), &WlrCompositor::voice_set_gain_db);
+    ClassDB::bind_method(D_METHOD("voice_get_gain_db"), &WlrCompositor::voice_get_gain_db);
     ClassDB::bind_method(D_METHOD("voice_feed_samples", "samples"), &WlrCompositor::voice_feed_samples);
     ClassDB::bind_method(D_METHOD("get_terminal_jobs", "pid"), &WlrCompositor::get_terminal_jobs);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);

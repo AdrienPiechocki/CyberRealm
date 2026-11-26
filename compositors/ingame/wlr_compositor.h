@@ -1313,6 +1313,8 @@ public:
     PackedVector2Array voice_decode(int peer, int seq, const PackedByteArray &data) { return voice_chat.decode(peer, seq, data); }
     void voice_forget(int peer) { voice_chat.forget(peer); }
     void voice_feed_samples(const PackedFloat32Array &s) { voice_chat.feed(s.ptr(), (int)s.size()); }
+    void voice_set_gain_db(float db) { voice_chat.set_gain_db(db); }
+    float voice_get_gain_db() const { return voice_chat.get_gain_db(); }
     // Son par fenêtre (audio_share.cpp) : sortie muette pour la spatialisation, PCM par PID, codecs par fenêtre.
     bool audio_set_spatial_sink(bool on) { return audio_share.set_spatial_sink(on, String(SPATIAL_SINK_NAME)); }
     Dictionary audio_drain_pcm() { return audio_share.drain_pcm(); }

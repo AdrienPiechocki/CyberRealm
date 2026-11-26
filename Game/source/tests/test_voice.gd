@@ -123,8 +123,12 @@ class FakeComp extends Node:
 		a.resize(960)
 		return a
 	func voice_forget(_p: int) -> void: pass
+	var gain_db := 0.0
+	func voice_set_gain_db(db: float) -> void: gain_db = db
 
 class FakeSettings extends Node:
+	var gain := 0.0
+	func get_voice_mic_gain_db() -> float: return gain
 	var mode := "vad"
 	var echo := false
 	var mic := ""
@@ -247,5 +251,34 @@ func test_mic_test_opens_chosen_device_without_sending():
 	vm.settings.visible = false                      # menu fermé : le test s'arrête
 	vm._process(0.016)
 	r = Runner.assert_true(vm.compositor.stopped >= 1 and vm.mic_level == 0.0, "micro refermé hors du menu")
+	_free_manager(vm)
+	return r
+
+
+func test_mic_gain_amplifies_before_encoding():
+	if not ClassDB.class_exists("WlrCompositor"):
+		return true
+	var comp: Object = ClassDB.instantiate("WlrCompositor")
+	if not comp.has_method("voice_set_gain_db"):
+		comp.free()
+		return "extension sans voice_set_gain_db (recompiler)"
+	comp.voice_set_gain_db(20.0)
+	var quiet := _sine(9600)
+	for i in quiet.size():
+		quiet[i] *= 0.1                                  # amplitude 0,03 : micro faible
+	comp.voice_feed_samples(quiet)
+	var frames: Array = comp.voice_poll()
+	var r: Variant = Runner.assert_approx(float(frames[5]["rms"]), 0.3 / sqrt(2.0), 0.02, "+20 dB : niveau ×10 (rms après gain)")
+	if r is String: comp.free(); return r
+	comp.voice_set_gain_db(99.0)
+	r = Runner.assert_eq(comp.voice_get_gain_db(), 24.0, "gain borné à +24 dB")
+	comp.free()
+	return r
+
+func test_manager_passes_gain_to_compositor():
+	var vm := _manager()
+	vm.settings.gain = 12.0
+	vm._process(0.016)
+	var r: Variant = Runner.assert_eq(vm.compositor.gain_db, 12.0, "gain du menu transmis au compositeur")
 	_free_manager(vm)
 	return r

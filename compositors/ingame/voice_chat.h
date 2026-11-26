@@ -26,6 +26,7 @@ public:
 	static constexpr int BITRATE = 24000;
 	static constexpr int MAX_PACKET = 400;      // octets (borne réseau, cf. scripts/network/lan/voice.gd)
 	static constexpr int MAX_PLC_FRAMES = 3;    // pertes comblées au-delà : nouvelle prise de parole
+	static constexpr float MAX_GAIN_DB = 24.0f;  // gain du micro : 0 à +24 dB
 
 	VoiceChat();
 	~VoiceChat();
@@ -37,8 +38,13 @@ public:
 	bool is_active() const;
 
 	// Trames de 20 ms encodées depuis le dernier appel : [{data, rms}]. rms = niveau
-	// de la trame (0..1), pour l'activation vocale.
+	// de la trame (0..1) APRÈS le gain, pour l'activation vocale et l'indicateur de niveau.
 	Array poll();
+
+	// Gain appliqué au micro avant l'encodage (dB, borné à [0, MAX_GAIN_DB]) : un micro faible (micro intégré d'un
+	// portable) arrive à un niveau normal chez les autres joueurs. Écrêtage doux au-delà de la pleine échelle.
+	void set_gain_db(float db);
+	float get_gain_db() const { return gain_db; }
 
 	// Décode une trame d'un interlocuteur. `seq` : numéro de la trame chez
 	// l'émetteur (les trous de 1 à MAX_PLC_FRAMES sont comblés). Renvoie des
@@ -57,6 +63,8 @@ private:
 	void *stream = nullptr;      // pw_stream*
 	void *hook = nullptr;        // spa_hook*
 	void *encoder = nullptr;     // OpusEncoder*
+	float gain_db = 0.0f;
+	float gain = 1.0f;           // linéaire (lu par poll(), thread principal)
 
 	std::mutex ring_mutex;
 	std::vector<float> ring;     // mono, RATE
