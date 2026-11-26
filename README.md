@@ -63,6 +63,17 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   keyboard on text fields*: gamepad only — default —, always, never) and closes
   when the field is left; without an input method, its extra row inserts emoji
   and symbols missing from the layout (`ime_commit_string`).
+- **Desktop-linked objects** (`Game/source/scenes/objects/`, to place in a level —
+  see `user/README.md`) — a media player (MPRIS: cover, title, progress; click
+  to play/pause, ⏮ ⏭), a notification board (last notifications; click runs the
+  default action), a system monitor (CPU/RAM/GPU/temperature from `/proc` and
+  `/sys`) and a wall clock. Fed by `compositors/desktop-bridge/
+  cyberrealm-desktop-bridge` (Python + PyGObject, started with the portals, JSON
+  lines on stdin/stdout, stops when the game does), which listens to the game's
+  private D-Bus *and* the desktop's: media players of both; notifications of the
+  apps in the game (it serves `org.freedesktop.Notifications` there if no other
+  server does) and of the desktop (read-only). Each player sees their own data;
+  General → *Notifications in the world*: full / app only / count only.
 - **Sharp windows up close** (pause menu → General → *Window sharpness*, default
   *up to ×1.5*) — a window you look at from near gets a higher scale through
   `wp_fractional_scale_v1` (×1.25, ×1.5 or ×2): the app renders more pixels for

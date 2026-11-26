@@ -159,6 +159,24 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
+	# Notifications affichées par les objets du monde (lu par notification_board.gd via desktop_bridge.gd).
+	var np_row := HBoxContainer.new()
+	np_row.add_child(menu._make_row_label("Notifications in the world"))
+	var np_opt := OptionButton.new()
+	var np_modes := ["full", "app", "count"]
+	np_opt.add_item("Full content")
+	np_opt.add_item("App name only")
+	np_opt.add_item("Count only")
+	np_opt.tooltip_text = "What notification boards in the level show (other players may see your screen)."
+	np_opt.selected = np_modes.find(menu.get_notification_privacy())
+	np_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	np_row.add_child(np_opt)
+	menu.container.add_child(np_row)
+	np_opt.item_selected.connect(func(i: int):
+		menu._settings["notification_privacy"] = np_modes[i]
+		menu._save_settings()
+	)
+
 	# Clavier virtuel sur un champ de texte (lu par text_input_osk.gd).
 	var osk_row := HBoxContainer.new()
 	osk_row.add_child(menu._make_row_label("Virtual keyboard on text fields"))

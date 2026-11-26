@@ -275,6 +275,44 @@ Rules:
   `get_interact_prompt()` text then stays under the crosshair, aimed or not,
   until it leaves the group.
 
+### Desktop-linked objects (media, notifications, system, clock)
+
+Four ready-made objects can be instanced in your level (drag them from `res://scenes/objects/` into your scene in
+the editor, then place and scale them like any node; their front faces +Z):
+
+| Scene | Shows | Click |
+|---|---|---|
+| `media_player.tscn` | cover, title, artist, progress of the current media player (MPRIS) | play / pause; ⏮ ⏭ buttons |
+| `notification_board.tscn` | the last notifications (time, app, summary) | a row: its default action |
+| `system_monitor.tscn` | CPU, RAM, GPU, temperature | — |
+| `wall_clock.tscn` | real time and date | — |
+
+Each player sees **their own** data (nothing is sent over the network); a click acts only for the player who
+clicked. Players are those of apps running in the game *and* on your desktop; notifications are those of apps in
+the game (CyberRealm serves them, with their actions, unless another notification server runs in the game) and of
+your desktop (read-only). General → *Notifications in the world* chooses what boards show: full content, app name
+only, or the count only. On a dedicated server these objects stay empty.
+
+**Your own objects** can use the same bridge: `get_tree().get_first_node_in_group("desktop_bridge")` returns the
+`DesktopBridge` node (null on a dedicated server, or before the game started it):
+
+```gdscript
+var b := get_tree().get_first_node_in_group("desktop_bridge")
+b.media_changed.connect(func(p): print(p["title"], " ", p["status"]))   # p = {id, bus, identity, status, title,
+                                                                         #  artist, album, art, length, position…}
+b.media_removed.connect(func(id): pass)
+b.notification_received.connect(func(n): print(n["app"], ": ", n["summary"]))  # n = {id, bus, app, summary, body,
+                                                                                 #  actions, actionable, time}
+var p: Dictionary = b.current_player()          # the playing one (or the last active), {} if none
+b.media_command(p["id"], "play_pause")         # "play_pause", "next", "previous", "seek" (offset in µs)
+b.notification_action(b.notifications()[0])   # default action (only "actionable" ones)
+var pos_us: int = b.estimated_position(p)      # position extrapolated while playing
+```
+
+Lengths and positions are in microseconds (MPRIS). Respect `b.privacy.call()` (`"full"`, `"app"`, `"count"`) if
+you display notifications. In multiplayer, `interact(player_id)` is called on every machine: act only when
+`player_id == multiplayer.get_unique_id()`.
+
 ## Level options (pause menu)
 
 A level can add its own settings to the pause menu: a **Level** row appears

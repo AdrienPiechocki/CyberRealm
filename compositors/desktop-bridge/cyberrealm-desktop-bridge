@@ -1,0 +1,379 @@
+#!/usr/bin/env python3
+"""cyberrealm-desktop-bridge — pont entre les bus D-Bus du bureau et les objets du monde de CyberRealm.
+
+Lancé par le jeu (scripts/main/desktop_bridge.gd), il parle en LIGNES JSON :
+  - stdout (pont -> jeu) : un événement par ligne ;
+  - stdin  (jeu -> pont) : une commande par ligne ; stdin fermé (le jeu est mort) = fin du pont.
+Aucun polling côté jeu.
+
+Deux bus, chaque événement porte son bus ("game" / "host") :
+  * "game" : le bus D-Bus PRIVÉ du jeu (DBUS_SESSION_BUS_ADDRESS hérité), où vivent les apps lancées dans le jeu ;
+  * "host" : le bus de session du bureau (--host-bus=ADRESSE), absent sous KMS.
+
+MPRIS (org.mpris.MediaPlayer2.*) sur les deux bus :
+  -> {"type": "media", "bus", "name", "identity", "status", "title", "artist", "album", "art", "length",
+      "position", "can_next", "can_previous", "can_pause", "can_play"}
+  -> {"type": "media_removed", "bus", "name"}
+  <- {"cmd": "media", "bus", "name", "action": "play_pause" | "next" | "previous" | "seek", "offset": µs}
+  La position des lecteurs en lecture est relue chaque seconde ICI (MPRIS ne la signale pas).
+
+Notifications :
+  * bus du jeu : le pont POSSÈDE org.freedesktop.Notifications si le nom est libre (serveur de notifications des
+    apps du jeu : Notify, CloseNotification, ActionInvoked, NotificationClosed) ; sinon (un autre serveur, ex. la
+    barre lancée dans le jeu), il l'observe en lecture seule comme le bus de l'hôte ;
+  * bus de l'hôte : observation des appels Notify (BecomeMonitor), lecture seule.
+  -> {"type": "notification", "bus", "id", "app", "summary", "body", "actions": [[clé, libellé]…], "actionable"}
+  -> {"type": "notification_closed", "bus", "id"}
+  <- {"cmd": "notification_action", "id", "action"}   (seulement les notifications servies par le pont)
+"""
+import json, os, sys, time
+
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+MPRIS_PREFIX = "org.mpris.MediaPlayer2."
+MPRIS_PATH = "/org/mpris/MediaPlayer2"
+PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
+NOTIF_NAME = "org.freedesktop.Notifications"
+NOTIF_PATH = "/org/freedesktop/Notifications"
+MAX_TEXT = 512
+
+NOTIF_XML = """<node>
+  <interface name="org.freedesktop.Notifications">
+    <method name="GetCapabilities"><arg type="as" direction="out"/></method>
+    <method name="Notify">
+      <arg type="s" direction="in"/><arg type="u" direction="in"/><arg type="s" direction="in"/>
+      <arg type="s" direction="in"/><arg type="s" direction="in"/><arg type="as" direction="in"/>
+      <arg type="a{sv}" direction="in"/><arg type="i" direction="in"/><arg type="u" direction="out"/>
+    </method>
+    <method name="CloseNotification"><arg type="u" direction="in"/></method>
+    <method name="GetServerInformation">
+      <arg type="s" direction="out"/><arg type="s" direction="out"/><arg type="s" direction="out"/><arg type="s" direction="out"/>
+    </method>
+    <signal name="NotificationClosed"><arg type="u"/><arg type="u"/></signal>
+    <signal name="ActionInvoked"><arg type="u"/><arg type="s"/></signal>
+  </interface>
+</node>"""
+
+
+def emit(obj):
+    try:
+        sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        os._exit(0)
+
+
+def log(msg):
+    print(f"cyberrealm-desktop-bridge: {msg}", file=sys.stderr, flush=True)
+
+
+def short(s):
+    return str(s)[:MAX_TEXT] if s is not None else ""
+
+
+class Bus:
+    def __init__(self, label, conn):
+        self.label = label
+        self.conn = conn
+        self.owners = {}        # nom unique -> nom MPRIS
+        self.players = {}       # nom MPRIS -> état
+        self.notif_server = False
+        self.notifications = {}  # id -> actions (notifications servies par le pont)
+        self.next_id = 1
+
+    # ── MPRIS ────────────────────────────────────────────────────────────
+    def start_mpris(self):
+        self.conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                                   "/org/freedesktop/DBus", None, Gio.DBusSignalFlags.NONE, self._on_owner_changed)
+        self.conn.signal_subscribe(None, "org.freedesktop.DBus.Properties", "PropertiesChanged", MPRIS_PATH,
+                                   PLAYER_IFACE, Gio.DBusSignalFlags.NONE, self._on_props_changed)
+        try:
+            names = self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                        "ListNames", None, GLib.VariantType("(as)"), 0, 2000, None).unpack()[0]
+        except GLib.Error as e:
+            log(f"{self.label}: ListNames: {e.message}")
+            return
+        for n in names:
+            if n.startswith(MPRIS_PREFIX):
+                self._add_player(n)
+
+    def _owner_of(self, name):
+        try:
+            return self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                       "GetNameOwner", GLib.Variant("(s)", (name,)), GLib.VariantType("(s)"),
+                                       0, 2000, None).unpack()[0]
+        except GLib.Error:
+            return None
+
+    def _add_player(self, name):
+        owner = self._owner_of(name)
+        if not owner:
+            return
+        self.owners[owner] = name
+        st = {"identity": name[len(MPRIS_PREFIX):]}
+        self.players[name] = st
+        try:
+            ident = self.conn.call_sync(name, MPRIS_PATH, "org.freedesktop.DBus.Properties", "Get",
+                                        GLib.Variant("(ss)", ("org.mpris.MediaPlayer2", "Identity")),
+                                        GLib.VariantType("(v)"), 0, 2000, None).unpack()[0]
+            if ident:
+                st["identity"] = short(ident)
+        except GLib.Error:
+            pass
+        try:
+            props = self.conn.call_sync(name, MPRIS_PATH, "org.freedesktop.DBus.Properties", "GetAll",
+                                        GLib.Variant("(s)", (PLAYER_IFACE,)), GLib.VariantType("(a{sv})"),
+                                        0, 2000, None).unpack()[0]
+        except GLib.Error as e:
+            log(f"{self.label}: {name}: {e.message}")
+            props = {}
+        self._apply(name, props)
+
+    def _apply(self, name, props):
+        st = self.players.get(name)
+        if st is None:
+            return
+        if "PlaybackStatus" in props:
+            st["status"] = props["PlaybackStatus"]
+        if "Metadata" in props:
+            md = props["Metadata"] or {}
+            st["title"] = short(md.get("xesam:title", ""))
+            artist = md.get("xesam:artist", [])
+            st["artist"] = short(", ".join(artist) if isinstance(artist, (list, tuple)) else artist)
+            st["album"] = short(md.get("xesam:album", ""))
+            st["art"] = short(md.get("mpris:artUrl", ""))
+            st["length"] = int(md.get("mpris:length", 0) or 0)
+        if "Position" in props:
+            st["position"] = int(props["Position"] or 0)
+        for k, key in (("CanGoNext", "can_next"), ("CanGoPrevious", "can_previous"), ("CanPause", "can_pause"),
+                       ("CanPlay", "can_play")):
+            if k in props:
+                st[key] = bool(props[k])
+        self._emit_player(name)
+
+    def _emit_player(self, name):
+        st = self.players[name]
+        out = {"type": "media", "bus": self.label, "name": name}
+        out.update({"status": "Stopped", "title": "", "artist": "", "album": "", "art": "", "length": 0,
+                    "position": 0, "can_next": False, "can_previous": False, "can_pause": False, "can_play": False})
+        out.update(st)
+        emit(out)
+
+    def _on_owner_changed(self, conn, sender, path, iface, signal, params):
+        name, old, new = params.unpack()
+        if not name.startswith(MPRIS_PREFIX):
+            return
+        if old and old in self.owners:
+            del self.owners[old]
+        if name in self.players and not new:
+            del self.players[name]
+            emit({"type": "media_removed", "bus": self.label, "name": name})
+        if new:
+            self._add_player(name)
+
+    def _on_props_changed(self, conn, sender, path, iface, signal, params):
+        name = self.owners.get(sender)
+        if not name:
+            return
+        _iface, changed, _inv = params.unpack()
+        self._apply(name, changed)
+
+    def poll_positions(self):
+        for name, st in list(self.players.items()):
+            if st.get("status") != "Playing":
+                continue
+            try:
+                pos = self.conn.call_sync(name, MPRIS_PATH, "org.freedesktop.DBus.Properties", "Get",
+                                          GLib.Variant("(ss)", (PLAYER_IFACE, "Position")),
+                                          GLib.VariantType("(v)"), 0, 1000, None).unpack()[0]
+                st["position"] = int(pos or 0)
+                self._emit_player(name)
+            except GLib.Error:
+                pass
+
+    def media(self, name, action, offset=0):
+        if name not in self.players:
+            return
+        method = {"play_pause": "PlayPause", "next": "Next", "previous": "Previous", "seek": "Seek"}.get(action)
+        if not method:
+            return
+        args = GLib.Variant("(x)", (int(offset),)) if method == "Seek" else None
+        self.conn.call(name, MPRIS_PATH, PLAYER_IFACE, method, args, None, 0, 2000, None, None)
+
+    # ── Notifications servies (bus du jeu) ──────────────────────────────
+    def serve_notifications(self):
+        info = Gio.DBusNodeInfo.new_for_xml(NOTIF_XML).interfaces[0]
+        self.conn.register_object(NOTIF_PATH, info, self._notif_call, None, None)
+        Gio.bus_own_name_on_connection(self.conn, NOTIF_NAME, Gio.BusNameOwnerFlags.DO_NOT_QUEUE,
+                                       self._name_acquired, self._name_lost)
+
+    def _name_acquired(self, conn, name):
+        self.notif_server = True
+        log(f"{self.label}: serveur de notifications")
+
+    def _name_lost(self, conn, name):
+        if self.notif_server:
+            log(f"{self.label}: nom {NOTIF_NAME} perdu")
+        self.notif_server = False
+        start_monitor(self.label, self.address)     # un autre serveur : observation en lecture seule
+
+    def _notif_call(self, conn, sender, path, iface, method, params, invocation):
+        try:
+            if method == "GetCapabilities":
+                invocation.return_value(GLib.Variant("(as)", (["body", "actions"],)))
+            elif method == "GetServerInformation":
+                invocation.return_value(GLib.Variant("(ssss)", ("CyberRealm", "CyberRealm", "1", "1.2")))
+            elif method == "CloseNotification":
+                nid = params.unpack()[0]
+                self._close(nid, 3)
+                invocation.return_value(None)
+            elif method == "Notify":
+                app, replaces, _icon, summary, body, actions, _hints, _timeout = params.unpack()
+                nid = replaces if replaces else self.next_id
+                if not replaces:
+                    self.next_id += 1
+                pairs = [[short(actions[i]), short(actions[i + 1])] for i in range(0, len(actions) - 1, 2)]
+                self.notifications[nid] = pairs
+                emit({"type": "notification", "bus": self.label, "id": nid, "app": short(app),
+                      "summary": short(summary), "body": short(body), "actions": pairs, "actionable": True})
+                invocation.return_value(GLib.Variant("(u)", (nid,)))
+            else:
+                invocation.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+        except Exception as e:      # jamais d'exception vers GDBus
+            log(f"{method}: {e}")
+            invocation.return_dbus_error("org.freedesktop.DBus.Error.Failed", str(e))
+
+    def _close(self, nid, reason):
+        if nid in self.notifications:
+            del self.notifications[nid]
+            self.conn.emit_signal(None, NOTIF_PATH, NOTIF_NAME, "NotificationClosed", GLib.Variant("(uu)", (nid, reason)))
+            emit({"type": "notification_closed", "bus": self.label, "id": nid})
+
+    def notification_action(self, nid, action):
+        if not self.notif_server or nid not in self.notifications:
+            return
+        keys = [a[0] for a in self.notifications[nid]]
+        if action not in keys:
+            if "default" in keys:
+                action = "default"
+            elif not keys:
+                self._close(nid, 2)            # aucune action : simple acquittement
+                return
+            else:
+                action = keys[0]
+        self.conn.emit_signal(None, NOTIF_PATH, NOTIF_NAME, "ActionInvoked", GLib.Variant("(us)", (nid, action)))
+        self._close(nid, 2)
+
+
+# ── Observation des notifications (BecomeMonitor, lecture seule) ─────────
+_monitors = {}
+
+
+def start_monitor(label, address):
+    if label in _monitors or not address:
+        return
+    try:
+        conn = Gio.DBusConnection.new_for_address_sync(
+            address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+            None, None)
+        rules = ["type='method_call',interface='org.freedesktop.Notifications',member='Notify'"]
+        conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.Monitoring",
+                       "BecomeMonitor", GLib.Variant("(asu)", (rules, 0)), None, 0, 2000, None)
+    except GLib.Error as e:
+        log(f"{label}: observation des notifications impossible : {e.message}")
+        return
+    counter = [0]
+
+    def on_message(_conn, msg, incoming):
+        # Fil de GDBus : on repasse par la boucle principale pour écrire sur stdout.
+        if msg.get_message_type() == Gio.DBusMessageType.METHOD_CALL and msg.get_member() == "Notify":
+            body = msg.get_body()
+            if body is not None:
+                try:
+                    app, _rep, _icon, summary, text, _actions, _hints, _t = body.unpack()
+                    counter[0] += 1
+                    GLib.idle_add(emit, {"type": "notification", "bus": label, "id": -counter[0], "app": short(app),
+                                         "summary": short(summary), "body": short(text), "actions": [],
+                                         "actionable": False})
+                except Exception as e:
+                    GLib.idle_add(log, f"{label}: Notify illisible : {e}")
+        return None      # un moniteur ne transmet rien
+
+    conn.add_filter(on_message)
+    _monitors[label] = conn
+    log(f"{label}: observation des notifications")
+
+
+def connect(address):
+    return Gio.DBusConnection.new_for_address_sync(
+        address, Gio.DBusConnectionFlags.AUTHENTICATION_CLIENT | Gio.DBusConnectionFlags.MESSAGE_BUS_CONNECTION,
+        None, None)
+
+
+def main():
+    host_addr = ""
+    for a in sys.argv[1:]:
+        if a.startswith("--host-bus="):
+            host_addr = a.split("=", 1)[1]
+    game_addr = os.environ.get("DBUS_SESSION_BUS_ADDRESS", "")
+    buses = {}
+    if game_addr:
+        try:
+            b = Bus("game", connect(game_addr))
+            b.address = game_addr
+            buses["game"] = b
+        except GLib.Error as e:
+            log(f"bus du jeu : {e.message}")
+    if host_addr and host_addr != game_addr:
+        try:
+            b = Bus("host", connect(host_addr))
+            b.address = host_addr
+            buses["host"] = b
+        except GLib.Error as e:
+            log(f"bus de l'hôte : {e.message}")
+    for b in buses.values():
+        b.start_mpris()
+    if "game" in buses:
+        buses["game"].serve_notifications()
+    if "host" in buses:
+        start_monitor("host", buses["host"].address)
+    emit({"type": "ready", "buses": list(buses.keys())})
+
+    loop = GLib.MainLoop()
+
+    def on_stdin(fd, cond):
+        if cond & (GLib.IO_HUP | GLib.IO_ERR):
+            loop.quit()
+            return False
+        line = sys.stdin.readline()
+        if not line:
+            loop.quit()
+            return False
+        try:
+            c = json.loads(line)
+            b = buses.get(c.get("bus", "game"))
+            if c.get("cmd") == "media" and b:
+                b.media(str(c.get("name", "")), str(c.get("action", "")), int(c.get("offset", 0)))
+            elif c.get("cmd") == "notification_action":
+                g = buses.get("game")
+                if g:
+                    g.notification_action(int(c.get("id", 0)), str(c.get("action", "default")))
+        except Exception as e:
+            log(f"commande ignorée : {e}")
+        return True
+
+    GLib.io_add_watch(sys.stdin.fileno(), GLib.IO_IN | GLib.IO_HUP | GLib.IO_ERR, on_stdin)
+
+    def tick():
+        for b in buses.values():
+            b.poll_positions()
+        return True
+
+    GLib.timeout_add_seconds(1, tick)
+    loop.run()
+
+
+if __name__ == "__main__":
+    main()

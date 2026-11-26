@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/objects/system_monitor.gd" id="1"]
+
+[node name="SystemMonitor" type="Node3D"]
+script = ExtResource("1")

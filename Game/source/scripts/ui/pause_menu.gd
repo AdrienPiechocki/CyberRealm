@@ -592,6 +592,11 @@ func get_window_audio_mode() -> String:
 	var m := String(_settings.get("window_audio", "normal"))
 	return m if m in ["normal", "spatial"] else "normal"
 
+# Contenu des notifications dans le monde (GENERAL, objets du bureau) : "full" (défaut), "app" ou "count".
+func get_notification_privacy() -> String:
+	var m := String(_settings.get("notification_privacy", "full"))
+	return m if m in ["full", "app", "count"] else "full"
+
 # Clavier virtuel sur un champ de texte (GENERAL, text_input_osk.gd) : "pad" (défaut), "always" ou "never".
 func get_osk_on_text_input() -> String:
 	var m := String(_settings.get("osk_on_text_input", "pad"))

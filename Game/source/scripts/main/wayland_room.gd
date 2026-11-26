@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var desktop_bridge: Node # MPRIS et notifications pour les objets du monde, cf. scripts/main/desktop_bridge.gd
 var annotations_view: Node # annotations sur les fenêtres partagées, cf. scripts/windows/annotations_view.gd
 var control_request: CanvasLayer # demande de contrôle d'une fenêtre partagée, cf. scripts/ui/control_request.gd
 var text_input_osk: Node # clavier virtuel sur les champs de texte, cf. scripts/main/text_input_osk.gd
@@ -569,6 +570,14 @@ func _ready() -> void:
 	global_shortcuts.prepare()
 	compositor.launch_portals()
 	global_shortcuts.start_backend(compositor)
+	# Pont avec le bureau (MPRIS, notifications) pour les objets du monde : après launch_portals pour hériter
+	# du bus privé du jeu ; le bus de l'hôte lui est passé (scripts/main/desktop_bridge.gd).
+	desktop_bridge = Node.new()
+	desktop_bridge.name = "DesktopBridge"
+	desktop_bridge.set_script(preload("res://scripts/main/desktop_bridge.gd"))
+	add_child(desktop_bridge)
+	desktop_bridge.privacy = Callable(pause_menu, "get_notification_privacy")
+	desktop_bridge.start(_host_session_bus)
 	# Les layer surfaces sont ancrées à l'écran : le compositeur doit
 	# connaître la taille du viewport pour le layout (arrange_layer_surfaces).
 	compositor.set_output_size(int(get_viewport().get_visible_rect().size.x),
