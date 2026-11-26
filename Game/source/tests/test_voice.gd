@@ -4,6 +4,7 @@ extends Node
 const Runner = preload("res://tests/runner.gd")
 const Voice = preload("res://scripts/network/lan/voice.gd")
 const VoiceManager = preload("res://scripts/main/voice_manager.gd")
+const MicSources = preload("res://scripts/main/mic_sources.gd")
 
 # ── Codec OPUS (extension) ─────────────────────────────────────────────────
 
@@ -126,6 +127,9 @@ class FakeComp extends Node:
 class FakeSettings extends Node:
 	var mode := "vad"
 	var echo := false
+	var mic := ""
+	var visible := false               # menu pause affiché (test du micro)
+	func get_voice_mic() -> String: return mic
 	var spatial := true
 	func get_voice_mode() -> String: return mode
 	func get_voice_vad_threshold() -> float: return 0.05
@@ -143,6 +147,9 @@ func _manager() -> Node:
 	var st := FakeSettings.new()
 	add_child(vm)
 	vm.setup(comp, lan, st)
+	vm.sources_provider = func() -> Array:
+		return [{"name": "mic2", "description": "Stereo Microphone", "default": true},
+			{"name": MicSources.ECHO_CANCEL_SOURCE, "description": "Echo-Cancel Source", "default": false}]
 	return vm
 
 func _free_manager(vm: Node) -> void:
@@ -162,7 +169,7 @@ func test_mic_opens_only_in_session_and_follows_echo_option():
 	vm._process(0.016)
 	vm.settings.echo = true
 	vm._process(0.016)
-	r = Runner.assert_eq(vm.compositor.opened, ["", VoiceManager.ECHO_CANCEL_SOURCE], "rouvert sur la source echo-cancel")
+	r = Runner.assert_eq(vm.compositor.opened, ["", MicSources.ECHO_CANCEL_SOURCE], "rouvert sur la source echo-cancel")
 	if r is String: _free_manager(vm); return r
 	vm.lan.active = false
 	vm._process(0.016)
@@ -219,5 +226,26 @@ func test_received_voice_plays_from_avatar_or_2d_and_mute():
 	vm.lan.voice.voice_packet.emit(6, 1, PackedByteArray([1]))
 	r = Runner.assert_true(not vm._players.has(6), "joueur en sourdine : rien n'est joué")
 	av.free()
+	_free_manager(vm)
+	return r
+
+
+func test_mic_test_opens_chosen_device_without_sending():
+	var vm := _manager()
+	vm.lan.active = false
+	vm.settings.mode = "off"
+	vm.settings.mic = "mic2"
+	vm.settings.visible = true
+	vm.mic_test = true                               # page Multiplayer affichée
+	vm._process(0.016)
+	var r: Variant = Runner.assert_eq(vm.compositor.opened, ["mic2"], "test : micro choisi ouvert hors session")
+	if r is String: _free_manager(vm); return r
+	vm.compositor.frames = [_frame(0.3)]
+	vm._process(0.016)
+	r = Runner.assert_true(vm.mic_level > 0.2 and vm.lan.voice.sent.is_empty(), "niveau mesuré, rien envoyé")
+	if r is String: _free_manager(vm); return r
+	vm.settings.visible = false                      # menu fermé : le test s'arrête
+	vm._process(0.016)
+	r = Runner.assert_true(vm.compositor.stopped >= 1 and vm.mic_level == 0.0, "micro refermé hors du menu")
 	_free_manager(vm)
 	return r

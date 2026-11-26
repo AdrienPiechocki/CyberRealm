@@ -586,6 +586,10 @@ func is_voice_echo_cancel() -> bool:
 func get_voice_volume() -> float:
 	return float(_settings.get("voice_volume", 1.0))
 
+## Micro du chat vocal : nom du nœud PipeWire ("" = source par défaut). Voir scripts/main/mic_sources.gd.
+func get_voice_mic() -> String:
+	return String(_settings.get("voice_mic", ""))
+
 # Son des fenêtres (GENERAL, window_audio.gd) : "normal" (défaut, les apps jouent directement) ou "spatial" (le son
 # sort du quad de chaque fenêtre).
 func get_window_audio_mode() -> String:

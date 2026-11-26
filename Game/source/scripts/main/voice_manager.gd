@@ -11,7 +11,7 @@ const VAD_HANGOVER_MSEC := 300   # l'activation vocale reste ouverte après la d
 const SPEAKING_MSEC := 300       # sans trame depuis ce délai : l'interlocuteur ne parle plus
 const BUFFER_SEC := 0.25
 const MAX_DISTANCE := 25.0
-const ECHO_CANCEL_SOURCE := "echo-cancel-source"   # nœud du module echo-cancel de PipeWire (nom par défaut)
+const MicSources := preload("res://scripts/main/mic_sources.gd")
 const BUS := "Voice"
 
 var compositor: Object = null
@@ -30,6 +30,17 @@ var _players: Dictionary = {}            # peer -> {player, playback, spatial}
 var _last_heard: Dictionary = {}         # peer -> ms
 var _speaking_shown: Dictionary = {}     # peer -> bool
 var local_speaking := false
+## Test du micro (page Multiplayer du menu pause ouverte) : le micro s'ouvre même hors session, rien n'est envoyé.
+var mic_test := false
+## Niveau du micro (rms des dernières trames, retombe doucement) : indicateur de la page Multiplayer.
+var mic_level := 0.0
+## Annulation d'écho demandée mais module echo-cancel absent : le micro choisi est utilisé à la place.
+var echo_cancel_missing := false
+## Sources micro PipeWire (remplacé dans les tests) : voir MicSources.list_sources.
+var sources_provider := func() -> Array: return MicSources.list_sources()
+var _target_key := ""                    # réglages (écho, micro) qui ont donné _target
+var _target := ""
+var _target_msec := -100000
 # Diagnostic (CYBERREALM_VOICE_DEBUG=1), une ligne par seconde : envoi (trames, volume moyen du micro) et, par
 # interlocuteur, réception (trames, décodées, refusées, volume moyen décodé, lecteur 2D/3D, distance, bus).
 var _dbg := OS.get_environment("CYBERREALM_VOICE_DEBUG") == "1"
@@ -52,11 +63,13 @@ func _exit_tree() -> void:
 
 # ── Micro et envoi ─────────────────────────────────────────────────────
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
 	_ensure_bus()
 	var mode := String(settings.get_voice_mode())
-	var want: bool = lan.is_session_active() and mode != "off" and not lan.voice.disabled
-	var target := ECHO_CANCEL_SOURCE if bool(settings.is_voice_echo_cancel()) else ""
+	var in_session: bool = lan.is_session_active() and mode != "off" and not lan.voice.disabled
+	var testing: bool = mic_test and bool(settings.get("visible"))
+	var want := in_session or testing
+	var target := _voice_target() if want else _mic_target
 	if want and _mic_target != target:
 		_close_mic()
 		if compositor.voice_start(target):
@@ -64,14 +77,20 @@ func _process(_delta: float) -> void:
 	elif not want and _mic_target != "<closed>":
 		_close_mic()
 	local_speaking = false
-	if _mic_target != "<closed>":
+	if _mic_target == "<closed>":
+		mic_level = 0.0
+	else:
 		var now := Time.get_ticks_msec()
 		var threshold := float(settings.get_voice_vad_threshold())
 		var ptt: bool = mode == "ptt" and Input.is_action_pressed("push_to_talk") \
 				and (not can_push_to_talk.is_valid() or bool(can_push_to_talk.call()))
+		mic_level *= exp(-delta * 6.0)       # retombe en ~0,5 s, quelle que soit la cadence d'affichage
 		for frame in compositor.voice_poll():
 			if _dbg:
 				_dbg_tx["polled"] += 1
+			mic_level = maxf(mic_level, float(frame["rms"]))
+			if not in_session:
+				continue                 # test du micro hors session : niveau seulement, rien n'est envoyé
 			var send := false
 			if mode == "ptt":
 				send = ptt
@@ -118,6 +137,25 @@ func _dbg_print(mode: String) -> void:
 				AudioServer.get_bus_volume_db(bus) if bus >= 0 else 0.0, AudioServer.is_bus_mute(bus) if bus >= 0 else false,
 				get_tree().paused if is_inside_tree() else false])
 	_dbg_rx.clear()
+
+## Cible du micro (MicSources.voice_target), recalculée quand les réglages changent et au plus toutes les 5 s (la
+## liste des sources vient de pw-dump : jamais à chaque frame).
+func _voice_target() -> String:
+	var echo := bool(settings.is_voice_echo_cancel())
+	var chosen := String(settings.get_voice_mic()) if settings.has_method("get_voice_mic") else ""
+	var key := "%s|%s" % [echo, chosen]
+	var now := Time.get_ticks_msec()
+	if key == _target_key and now - _target_msec < 5000:
+		return _target
+	var sources: Array = sources_provider.call()
+	var missing := echo and not MicSources.echo_cancel_available(sources)
+	if missing and not echo_cancel_missing:
+		push_warning("voice: annulation d'écho demandée mais le module echo-cancel de PipeWire est absent — micro choisi utilisé")
+	echo_cancel_missing = missing
+	_target = MicSources.voice_target(echo, chosen, sources)
+	_target_key = key
+	_target_msec = now
+	return _target
 
 func _close_mic() -> void:
 	if compositor != null and _mic_target != "<closed>":

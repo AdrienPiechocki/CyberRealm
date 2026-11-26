@@ -5,6 +5,7 @@ extends Node
 ## (`menu`), l'état propre au module vit ici.
 
 const PauseMenu := preload("res://scripts/ui/pause_menu.gd")
+const MicSources := preload("res://scripts/main/mic_sources.gd")
 var menu: PauseMenu = null
 
 # Page LAN
@@ -475,6 +476,7 @@ func _add_voice_settings() -> void:
 		menu._save_settings()
 		vad_row.visible = modes[i] == "vad"
 	)
+	_add_mic_device_row()
 	vad.value_changed.connect(func(v: float):
 		menu._settings["voice_vad_threshold"] = v
 		menu._save_settings()
@@ -495,6 +497,15 @@ func _add_voice_settings() -> void:
 		menu._save_settings()
 	)
 
+	# Annulation d'écho demandée sans le module echo-cancel : prévenir (le micro choisi est utilisé à la place).
+	var echo_warn := Label.new()
+	echo_warn.text = "PipeWire's echo-cancel module isn't running: the microphone above is used without echo cancellation."
+	echo_warn.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	echo_warn.add_theme_font_size_override("font_size", 12)
+	echo_warn.add_theme_color_override("font_color", Color(1.0, 0.75, 0.3))
+	var refresh_echo_warn := func():
+		echo_warn.visible = menu.is_voice_echo_cancel() \
+				and not MicSources.echo_cancel_available(MicSources.list_sources())
 	for spec in [["voice_spatial", "Spatial voice (comes from the player's avatar)", menu.is_voice_spatial()],
 			["voice_echo_cancel", "Use PipeWire echo cancellation (needs the echo-cancel module)", menu.is_voice_echo_cancel()]]:
 		var cb := CheckButton.new()
@@ -505,8 +516,85 @@ func _add_voice_settings() -> void:
 		cb.toggled.connect(func(on: bool):
 			menu._settings[key] = on
 			menu._save_settings()
+			refresh_echo_warn.call()
 		)
 		menu.container.add_child(cb)
+	menu.container.add_child(echo_warn)
+	refresh_echo_warn.call()
+
+## Choix du micro (sources PipeWire, défaut en tête) et niveau en direct : tant que cette page est affichée, le micro
+## est ouvert en test (rien n'est envoyé hors session, voice_manager.mic_test).
+func _add_mic_device_row() -> void:
+	var row := HBoxContainer.new()
+	row.add_child(menu._make_row_label("Input device"))
+	var dev := OptionButton.new()
+	dev.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	dev.clip_text = true
+	var names: Array = [""]
+	var sources := MicSources.list_sources(true)
+	var default_desc := ""
+	for src in sources:
+		if bool(src["default"]):
+			default_desc = String(src["description"])
+	dev.add_item("System default" + (" (%s)" % default_desc if default_desc != "" else ""))
+	var chosen := menu.get_voice_mic()
+	var selected := 0
+	for src in sources:
+		names.append(String(src["name"]))
+		dev.add_item(String(src["description"]))
+		if String(src["name"]) == chosen:
+			selected = names.size() - 1
+	if chosen != "" and selected == 0:
+		names.append(chosen)                     # micro choisi débranché : gardé, signalé
+		dev.add_item("%s (unavailable)" % chosen)
+		selected = names.size() - 1
+	dev.selected = selected
+	dev.item_selected.connect(func(i: int):
+		menu._settings["voice_mic"] = String(names[i])
+		menu._save_settings()
+	)
+	row.add_child(dev)
+	menu.container.add_child(row)
+
+	var level_row := HBoxContainer.new()
+	level_row.add_child(menu._make_row_label("Input level"))
+	var bar := ProgressBar.new()
+	bar.min_value = 0.0
+	bar.max_value = 1.0
+	bar.show_percentage = false
+	bar.custom_minimum_size = Vector2(0, 14)
+	bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bar.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	level_row.add_child(bar)
+	var db_label := Label.new()
+	db_label.custom_minimum_size = Vector2(64, 0)
+	db_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	db_label.add_theme_font_size_override("font_size", 12)
+	level_row.add_child(db_label)
+	menu.container.add_child(level_row)
+	var vm: Node = menu.voice_manager
+	if vm == null:
+		bar.visible = false
+		db_label.text = "—"
+		return
+	vm.set("mic_test", true)
+	var timer := Timer.new()
+	timer.wait_time = 0.05
+	timer.autostart = true
+	timer.timeout.connect(func():
+		var lvl := float(vm.get("mic_level"))
+		var db := linear_to_db(maxf(lvl, 0.00001))
+		bar.value = level_bar_value(lvl)
+		db_label.text = "%d dB" % roundi(db) if lvl > 0.00001 else "silent"
+	)
+	level_row.add_child(timer)
+	level_row.tree_exiting.connect(func(): vm.set("mic_test", false))
+
+## Niveau linéaire (rms) -> barre 0..1 sur une échelle de -60 dB à 0 dB.
+static func level_bar_value(rms: float) -> float:
+	if rms <= 0.0:
+		return 0.0
+	return clampf((linear_to_db(rms) + 60.0) / 60.0, 0.0, 1.0)
 
 static func _action_key_text(action: String) -> String:
 	if not InputMap.has_action(action):
