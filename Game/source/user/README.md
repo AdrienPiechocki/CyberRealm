@@ -15,14 +15,14 @@ content at startup.
      your assets),
    - or create a new 3D scene there and save it with the exact name
      `level.tscn`.
-4. Run the game and pick it in **pause menu → Worlds** (see below). Until a
+4. Run the game and pick it in **pause menu → World** (see below). Until a
    level has been picked there, the first custom level found is loaded
    instead of the default one.
 
-## Several levels: the Worlds menu
+## Several levels: the World menu
 
 You can keep several levels side by side and switch between them in game:
-**pause menu → Worlds** lists the default level plus every file named
+**pause menu → World** lists the default level plus every file named
 `level.tscn` found anywhere under `res://user/`, for example:
 
 | File | Shown as |
@@ -40,14 +40,14 @@ at the next start (if the file disappears, the game falls back to the first
 custom level, then to the default level).
 
 In multiplayer, **only the selected level is baked** and sent to the other
-players, when you host. The Worlds page is **locked during a multiplayer
+players, when you host. The World page is **locked during a multiplayer
 session** (hosting or joined): disconnect first to change level.
 
 ## Rules
 
 - The file must be named **exactly** `level.tscn` and live under
   `res://user/`, ideally in its own folder `res://user/Levels/<Name>/` (the
-  folder name is what the Worlds menu shows).
+  folder name is what the World menu shows).
 - The root node can be any `Node3D` (the game instantiates it as a child of
   the `WaylandRoom` scene).
 - The scene must contain a player. Use the one from
@@ -268,8 +268,8 @@ Rules:
 
 ## Level options (pause menu)
 
-A level can add its own settings to the pause menu: a **Level** entry appears
-in the menu's left sidebar (after *Worlds*) and opens its options page. This is done by the level itself (see `Levels/Morrowind/scripts/level_options.gd`),
+A level can add its own settings to the pause menu: a **Level** row appears
+under *Current level* in the **World** page and opens its options page. This is done by the level itself (see `Levels/Morrowind/scripts/level_options.gd`),
 not by the game: levels without such a script simply have no **Level** button.
 
 The Morrowind level provides:
@@ -306,7 +306,7 @@ keep applying to them.
 `level_options.gd` registers its page with the pause menu's extension point:
 
 ```gdscript
-pause_menu.add_menu_page("level_options", "Level", _show_page)   # sidebar entry
+pause_menu.add_menu_page("level_options", "Level", _show_page)   # row in the World page
 pause_menu.remove_menu_page("level_options")                     # in _exit_tree()
 ```
 
@@ -322,7 +322,7 @@ for another level.
 
 ## Back to the default level
 
-Pick **Default** in the pause menu's **Worlds** page.
+Pick **Default** in the pause menu's **World** page.
 
 ## Back to the default avatar
 
@@ -415,7 +415,7 @@ Limitations to know:
 - The **player** (`Player`) is not transmitted: each machine keeps its own
   player; the host's spawn point is applied on the client.
 - The level is sent when a player joins. It is the level selected in the
-  Worlds menu when you hosted; it cannot be changed during the session.
+  World menu when you hosted; it cannot be changed during the session.
 - **The client loads the map BEFORE entering the game**: after connecting,
   it receives and applies the host's level while frozen and invisible to
   other players (progress shown: "Loading host map… X%"). It only becomes

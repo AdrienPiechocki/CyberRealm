@@ -1,5 +1,5 @@
 extends Node
-## Tests du catalogue de niveaux (menu Worlds).
+## Tests du catalogue de niveaux (menu World).
 const Catalog = preload("res://scripts/main/level_catalog.gd")
 
 func test_default_listed_first() -> Variant:

@@ -72,7 +72,7 @@ var _host_session_bus := ""
 var _host_wayland_display := ""
 var _host_agent_stopped := false
 
-# Niveaux : le niveau choisi dans le menu (Worlds, persisté) s'il existe
+# Niveaux : le niveau choisi dans le menu (World, persisté) s'il existe
 # encore, sinon le premier level custom de res://user/, sinon le défaut.
 const LEVEL_CATALOG := preload("res://scripts/main/level_catalog.gd")
 const DEFAULT_LEVEL_PATH := LEVEL_CATALOG.DEFAULT_LEVEL_PATH
@@ -117,7 +117,7 @@ var _last_pinch_time_msec := -1
 const PINCH_DEDUP_WINDOW_MS := 100
 
 func _load_level() -> void:
-	# Niveau choisi dans le menu Worlds (persisté), sinon le premier niveau
+	# Niveau choisi dans le menu World (persisté), sinon le premier niveau
 	# custom (res://user/level.tscn, puis res://user/**/level.tscn), sinon le défaut. Les assets des niveaux custom doivent avoir été importés
 	# par l'éditeur Godot (dossier res://user/) pour être chargés au runtime.
 	var level_path := LEVEL_CATALOG.resolve_startup_level(LEVEL_CATALOG.read_saved_level(SETTINGS_PATH))
@@ -174,7 +174,7 @@ func restore_local_level() -> bool:
 		return true
 	return false
 
-# Changement d'environnement à la volée (menu pause → Worlds). Refusé pendant
+# Changement d'environnement à la volée (menu pause → World). Refusé pendant
 # une session multijoueur : le niveau baké et envoyé aux autres joueurs est
 # celui sélectionné au moment d'héberger, il ne doit pas changer sous eux.
 # Chargement en thread (un gros niveau prend plusieurs secondes) puis échange

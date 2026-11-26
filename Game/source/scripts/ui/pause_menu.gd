@@ -85,7 +85,7 @@ var _lan: Node = null
 func set_lan_ref(lan: Node) -> void:
 	_lan = lan
 
-# Page « Worlds » : WaylandRoom (niveau courant, chargement en cours) et
+# Page « World » : WaylandRoom (niveau courant, chargement en cours) et
 # dernier message d'état, conservé si la page est reconstruite.
 var _level_room: Node = null
 var _level_status_text := ""
@@ -374,11 +374,15 @@ func _make_section(text: String) -> Label:
 
 # Retour à la page parente (catégorie), ou fermeture du menu depuis le hub.
 func _go_back() -> void:
+	if _is_extra_page(_current_view):
+		_show_levels()
+		return
 	match _PARENT_VIEW.get(_current_view, "main"):
 		"general": _show_general()
 		"graphics": _show_graphics()
 		"controls": _show_controls()
 		"lan": _show_lan()
+		"levels": _show_levels()
 		_: _show_main()
 
 func _make_line_edit() -> LineEdit:
@@ -465,7 +469,7 @@ func _show_main() -> void:
 	cards.add_theme_constant_override("separation", 12)
 	container.add_child(cards)
 	cards.add_child(_make_card("WORLD", _world_label(),
-		"Locked during a multiplayer session" if _lan_connected else "Change it in Worlds"))
+		"Locked during a multiplayer session" if _lan_connected else "Change it in World"))
 	var players := _lan_roster.size()
 	cards.add_child(_make_card("MULTIPLAYER",
 		("Connected" if _lan_connected else "Offline"),
@@ -1813,7 +1817,7 @@ func _search_world_environment(node: Node) -> WorldEnvironment:
 			return found
 	return null
 
-# ── Worlds : choix du niveau (environnement) ─────────────────────────
+# ── World : choix du niveau (environnement) ─────────────────────────
 # Liste le niveau par défaut et tous les level.tscn de res://user/. Le choix
 # est appliqué à chaud et persisté (rechargé au prochain démarrage). Verrouillé
 # pendant une session multijoueur : seul le niveau sélectionné au moment
@@ -1823,7 +1827,7 @@ func _show_levels() -> void:
 	_waiting_action = ""
 	_current_view = "levels"
 
-	container.add_child(_make_title("WORLDS"))
+	container.add_child(_make_title("WORLD"))
 
 	var locked := _lan_connected
 	var loading := _level_room != null and bool(_level_room.call("is_level_loading"))
@@ -1862,6 +1866,13 @@ func _show_levels() -> void:
 	_level_status_label.add_theme_font_size_override("font_size", 13)
 	_level_status_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
 	container.add_child(_level_status_label)
+
+	# Pages ajoutées par le niveau courant (add_menu_page) : sous-pages de World.
+	if not _extra_pages.is_empty():
+		container.add_child(_make_section("Current level"))
+		for page in _extra_pages:
+			container.add_child(_make_nav_row(String(page["label"]),
+				"Options of " + _world_label(), page["show"]))
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
@@ -2069,7 +2080,7 @@ func set_lan_players(roster: Array) -> void:
 func set_lan_connected(connected: bool) -> void:
 	var changed := connected != _lan_connected
 	_lan_connected = connected
-	# Page Worlds ouverte : (dé)verrouiller la liste dès que la session change.
+	# Page World ouverte : (dé)verrouiller la liste dès que la session change.
 	if changed and visible and _current_view == "levels":
 		_show_levels.call_deferred()
 	if _lan_disconnect_btn != null and is_instance_valid(_lan_disconnect_btn):
@@ -2555,13 +2566,13 @@ const SIDEBAR_WIDTH := 230
 const CONTENT_MAX_WIDTH := 820
 
 ## Catégories de la sidebar : [vue, libellé]. Les pages de niveau
-## (add_menu_page) s'insèrent après « Worlds ».
+## (add_menu_page) sont des sous-pages de « World ».
 const _CATEGORIES := [
 	["general", "General"],
 	["graphics", "Graphics"],
 	["controls", "Controls"],
 	["lan", "Multiplayer"],
-	["levels", "Worlds"],
+	["levels", "World"],
 ]
 
 var _header_status: Label = null
@@ -2668,8 +2679,6 @@ func _rebuild_sidebar() -> void:
 		_add_category_btn(String(cat[0]), String(cat[1]), _show_category.bind(String(cat[0])))
 		if String(cat[0]) == "controls":
 			_sidebar.add_child(_make_side_section("Session"))
-	for page in _extra_pages:
-		_add_category_btn(String(page["id"]), String(page["label"]), page["show"])
 
 	var spacer := Control.new()
 	spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -2734,8 +2743,10 @@ func _show_category(view: String) -> void:
 			_show_main()
 
 ## Catégorie de premier niveau d'une vue (remonte _PARENT_VIEW jusqu'à
-## l'accueil). Une page de niveau (add_menu_page) est sa propre catégorie.
+## l'accueil). Une page de niveau (add_menu_page) relève de World.
 func _category_of(view: String) -> String:
+	if _is_extra_page(view):
+		return "levels"
 	var v := view
 	for _i in 8:
 		var parent := String(_PARENT_VIEW.get(v, "main"))
@@ -2743,6 +2754,12 @@ func _category_of(view: String) -> String:
 			return v
 		v = parent
 	return v
+
+func _is_extra_page(view: String) -> bool:
+	for page in _extra_pages:
+		if String(page["id"]) == view:
+			return true
+	return false
 
 func _category_label(view: String) -> String:
 	for cat in _CATEGORIES:
@@ -2903,13 +2920,15 @@ func _find_live_scroll(node: Node) -> ScrollContainer:
 			return found
 	return null
 
-## Pages ajoutées par le niveau courant (ex. options Morrowind) : entrée dans
-## la sidebar, construite par `show` dans `container` comme les autres pages.
+## Pages ajoutées par le niveau courant (ex. options Morrowind) : ligne dans la
+## page World, construite par `show` dans `container` comme les autres pages.
 ## `id` doit être la valeur que `show` donne à _current_view.
 func add_menu_page(id: String, label: String, show: Callable) -> void:
 	remove_menu_page(id, false)
 	_extra_pages.append({"id": id, "label": label, "show": show})
 	_rebuild_sidebar()
+	if visible and _current_view == "levels":
+		_show_levels()
 
 func remove_menu_page(id: String, rebuild := true) -> void:
 	for i in range(_extra_pages.size() - 1, -1, -1):
@@ -2917,8 +2936,8 @@ func remove_menu_page(id: String, rebuild := true) -> void:
 			_extra_pages.remove_at(i)
 	if rebuild:
 		_rebuild_sidebar()
-		if _current_view == id and visible:
-			_show_main()
+		if visible and (_current_view == id or _current_view == "levels"):
+			_show_levels()
 
 # ── Navigation manette par colonnes ──────────────────────────────────
 # Haut/bas restent dans la colonne courante (sidebar ou contenu). Droite
