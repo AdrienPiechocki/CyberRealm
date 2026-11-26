@@ -448,6 +448,18 @@ cyberrealm-launch firefox
 Remote windows are view-only by default: `SUPER+F` opens a fullscreen view of them
 (with the owner's cursor overlaid), `SUPER+P` pins them as PiP.
 
+**Annotations on a shared window.** Aim at a shared window (yours or another player's)
+or open it in focus view, and press `SUPER+A` (or *ANNOTATE* in the radial menu):
+left click held draws in your color, right click held erases your own strokes; in 3D
+you draw with the crosshair, in focus view with the mouse (also on a view-only remote
+window). While annotating, clicks don't reach the window; `SUPER+A` again stops. The
+owner can *CLEAR ANNOTATIONS* (radial menu). By default strokes vanish 4 s after being
+drawn, like a laser pointer (Multiplayer → *Ephemeral annotations*; off, they stay).
+Strokes use window-relative coordinates: they follow a resize roughly, but not the
+content scrolling. They are erased when the share stops or the window closes; a player
+who joins later receives the persistent ones. Limits: 2000 points per stroke, 200
+strokes per window, 40 messages/s per player. Not available in online sessions.
+
 **Taking control of a shared window.** Aim at a shared window of another player and
 press `SUPER+R` (or *REQUEST CONTROL* in the radial menu). Its owner gets a dialog
 saying that you will be able to click and type in that window — in a terminal, that is

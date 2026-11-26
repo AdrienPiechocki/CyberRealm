@@ -148,6 +148,17 @@ func _show_lan() -> void:
 		menu._save_settings()
 	)
 
+	# Annotations sur les fenêtres partagées (lu par annotations_view.gd).
+	var eph_check := CheckButton.new()
+	eph_check.text = "Ephemeral annotations (strokes vanish after 4 s, like a laser pointer)"
+	eph_check.button_pressed = menu.is_annotation_ephemeral()
+	eph_check.add_theme_font_size_override("font_size", 14)
+	menu.container.add_child(eph_check)
+	eph_check.toggled.connect(func(on: bool):
+		menu._settings["annotation_ephemeral"] = on
+		menu._save_settings()
+	)
+
 	_add_voice_settings()
 	_add_server_admin()
 	

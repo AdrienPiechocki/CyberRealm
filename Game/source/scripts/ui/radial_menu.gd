@@ -33,6 +33,9 @@ var social_available := false
 ## Libellé de l'entrée « contrôle » d'une fenêtre partagée (lot J) : posé par wayland_room avant show_menu selon la
 ## fenêtre visée (« REQUEST CONTROL », « RELEASE CONTROL », « TAKE BACK CONTROL ») ; vide = pas d'entrée.
 var control_label := ""
+## Annotations (lot K) : « ANNOTATE » / « STOP ANNOTATING » ; clear_annotations : propriétaire avec des traits.
+var annotate_label := ""
+var clear_annotations := false
 
 
 func _ready() -> void:
@@ -161,6 +164,10 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 		_append_group_grab(context)
 		if control_label != "" and context in ["window", "focus"]:
 			_items.append({label = control_label, emoji = "🕹️", action = "control"})
+		if annotate_label != "" and context in ["window", "focus"]:
+			_items.append({label = annotate_label, emoji = "✏️", action = "annotate"})
+		if clear_annotations and context in ["window", "focus"]:
+			_items.append({label = "CLEAR ANNOTATIONS", emoji = "🧽", action = "clear_annotations"})
 		_append_pin_zoom()
 
 

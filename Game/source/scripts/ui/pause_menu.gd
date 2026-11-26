@@ -604,6 +604,10 @@ func get_window_sharpness_max() -> float:
 	return v if v in [1.0, 1.5, 2.0] else 1.5
 
 # Bulles de chat au-dessus des avatars (MULTIPLAYER). Défaut : oui.
+# Annotations éphémères (MULTIPLAYER, lot K) : un trait disparaît 4 s après avoir été tracé. Défaut : oui.
+func is_annotation_ephemeral() -> bool:
+	return bool(_settings.get("annotation_ephemeral", true))
+
 func is_chat_bubbles_enabled() -> bool:
 	return bool(_settings.get("chat_bubbles", true))
 

@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var annotations_view: Node # annotations sur les fenêtres partagées, cf. scripts/windows/annotations_view.gd
 var control_request: CanvasLayer # demande de contrôle d'une fenêtre partagée, cf. scripts/ui/control_request.gd
 var text_input_osk: Node # clavier virtuel sur les champs de texte, cf. scripts/main/text_input_osk.gd
 var window_sharpness: Node # netteté selon la distance, cf. scripts/main/window_sharpness.gd
@@ -793,6 +794,14 @@ func _ready() -> void:
 	control_request.setup(lan.remote_control, _peer_name, func(wid: int) -> String: return String(win3d.window_titles.get(wid, "window")))
 	lan.remote_control.control_changed.connect(_on_control_changed)
 	lan.remote_control.guest_control_changed.connect(_on_guest_control_changed)
+	# Annotations sur les fenêtres partagées (réseau : scripts/network/lan/annotations.gd).
+	lan.annotations.win3d = win3d
+	annotations_view = Node.new()
+	annotations_view.name = "AnnotationsView"
+	annotations_view.set_script(preload("res://scripts/windows/annotations_view.gd"))
+	add_child(annotations_view)
+	annotations_view.setup(lan.annotations, lan, win3d, focus)
+	annotations_view.ephemeral_setting = Callable(pause_menu, "is_annotation_ephemeral")
 	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
 	voice_manager = Node.new()
 	voice_manager.name = "VoiceManager"
@@ -1125,6 +1134,10 @@ func _process(delta: float) -> void:
 			and not (focus.is_active() and not focus.is_remote()) \
 			and Input.is_action_just_pressed("request_control", true):
 		_toggle_control()
+	# Mode annotation (lot K) : aussi en mode focus (y compris vue seule).
+	if lan.is_session_active() and not layers.keyboard_busy() and not window_menu.visible \
+			and Input.is_action_just_pressed("annotate", true):
+		_toggle_annotate()
 	if lan.is_session_active() and not focus.is_active() and not interact_mode_active \
 			and not layers.keyboard_busy() and not window_menu.visible:
 		if Input.is_action_just_pressed("chat", true) and not chat_box.just_closed():
@@ -1173,6 +1186,11 @@ func _process(delta: float) -> void:
 			radial_menu.group_grab_active = aimed.has("local") \
 				and win3d.is_group_grabbed(aimed["local"])
 			radial_menu.control_label = _control_label(_control_target())
+			var at := _annotation_target()
+			radial_menu.annotate_label = "STOP ANNOTATING" if annotations_view.active else \
+				("ANNOTATE" if not at.is_empty() else "")
+			radial_menu.clear_annotations = not at.is_empty() and int(at[0]) == lan.annotations.my_id() \
+				and not lan.annotations.strokes(at[0], at[1]).is_empty()
 			radial_menu.show_menu(ctx)
 
 	_menu_just_closed = false
@@ -1258,6 +1276,9 @@ func _process(delta: float) -> void:
 		# aussi. La fenêtre focalisée ne reçoit plus rien tant qu'il est ouvert, sinon ses widgets
 		# ne seraient ni cliquables ni déplaçables.
 		if layers.keyboard_busy() and layers.handle_layer_pointer(delta):
+			return
+		# Mode annotation : la souris dessine au lieu de cliquer dans la fenêtre.
+		if annotations_view.handle_focus(focus.mouse_pos):
 			return
 		focus.handle_focus_input(delta)
 		return
@@ -1377,11 +1398,14 @@ func _process(delta: float) -> void:
 	var aim: Array = player.aim_ray(mouse_pos)
 	var ray_origin: Vector3 = aim[0]
 	var ray_dir: Vector3 = aim[1]
-	win3d.process_raycast(ray_origin, ray_dir, delta, interact_mode_active)
+	# Mode annotation : le réticule dessine sur la fenêtre visée au lieu d'interagir avec elle.
+	var annotating: bool = annotations_view.handle_3d(get_world_3d().direct_space_state, ray_origin, ray_dir, [player.get_rid()])
+	if not annotating:
+		win3d.process_raycast(ray_origin, ray_dir, delta, interact_mode_active)
 	# Interaction monde (clic gauche sur un objet scripté du niveau) : même
 	# rayon, évalué APRÈS le système de fenêtres — un clic qui touche une
 	# surface Wayland lui appartient et n'interagit jamais avec le monde.
-	if interactor != null:
+	if interactor != null and not annotating:
 		interactor.update_aim(ray_origin, ray_dir)
 	# Cible de drop pendant un drag Wayland (même rayon caméra).
 	if file_share != null:
@@ -1476,6 +1500,11 @@ func _input(event: InputEvent) -> void:
 	# handle_input_event) pour que rien ne fuie vers les binds du jeu.
 	if focus.is_active() and not capture_selector.visible \
 			and (focus.is_remote() or focus.get_focus_window_id() != -1):
+		# Mode annotation : les clics dessinent (traités dans _process), rien ne part à la fenêtre.
+		if annotations_view.active and (event is InputEventMouseButton or event is InputEventMouseMotion):
+			if event is InputEventMouseButton:
+				get_viewport().set_input_as_handled()
+			return
 		if focus.handle_input_event(event):
 			return
 
@@ -1829,6 +1858,33 @@ func _toggle_control() -> void:
 	elif t.has("local") and rc.controller_of(t["local"]) != -1:
 		rc.revoke(t["local"])
 
+# ── Annotations (lot K) ──────────────────────────────────────────────
+
+## Fenêtre partagée concernée : [owner, wid] (vue focus, sinon fenêtre visée), [] si non annotable.
+func _annotation_target() -> Array:
+	var me: int = lan.annotations.my_id()
+	var t: Array = []
+	if focus.is_active():
+		if focus.is_remote():
+			t = [focus.get_remote_peer(), focus.get_remote_wid()]
+		elif focus.get_focus_window_id() != -1:
+			t = [me, focus.get_focus_window_id()]
+	else:
+		var aim := _raycast_window_target(_aim_pos())
+		if aim.has("local"):
+			t = [me, aim["local"]]
+		elif aim.has("remote_peer"):
+			t = [aim["remote_peer"], aim["remote_wid"]]
+	return t if not t.is_empty() and lan.annotations.is_annotatable(t[0], t[1]) else []
+
+func _toggle_annotate() -> void:
+	if not annotations_view.active and _annotation_target().is_empty():
+		chat_box.add_system("Annotations: aim at a shared window")
+		return
+	annotations_view.toggle()
+	chat_box.add_system("Annotation mode: left click draws, right click erases your strokes" if annotations_view.active
+		else "Annotation mode off")
+
 ## Invité : le propriétaire a accordé / refusé / retiré le contrôle de sa fenêtre.
 func _on_control_changed(owner: int, wid: int, active: bool) -> void:
 	if active:
@@ -1847,6 +1903,12 @@ func _on_radial_action(action: String) -> void:
 	match action:
 		"control":
 			_toggle_control()
+		"annotate":
+			_toggle_annotate()
+		"clear_annotations":
+			var at := _annotation_target()
+			if not at.is_empty():
+				lan.annotations.clear(at[0], at[1])
 		"window_menu":
 			_open_window_menu()
 		"layer_interact":

@@ -111,6 +111,7 @@ const ChatModule := preload("res://scripts/network/lan/chat.gd")
 const VoiceModule := preload("res://scripts/network/lan/voice.gd")
 const InviteModule := preload("res://scripts/network/lan/invite.gd")
 const RemoteControlModule := preload("res://scripts/network/lan/remote_control.gd")
+const AnnotationsModule := preload("res://scripts/network/lan/annotations.gd")
 var session: SessionModule = null
 var players: PlayersModule = null
 var level_transfer: LevelTransferModule = null
@@ -123,6 +124,7 @@ var chat: ChatModule = null
 var voice: VoiceModule = null
 var invite                         # module Invite (code d'invitation, UPnP)
 var remote_control                 # module RemoteControl (prise de contrôle d'une fenêtre partagée)
+var annotations                    # module Annotations (dessin sur une fenêtre partagée)
 ## Hôte : héberger « par Internet » (identité DTLS propre, PIN long, UPnP, code d'invitation). Voir invite.gd.
 var invite_mode := false
 ## Session par invitation (hôte ou client) : mêmes restrictions qu'en ligne (pas de partage de fenêtres / fichiers,
@@ -178,6 +180,10 @@ func _init() -> void:
 	remote_control.name = "RemoteControl"
 	remote_control.lan = self
 	add_child(remote_control)
+	annotations = AnnotationsModule.new()
+	annotations.name = "Annotations"
+	annotations.lan = self
+	add_child(annotations)
 # Journal protocole (user://lan_debug.log) : diagnostic du join LAN.
 func _lan_log(msg: String, reset := false) -> void:
 	push_warning("LAN: " + msg)
@@ -449,6 +455,7 @@ func _disconnect_session(keep_context := false) -> void:
 	_peer_pos.clear()
 	invite.stop_host()                  # ports ouverts par UPnP refermés
 	remote_control.reset()
+	annotations.reset()
 	invite_mode = false
 	audio_share._stop_audio_share()
 	video_share._stop_video_share()
