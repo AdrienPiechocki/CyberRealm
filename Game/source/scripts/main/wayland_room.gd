@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var toplevel_bridge: Node # barres de tâches + raccourcis capturés par une fenêtre, cf. scripts/main/toplevel_bridge.gd
 var global_shortcuts: Node # raccourcis globaux (portail GlobalShortcuts), cf. scripts/input/global_shortcuts.gd
 var lan: Node # multijoueur LAN (hôte/join, avatars)
 var cmd: Node # drone de commandes IPC (cyberrealm-exec)
@@ -500,6 +501,16 @@ func _ready() -> void:
 	compositor.session_lock_locked.connect(layers.on_session_lock_locked)
 	compositor.session_lock_unlocked.connect(layers.on_session_lock_unlocked)
 	compositor.session_lock_surface_texture_updated.connect(layers.on_session_lock_surface_texture_updated)
+
+	# Barres de tâches (foreign-toplevel-management) et raccourcis capturés par une fenêtre
+	# (keyboard-shortcuts-inhibit) : voir scripts/main/toplevel_bridge.gd.
+	toplevel_bridge = Node.new()
+	toplevel_bridge.name = "ToplevelBridge"
+	toplevel_bridge.set_script(preload("res://scripts/main/toplevel_bridge.gd"))
+	add_child(toplevel_bridge)
+	toplevel_bridge.setup(compositor, win3d, focus, fx, pause_menu)
+	toplevel_bridge.can_enter_focus = func() -> bool:
+		return not player.freecam_active and not pause_menu.visible
 	win3d.window_created.connect(fx.on_window_created)
 
 	compositor.start_headless()
@@ -932,6 +943,7 @@ static func _ui_toggle_allowed(focus_active: bool, keyboard_busy: bool) -> bool:
 
 func _process(delta: float) -> void:
 	fx.process(delta)
+	toplevel_bridge.process()
 
 	# Diagnostic rendu périodique (comparaison entre machines).
 	if _rdi_enabled:
@@ -1105,21 +1117,24 @@ func _process(delta: float) -> void:
 	# is_action_just_pressed(exact=true) : seul le bind exact (modifieurs
 	# compris) déclenche la sortie — F seul, Ctrl+F... vont à la fenêtre.
 	if focus.is_active():
-		if Input.is_action_just_pressed("focus_window", true):
+		# Une fenêtre (VM, bureau à distance) capture les raccourcis : aucun bind
+		# du jeu ne se déclenche, l'échappatoire passe par focus.handle_input_event.
+		var inhibited: bool = toplevel_bridge.shortcuts_inhibited()
+		if not inhibited and Input.is_action_just_pressed("focus_window", true):
 			focus.exit_focus()
 			pins.set_zooming(false)
 			return
 		# force_game (remapable) : bascule is_game de la fenêtre focus pour la
 		# traiter (ou non) comme un jeu vidéo.
-		if Input.is_action_just_pressed("force_game", true) and not keyboard.visible:
+		if not inhibited and Input.is_action_just_pressed("force_game", true) and not keyboard.visible:
 			focus.toggle_force_game()
 			return
 		# Kill : seulement pour une fenêtre LOCALE en focus. Le focus d'une
 		# fenêtre distante est vue seule : pas de fermeture possible.
-		if not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):
+		if not inhibited and not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):
 			compositor.close_window(focus.get_focus_window_id())
 			return
-		if Input.is_action_just_pressed("pin_zoom", true) and not interact_mode_active:
+		if not inhibited and Input.is_action_just_pressed("pin_zoom", true) and not interact_mode_active:
 			pins.toggle_zoom()
 			return
 		# Loupe : plus aucun input monde, la molette et le mouvement souris
@@ -1307,7 +1322,8 @@ func _input(event: InputEvent) -> void:
 	# prioritaires sur le mode focus et les binds — la touche est consommée. Ici, donc
 	# APRÈS le lockscreen et les layers keyboard-interactive : un overlay qui a pris le
 	# clavier reçoit ses propres touches (il referme lui-même avec la sienne).
-	if event is InputEventKey and not capture_selector.visible and global_shortcuts.try_event(event):
+	if event is InputEventKey and not capture_selector.visible \
+			and not toplevel_bridge.shortcuts_inhibited() and global_shortcuts.try_event(event):
 		get_viewport().set_input_as_handled()
 		return
 	# Overlay interactif ouvert PAR-DESSUS une fenêtre en mode focus : la molette et les mouvements

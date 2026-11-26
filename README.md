@@ -51,6 +51,24 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
+- **Taskbars** — implements `zwlr_foreign_toplevel_management_v1`, so a taskbar
+  launched inside the game (waybar's `wlr/taskbar` module, `lswt`…) lists the
+  windows and drives them: clicking a window un-hides it, gives it the keyboard
+  and flashes it so you can find it in the room (or brings it into focus mode
+  when focus mode is open); minimize hides it, fullscreen/maximize opens it in
+  focus mode, close closes it. The taskbar sees each window as minimized while
+  it is hidden and fullscreen while it is in focus mode.
+- **Apps that capture shortcuts** — implements
+  `zwp_keyboard_shortcuts_inhibit_v1`: a VM viewer, a remote-desktop client or
+  a game streaming client can receive `Super`, `Alt+Tab`… while it is the
+  window in **focus mode** (never in the 3D view, where the game needs its
+  keys). A banner tells you when it happens; `SUPER+SHIFT+Esc` (remappable,
+  *release_shortcuts*) takes the shortcuts back until you leave that window.
+  Disable it in the pause menu (General → *Let apps capture shortcuts in focus
+  mode*).
+- **Cursor shapes** — implements `wp_cursor_shape_v1`: apps that name their
+  cursor (GTK 4, Qt ≥ 6.6, kitty…) instead of sending an image get the
+  matching cursor from your theme, in focus mode and on remote views alike.
 - **Global shortcuts** — implements the `org.freedesktop.portal.GlobalShortcuts`
   portal, so any app can register a key that works whatever window has focus
   (e.g. the Ludodex in-game overlay on `Shift+Tab`). The game sees every key
@@ -154,7 +172,8 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
              │   GDExtension "libwaylandgodot" (C++, SCons)                                                │
              │     WlrCompositor (Node)  — full wlroots 0.19 compositor                                    │
              │       ├─ xdg-shell, layer-shell, session-lock, pointer-constraints,                         │
-             │       │  relative-pointer, primary-selection, data-device (DnD)                             │
+             │       │  relative-pointer, primary-selection, data-device (DnD),                            │
+             │       │  cursor-shape, foreign-toplevel-management, keyboard-shortcuts-inhibit              │
              │       ├─ headless backend + xwayland-satellite (XWayland)                                   │
              │       ├─ VulkanDmaBufImport — zero-copy DMA-BUF → VkImage → Texture2D                       │
              │       ├─ VideoShare  — H.264/AV1 inter-frame (VAAPI hw / libx264 sw)                        │
@@ -406,6 +425,7 @@ networks. Full details: `Game/source/user/README.md`.
 | `SUPER+TAB`          | Hand the pointer to a layer overlay (waybar/rofi) |
 | `SUPER+SHIFT+F`      | Free camera mode (detach the view)                |
 | `SUPER+SHIFT+H`      | Hide / show the HUD (crosshair, FPS counter)      |
+| `SUPER+SHIFT+Esc`    | Take back the shortcuts captured by a VM / remote desktop in focus mode |
 | `Print Screen`       | Take a full-screen screenshot                     |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
 

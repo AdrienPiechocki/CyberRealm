@@ -103,6 +103,11 @@ func _update_xray(delta: float) -> void:
 	var pulse := (sin(xray_time * 6.0) * 0.5 + 0.5) # 0..1, ~1 Hz
 	xray_overlay.albedo_color.a = 0.3 + pulse * 0.5
 
+## Flash bref d'une fenêtre (comme à son ouverture) pour la repérer, ex. activée depuis une barre de tâches.
+func flash_window(id: int) -> void:
+	if windows.quads.has(id) and is_instance_valid(windows.quads[id]):
+		_start_flash(id, windows.quads[id])
+
 func _start_flash(id: int, quad: MeshInstance3D) -> void:
 	var mat := StandardMaterial3D.new()
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA

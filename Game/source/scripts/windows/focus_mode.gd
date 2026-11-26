@@ -6,6 +6,9 @@ extends Node3D
 # (croppée depuis le viewport par wayland_room.gd) si la zone fait au moins
 # ZONE_MIN_PX, sinon rien. Escape annule. Fonctionne aussi en focus distant.
 signal zone_capture_selected(screen_rect: Rect2)
+# Le joueur a pressé release_shortcuts pendant qu'une fenêtre capture les raccourcis
+# (zwp_keyboard_shortcuts_inhibit_v1) : toplevel_bridge.gd les lui rend.
+signal shortcuts_release_requested
 
 var zone_select_active := false
 

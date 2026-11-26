@@ -13,7 +13,7 @@ const REMAPPABLE_ACTIONS := [
 	"look_up", "look_down", "look_left", "look_right",
 	"interact_mode", "layer_interact", "window_menu", "radial_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
-	"screenshot", "force_game", "freecam", "toggle_tps", "toggle_ui",
+	"screenshot", "force_game", "release_shortcuts", "freecam", "toggle_tps", "toggle_ui",
 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]
 var _cleared_keybinds: Dictionary = {} # action -> {"kb": bool, "pad": bool} (bind passé à None)>

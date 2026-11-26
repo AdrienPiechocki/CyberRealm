@@ -556,6 +556,11 @@ func does_toggle_ui_hide_names() -> bool:
 func is_fullbody_enabled() -> bool:
 	return bool(_settings.get("fullbody_awareness", true))
 
+# Une app (VM, bureau à distance…) peut-elle capturer les raccourcis du jeu en mode focus
+# (zwp_keyboard_shortcuts_inhibit_v1) ? (GENERAL). Défaut : oui.
+func is_shortcut_inhibit_allowed() -> bool:
+	return bool(_settings.get("allow_shortcut_inhibit", true))
+
 # ── LAN multiplayer ──────────────────────────────────────────────────
 
 func get_tutorial_seen() -> bool:

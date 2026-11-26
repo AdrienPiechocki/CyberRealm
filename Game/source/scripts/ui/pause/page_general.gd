@@ -128,6 +128,21 @@ func _show_general() -> void:
 		menu.fullbody_changed.emit(on)
 	)
 
+	# Raccourcis capturés par une app en mode focus (VM, bureau à distance : Super, Alt+Tab…).
+	# Lu à chaque frame par toplevel_bridge.gd : aucun signal nécessaire.
+	var inhibit_check := CheckButton.new()
+	inhibit_check.text = "Let apps capture shortcuts in focus mode (VMs, remote desktop)"
+	inhibit_check.button_pressed = menu.is_shortcut_inhibit_allowed()
+	inhibit_check.custom_minimum_size = Vector2(0, 36)
+	inhibit_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	inhibit_check.add_theme_font_size_override("font_size", 14)
+	menu.container.add_child(inhibit_check)
+
+	inhibit_check.toggled.connect(func(on: bool):
+		menu._settings["allow_shortcut_inhibit"] = on
+		menu._save_settings()
+	)
+
 	menu.container.add_child(menu._make_spacer())
 	menu.container.add_child(menu._make_back_btn())
 

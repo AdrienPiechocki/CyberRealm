@@ -9,6 +9,8 @@ signal window_created(window_id: int, quad: MeshInstance3D)
 # taille, fin de déplacement/redimensionnement, plein écran) : le LAN s'en
 # sert pour resynchroniser les quads noirs des autres joueurs.
 signal windows_state_changed
+# Une fenêtre a été cachée (SUPER+H…) ou réaffichée : la barre de tâches la voit « minimized ».
+signal window_hidden_changed(window_id: int, hidden: bool)
 # Multiplicateur de taille des quads en unités monde : agrandit l'affichage
 # 3D des fenêtres sans toucher à la résolution de l'image (les pixels par
 # unité monde sont divisés d'autant, l'échantillonnage reste le même).
@@ -541,6 +543,7 @@ func toggle_hide(id: int) -> void:
 	var quad: MeshInstance3D = quads[id]
 	quad.visible = not quad.visible
 	_set_quad_interactive(quad, quad.visible)
+	window_hidden_changed.emit(id, not quad.visible)
 	windows_state_changed.emit()
 
 func on_window_mapped(id: int, title: String, app_id: String) -> void:

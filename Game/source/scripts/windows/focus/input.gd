@@ -589,7 +589,7 @@ func handle_input_event(event: InputEvent) -> bool:
 		return true
 	# PrtSc en mode focus : armer l'outil de sélection au lieu de forwarder la
 	# touche au client. Fonctionne sur le bind remapable "screenshot".
-	if event is InputEventKey:
+	if event is InputEventKey and not _shortcuts_inhibited():
 		var skey := event as InputEventKey
 		if not skey.echo and InputMap.event_is_action(skey, "screenshot", true):
 			fm.zone_select._start_zone_selection()
@@ -616,7 +616,13 @@ func handle_input_event(event: InputEvent) -> bool:
 		# (modifieurs compris) ET uniquement l'appui : le relâchement est
 		# forwardé (dropé comme orphelin par le garde-fou du compositeur si
 		# nécessaire), pour ne jamais laisser une touche enfoncée côté client.
-		if _is_compositor_shortcut(key_event):
+		# Une fenêtre capture les raccourcis (VM, bureau à distance) : tout lui
+		# part, sauf l'échappatoire release_shortcuts qui rend la main au jeu.
+		if _shortcuts_inhibited():
+			if key_event.pressed and InputMap.event_is_action(key_event, "release_shortcuts", true):
+				fm.shortcuts_release_requested.emit()
+				return true
+		elif _is_compositor_shortcut(key_event):
 			return true
 		var code = key_event.physical_keycode
 		if code == 0:
@@ -705,6 +711,11 @@ func handle_input_event(event: InputEvent) -> bool:
 # avalait aussi le keyup, un F dont l'appui a déjà été forwardé (tapé dans
 # la fenêtre) et qui est relâché pendant que Super est encore enfoncé serait
 # perdu → la touche resterait enfoncée côté client (auto-repeat en boucle).
+## Une fenêtre a-t-elle capturé les raccourcis du jeu (zwp_keyboard_shortcuts_inhibit_v1) ?
+func _shortcuts_inhibited() -> bool:
+	return fm.compositor != null and fm.compositor.has_method("is_shortcuts_inhibited") \
+			and fm.compositor.is_shortcuts_inhibited()
+
 func _is_compositor_shortcut(event: InputEventKey) -> bool:
 	if not event.pressed:
 		return false
