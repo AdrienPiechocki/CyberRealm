@@ -529,7 +529,12 @@ func _add_mic_device_row() -> void:
 	row.add_child(menu._make_row_label("Input device"))
 	var dev := OptionButton.new()
 	dev.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	# Noms de périphériques parfois très longs : sans ceci, le bouton prend la largeur du plus long et élargit tout
+	# le menu. Le nom complet reste lisible dans la liste déroulante et en infobulle.
+	dev.fit_to_longest_item = false
 	dev.clip_text = true
+	dev.custom_minimum_size = Vector2(120, 0)
+	dev.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 	var names: Array = [""]
 	var sources := MicSources.list_sources(true)
 	var default_desc := ""
@@ -549,9 +554,11 @@ func _add_mic_device_row() -> void:
 		dev.add_item("%s (unavailable)" % chosen)
 		selected = names.size() - 1
 	dev.selected = selected
+	dev.tooltip_text = dev.get_item_text(selected)
 	dev.item_selected.connect(func(i: int):
 		menu._settings["voice_mic"] = String(names[i])
 		menu._save_settings()
+		dev.tooltip_text = dev.get_item_text(i)
 	)
 	row.add_child(dev)
 	menu.container.add_child(row)
