@@ -1,4 +1,4 @@
-# Godot DisplayServer `kms` (WIP)
+# Godot DisplayServer `kms`
 
 Patch : `kms-display-driver.patch` (sur Godot 4.7.2, `git apply`).
 Build : `scons platform=linuxbsd kms=yes ...` (libseat, libdrm, libinput, libudev requis ; Vulkan obligatoire).
@@ -10,7 +10,7 @@ Lancement : `--display-driver kms` depuis un VT (session logind/seatd).
 - Curseur : logiciel, côté jeu (Game/source/scripts/kms_cursor.gd), visible en MOUSE_MODE_VISIBLE. En mode focus, l'apparence posée par le client (wl_pointer.set_cursor) passe par l'overlay 2D de focus_mode.gd (pas de curseur matériel sous kms).
 - Changement de VT : OK (Ctrl+Alt+Fn ; ~1 s d'écran noir au retour). Le GPU n'est pas rouvert, l'écran n'est jamais relâché côté Vulkan (vkReleaseDisplayEXT plante RADV), la swapchain est recréée (2 fois) au retour.
   Avec le clavier en K_OFF (libseat), Ctrl+C ne marche pas : sortir par le menu pause du jeu ou Ctrl+Alt+Fn.
-- TODO : multi-écrans, compose, branchement dans install.sh (option --with-kms ; build avec
+- TODO : multi-écrans. Branché dans install.sh (activé par défaut, --without-kms pour s'en passer ; build avec
   `kms=yes disable_path_overrides=no` pour lancer depuis les sources).
 
 Choix de la sortie : par défaut la dalle interne (eDP/LVDS/DSI, supposée écran principal), sinon le premier connecteur connecté. Variable

@@ -17,7 +17,7 @@ DO_FIREWALL=1
 DO_KWIN=1
 DO_GNOME_EXT=1
 DO_HYPRLAND=1
-KMS_WANTED=0
+KMS_WANTED=1
 
 usage() {
     cat <<'HELP'
@@ -27,10 +27,12 @@ Install CyberRealm on Arch, Debian/Ubuntu or Fedora/RHEL based distros.
 Without --yes you are asked before each major step (system packages, GNOME
 patch/template, KWin, firewalld ports, Hyprland config).
 
-  --with-kms          build the Godot template with the KMS display driver
-                      (kms=yes: runs without any host compositor, from a login
-                      manager session) and install the "CyberRealm (KMS)"
+  --with-kms          (default) build the Godot template with the KMS display
+                      driver (kms=yes: runs without any host compositor, from a
+                      login manager session) and install the "CyberRealm (KMS)"
                       Wayland session entry (needs sudo for /usr/share)
+  --without-kms       build the template without the KMS display driver and
+                      skip the KMS session entry
   --with-gnome        force the GNOME extension + patched Godot template
   --without-gnome     disable all GNOME-specific steps
   --yes               accept every default, never prompt
@@ -48,6 +50,7 @@ HELP
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --with-kms)      KMS_WANTED=1 ;;
+        --without-kms)   KMS_WANTED=0 ;;
         --with-gnome)    GNOME_WANTED="yes" ;;
         --without-gnome) GNOME_WANTED="no" ;;
         --yes)           ASSUME_YES=1 ;;
@@ -413,7 +416,7 @@ SHM_FIX="$SCRIPT_DIR/compositors/godot-patches/fix-wayland-shm-fd-leak.sh"
 SHM_FIX_STAMP="$TEMPLATES_DIR/linux_release.x86_64.shm-fd-fix"
 
 # -- Driver d'affichage KMS (compositors/godot-patches/kms-display-driver.patch)
-# Opt-in (--with-kms) : DisplayServer "kms" (libseat + VK_KHR_display + libinput).
+# Activé par défaut (--without-kms pour s'en passer) : DisplayServer "kms" (libseat + VK_KHR_display + libinput).
 # Le template est alors compilé avec kms=yes (liaison dynamique avec libseat,
 # libinput, libudev, libdrm). Le stamp enregistre l'état pour reconstruire quand
 # l'option est ajoutée ou retirée.
@@ -603,7 +606,7 @@ if [[ "$KMS_WANTED" -eq 1 && -x "$GAME" ]]; then
     install -d "$HOME/.local/bin"
     cat > "$HOME/.local/bin/cyberrealm-kms-session" <<EOF
 #!/usr/bin/env bash
-# Genere par install.sh --with-kms : session CyberRealm sans compositeur hote.
+# Genere par install.sh (KMS, defaut) : session CyberRealm sans compositeur hote.
 LOG_DIR="\${XDG_STATE_HOME:-\$HOME/.local/state}/cyberrealm"
 mkdir -p "\$LOG_DIR"
 [[ -f "\$LOG_DIR/kms-session.log" ]] && mv -f "\$LOG_DIR/kms-session.log" "\$LOG_DIR/kms-session.log.old"
