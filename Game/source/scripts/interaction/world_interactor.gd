@@ -31,6 +31,8 @@ const MAX_ANCESTORS := 8
 const WINDOW_METAS: Array[String] = ["window_id", "titlebar_of", "titlebar_button", "popup_id"]
 # Anti-spam du relais réseau : au plus une interaction par pair et période.
 const NET_RATE_LIMIT_MSEC := 150
+## Marge sur REACH pour une interaction reçue du réseau (latence, différence de position).
+const NET_REACH_MARGIN := 1.5
 const PROMPT_DEFAULT := "Left click: interact"
 const HELD_GROUP := "interact_held"
 
@@ -186,6 +188,14 @@ func _apply_net_interact(sender: int, target_path: String, from_peer: int) -> vo
 		return
 	var n := get_node_or_null(NodePath(target_path))
 	if n != null and n.has_method("interact"):
+		# Distance : un client modifié pourrait interagir avec un objet à l'autre bout du niveau. Refusé si sa
+		# position est connue et trop loin, ou inconnue alors que cette machine est l'hôte (qui reçoit les positions).
+		if n is Node3D and lan != null and is_instance_valid(lan) and lan.has_method("peer_within"):
+			var known: bool = lan.peer_position(from_peer) != Vector3.INF
+			if (known or bool(lan.get("is_host"))) \
+					and not lan.peer_within(from_peer, (n as Node3D).global_position, REACH + NET_REACH_MARGIN):
+				push_warning("Interactor: interaction from peer %d rejected (too far)" % from_peer)
+				return
 		_call_interact(n, from_peer)
 
 # Racine du niveau résolue à la demande : elle est REMPLACÉE en LAN

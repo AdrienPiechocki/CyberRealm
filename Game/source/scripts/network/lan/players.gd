@@ -760,6 +760,8 @@ func _sync_player_transform(pos: Vector3, yaw: float, pitch: float) -> void:
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0:
 		return
+	# Avant le test d'avatar : le serveur dédié n'a pas d'avatars mais valide les distances (peer_within).
+	lan.note_peer_position(from, pos)
 	if not LanManager._remote_players.has(from):
 		return
 	_reveal_peer(from)

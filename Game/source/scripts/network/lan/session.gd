@@ -750,6 +750,7 @@ func _set_peer_timeout(id: int) -> void:
 
 func _on_peer_disconnected(id: int) -> void:
 	lan.chat.forget_peer(id)
+	lan._peer_pos.erase(id)
 	lan.voice.forget_peer(id)
 	lan.players._avatar_blobs.erase(id)
 	lan.players._avatar_send_queue.erase(id)

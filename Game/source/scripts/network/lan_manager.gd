@@ -429,6 +429,7 @@ func _clear_remote_players() -> void:
 	players._arrived_peers.clear()
 
 func _disconnect_session(keep_context := false) -> void:
+	_peer_pos.clear()
 	audio_share._stop_audio_share()
 	video_share._stop_video_share()
 	session._pending_auth.clear()
@@ -555,6 +556,34 @@ func _exit_tree() -> void:
 # demande au serveur, le serveur diffuse le résultat. Les scripts du niveau écoutent `level_message`.
 signal level_message(topic: String, data: Variant, from_peer: int)
 signal level_peer_left(peer: int)       # serveur : un client est parti (libérer ses objets en main…)
+
+# ── Positions des joueurs (validation de distance, côté hôte / serveur) ──
+## Dernière position connue de chaque pair (reçue par la synchro des transforms) : les scripts de niveau et le relais
+## des interactions s'en servent pour refuser une action lancée de trop loin (client modifié).
+const PEER_POSITION_STALE_MSEC := 2000
+const PEER_JUMP_LOG := 50.0      # m : saut journalisé (téléportation par waypoint : légitime, pas refusé)
+var _peer_pos: Dictionary = {}   # peer -> {pos, t}
+
+func note_peer_position(peer: int, pos: Vector3) -> void:
+	var prev: Dictionary = _peer_pos.get(peer, {})
+	if not prev.is_empty() and (prev["pos"] as Vector3).distance_to(pos) > PEER_JUMP_LOG:
+		_lan_log("peer %d moved %.0f m in one update (teleport?)" % [peer, (prev["pos"] as Vector3).distance_to(pos)])
+	_peer_pos[peer] = {"pos": pos, "t": Time.get_ticks_msec()}
+
+## Position d'un pair (le joueur local : son personnage), Vector3.INF si inconnue ou périmée.
+func peer_position(peer: int) -> Vector3:
+	if is_inside_tree() and multiplayer.has_multiplayer_peer() and peer == multiplayer.get_unique_id() \
+			and local_player != null and is_instance_valid(local_player):
+		return local_player.global_position
+	var e: Dictionary = _peer_pos.get(peer, {})
+	if e.is_empty() or Time.get_ticks_msec() - int(e["t"]) > PEER_POSITION_STALE_MSEC:
+		return Vector3.INF
+	return e["pos"]
+
+## Le pair est-il connu et à moins de `radius` mètres de `pos` ?
+func peer_within(peer: int, pos: Vector3, radius: float) -> bool:
+	var p := peer_position(peer)
+	return p != Vector3.INF and p.distance_to(pos) <= radius
 
 func in_dedicated_session() -> bool:
 	return dedicated or session_dedicated
