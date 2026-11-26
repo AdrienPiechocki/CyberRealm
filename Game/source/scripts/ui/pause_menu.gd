@@ -487,6 +487,8 @@ func _show_general() -> void:
 	container.add_child(_make_nav_row("Polkit Agent", "Authentication dialog used in game", _show_polkit))
 	container.add_child(_make_nav_row("Screenshot Folder", "Where captures are saved", _show_screenshots))
 
+	_add_profile_rows()
+
 	container.add_child(_make_section("Performance"))
 	# ── Max FPS (appliqué immédiatement) ──
 	var fps_label := _make_row_label("Max FPS")
@@ -567,6 +569,91 @@ func _show_general() -> void:
 
 	container.add_child(_make_spacer())
 	container.add_child(_make_back_btn())
+
+# Profil joueur (nom, couleur, avatar) : affiché dans GENERAL, utilisé en multijoueur.
+func _add_profile_rows() -> void:
+	container.add_child(_make_section("Profile"))
+	var name_label := Label.new()
+	name_label.text = "Player name"
+	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	name_label.add_theme_font_size_override("font_size", 13)
+	name_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	container.add_child(name_label)
+
+	var name_edit := _make_line_edit()
+	name_edit.text = get_lan_player_name()
+	name_edit.placeholder_text = "Player name"
+	name_edit.text_submitted.connect(func(_t: String):
+		_save_lan_name(name_edit)
+	)
+	name_edit.focus_exited.connect(func():
+		if name_edit.text.strip_edges() != get_lan_player_name():
+			_save_lan_name(name_edit)
+	)
+	container.add_child(name_edit)
+
+	var color_row := HBoxContainer.new()
+	color_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	color_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var color_label := Label.new()
+	color_label.text = "Avatar color"
+	color_label.add_theme_font_size_override("font_size", 13)
+	color_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	color_row.add_child(color_label)
+	var color_btn := ColorPickerButton.new()
+	color_btn.focus_mode = Control.FOCUS_ALL
+	color_btn.color = get_lan_player_color()
+	color_btn.custom_minimum_size = Vector2(64, 30)
+	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	color_row.add_child(color_btn)
+	var apply_color := func(c: Color) -> void:
+		_settings["lan_player_color"] = c.to_html(true)
+		_save_settings()
+		lan_color_changed.emit(c)
+	if _lan_connected:
+		# Connecté : on n'envoie qu'à la fermeture du sélecteur, pour ne pas
+		# inonder le réseau pendant le glissé.
+		color_btn.popup_closed.connect(func():
+			if color_btn.color.to_html(true) != get_lan_player_color().to_html(true):
+				apply_color.call(color_btn.color)
+		)
+	else:
+		color_btn.color_changed.connect(apply_color)
+	container.add_child(color_row)
+
+	# Choix de l'avatar incarné : tous les avatar.tscn trouvés dans le
+	# projet, nommés d'après le nœud racine de chaque scène. Persisté comme
+	# le nom/couleur ; "" = avatar par défaut (auto).
+	var avatar_row := HBoxContainer.new()
+	avatar_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	avatar_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	var avatar_label := Label.new()
+	avatar_label.text = "Avatar"
+	avatar_label.add_theme_font_size_override("font_size", 13)
+	avatar_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
+	avatar_row.add_child(avatar_label)
+	var avatar_opt := OptionButton.new()
+	var saved_avatar := get_lan_avatar_path()
+	var sel_idx := -1
+	for a in LanManagerScript.list_avatars():
+		var path := String(a["path"])
+		if path == saved_avatar:
+			sel_idx = avatar_opt.item_count
+		avatar_opt.add_item(String(a["name"]))
+		avatar_opt.set_item_metadata(avatar_opt.item_count - 1, path)
+	if avatar_opt.item_count > 0:
+		avatar_opt.select(maxi(sel_idx, 0))
+		avatar_opt.item_selected.connect(func(idx: int):
+			var p := String(avatar_opt.get_item_metadata(idx))
+			_settings["lan_avatar_path"] = p
+			_save_settings()
+			lan_avatar_changed.emit(p)
+		)
+		avatar_row.add_child(avatar_opt)
+	else:
+		avatar_label.queue_free()
+		avatar_row.queue_free()
+	container.add_child(avatar_row)
 
 func _show_graphics() -> void:
 	_clear()
@@ -1811,93 +1898,9 @@ func _show_lan() -> void:
 	hint.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
 	container.add_child(hint)
 
-	container.add_child(_make_section("Profile"))
-	var name_label := Label.new()
-	name_label.text = "Player name"
-	name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	name_label.add_theme_font_size_override("font_size", 13)
-	name_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
-	container.add_child(name_label)
-
-	var name_edit := _make_line_edit()
-	name_edit.text = get_lan_player_name()
-	name_edit.placeholder_text = "Player name"
-	name_edit.text_submitted.connect(func(_t: String):
-		_save_lan_name(name_edit)
-	)
-	name_edit.focus_exited.connect(func():
-		if name_edit.text.strip_edges() != get_lan_player_name():
-			_save_lan_name(name_edit)
-	)
-	container.add_child(name_edit)
-
-	var color_row := HBoxContainer.new()
-	color_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	color_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	var color_label := Label.new()
-	color_label.text = "Avatar color"
-	color_label.add_theme_font_size_override("font_size", 13)
-	color_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
-	color_row.add_child(color_label)
-	var color_btn := ColorPickerButton.new()
-	color_btn.focus_mode = Control.FOCUS_ALL
-	color_btn.color = get_lan_player_color()
-	color_btn.custom_minimum_size = Vector2(64, 30)
-	color_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
-	color_row.add_child(color_btn)
-	var apply_color := func(c: Color) -> void:
-		_settings["lan_player_color"] = c.to_html(true)
-		_save_settings()
-		lan_color_changed.emit(c)
-	if _lan_connected:
-		# Connecté : on n'envoie qu'à la fermeture du sélecteur, pour ne pas
-		# inonder le réseau pendant le glissé.
-		color_btn.popup_closed.connect(func():
-			if color_btn.color.to_html(true) != get_lan_player_color().to_html(true):
-				apply_color.call(color_btn.color)
-		)
-	else:
-		color_btn.color_changed.connect(apply_color)
-	container.add_child(color_row)
-
-	# Choix de l'avatar incarné : tous les avatar.tscn trouvés dans le
-	# projet, nommés d'après le nœud racine de chaque scène. Persisté comme
-	# le nom/couleur ; "" = avatar par défaut (auto).
-	var avatar_row := HBoxContainer.new()
-	avatar_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	avatar_row.alignment = BoxContainer.ALIGNMENT_CENTER
-	var avatar_label := Label.new()
-	avatar_label.text = "Avatar"
-	avatar_label.add_theme_font_size_override("font_size", 13)
-	avatar_label.add_theme_color_override("font_color", Color(0.85, 0.87, 0.9))
-	avatar_row.add_child(avatar_label)
-	var avatar_opt := OptionButton.new()
-	var saved_avatar := get_lan_avatar_path()
-	var sel_idx := -1
-	for a in LanManagerScript.list_avatars():
-		var path := String(a["path"])
-		if path == saved_avatar:
-			sel_idx = avatar_opt.item_count
-		avatar_opt.add_item(String(a["name"]))
-		avatar_opt.set_item_metadata(avatar_opt.item_count - 1, path)
-	if avatar_opt.item_count > 0:
-		avatar_opt.select(maxi(sel_idx, 0))
-		avatar_opt.item_selected.connect(func(idx: int):
-			var p := String(avatar_opt.get_item_metadata(idx))
-			_settings["lan_avatar_path"] = p
-			_save_settings()
-			lan_avatar_changed.emit(p)
-		)
-		avatar_row.add_child(avatar_opt)
-	else:
-		avatar_label.queue_free()
-		avatar_row.queue_free()
-	container.add_child(avatar_row)
-
 	container.add_child(_make_section("Session"))
 	var host_btn := _make_btn("Host Game")
 	host_btn.pressed.connect(func():
-		_save_lan_name(name_edit)
 		lan_host_requested.emit()
 	)
 	container.add_child(host_btn)
@@ -1946,7 +1949,6 @@ func _show_lan() -> void:
 	join_btn.custom_minimum_size = Vector2(100, 36)
 	join_btn.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	join_btn.pressed.connect(func():
-		_save_lan_name(name_edit)
 		var ip := _lan_ip_edit.text.strip_edges()
 		var pin := _lan_pin_edit.text.strip_edges()
 		if ip != "":
@@ -1957,7 +1959,6 @@ func _show_lan() -> void:
 
 	var find_btn := _make_btn("Find LAN games")
 	find_btn.pressed.connect(func():
-		_save_lan_name(name_edit)
 		lan_discover_requested.emit()
 	)
 	container.add_child(find_btn)
