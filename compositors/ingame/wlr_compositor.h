@@ -613,6 +613,16 @@ class WlrCompositor : public Node {
     wl_listener drag_destroy_listener{};
     wl_listener request_set_selection_listener{};
     wl_listener request_set_primary_selection_listener{};
+    // Passerelle presse-papier Godot <-> Wayland (clipboard.cpp).
+    wl_listener set_selection_listener{};
+    bool set_selection_listener_added = false;
+    bool clip_bridge = false;              // actif seulement sous le DisplayServer « kms »
+    std::string clip_synced;               // dernier texte commun aux deux presse-papiers
+    uint64_t clip_poll_ms = 0;
+    wlr_data_source *clip_godot_source = nullptr;   // source servie par nous (texte de Godot)
+    int clip_read_fd = -1;                 // lecture en cours d'une sélection client
+    wl_event_source *clip_read_source = nullptr;
+    std::string clip_read_buf;
     wl_listener keyboard_key_listener{};
     wl_listener keyboard_modifiers_listener{};
     wl_listener pointer_grab_begin_listener{};
@@ -883,6 +893,12 @@ private:
     // entre les fenêtres/clients.
     static void on_request_set_selection(wl_listener *listener, void *data);
     static void on_request_set_primary_selection(wl_listener *listener, void *data);
+    static void on_set_selection(wl_listener *listener, void *data);
+    static int on_clip_readable(int fd, uint32_t mask, void *data);
+    void clipboard_init();
+    void clipboard_poll();
+    void clipboard_shutdown();
+    void clipboard_finish_read(bool ok);
     static void on_toplevel_map(wl_listener *listener, void *data);
     static void on_toplevel_unmap(wl_listener *listener, void *data);
     static void on_toplevel_destroy(wl_listener *listener, void *data);
@@ -1093,6 +1109,8 @@ private:
     std::shared_ptr<std::atomic_bool> alive_guard;
     bool extract_file_drop_start();
     void _finish_file_drop(PackedStringArray paths, uint32_t time_msec, int button);
+
+    friend struct WlrCompositorClipAccess;
 
 protected:
     static void _bind_methods();

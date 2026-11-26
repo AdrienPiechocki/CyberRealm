@@ -125,10 +125,10 @@ index 0000000..1a056f2
 +Return("source_files")
 diff --git a/platform/linuxbsd/kms/display_server_kms.cpp b/platform/linuxbsd/kms/display_server_kms.cpp
 new file mode 100644
-index 0000000..a5309bd
+index 0000000..36bd2d8
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.cpp
-@@ -0,0 +1,436 @@
+@@ -0,0 +1,438 @@
 +#ifdef KMS_ENABLED
 +
 +#include "display_server_kms.h"
@@ -206,6 +206,8 @@ index 0000000..a5309bd
 +		case DisplayServerEnums::FEATURE_MOUSE:
 +		case DisplayServerEnums::FEATURE_CURSOR_SHAPE:
 +		case DisplayServerEnums::FEATURE_HIDPI:
++		case DisplayServerEnums::FEATURE_CLIPBOARD:
++		case DisplayServerEnums::FEATURE_CLIPBOARD_PRIMARY:
 +			return true;
 +		default:
 +			return false;
@@ -567,10 +569,10 @@ index 0000000..a5309bd
 +#endif // KMS_ENABLED
 diff --git a/platform/linuxbsd/kms/display_server_kms.h b/platform/linuxbsd/kms/display_server_kms.h
 new file mode 100644
-index 0000000..8d4b2a9
+index 0000000..c6b68a2
 --- /dev/null
 +++ b/platform/linuxbsd/kms/display_server_kms.h
-@@ -0,0 +1,235 @@
+@@ -0,0 +1,242 @@
 +/**************************************************************************/
 +/*  display_server_kms.h                                             */
 +/**************************************************************************/
@@ -644,6 +646,8 @@ index 0000000..8d4b2a9
 +	DisplayServerEnums::MouseMode mouse_mode = DisplayServerEnums::MOUSE_MODE_VISIBLE;
 +	DisplayServerEnums::MouseMode mouse_mode_override = DisplayServerEnums::MOUSE_MODE_VISIBLE;
 +	bool mouse_mode_override_enabled = false;
++	String clipboard;
++	String clipboard_primary;
 +	void _apply_mouse_mode();
 +	int drm_device_id = -1;
 +	int drm_fd = -1;
@@ -776,8 +780,13 @@ index 0000000..8d4b2a9
 +	void mouse_set_mode_override_enabled(bool p_override_enabled) override;
 +	void warp_mouse(const Point2i &p_position) override { input.warp_pointer(p_position); }
 +	Point2i mouse_get_position() const override { return input.get_pointer_position(); }
-+	void clipboard_set(const String &p_text) override {}
-+	void clipboard_set_primary(const String &p_text) override {}
++	// Pas de presse-papier système sous KMS : on garde le texte en mémoire. Le
++	// compositeur intégré au jeu le relie au presse-papier Wayland de ses fenêtres.
++	void clipboard_set(const String &p_text) override { clipboard = p_text; }
++	String clipboard_get() const override { return clipboard; }
++	bool clipboard_has() const override { return !clipboard.is_empty(); }
++	void clipboard_set_primary(const String &p_text) override { clipboard_primary = p_text; }
++	String clipboard_get_primary() const override { return clipboard_primary; }
 +
 +	void virtual_keyboard_show(const String &p_existing_text, const Rect2 &p_screen_rect = Rect2(), DisplayServerEnums::VirtualKeyboardType p_type = DisplayServerEnums::KEYBOARD_TYPE_DEFAULT, int p_max_length = -1, int p_cursor_start = -1, int p_cursor_end = -1) override {}
 +	void virtual_keyboard_hide() override {}

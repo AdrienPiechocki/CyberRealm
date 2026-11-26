@@ -407,6 +407,7 @@ WlrCompositor::~WlrCompositor() {
     }
 
     if (display) {
+        clipboard_shutdown();
         // Retirer TOUS les listeners attachés aux objets wlr AVANT de
         // détruire le display. wlroots exige que les signaux de
         // xdg_shell (new_surface/new_toplevel/new_popup/destroy) soient
@@ -1155,6 +1156,9 @@ void WlrCompositor::start_headless() {
     request_set_primary_selection_listener.notify = WlrCompositor::on_request_set_primary_selection;
     wl_signal_add(&seat->events.request_set_primary_selection, &request_set_primary_selection_listener);
 
+    // Relie le presse-papier Godot (sous KMS, en mémoire) à celui des fenêtres.
+    clipboard_init();
+
     // Pointer constraints (zwp_pointer_constraints_v1) + relative pointer
     // (zwp_relative_pointer_v1) — nécessaires pour les jeux FPS qui
     // demandent un pointer lock via zwp_pointer_constraints_v1::lock_pointer.
@@ -1448,6 +1452,7 @@ void WlrCompositor::_process(double delta) {
     }
 
     wl_event_loop_dispatch(event_loop, 0);
+    clipboard_poll();
     if (display) wl_display_flush_clients(display);
 
     // Clôturer un geste pinch resté sans update depuis trop longtemps.
