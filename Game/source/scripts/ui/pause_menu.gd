@@ -592,6 +592,11 @@ func get_window_audio_mode() -> String:
 	var m := String(_settings.get("window_audio", "normal"))
 	return m if m in ["normal", "spatial"] else "normal"
 
+# Clavier virtuel sur un champ de texte (GENERAL, text_input_osk.gd) : "pad" (défaut), "always" ou "never".
+func get_osk_on_text_input() -> String:
+	var m := String(_settings.get("osk_on_text_input", "pad"))
+	return m if m in ["pad", "always", "never"] else "pad"
+
 # Netteté selon la distance (GENERAL, window_sharpness.gd) : échelle maximale annoncée aux fenêtres vues de près.
 # 1.0 = désactivée. Défaut : 1.5.
 func get_window_sharpness_max() -> float:

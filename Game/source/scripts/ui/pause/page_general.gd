@@ -159,6 +159,24 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
+	# Clavier virtuel sur un champ de texte (lu par text_input_osk.gd).
+	var osk_row := HBoxContainer.new()
+	osk_row.add_child(menu._make_row_label("Virtual keyboard on text fields"))
+	var osk_opt := OptionButton.new()
+	var osk_modes := ["pad", "always", "never"]
+	osk_opt.add_item("With a gamepad only")
+	osk_opt.add_item("Always")
+	osk_opt.add_item("Never")
+	osk_opt.tooltip_text = "Opens the virtual keyboard when a text field of a window gets focus, and closes it after."
+	osk_opt.selected = osk_modes.find(menu.get_osk_on_text_input())
+	osk_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	osk_row.add_child(osk_opt)
+	menu.container.add_child(osk_row)
+	osk_opt.item_selected.connect(func(i: int):
+		menu._settings["osk_on_text_input"] = osk_modes[i]
+		menu._save_settings()
+	)
+
 	# Netteté selon la distance (lu par window_sharpness.gd) : les fenêtres vues de près rendent plus de pixels.
 	var sharp_row := HBoxContainer.new()
 	sharp_row.add_child(menu._make_row_label("Window sharpness"))

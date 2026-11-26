@@ -499,7 +499,10 @@ struct WindowCursorState {
     class WlrCompositor *owner = nullptr;
 };
 
+struct TextInputRelay;   // text_input.cpp (text_input_v3 / input_method_v2 / virtual_keyboard_v1)
+
 class WlrCompositor : public Node {
+    friend struct TextInputRelay;
     GDCLASS(WlrCompositor, Node)
 
     wl_display *display = nullptr;
@@ -667,6 +670,23 @@ class WlrCompositor : public Node {
     wl_listener keyboard_focus_change_listener{};
     bool keyboard_focus_listening = false;
     static void on_keyboard_focus_change(wl_listener *listener, void *data);
+
+    // ── Saisie de texte (lot I, text_input.cpp) ─────────────────────────
+    // Relais text_input_v3 (apps) <-> input_method_v2 (fcitx5, ibus…), clavier virtuel de l'input method, popups
+    // de candidats (émis comme des popups xdg : popup_mapped / popup_texture_updated / popup_unmapped).
+    TextInputRelay *ti_relay = nullptr;
+    void setup_text_input();
+    void teardown_text_input_listeners();
+    void destroy_text_input_relay();
+    void text_input_focus_changed(wlr_surface *surface);
+    // Grab clavier de l'input method : true si la touche lui a été envoyée (le seat ne la reçoit pas).
+    bool text_input_grab_key(uint32_t time_msec, uint32_t keycode, uint32_t state);
+    bool text_input_grab_modifiers();
+public:
+    bool ime_commit_string(const String &text);
+    bool has_input_method() const;
+    Dictionary get_text_input_state();
+private:
     // Fenêtre (toplevel) d'une surface : racine, ou toplevel parent d'un popup.
     int window_id_for_surface(wlr_surface *surface);
     // Fenêtre qui a le focus clavier du seat, -1 sinon.

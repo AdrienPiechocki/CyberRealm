@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var text_input_osk: Node # clavier virtuel sur les champs de texte, cf. scripts/main/text_input_osk.gd
 var window_sharpness: Node # netteté selon la distance, cf. scripts/main/window_sharpness.gd
 var window_audio: Node # son des fenêtres (spatialisé / partagé), cf. scripts/main/window_audio.gd
 var voice_manager: Node # chat vocal, cf. scripts/main/voice_manager.gd
@@ -775,6 +776,12 @@ func _ready() -> void:
 	add_child(window_sharpness)
 	window_sharpness.setup(compositor, win3d, focus, pins, pause_menu)
 	compositor.window_unmapped.connect(window_sharpness.on_window_unmapped)
+	# Champ de texte actif dans une fenêtre (text_input_v3) : clavier virtuel selon l'option.
+	text_input_osk = Node.new()
+	text_input_osk.name = "TextInputOSK"
+	text_input_osk.set_script(preload("res://scripts/main/text_input_osk.gd"))
+	add_child(text_input_osk)
+	text_input_osk.setup(compositor, keyboard, pause_menu, func() -> bool: return focus.is_active() or interact_mode_active)
 	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
 	voice_manager = Node.new()
 	voice_manager.name = "VoiceManager"

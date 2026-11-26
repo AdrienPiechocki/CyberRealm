@@ -16,6 +16,11 @@ var _ctrl_locked := false
 var _alt_locked := false
 var _key_buttons: Array[Button] = []
 var _target_line_edit: LineEdit = null
+# Rangée de caractères absents des dispositions (emoji, typographie) : insérés par l'input method minimale du
+# compositeur (ime_commit_string) dans le champ de texte actif ; visible seulement quand c'est possible (champ actif,
+# pas d'input method externe). Dernière rangée de la navigation au D-PAD.
+const EXTRA_CHARS := ["😀", "😂", "😍", "😉", "👍", "🙏", "🎉", "❤️", "🔥", "😢", "€", "«", "»", "…", "—"]
+var _extra_row: HBoxContainer = null
 
 # ── Key repeat (maintien d'une touche clavier/d'un bouton pad) ───────────
 const REPEAT_DELAY := 0.4
@@ -280,6 +285,42 @@ func _rebuild_keys() -> void:
 			row_box.add_child(btn)
 			_key_buttons.append(btn)
 		row_index += 1
+
+	_extra_row = HBoxContainer.new()
+	_extra_row.alignment = BoxContainer.ALIGNMENT_CENTER
+	_extra_row.add_theme_constant_override("separation", 3)
+	_container.add_child(_extra_row)
+	for i in EXTRA_CHARS.size():
+		var ch: String = EXTRA_CHARS[i]
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_ALL
+		b.text = ch
+		b.custom_minimum_size = Vector2(44, 36)
+		b.set_meta("ui_class", "key-button")
+		UITheme.apply_class(b, "key-button")
+		b.set_meta("row", ROWS.size())
+		b.set_meta("col", i)
+		b.set_meta("keycode", -1)
+		b.pressed.connect(func(): if _compositor != null: _compositor.ime_commit_string(ch))
+		_extra_row.add_child(b)
+		_key_buttons.append(b)
+	_refresh_extra_row()
+
+## La rangée d'emoji n'apparaît que si le compositeur peut insérer du texte (champ actif, pas d'input method).
+func _refresh_extra_row() -> void:
+	if _extra_row == null:
+		return
+	var ok := false
+	if _compositor != null and _compositor.has_method("get_text_input_state"):
+		var st: Dictionary = _compositor.get_text_input_state()
+		ok = bool(st.get("active", false)) and not bool(st.get("input_method", false))
+	_extra_row.visible = ok
+
+func _nav_rows() -> int:
+	return ROWS.size() + (1 if _extra_row != null and _extra_row.visible else 0)
+
+func _row_len(r: int) -> int:
+	return ROWS[r].size() if r < ROWS.size() else EXTRA_CHARS.size()
 
 
 func _get_current_layout() -> Dictionary:
@@ -559,6 +600,7 @@ func show_menu(target_line_edit: LineEdit = null, focus_first_key: bool = true) 
 	_ctrl_locked = false
 	_alt_locked = false
 	_target_line_edit = target_line_edit
+	_refresh_extra_row()
 	var layout_data := _get_current_layout()
 	_update_all_labels(layout_data)
 	# Reset mod button styles
@@ -579,13 +621,16 @@ func show_menu(target_line_edit: LineEdit = null, focus_first_key: bool = true) 
 				break
 
 
-func hide_menu() -> void:
+## `notify` false : fermeture automatique (champ de texte quitté, text_input_osk.gd) — ne coupe pas le mode
+## interaction (keyboard_closed le ferait).
+func hide_menu(notify := true) -> void:
 	_clear_hold()
 	visible = false
 	if _target_line_edit != null and is_instance_valid(_target_line_edit):
 		_target_line_edit.grab_focus()
 	_target_line_edit = null
-	keyboard_closed.emit()
+	if notify:
+		keyboard_closed.emit()
 
 
 func _get_focusable(action: String) -> Array:
@@ -595,7 +640,7 @@ func _get_focusable(action: String) -> Array:
 
 	var cur_row: int = current.get_meta("row", 0)
 	var cur_col: int = current.get_meta("col", 0)
-	var num_rows: int = ROWS.size()
+	var num_rows: int = _nav_rows()
 
 	match action:
 		"ui_up":
@@ -603,10 +648,10 @@ func _get_focusable(action: String) -> Array:
 		"ui_down":
 			return _find_in_row((cur_row + 1) % num_rows, cur_col)
 		"ui_left":
-			var max_col: int = ROWS[cur_row].size() - 1
+			var max_col: int = _row_len(cur_row) - 1
 			return _find_in_row_col(cur_row, (cur_col - 1 + max_col + 1) % (max_col + 1))
 		"ui_right":
-			var max_col: int = ROWS[cur_row].size() - 1
+			var max_col: int = _row_len(cur_row) - 1
 			return _find_in_row_col(cur_row, (cur_col + 1) % (max_col + 1))
 	return _key_buttons
 

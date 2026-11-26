@@ -51,6 +51,18 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
+- **Input methods and text fields** — `text_input_v3`, `input_method_v2` and
+  `virtual_keyboard_v1`: an input method started *inside* the game (fcitx5,
+  ibus — e.g. as a startup app `fcitx5 -d`; it lives on the game's own D-Bus)
+  types Japanese, Chinese, Korean or emoji in GTK, Qt and Firefox windows. Its
+  candidate list appears under the text cursor (a popup of the window, also in
+  focus mode); while it grabs the keyboard, game keys go to it (game shortcuts
+  are still handled first). A password field never shows a preedit. Leave
+  `GTK_IM_MODULE` / `QT_IM_MODULE` unset so apps use the Wayland protocol.
+  The virtual keyboard opens by itself on a text field (General → *Virtual
+  keyboard on text fields*: gamepad only — default —, always, never) and closes
+  when the field is left; without an input method, its extra row inserts emoji
+  and symbols missing from the layout (`ime_commit_string`).
 - **Sharp windows up close** (pause menu → General → *Window sharpness*, default
   *up to ×1.5*) — a window you look at from near gets a higher scale through
   `wp_fractional_scale_v1` (×1.25, ×1.5 or ×2): the app renders more pixels for

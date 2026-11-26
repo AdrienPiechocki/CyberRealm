@@ -163,6 +163,9 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_window_scale", "window_id", "scale"), &WlrCompositor::set_window_scale);
     ClassDB::bind_method(D_METHOD("get_window_scale", "window_id"), &WlrCompositor::get_window_scale);
     ClassDB::bind_method(D_METHOD("get_capture_pressure"), &WlrCompositor::get_capture_pressure);
+    ClassDB::bind_method(D_METHOD("ime_commit_string", "text"), &WlrCompositor::ime_commit_string);
+    ClassDB::bind_method(D_METHOD("has_input_method"), &WlrCompositor::has_input_method);
+    ClassDB::bind_method(D_METHOD("get_text_input_state"), &WlrCompositor::get_text_input_state);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
     ClassDB::bind_method(D_METHOD("set_cpu_capture_requested", "requested"), &WlrCompositor::set_cpu_capture_requested);
     ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
@@ -254,6 +257,13 @@ void WlrCompositor::_bind_methods() {
     ADD_SIGNAL(MethodInfo("window_title_changed",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::STRING, "title")));
+    // Champ de texte (text_input_v3) actif / inactif dans une fenêtre (text_input.cpp).
+    ADD_SIGNAL(MethodInfo("text_input_changed",
+        PropertyInfo(Variant::INT, "window_id"),
+        PropertyInfo(Variant::BOOL, "active"),
+        PropertyInfo(Variant::INT, "content_hint"),
+        PropertyInfo(Variant::INT, "content_purpose"),
+        PropertyInfo(Variant::RECT2I, "cursor_rect")));
     ADD_SIGNAL(MethodInfo("window_texture_updated",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::OBJECT, "texture"),
@@ -447,6 +457,7 @@ WlrCompositor::~WlrCompositor() {
             wl_list_remove(&new_shortcuts_inhibitor_listener.link);
             shortcuts_inhibit_listening = false;
         }
+        teardown_text_input_listeners();
 
         // Détruire le curseur AVANT le display (wlr_cursor/wlr_cursor_manager
         // dépendent du display pour leurs ressources internes).
@@ -461,6 +472,7 @@ WlrCompositor::~WlrCompositor() {
 
         wl_display_destroy_clients(display);
         wl_display_destroy(display);
+        destroy_text_input_relay();
     }
 
     // Tuer tous les processus enfants lancés par launch_app() : SIGTERM,
@@ -1189,6 +1201,9 @@ void WlrCompositor::start_headless() {
     // curseur de l'application en focus.
     request_set_cursor_listener.notify = WlrCompositor::on_request_set_cursor;
     wl_signal_add(&seat->events.request_set_cursor, &request_set_cursor_listener);
+
+    // Saisie de texte : text_input_v3 / input_method_v2 / virtual_keyboard_v1 (text_input.cpp).
+    setup_text_input();
 
     // wp_cursor_shape_v1 : curseur demandé par forme (cursor_shape.cpp).
     cursor_shape_manager = wlr_cursor_shape_manager_v1_create(display, 1);

@@ -52,7 +52,6 @@ int WlrCompositor::keyboard_focus_window_id() {
 
 void WlrCompositor::on_keyboard_focus_change(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, keyboard_focus_change_listener);
-    (void)data;
     // Destruction en cours (~WlrCompositor ferme les clients, ce qui change
     // le focus) : ne plus rien émettre vers un objet Godot à demi détruit.
     if (!self->alive_guard || !self->alive_guard->load()) {
@@ -60,6 +59,9 @@ void WlrCompositor::on_keyboard_focus_change(wl_listener *listener, void *data) 
     }
     self->sync_toplevel_mgmt_activated();
     self->update_shortcuts_inhibitors();
+    // text_input_v3 : enter / leave suivent le focus clavier (text_input.cpp).
+    auto *ev = static_cast<wlr_seat_keyboard_focus_change_event *>(data);
+    self->text_input_focus_changed(ev ? ev->new_surface : nullptr);
 }
 
 void WlrCompositor::sync_toplevel_mgmt_activated() {

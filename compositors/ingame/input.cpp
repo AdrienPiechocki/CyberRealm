@@ -130,11 +130,19 @@ static const std::unordered_map<int, uint32_t> NUMPAD_EVDEV = {
 void WlrCompositor::on_keyboard_key(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, keyboard_key_listener);
     auto *event = static_cast<wlr_keyboard_key_event *>(data);
+    // Input method avec grab clavier (fcitx5…) : la touche lui revient ; elle renvoie celles qu'elle ne consomme
+    // pas par son clavier virtuel (text_input.cpp).
+    if (self->text_input_grab_key(event->time_msec, event->keycode, event->state)) {
+        return;
+    }
     wlr_seat_set_keyboard(self->seat, &self->virtual_keyboard);
     wlr_seat_keyboard_notify_key(self->seat, event->time_msec, event->keycode, event->state);
 }
 void WlrCompositor::on_keyboard_modifiers(wl_listener *listener, void *data) {
     WlrCompositor *self = wl_container_of(listener, self, keyboard_modifiers_listener);
+    if (self->text_input_grab_modifiers()) {
+        return;
+    }
     wlr_seat_set_keyboard(self->seat, &self->virtual_keyboard);
     wlr_seat_keyboard_notify_modifiers(self->seat, &self->virtual_keyboard.modifiers);
 }
