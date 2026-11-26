@@ -19,6 +19,7 @@ class FakeLan extends Node:
 	var _players := {7: {"name": "Bob", "color": Color.RED}}
 	func is_session_active() -> bool: return true
 	func online_restricted() -> bool: return false
+	func window_share_restricted() -> bool: return false
 
 class FakeWin3D extends Node:
 	var quads: Dictionary = {}

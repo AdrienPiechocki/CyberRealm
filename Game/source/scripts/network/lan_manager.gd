@@ -617,14 +617,14 @@ func peer_within(peer: int, pos: Vector3, radius: float) -> bool:
 func in_dedicated_session() -> bool:
 	return dedicated or session_dedicated
 
-## true en mode online (serveur ou client) : fonctions entre joueurs coupées (fichiers, prise de contrôle, annotations).
+## true en mode online (serveur ou client) : partage de fichiers coupé, avatars sans code.
 func online_restricted() -> bool:
 	return online or session_online or (invite_session() and not invite_trusted)
 
-## true quand la VUE des fenêtres des autres joueurs est coupée (disposition, contenu partagé, curseur, son des
-## fenêtres) : seulement dans une session par code d'invitation non approuvée. Sur un serveur online, les joueurs sont
-## authentifiés par le mot de passe du serveur : ils voient les fenêtres les uns des autres.
-func window_view_restricted() -> bool:
+## true quand le partage de fenêtres entre joueurs est coupé (disposition, contenu partagé, curseur, son des fenêtres,
+## annotations, prise de contrôle) : seulement dans une session par code d'invitation non approuvée. Sur un serveur
+## online, les joueurs sont authentifiés par le mot de passe du serveur : le partage de fenêtres y fonctionne.
+func window_share_restricted() -> bool:
 	return invite_session() and not invite_trusted
 
 ## true pendant une session ouverte par code d'invitation (hôte invite_mode, ou client qui a rejoint avec un code).

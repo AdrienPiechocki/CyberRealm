@@ -140,7 +140,7 @@ func _resolve_dynamic_sync(path: String) -> Node3D:
 		return n
 	return null
 
-const LEVEL_SYNC_GAP := 0.05
+const LEVEL_SYNC_GAP := 1.0 / 30.0     # 30 Hz : objets en mouvement fluides chez les clients
 var _level_sync_by_path: Dictionary = {}  # chemin relatif -> Node3D
 var _level_sync_target: Dictionary = {}   # chemin -> Transform3D (client)
 var _level_sync_snapped: Dictionary = {}
@@ -177,7 +177,7 @@ func _sync_level_state(delta: float) -> void:
 		return
 	if _level_sync_target.is_empty():
 		return
-	var t := 1.0 - exp(-delta * 12.0)
+	var t := 1.0 - exp(-delta * 20.0)       # lissage ~50 ms : suit la cadence d'envoi sans à-coups
 	for path in _level_sync_target:
 		var n := _level_sync_by_path.get(path) as Node3D
 		if n == null:

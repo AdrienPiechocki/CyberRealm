@@ -97,7 +97,7 @@ class FakeLan extends Node:
 	var session := false
 	func is_session_active() -> bool: return session
 	func online_restricted() -> bool: return false
-	func window_view_restricted() -> bool: return false
+	func window_share_restricted() -> bool: return false
 
 class FakeSettings extends Node:
 	var mode := "spatial"

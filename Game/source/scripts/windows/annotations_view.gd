@@ -239,7 +239,7 @@ func _drop_view(key: String) -> void:
 func _process(_delta: float) -> void:
 	if ephemeral_setting.is_valid():
 		annotations.ephemeral = bool(ephemeral_setting.call())
-	if active and (lan == null or not lan.is_session_active() or lan.online_restricted()):
+	if active and (lan == null or not lan.is_session_active() or lan.window_share_restricted()):
 		toggle()                  # plus de session : fin du mode
 	for key in _views.keys():
 		var v: Dictionary = _views[key]

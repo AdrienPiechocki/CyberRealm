@@ -171,7 +171,7 @@ func _sync_windows_state(delta: float) -> void:
 
 @rpc("any_peer", "unreliable")
 func _sync_windows(windows: Array) -> void:
-	if lan.window_view_restricted():
+	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
@@ -615,7 +615,7 @@ func _debug_dump_once(key: int) -> bool:
 # Canal 2 séparé : la sync des avatars (canal 0) n'est jamais retardée.
 @rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_window_texture(wid: int, version: int, bytes: PackedByteArray) -> void:
-	if lan.window_view_restricted():
+	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	_receive_share_frame(wid, version, bytes, false)
 
@@ -625,7 +625,7 @@ func _sync_window_texture(wid: int, version: int, bytes: PackedByteArray) -> voi
 # ignore alors toute frame de version antérieure encore en file de décodage.
 @rpc("any_peer", "call_remote", "reliable", 4)
 func _sync_window_keyframe(wid: int, version: int, bytes: PackedByteArray) -> void:
-	if lan.window_view_restricted():
+	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	_receive_share_frame(wid, version, bytes, true)
 
@@ -666,7 +666,7 @@ func _receive_share_frame(wid: int, version: int, bytes: PackedByteArray, is_key
 # du canal 0 (niveau, états) qui pourraient retarder le flow control.
 @rpc("any_peer", "call_remote", "reliable", 5)
 func _ack_window_versions(versions: Dictionary) -> void:
-	if lan.window_view_restricted():
+	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
@@ -1017,7 +1017,7 @@ func _sync_cursor_state(delta: float) -> void:
 # minuscule.
 @rpc("any_peer", "unreliable")
 func _sync_window_pointer(wid: int, inside: bool, captured: bool, x: float, y: float) -> void:
-	if lan.window_view_restricted():
+	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():
@@ -1045,7 +1045,7 @@ func _sync_window_pointer(wid: int, inside: bool, captured: bool, x: float, y: f
 # custom, ex. curseur système). Rare (≈ curseur posé une fois par app).
 @rpc("any_peer", "reliable")
 func _sync_window_cursor_image(wid: int, serial: int, hidden: bool, hx: int, hy: int, w: int, h: int, bytes: PackedByteArray) -> void:
-	if lan.window_view_restricted():
+	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	var from := multiplayer.get_remote_sender_id()
 	if from == 0 or from == multiplayer.get_unique_id():

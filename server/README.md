@@ -97,8 +97,8 @@ What online mode changes:
 | Brute force | 30 s per-IP lock | per-IP lock **doubling** 30 s → 1 h, plus a global cap of 40 attempts/min; password compared as SHA-256 |
 | Discovery (UDP 9999) | on | **off** — only answers « who serves `<domain>`? » from private (LAN) addresses |
 | Custom avatars | scripts travel and run | **no code accepted**: an avatar carrying scripts/scripted resources/sub-scenes is replaced by the default one; the server decodes no avatar |
-| Other players' windows (layout, shared content, cursor, window audio) | on | on (players hold the server password) |
-| File sharing, remote control, annotations | on | **off** (RPCs ignored) |
+| Window sharing (layout, shared content, cursor, window audio, annotations, remote control) | on | on (players hold the server password) |
+| File sharing | on | **off** (RPCs ignored) |
 | Level download | integrity by TCP only | **SHA-256 announced over the authenticated channel and checked** before the level is used |
 | Messages | — | shape/size-checked, 120 msg/s per peer |
 | systemd | — | sandboxed (no new privileges, read-only system, private /tmp, minimal capabilities) |

@@ -8,6 +8,7 @@ class FakeLan extends Node:
 	var shared := {}               # "owner:wid" -> true (fenêtres distantes partagées)
 	func is_session_active() -> bool: return true
 	func online_restricted() -> bool: return false
+	func window_share_restricted() -> bool: return false
 	func is_remote_window_shared(o: int, w: int) -> bool: return shared.has("%d:%d" % [o, w])
 
 class FakeWin3D extends Node:

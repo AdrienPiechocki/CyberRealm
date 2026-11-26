@@ -471,10 +471,10 @@ Remote windows are view-only by default: `SUPER+F` opens a fullscreen view of th
 (with the owner's cursor overlaid), `SUPER+P` pins them as PiP.
 
 **Annotations on a shared window.** Aim at a shared window (yours or another player's)
-or open it in focus view, and press `SUPER+A` (or *ANNOTATE* in the radial menu):
+or open it in focus view, and press `SUPER+Q` (or *ANNOTATE* in the radial menu):
 left click held draws in your color, right click held erases your own strokes; in 3D
 you draw with the crosshair, in focus view with the mouse (also on a view-only remote
-window). While annotating, clicks don't reach the window; `SUPER+A` again stops. The
+window). While annotating, clicks don't reach the window; `SUPER+Q` again stops. The
 owner can *CLEAR ANNOTATIONS* (radial menu). By default strokes vanish 4 s after being
 drawn, like a laser pointer (Multiplayer → *Ephemeral annotations*; off, they stay).
 Strokes use window-relative coordinates: they follow a resize roughly, but not the

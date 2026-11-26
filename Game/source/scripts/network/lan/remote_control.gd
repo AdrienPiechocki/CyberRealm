@@ -10,8 +10,8 @@ extends Node
 ## Entrées de l'invité : pointeur en coordonnées NORMALISÉES (u, v) de la fenêtre (non fiable, canal 3, une fois par
 ## frame), boutons / molette / touches (fiables, canal 1). Chez le propriétaire elles vont DIRECTEMENT au compositeur,
 ## jamais par la carte des keybinds du jeu : ni raccourci du jeu ni bind personnalisé. Ctrl+Alt+F1…F12 (changement
-## de VT) filtré. Bornes : MAX_POINTER_PER_SEC, MAX_INPUT_PER_SEC ; au-delà, ignoré. Interdit en session en ligne
-## (online_restricted, comme les partages). Un seul seat : l'invité et le propriétaire partagent clavier et pointeur
+## de VT) filtré. Bornes : MAX_POINTER_PER_SEC, MAX_INPUT_PER_SEC ; au-delà, ignoré. Interdit en session par code d'invitation non approuvée
+## (window_share_restricted, comme le partage de fenêtres). Un seul seat : l'invité et le propriétaire partagent clavier et pointeur
 ## du compositeur (une touche de l'invité donne le focus clavier à la fenêtre contrôlée).
 
 signal control_requested(peer: int, wid: int)              # propriétaire : afficher la demande
@@ -47,7 +47,7 @@ func _now() -> int:
 
 func _can_net() -> bool:
 	return is_inside_tree() and multiplayer.has_multiplayer_peer() and lan != null and lan.is_session_active() \
-		and not lan.online_restricted()
+		and not lan.window_share_restricted()
 
 static func key_of(peer: int, wid: int) -> String:
 	return "%d:%d" % [peer, wid]
@@ -176,7 +176,7 @@ func _rc_request(wid: Variant) -> void:
 	_on_request(multiplayer.get_remote_sender_id(), wid)
 
 func _on_request(from: int, wid: Variant) -> void:
-	if not (wid is int) or from <= 0 or lan == null or lan.online_restricted():
+	if not (wid is int) or from <= 0 or lan == null or lan.window_share_restricted():
 		return
 	# Une demande à la fois (une seule boîte de dialogue), fenêtre partagée, pas déjà contrôlée.
 	if not _is_shared(wid) or _grants.has(wid) or not _pending.is_empty():
@@ -390,7 +390,7 @@ func _process(_delta: float) -> void:
 	var peers: Array = multiplayer.get_peers() if is_inside_tree() and multiplayer.has_multiplayer_peer() else []
 	for wid in _grants.keys():
 		if not _is_shared(wid) or not peers.has(int(_grants[wid])) or lan == null or not lan.is_session_active() \
-				or lan.online_restricted():
+				or lan.window_share_restricted():
 			revoke(wid, peers.has(int(_grants[wid])))
 	# Invité : demandes sans réponse oubliées, propriétaire parti.
 	for k in _requested.keys():

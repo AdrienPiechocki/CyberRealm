@@ -50,18 +50,18 @@ func test_invite_sessions_restricted_unless_trusted():
 	lan.free()
 	return r
 
-func test_online_server_shows_windows_but_keeps_other_shares_off():
+func test_online_server_shares_windows_but_not_files():
 	var lan: Node = LANManager.new()
 	lan.session_online = true
-	var r: Variant = Runner.assert_true(lan.online_restricted(), "serveur online : fichiers / contrôle coupés")
+	var r: Variant = Runner.assert_true(lan.online_restricted(), "serveur online : partage de fichiers coupé")
 	if r is String: lan.free(); return r
-	r = Runner.assert_true(not lan.window_view_restricted(), "serveur online : fenêtres des autres visibles")
+	r = Runner.assert_true(not lan.window_share_restricted(), "serveur online : fenêtres, annotations, contrôle actifs")
 	if r is String: lan.free(); return r
 	lan.session_online = false
 	lan.session._invite_cert = PEM
-	r = Runner.assert_true(lan.window_view_restricted(), "client par invitation non approuvé : fenêtres coupées")
+	r = Runner.assert_true(lan.window_share_restricted(), "client par invitation non approuvé : fenêtres coupées")
 	if r is String: lan.free(); return r
 	lan.invite_trusted = true
-	r = Runner.assert_true(not lan.window_view_restricted(), "invités de confiance : fenêtres visibles")
+	r = Runner.assert_true(not lan.window_share_restricted(), "invités de confiance : fenêtres visibles")
 	lan.free()
 	return r

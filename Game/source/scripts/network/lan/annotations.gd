@@ -10,7 +10,7 @@ extends Node
 ## _stroke_erase (ses propres traits), _annot_clear (propriétaire seulement), _annot_sync (traits persistants pour un
 ## arrivant, envoyés par le propriétaire). Bornes : MAX_POINTS par trait, MAX_STROKES par fenêtre, MAX_MSG_PER_SEC
 ## par pair. Traits éphémères (option, par défaut) : effacés EPHEMERAL_SEC après la fin du trait. Tout disparaît à
-## l'arrêt du partage ou à la fermeture de la fenêtre. Interdit en session en ligne.
+## l'arrêt du partage ou à la fermeture de la fenêtre. Interdit en session par code d'invitation non approuvée (window_share_restricted).
 ## Le rendu est fait par scripts/windows/annotations_view.gd (signal strokes_changed).
 
 signal strokes_changed(owner: int, wid: int)
@@ -45,11 +45,11 @@ func strokes(owner: int, wid: int) -> Dictionary:
 
 func _net_ok() -> bool:
 	return is_inside_tree() and multiplayer.has_multiplayer_peer() and lan != null and lan.is_session_active() \
-		and not lan.online_restricted()
+		and not lan.window_share_restricted()
 
 ## La fenêtre est-elle partagée (donc annotable) ? Locale : partage actif ; distante : contenu partagé.
 func is_annotatable(owner: int, wid: int) -> bool:
-	if lan == null or not lan.is_session_active() or lan.online_restricted():
+	if lan == null or not lan.is_session_active() or lan.window_share_restricted():
 		return false
 	if owner == my_id():
 		return win3d != null and win3d.has_method("is_window_shared") and win3d.is_window_shared(wid)
@@ -170,7 +170,7 @@ func _remove(owner: int, wid: int, key: String) -> void:
 
 ## Garde commune : session non en ligne, cadence du pair, types de base.
 func _accept(from: int, owner: Variant, wid: Variant) -> bool:
-	if from <= 0 or lan == null or lan.online_restricted() or not (owner is int) or not (wid is int):
+	if from <= 0 or lan == null or lan.window_share_restricted() or not (owner is int) or not (wid is int):
 		return false
 	var now := Time.get_ticks_msec()
 	var b: Dictionary = _budget.get(from, {"t": now, "n": 0})

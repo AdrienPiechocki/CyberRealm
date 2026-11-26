@@ -1857,7 +1857,7 @@ func _control_target() -> Dictionary:
 	return _raycast_window_target(_aim_pos())
 
 func _control_label(t: Dictionary) -> String:
-	if not lan.is_session_active() or lan.online_restricted():
+	if not lan.is_session_active() or lan.window_share_restricted():
 		return ""
 	if t.has("remote_peer"):
 		if lan.remote_control.is_controlling(t["remote_peer"], t["remote_wid"]):
