@@ -174,15 +174,23 @@ func process_raycast(ray_origin: Vector3, ray_dir: Vector3, delta: float, intera
 			uv.x * win_size.x + content_offset_fwd.x, " py=",
 			uv.y * win_size.y + content_offset_fwd.y,
 			" content_offset=", content_offset_fwd, " surf_size=", win_size)
-	w3d.compositor.forward_pointer_motion(wid,
-		uv.x * win_size.x + content_offset_fwd.x,
-		uv.y * win_size.y + content_offset_fwd.y)
-	# Position du pointeur dans la fenêtre (coordonnées surface, y vers le
-	# bas) : servira à composer le curseur dans la capture fenêtre OBS quand
-	# la source a coché « afficher le curseur ».
-	w3d.compositor.set_window_pointer(wid,
-		uv.x * win_size.x + content_offset_fwd.x,
-		uv.y * win_size.y + content_offset_fwd.y, true)
+	# Fenêtre contrôlée par un invité : le viseur immobile ne lui reprend pas le pointeur (voir remote_control.gd).
+	var gate: Object = w3d.owner_gate
+	if gate == null or bool(gate.call("owner_motion", wid)):
+		w3d.compositor.forward_pointer_motion(wid,
+			uv.x * win_size.x + content_offset_fwd.x,
+			uv.y * win_size.y + content_offset_fwd.y)
+		# Position du pointeur dans la fenêtre (coordonnées surface, y vers le
+		# bas) : servira à composer le curseur dans la capture fenêtre OBS quand
+		# la source a coché « afficher le curseur ».
+		w3d.compositor.set_window_pointer(wid,
+			uv.x * win_size.x + content_offset_fwd.x,
+			uv.y * win_size.y + content_offset_fwd.y, true)
+	# Clic, molette : le propriétaire agit, il reprend le siège.
+	if gate != null and (Input.is_action_just_pressed("left_click", false) or Input.is_action_just_released("left_click", false)
+			or Input.is_action_just_pressed("right_click", false) or Input.is_action_just_released("right_click", false)
+			or Input.is_action_pressed("scroll_up", false) or Input.is_action_pressed("scroll_down", false)):
+		gate.call("owner_action", wid)
 
 	if Input.is_action_just_pressed("grab", true) and not interact_active:
 		w3d.active_window_id = wid

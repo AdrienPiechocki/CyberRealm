@@ -3,9 +3,14 @@ extends Node
 ##
 ## Module de LanManager (nœud enfant « RemoteControl »). Un joueur qui regarde une fenêtre PARTAGÉE d'un autre
 ## demande le contrôle ; le propriétaire voit une demande explicite (scripts/ui/control_request.gd) et accepte ou
-## refuse (refus automatique au bout de REQUEST_TIMEOUT_MSEC). Un seul invité par fenêtre. Le propriétaire reprend la
-## main quand il veut (menu radial), en arrêtant le partage ou en fermant la fenêtre ; la déconnexion de l'invité le
-## révoque aussi.
+## refuse (refus automatique au bout de REQUEST_TIMEOUT_MSEC ; les demandes suivantes attendent leur tour). Plusieurs
+## invités peuvent avoir la main sur la même fenêtre. Le propriétaire la reprend quand il veut (menu radial), en
+## arrêtant le partage ou en fermant la fenêtre ; la déconnexion d'un invité révoque son contrôle.
+##
+## Siège : le compositeur n'a qu'UN pointeur et qu'UN clavier. Par fenêtre, ils vont à CELUI QUI A FAIT LA DERNIÈRE
+## ACTION (bouton, molette, touche, mouvement réel de la souris) — un invité ou le propriétaire (0). Quand le siège
+## change de main, ce que l'ancien acteur tenait enfoncé est relâché (pas de glisser ni de touche coincés). Le viseur
+## immobile du propriétaire posé sur la fenêtre ne reprend pas le pointeur à un invité (owner_motion).
 ##
 ## Entrées de l'invité : pointeur en coordonnées NORMALISÉES (u, v) de la fenêtre (non fiable, canal 3, une fois par
 ## frame), boutons / molette / touches (fiables, canal 1). Chez le propriétaire elles vont DIRECTEMENT au compositeur,
@@ -29,12 +34,16 @@ var lan = null                    # LanManager (non typé : doublure possible da
 var win3d: Node = null            # windows_3d (posé par wayland_room) : fenêtres partagées, quads
 
 # ── Propriétaire ──
-var _grants: Dictionary = {}      # wid -> peer
-var _pending: Dictionary = {}     # wid -> {peer, t}
+const OWNER := 0                  # siège tenu par le propriétaire
+var _grants: Dictionary = {}      # wid -> {peer: true} (invités qui ont la main)
+var _seat: Dictionary = {}        # wid -> acteur de la dernière action (OWNER ou un invité)
+var _pending: Array = []          # demandes en attente, la première est affichée : [{wid, peer, t}]
 var _budget: Dictionary = {}      # peer -> {t, ptr, inp}
-var _held: Dictionary = {}        # wid -> {"k:<code>:<loc>": [code, loc], "b:<button>": button}
+var _held: Dictionary = {}        # wid -> {"k:<code>:<loc>": [code, loc], "b:<button>": button} (de l'invité au siège)
 var _mods: Dictionary = {}        # wid -> {ctrl, alt}
-var _markers: Dictionary = {}     # wid -> [Node3D, Control|null] (pointeur de l'invité)
+var _markers: Dictionary = {}     # "wid:peer" -> [Node3D, Control|null] (pointeur de chaque invité)
+var _kbd_wid := -1                # fenêtre qui a reçu le focus clavier en dernier (touches du propriétaire)
+var _owner_moved_frame := -100    # dernière frame où la souris du propriétaire a réellement bougé
 
 # ── Invité ──
 var _controlling: Dictionary = {} # "peer:wid" -> true
@@ -164,8 +173,58 @@ func _on_revoke(from: int, wid: Variant) -> void:
 # Propriétaire
 # ════════════════════════════════════════════════════════════════════════
 
+## Un invité qui a la main sur `wid` (celui qui tient le siège s'il y en a un), -1 sinon.
 func controller_of(wid: int) -> int:
-	return int(_grants.get(wid, -1))
+	var seat := int(_seat.get(wid, OWNER))
+	if seat != OWNER:
+		return seat
+	var g: Dictionary = _grants.get(wid, {})
+	return int(g.keys()[0]) if not g.is_empty() else -1
+
+func controllers_of(wid: int) -> Array:
+	return (_grants.get(wid, {}) as Dictionary).keys()
+
+func has_control(wid: int, peer: int) -> bool:
+	return (_grants.get(wid, {}) as Dictionary).has(peer)
+
+## Acteur qui tient le siège de `wid` (OWNER = le propriétaire).
+func seat_of(wid: int) -> int:
+	return int(_seat.get(wid, OWNER))
+
+## Le siège de `wid` passe à `actor` : ce que l'acteur précédent (invité) tenait enfoncé est relâché.
+func _take_seat(wid: int, actor: int) -> void:
+	if int(_seat.get(wid, OWNER)) == actor:
+		return
+	_release_held(wid)
+	_mods[wid] = {"ctrl": false, "alt": false}
+	_seat[wid] = actor
+
+# ── Entrées du propriétaire (windows_3d/pointer.gd, focus/input.gd, wayland_room.gd) ──
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventMouseMotion and (event as InputEventMouseMotion).relative != Vector2.ZERO:
+		_owner_moved_frame = Engine.get_process_frames()
+
+## Le propriétaire clique / fait défiler sur `wid` : il prend le siège.
+func owner_action(wid: int) -> void:
+	_kbd_wid = wid
+	if _grants.has(wid):
+		_take_seat(wid, OWNER)
+
+## Mouvement du pointeur du propriétaire sur `wid` : true s'il doit être transmis. Un vrai mouvement de souris prend
+## le siège ; un viseur immobile (le pointeur 3D est retransmis à chaque frame) ne le reprend pas à un invité.
+func owner_motion(wid: int) -> bool:
+	if not _grants.has(wid):
+		return true
+	if Engine.get_process_frames() - _owner_moved_frame <= 1:
+		_take_seat(wid, OWNER)
+		return true
+	return int(_seat.get(wid, OWNER)) == OWNER
+
+## Touche du propriétaire : elle va à la fenêtre qui a le focus clavier, qui revient au propriétaire.
+func owner_key() -> void:
+	if _grants.has(_kbd_wid):
+		_take_seat(_kbd_wid, OWNER)
 
 func _is_shared(wid: int) -> bool:
 	return win3d != null and win3d.has_method("is_window_shared") and win3d.is_window_shared(wid) \
@@ -178,50 +237,67 @@ func _rc_request(wid: Variant) -> void:
 func _on_request(from: int, wid: Variant) -> void:
 	if not (wid is int) or from <= 0 or lan == null or lan.window_share_restricted():
 		return
-	# Une demande à la fois (une seule boîte de dialogue), fenêtre partagée, pas déjà contrôlée.
-	if not _is_shared(wid) or _grants.has(wid) or not _pending.is_empty():
+	# Fenêtre partagée, joueur qui n'a pas déjà la main ni de demande en attente. Une boîte de dialogue à la fois :
+	# les demandes suivantes attendent leur tour.
+	if not _is_shared(wid) or has_control(wid, from):
 		_send_answer(from, wid, false)
 		return
-	_pending[wid] = {"peer": from, "t": _now()}
-	control_requested.emit(from, wid)
+	for p in _pending:
+		if int(p["wid"]) == wid and int(p["peer"]) == from:
+			return
+	_pending.append({"wid": wid, "peer": from, "t": _now()})
+	if _pending.size() == 1:
+		control_requested.emit(from, wid)
 
-## Réponse du propriétaire (boîte de dialogue) ou refus automatique.
+## Réponse du propriétaire (boîte de dialogue) ou refus automatique, pour la demande affichée.
 func answer(wid: int, accepted: bool) -> void:
-	var p: Dictionary = _pending.get(wid, {})
-	if p.is_empty():
+	if _pending.is_empty() or int(_pending[0]["wid"]) != wid:
 		return
-	_pending.erase(wid)
+	var p: Dictionary = _pending.pop_front()
 	var peer := int(p["peer"])
-	var ok := accepted and _is_shared(wid) and not _grants.has(wid)
+	var ok := accepted and _is_shared(wid) and not has_control(wid, peer)
 	if ok:
-		_grants[wid] = peer
-		_held[wid] = {}
-		_mods[wid] = {"ctrl": false, "alt": false}
+		if not _grants.has(wid):
+			_grants[wid] = {}
+			_held[wid] = {}
+			_mods[wid] = {"ctrl": false, "alt": false}
+		(_grants[wid] as Dictionary)[peer] = true
 		guest_control_changed.emit(peer, wid, true)
 	_send_answer(peer, wid, ok)
+	if not _pending.is_empty():
+		_pending[0]["t"] = _now()
+		control_requested.emit(int(_pending[0]["peer"]), int(_pending[0]["wid"]))
 
 func _send_answer(peer: int, wid: int, ok: bool) -> void:
 	if is_inside_tree() and multiplayer.has_multiplayer_peer():
 		_rc_answer.rpc_id(peer, wid, ok)
 
-## Le propriétaire reprend la main (ou fin du partage, fermeture, départ de l'invité).
+## Le propriétaire reprend la main sur `wid` : tous les invités la perdent (ou fin du partage, fermeture).
 func revoke(wid: int, notify := true) -> void:
-	if not _grants.has(wid):
+	for peer in controllers_of(wid):
+		revoke_peer(wid, int(peer), notify)
+
+## Un invité perd la main sur `wid` (repris par le propriétaire, rendu par l'invité, départ).
+func revoke_peer(wid: int, peer: int, notify := true) -> void:
+	if not has_control(wid, peer):
 		return
-	var peer := int(_grants[wid])
-	_release_held(wid)
-	_grants.erase(wid)
-	_held.erase(wid)
-	_mods.erase(wid)
-	_remove_marker(wid)
+	if int(_seat.get(wid, OWNER)) == peer:
+		_take_seat(wid, OWNER)
+	(_grants[wid] as Dictionary).erase(peer)
+	_remove_marker(wid, peer)
+	if (_grants[wid] as Dictionary).is_empty():
+		_grants.erase(wid)
+		_seat.erase(wid)
+		_held.erase(wid)
+		_mods.erase(wid)
 	if notify and is_inside_tree() and multiplayer.has_multiplayer_peer() and multiplayer.get_peers().has(peer):
 		_rc_revoke.rpc_id(peer, wid)
 	guest_control_changed.emit(peer, wid, false)
 
 @rpc("any_peer", "call_remote", "reliable", 1)
 func _rc_release(wid: Variant) -> void:
-	if wid is int and controller_of(wid) == multiplayer.get_remote_sender_id():
-		revoke(wid, false)
+	if wid is int:
+		revoke_peer(wid, multiplayer.get_remote_sender_id(), false)
 
 func _allow(peer: int, kind: String) -> bool:
 	var now := _now()
@@ -240,13 +316,14 @@ func _rc_pointer(wid: Variant, u: Variant, v: Variant) -> void:
 	_on_pointer(multiplayer.get_remote_sender_id(), wid, u, v)
 
 func _on_pointer(from: int, wid: Variant, u: Variant, v: Variant) -> void:
-	if not (wid is int) or not (u is float) or not (v is float) or controller_of(wid) != from or not _allow(from, "ptr"):
+	if not (wid is int) or not (u is float) or not (v is float) or not has_control(wid, from) or not _allow(from, "ptr"):
 		return
 	var uv := Vector2(clampf(u, 0.0, 1.0), clampf(v, 0.0, 1.0))
 	var body := _body(wid)
 	var comp := _comp()
 	if body == null or comp == null:
 		return
+	_take_seat(wid, from)
 	var ss: Vector2 = body.get_meta("surface_size", Vector2.ZERO)
 	var co: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
 	var p := uv * ss + co
@@ -258,10 +335,13 @@ func _rc_button(wid: Variant, button: Variant, pressed: Variant) -> void:
 	_on_button(multiplayer.get_remote_sender_id(), wid, button, pressed)
 
 func _on_button(from: int, wid: Variant, button: Variant, pressed: Variant) -> void:
-	if not (wid is int) or not (button is int) or not (pressed is bool) or controller_of(wid) != from:
+	if not (wid is int) or not (button is int) or not (pressed is bool) or not has_control(wid, from):
 		return
 	if not BUTTONS.has(button) or not _allow(from, "inp"):
 		return
+	if not pressed and int(_seat.get(wid, OWNER)) != from:
+		return                          # relâchement d'un bouton déjà relâché quand le siège a changé de main
+	_take_seat(wid, from)
 	var held: Dictionary = _held.get(wid, {})
 	var id := "b:%d" % button
 	if pressed:
@@ -275,8 +355,9 @@ func _rc_axis(wid: Variant, dx: Variant, dy: Variant) -> void:
 	_on_axis(multiplayer.get_remote_sender_id(), wid, dx, dy)
 
 func _on_axis(from: int, wid: Variant, dx: Variant, dy: Variant) -> void:
-	if not (wid is int) or not (dx is float) or not (dy is float) or controller_of(wid) != from or not _allow(from, "inp"):
+	if not (wid is int) or not (dx is float) or not (dy is float) or not has_control(wid, from) or not _allow(from, "inp"):
 		return
+	_take_seat(wid, from)
 	_comp().forward_pointer_axis(wid, clampf(dx, -MAX_AXIS, MAX_AXIS), clampf(dy, -MAX_AXIS, MAX_AXIS))
 
 @rpc("any_peer", "call_remote", "reliable", 1)
@@ -286,8 +367,12 @@ func _rc_key(wid: Variant, code: Variant, location: Variant, pressed: Variant) -
 func _on_key(from: int, wid: Variant, code: Variant, location: Variant, pressed: Variant) -> void:
 	if not (wid is int) or not (code is int) or not (location is int) or not (pressed is bool):
 		return
-	if controller_of(wid) != from or location < 0 or location > 3 or not _allow(from, "inp"):
+	if not has_control(wid, from) or location < 0 or location > 3 or not _allow(from, "inp"):
 		return
+	if not pressed and int(_seat.get(wid, OWNER)) != from:
+		return                          # touche déjà relâchée quand le siège a changé de main
+	_take_seat(wid, from)
+	_kbd_wid = wid
 	var mods: Dictionary = _mods.get(wid, {"ctrl": false, "alt": false})
 	if code == KEY_CTRL:
 		mods["ctrl"] = pressed
@@ -339,7 +424,8 @@ func _update_marker(wid: int, peer: int, uv: Vector2) -> void:
 	if win3d == null or not win3d.quads.has(wid):
 		return
 	var quad: MeshInstance3D = win3d.quads[wid]
-	var m: Array = _markers.get(wid, [])
+	var mk := key_of(wid, peer)
+	var m: Array = _markers.get(mk, [])
 	if m.is_empty() or not is_instance_valid(m[0]):
 		var dot := MeshInstance3D.new()
 		var mesh := SphereMesh.new()
@@ -368,13 +454,18 @@ func _update_marker(wid: int, peer: int, uv: Vector2) -> void:
 			rect.add_child(c)
 			m[1] = c
 		(m[1] as Control).position = uv * rect.size - Vector2(5, 5)
-	_markers[wid] = m
+	_markers[mk] = m
 
-func _remove_marker(wid: int) -> void:
-	for n in _markers.get(wid, []):
-		if n != null and is_instance_valid(n):
-			n.queue_free()
-	_markers.erase(wid)
+## Pastilles d'un invité sur `wid` (peer = -1 : de tous les invités).
+func _remove_marker(wid: int, peer := -1) -> void:
+	for mk in _markers.keys():
+		var p := String(mk).split(":")
+		if int(p[0]) != wid or (peer != -1 and int(p[1]) != peer):
+			continue
+		for n in _markers[mk]:
+			if n != null and is_instance_valid(n):
+				n.queue_free()
+		_markers.erase(mk)
 
 # ── Boucle : envoi du pointeur, fins de contrôle, délais ───────────────
 
@@ -382,16 +473,17 @@ func _process(_delta: float) -> void:
 	for k in _pending_ptr.keys():
 		_flush_pointer(k)
 	var now := _now()
-	# Propriétaire : demande sans réponse = refus.
-	for wid in _pending.keys():
-		if now - int(_pending[wid]["t"]) > REQUEST_TIMEOUT_MSEC:
-			answer(wid, false)
+	# Propriétaire : demande affichée sans réponse = refus (la suivante s'affiche).
+	if not _pending.is_empty() and now - int(_pending[0]["t"]) > REQUEST_TIMEOUT_MSEC:
+		answer(int(_pending[0]["wid"]), false)
 	# Propriétaire : fin de partage, fenêtre fermée, invité parti, session finie.
 	var peers: Array = multiplayer.get_peers() if is_inside_tree() and multiplayer.has_multiplayer_peer() else []
 	for wid in _grants.keys():
-		if not _is_shared(wid) or not peers.has(int(_grants[wid])) or lan == null or not lan.is_session_active() \
-				or lan.window_share_restricted():
-			revoke(wid, peers.has(int(_grants[wid])))
+		var gone_all: bool = not _is_shared(wid) or lan == null or not lan.is_session_active() \
+				or lan.window_share_restricted()
+		for peer in controllers_of(wid):
+			if gone_all or not peers.has(int(peer)):
+				revoke_peer(wid, int(peer), peers.has(int(peer)))
 	# Invité : demandes sans réponse oubliées, propriétaire parti.
 	for k in _requested.keys():
 		if now - int(_requested[k]) > REQUEST_TIMEOUT_MSEC + 5000:
@@ -409,6 +501,7 @@ func reset() -> void:
 	for wid in _grants.keys():
 		revoke(wid, false)
 	_pending.clear()
+	_seat.clear()
 	_controlling.clear()
 	_requested.clear()
 	_pending_ptr.clear()

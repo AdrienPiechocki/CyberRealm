@@ -808,6 +808,7 @@ func _ready() -> void:
 	text_input_osk.setup(compositor, keyboard, pause_menu, func() -> bool: return focus.is_active() or interact_mode_active)
 	# Prise de contrôle d'une fenêtre partagée (réseau : scripts/network/lan/remote_control.gd).
 	lan.remote_control.win3d = win3d
+	win3d.owner_gate = lan.remote_control
 	focus.remote_control = lan.remote_control
 	control_request = CanvasLayer.new()
 	control_request.name = "ControlRequest"
@@ -1572,6 +1573,8 @@ func _input(event: InputEvent) -> void:
 		if key_event.unicode == 60 or key_event.unicode == 62 or code == KEY_QUOTELEFT:
 			code = KEY_LESS
 
+		if key_event.pressed and lan != null:
+			lan.remote_control.owner_key()      # touche du propriétaire : il reprend le siège (remote_control.gd)
 		compositor.forward_keyboard_key(code, key_event.location, key_event.pressed)
 		get_viewport().set_input_as_handled()
 

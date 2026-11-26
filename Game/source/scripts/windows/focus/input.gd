@@ -131,6 +131,11 @@ func _forward_window_buttons(id: int, delta: float) -> void:
 		fm._scroll_down_held = false
 	var scroll_active := (not game) and (fm._scroll_up_held or fm._scroll_down_held \
 		or Input.is_action_pressed("scroll_up") or Input.is_action_pressed("scroll_down"))
+	# Clic ou molette du propriétaire sur une fenêtre que des invités contrôlent : il reprend le siège.
+	if fm.remote_control != null and (scroll_active or _left_press_this_frame() or _left_release_this_frame()
+			or _click_action_just_pressed("right_click") or _click_action_just_released("right_click")
+			or _click_action_just_pressed("middle_click") or _click_action_just_released("middle_click")):
+		fm.remote_control.owner_action(id)
 	if scroll_active:
 		_stick_scroll_cooldown -= delta
 		if _stick_scroll_cooldown <= 0.0:
@@ -435,7 +440,7 @@ func handle_focus_input(delta: float) -> void:
 	# le traitement du scroll côté client (Steam/SDL). On skip le motion
 	# quand le scroll est actif — le focus pointeur est déjà établi.
 	var scroll_active := fm._scroll_up_held or fm._scroll_down_held
-	if not scroll_active:
+	if not scroll_active and (fm.remote_control == null or fm.remote_control.owner_motion(target_window)):
 		if not _motion_is_duplicate(target_window, Vector2(surf_x, surf_y)):
 			fm.compositor.forward_pointer_motion(target_window, surf_x, surf_y)
 	fm.compositor.set_window_pointer(target_window, surf_x, surf_y, true)

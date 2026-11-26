@@ -220,6 +220,9 @@ var focused_window_id := -1 # fenêtre qui reçoit le clavier après un clic, -1
 var resizing_edge := "" # "left", "right", "top", "bottom", etc.
 var is_resizing := false
 var is_moving := false
+## Arbitrage du siège avec les invités qui contrôlent une fenêtre partagée (LAN/RemoteControl, posé par wayland_room) :
+## owner_motion(wid) -> bool, owner_action(wid). null hors multijoueur.
+var owner_gate: Object = null
 var active_window_id := -1
 var is_in_window := false
 # Déplacement: distance (caméra -> fenêtre) figée au moment du grab, la

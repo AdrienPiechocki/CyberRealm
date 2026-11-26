@@ -61,12 +61,15 @@ func test_request_answer_and_inputs():
 	rc._on_request(7, 5)
 	var r: Variant = Runner.assert_eq(asked, [[7, 5]], "demande transmise au propriétaire")
 	if r is String: return _done(r)
-	rc._on_request(8, 5)                             # deuxième demande pendant la première : refusée d'office
-	r = Runner.assert_eq(rc._pending.size(), 1, "une demande à la fois")
+	rc._on_request(8, 5)                             # deuxième demande pendant la première : elle attend son tour
+	r = Runner.assert_true(rc._pending.size() == 2 and asked.size() == 1, "une boîte de dialogue à la fois")
 	if r is String: return _done(r)
 	rc.answer(5, true)
 	r = Runner.assert_eq(rc.controller_of(5), 7, "contrôle accordé")
 	if r is String: return _done(r)
+	r = Runner.assert_eq(asked, [[7, 5], [8, 5]], "demande suivante affichée après la réponse")
+	if r is String: return _done(r)
+	rc.answer(5, false)
 	var comp: Node = rc.lan.compositor
 	rc._on_pointer(9, 5, 0.5, 0.5)                   # pas l'invité : ignoré
 	rc._on_pointer(7, 5, 0.5, 0.5)
@@ -121,3 +124,32 @@ func test_guest_side_state():
 	if r is String: return _done(r)
 	rc._on_revoke(1, 5)
 	return _done(Runner.assert_true(not rc.is_controlling(1, 5) and changes.size() == 2, "contrôle retiré"))
+
+
+func test_last_action_takes_the_seat():
+	var rc := _make()
+	rc._on_request(7, 5)
+	rc.answer(5, true)
+	rc._on_request(8, 5)
+	rc.answer(5, true)
+	var r: Variant = Runner.assert_eq(rc.controllers_of(5).size(), 2, "deux invités ont la main")
+	if r is String: return _done(r)
+	var comp: Node = rc.lan.compositor
+	rc._on_button(7, 5, 0x110, true)                 # l'invité 7 commence un glisser
+	r = Runner.assert_eq(rc.seat_of(5), 7, "siège à l'invité 7")
+	if r is String: return _done(r)
+	comp.calls.clear()
+	rc._on_pointer(8, 5, 0.5, 0.5)                   # l'invité 8 bouge : il prend le siège, le bouton de 7 est relâché
+	r = Runner.assert_eq(comp.calls, [["button", 5, 0x110, false], ["motion", 5, 410.0, 320.0]], "dernière action : invité 8")
+	if r is String: return _done(r)
+	comp.calls.clear()
+	rc._on_button(7, 5, 0x110, false)                # relâchement périmé de 7 : ignoré
+	r = Runner.assert_eq(comp.calls, [], "relâchement d'un bouton déjà relâché ignoré")
+	if r is String: return _done(r)
+	r = Runner.assert_true(not rc.owner_motion(5), "viseur immobile du propriétaire : ne reprend pas le pointeur")
+	if r is String: return _done(r)
+	rc.owner_action(5)                               # clic du propriétaire
+	r = Runner.assert_eq(rc.seat_of(5), RC.OWNER, "le propriétaire reprend le siège")
+	if r is String: return _done(r)
+	rc.revoke_peer(5, 7, false)                      # l'invité 7 rend la main
+	return _done(Runner.assert_eq(rc.controllers_of(5), [8], "l'invité 7 rend la main, 8 la garde"))
