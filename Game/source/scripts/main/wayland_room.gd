@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var window_sharpness: Node # netteté selon la distance, cf. scripts/main/window_sharpness.gd
 var window_audio: Node # son des fenêtres (spatialisé / partagé), cf. scripts/main/window_audio.gd
 var voice_manager: Node # chat vocal, cf. scripts/main/voice_manager.gd
 var chat_box: Control # chat textuel et emotes (multijoueur), cf. scripts/ui/chat_box.gd
@@ -767,6 +768,13 @@ func _ready() -> void:
 	add_child(window_audio)
 	window_audio.setup(compositor, win3d, focus, pins, lan, pause_menu)
 	compositor.window_unmapped.connect(window_audio.on_window_unmapped)
+	# Netteté selon la distance (wp_fractional_scale_v1) : scripts/main/window_sharpness.gd.
+	window_sharpness = Node.new()
+	window_sharpness.name = "WindowSharpness"
+	window_sharpness.set_script(preload("res://scripts/main/window_sharpness.gd"))
+	add_child(window_sharpness)
+	window_sharpness.setup(compositor, win3d, focus, pins, pause_menu)
+	compositor.window_unmapped.connect(window_sharpness.on_window_unmapped)
 	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
 	voice_manager = Node.new()
 	voice_manager.name = "VoiceManager"

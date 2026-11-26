@@ -48,6 +48,7 @@ extern "C" {
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_xcursor_manager.h>
@@ -159,6 +160,9 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_terminal_jobs", "pid"), &WlrCompositor::get_terminal_jobs);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
+    ClassDB::bind_method(D_METHOD("set_window_scale", "window_id", "scale"), &WlrCompositor::set_window_scale);
+    ClassDB::bind_method(D_METHOD("get_window_scale", "window_id"), &WlrCompositor::get_window_scale);
+    ClassDB::bind_method(D_METHOD("get_capture_pressure"), &WlrCompositor::get_capture_pressure);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
     ClassDB::bind_method(D_METHOD("set_cpu_capture_requested", "requested"), &WlrCompositor::set_cpu_capture_requested);
     ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
@@ -1014,6 +1018,8 @@ void WlrCompositor::start_headless() {
     compositor = wlr_compositor_create(display, 6, renderer);
     xdg_shell = wlr_xdg_shell_create(display, 3);
     wlr_viewporter_create(display);
+    // Netteté selon la distance (lot H) : le jeu annonce une échelle > 1 aux fenêtres vues de près.
+    wlr_fractional_scale_manager_v1_create(display, 1);
     wlr_subcompositor_create(display);
 
     // xdg-decoration-unstable-v1 : voir commentaire dans le header. Sans ce

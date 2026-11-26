@@ -624,7 +624,10 @@ func _refresh_rect_layout(id: int) -> void:
 	var fit_size := viewport_size
 	if focus_title_bars.has(id):
 		fit_size.y = maxf(viewport_size.y - TitlebarModule.titlebar_h(), 1.0)
-	var display_size := _nonfullscreen_display_size(_state(id)["surface_size"], fit_size)
+	# Taille logique à l'écran : une texture capturée à l'échelle > 1 (netteté) ne doit pas grossir la fenêtre.
+	var display_size := _nonfullscreen_display_size(
+		(_state(id)["surface_size"] as Vector2) / windows.window_capture_scale(id) if windows != null and windows.has_method("window_capture_scale") else _state(id)["surface_size"],
+		fit_size)
 	rect.size = display_size
 	# Centrage fin sur le CONTENU VISIBLE (pas le buffer) : compense le
 	# padding d'arrondi 64 et les offsets de géométrie (CSD). Calculé SANS

@@ -192,13 +192,15 @@ void WlrCompositor::forward_pointer_motion(int window_id, double surface_x, doub
     notify_activity();
     WindowState *ws = find_window(window_id);
     if (!ws) return;
-    notify_pointer_motion_on_surface(ws->toplevel->base->surface, surface_x, surface_y);
+    // Pixels de capture -> coordonnées logiques (échelle de la fenêtre, cf. set_window_scale).
+    notify_pointer_motion_on_surface(ws->toplevel->base->surface, surface_x / ws->scale, surface_y / ws->scale);
 }
 void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y) {
     notify_activity();
     PopupState *ps = find_popup(popup_id);
     if (!ps) return;
-    notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x, surface_y);
+    const float sc = popup_scale(*ps);
+    notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x / sc, surface_y / sc);
 }
 void WlrCompositor::release_stale_button(uint32_t button) {
     if (!seat) return;

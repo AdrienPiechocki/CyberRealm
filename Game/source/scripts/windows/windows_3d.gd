@@ -455,6 +455,12 @@ func get_quad_info(id: int) -> Dictionary:
 	info["content_size"] = body.get_meta("content_size", Vector2(1, 1))
 	return info
 
+## Échelle de capture d'une fenêtre (1 sans compositeur ou pour une fenêtre inconnue).
+func window_capture_scale(id: int) -> float:
+	if compositor == null or not compositor.has_method("get_window_scale"):
+		return 1.0
+	return maxf(float(compositor.get_window_scale(id)), 1.0)
+
 ## État de disposition d'une fenêtre, pour la retrouver à la prochaine session
 ## (scripts/main/window_layouts.gd). Vide si la fenêtre est inconnue.
 func get_window_layout(id: int) -> Dictionary:
@@ -466,7 +472,8 @@ func get_window_layout(id: int) -> Dictionary:
 		"transform": Transform3D(snap._stored_basis(id), quad.global_position),
 		"size": (quad.mesh as QuadMesh).size,
 		"user_sized": bool(body.get_meta("user_sized", false)),
-		"surface_size": body.get_meta("surface_size", Vector2(1, 1)),
+		# Taille LOGIQUE (sans l'échelle de capture) : la session suivante repart à l'échelle 1.
+		"surface_size": (body.get_meta("surface_size", Vector2(1, 1)) as Vector2) / float(body.get_meta("capture_scale", 1.0)),
 		"hidden": not quad.visible,
 	}
 
@@ -878,6 +885,9 @@ func on_texture_updated(id: int, texture: Texture2D, width: int, height: int) ->
 	# wrong dès que le client commite la nouvelle taille.
 	var body: StaticBody3D = quad.get_child(0)
 	body.set_meta("surface_size", Vector2(width, height))
+	# Échelle de capture (netteté selon la distance, window_sharpness.gd) : la texture et toutes les coordonnées
+	# du compositeur sont en pixels de capture = logique × échelle ; seule la taille monde du quad la divise.
+	body.set_meta("capture_scale", window_capture_scale(id))
 	var geo := compositor.get_window_geometry(id)
 	body.set_meta("content_offset", Vector2(geo["x"], geo["y"]))
 	body.set_meta("content_size", Vector2(geo["width"], geo["height"]))
@@ -918,7 +928,7 @@ func _fit_quad_to_surface(quad: MeshInstance3D, body: StaticBody3D, width: int, 
 	if not body.get_meta("user_sized", false):
 		var vh: float = get_viewport().get_visible_rect().size.y
 		if vh > 0.0:
-			current_h = float(height) / vh
+			current_h = float(height) / (vh * float(body.get_meta("capture_scale", 1.0)))
 		current_h = max(current_h, 0.05)
 		# WINDOW_QUAD_SCALE s'applique uniquement à la hauteur calculée
 		# depuis les pixels. Pour une fenêtre user_sized, current_h est

@@ -159,6 +159,24 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
+	# Netteté selon la distance (lu par window_sharpness.gd) : les fenêtres vues de près rendent plus de pixels.
+	var sharp_row := HBoxContainer.new()
+	sharp_row.add_child(menu._make_row_label("Window sharpness"))
+	var sharp_opt := OptionButton.new()
+	var sharp_levels := [1.0, 1.5, 2.0]
+	sharp_opt.add_item("Off")
+	sharp_opt.add_item("Adaptive, up to ×1.5")
+	sharp_opt.add_item("Adaptive, up to ×2 (more GPU)")
+	sharp_opt.tooltip_text = "Windows seen up close render more pixels so text stays sharp (Wayland apps only)."
+	sharp_opt.selected = sharp_levels.find(menu.get_window_sharpness_max())
+	sharp_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	sharp_row.add_child(sharp_opt)
+	menu.container.add_child(sharp_row)
+	sharp_opt.item_selected.connect(func(i: int):
+		menu._settings["window_sharpness"] = sharp_levels[i]
+		menu._save_settings()
+	)
+
 	# Reprise de session (lu par window_layouts.gd) : apps relancées au démarrage et fenêtres à leur place.
 	var session_check := CheckButton.new()
 	session_check.text = "Restore the previous session (apps and window positions)"

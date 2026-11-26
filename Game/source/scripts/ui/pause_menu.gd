@@ -592,6 +592,12 @@ func get_window_audio_mode() -> String:
 	var m := String(_settings.get("window_audio", "normal"))
 	return m if m in ["normal", "spatial"] else "normal"
 
+# Netteté selon la distance (GENERAL, window_sharpness.gd) : échelle maximale annoncée aux fenêtres vues de près.
+# 1.0 = désactivée. Défaut : 1.5.
+func get_window_sharpness_max() -> float:
+	var v := float(_settings.get("window_sharpness", 1.5))
+	return v if v in [1.0, 1.5, 2.0] else 1.5
+
 # Bulles de chat au-dessus des avatars (MULTIPLAYER). Défaut : oui.
 func is_chat_bubbles_enabled() -> bool:
 	return bool(_settings.get("chat_bubbles", true))

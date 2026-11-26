@@ -33,6 +33,9 @@ extern "C" {
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <wlr/types/wlr_fractional_scale_v1.h>
+#include <cmath>
+#include <algorithm>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_output.h>
@@ -416,6 +419,43 @@ void WlrCompositor::wire_popup(PopupState &ps, wlr_xdg_popup *popup) {
     ps.new_popup_listener.notify = WlrCompositor::on_new_popup_from_popup;
     wl_signal_add(&popup->base->events.new_popup, &ps.new_popup_listener);
 }
+// ── Échelle par fenêtre (wp_fractional_scale_v1, lot H) ────────────────
+// Le jeu annonce une échelle > 1 à une fenêtre vue de près : le client rend plus de pixels pour la même taille
+// logique. La capture rend alors à logique × échelle (cap_surface.cpp) et TOUTES les coordonnées échangées avec le
+// jeu pour la fenêtre et ses popups sont en pixels de capture : géométrie, popups, pointeur, set_window_size. Le jeu
+// garde ainsi « coordonnées = pixels de texture » ; seule la taille monde du quad divise par l'échelle.
+void WlrCompositor::apply_surface_scale(wlr_surface *surface, float scale) {
+    if (!surface) return;
+    wlr_fractional_scale_v1_notify_scale(surface, scale);
+    wlr_surface_set_preferred_buffer_scale(surface, (int32_t)std::ceil(scale - 0.001f));
+}
+float WlrCompositor::popup_scale(const PopupState &ps) {
+    if (ps.parent_window_id < 0) return 1.0f;          // popup d'une layer surface
+    WindowState *ws = find_window(ps.parent_window_id);
+    return ws ? ws->scale : 1.0f;
+}
+void WlrCompositor::set_window_scale(int window_id, double scale) {
+    WindowState *ws = find_window(window_id);
+    if (!ws || !ws->toplevel || !ws->toplevel->base) return;
+    // X11 via xwayland-satellite : on reste à 1 (comportement du satellite non vérifié).
+    float s = ws->xwayland ? 1.0f : (float)std::clamp(scale, 1.0, 3.0);
+    if (std::fabs(s - ws->scale) < 0.001f) return;
+    ws->scale = s;
+    ws->capture_cache.scale = s;
+    ws->dirty = true;
+    apply_surface_scale(ws->toplevel->base->surface, s);
+    for (auto &pair : popups) {
+        PopupState &ps = pair.second;
+        if (ps.parent_window_id == window_id && ps.popup && ps.popup->base) {
+            ps.capture_cache.scale = s;
+            apply_surface_scale(ps.popup->base->surface, s);
+        }
+    }
+}
+double WlrCompositor::get_window_scale(int window_id) {
+    WindowState *ws = find_window(window_id);
+    return ws ? ws->scale : 1.0;
+}
 void WlrCompositor::on_new_popup(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, new_popup_listener);
     WlrCompositor *self = ws->owner;
@@ -427,6 +467,8 @@ void WlrCompositor::on_new_popup(wl_listener *listener, void *data) {
     ps.parent_window_id = ws->id;
     ps.parent_popup_id = -1;
     self->wire_popup(ps, popup);
+    ps.capture_cache.scale = ws->scale;
+    if (ws->scale != 1.0f) apply_surface_scale(popup->base->surface, ws->scale);
 
     UtilityFunctions::print("waylandgodot: new_popup received, id=", id, " parent_window_id=", ws->id);
 }
@@ -441,6 +483,9 @@ void WlrCompositor::on_new_popup_from_popup(wl_listener *listener, void *data) {
     ps.parent_window_id = parent_ps->parent_window_id;
     ps.parent_popup_id = parent_ps->id;
     self->wire_popup(ps, popup);
+    float sc = self->popup_scale(ps);
+    ps.capture_cache.scale = sc;
+    if (sc != 1.0f) apply_surface_scale(popup->base->surface, sc);
 
     UtilityFunctions::print("waylandgodot: new_popup (submenu) received, id=", id,
         " parent_popup_id=", parent_ps->id);
@@ -514,8 +559,11 @@ void WlrCompositor::emit_popup_mapped(PopupState &ps) {
         " parent=", ps.parent_window_id,
         " parent_popup=", ps.parent_popup_id,
         " x=", geo.x, " y=", geo.y, " w=", geo.width, " h=", geo.height);
+    // Pixels de capture du parent (échelle de la fenêtre, cf. set_window_scale).
+    const float sc = popup_scale(ps);
     emit_signal("popup_mapped", ps.id, ps.parent_window_id, ps.parent_popup_id,
-        geo.x, geo.y, geo.width, geo.height);
+        (int)std::lround(geo.x * sc), (int)std::lround(geo.y * sc),
+        (int)std::lround(geo.width * sc), (int)std::lround(geo.height * sc));
 }
 void WlrCompositor::on_popup_map(wl_listener *listener, void *data) {
     PopupState *ps = wl_container_of(listener, ps, map_listener);
@@ -635,6 +683,11 @@ void WlrCompositor::set_window_size(int window_id, int width, int height) {
     WindowState *ws = find_window(window_id);
     if (!ws || !ws->toplevel) return;
 
+    // Le jeu donne des pixels de capture : taille logique = pixels / échelle.
+    if (ws->scale != 1.0f) {
+        width = (int)std::lround(width / ws->scale);
+        height = (int)std::lround(height / ws->scale);
+    }
     if (width < 50) width = 50;
     if (height < 50) height = 50;
 
@@ -728,10 +781,11 @@ Dictionary WlrCompositor::get_window_geometry(int window_id) {
             geo.height = (int)tex->height;
         }
     }
-    result["x"] = geo.x;
-    result["y"] = geo.y;
-    result["width"] = geo.width;
-    result["height"] = geo.height;
+    const float sc = ws->scale;
+    result["x"] = (int)std::lround(geo.x * sc);
+    result["y"] = (int)std::lround(geo.y * sc);
+    result["width"] = (int)std::lround(geo.width * sc);
+    result["height"] = (int)std::lround(geo.height * sc);
     return result;
 }
 // Décalage (x,y) de la window_geometry du popup dans sa propre surface
@@ -744,8 +798,9 @@ Dictionary WlrCompositor::get_popup_geometry(int popup_id) {
     PopupState *ps = find_popup(popup_id);
     if (!ps || !ps->popup || !ps->popup->base) return result;
     wlr_box geo = ps->popup->base->geometry;
-    result["x"] = geo.x;
-    result["y"] = geo.y;
+    const float sc = popup_scale(*ps);
+    result["x"] = (int)std::lround(geo.x * sc);
+    result["y"] = (int)std::lround(geo.y * sc);
     return result;
 }
 bool WlrCompositor::popup_accepts_input(int popup_id) {

@@ -51,6 +51,13 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
+- **Sharp windows up close** (pause menu → General → *Window sharpness*, default
+  *up to ×1.5*) — a window you look at from near gets a higher scale through
+  `wp_fractional_scale_v1` (×1.25, ×1.5 or ×2): the app renders more pixels for
+  the same size, so text stays crisp. Decided 4×/s from the window's height on
+  screen, applied after 1 s of stability; back to ×1 when hidden, pinned, shown
+  by focus mode (already pixel-exact) or under GPU pressure. X11 apps
+  (xwayland-satellite) stay at ×1.
 - **Spatial window sound** (pause menu → General → *Window sound*) — in
   *Spatial* mode the sound of each app comes from its window in the room (3D,
   fading out with distance); in focus mode the focused window plays at full

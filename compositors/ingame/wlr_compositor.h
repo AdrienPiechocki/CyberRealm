@@ -110,6 +110,8 @@ struct CaptureCache {
     // partagées). Utilisé par submit_video_frame pour router la soumission
     // vidéo vers VideoShare ; -1 pour les caches non-fenêtres (popups, layers).
     int wid = -1;
+    // Échelle de rendu de la capture (wp_fractional_scale_v1) : offscreen = taille logique × scale.
+    float scale = 1.0f;
 
     // --- Vulkan zero-copy DMA-BUF import ------------------------------
     // Ces champs sont utilisés lorsque le pipeline GPU Vulkan est actif.
@@ -193,6 +195,9 @@ struct WindowState {
     // true si la fenêtre appartient au client xwayland-satellite (déterminé
     // au map via /proc/<pid>/comm). Voir is_window_xwayland().
     bool xwayland = false;
+    // Échelle annoncée au client (wp_fractional_scale_v1 / preferred_buffer_scale), 1 par défaut. Les coordonnées
+    // échangées avec le jeu pour cette fenêtre et ses popups sont en pixels de capture (logique × scale).
+    float scale = 1.0f;
 
     wl_listener map_listener{};
     wl_listener unmap_listener{};
@@ -1221,6 +1226,11 @@ public:
     // Renvoie la géométrie de contenu (sans les ombres CSD) d'une fenêtre:
     // Dictionary { x, y, width, height } en pixels, relatifs à la surface.
     Dictionary get_window_geometry(int window_id);
+    void set_window_scale(int window_id, double scale);
+    double get_window_scale(int window_id);
+    int get_capture_pressure() const { return capture_pressure; }
+    float popup_scale(const PopupState &ps);
+    static void apply_surface_scale(wlr_surface *surface, float scale);
 
     // Image CPU RGBA8 de la dernière capture d'une fenêtre (chemin Vulkan :
     // copie synchrone du dmabuf faite juste après le rendu — lisible de

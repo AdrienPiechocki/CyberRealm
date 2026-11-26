@@ -34,6 +34,7 @@ extern "C" {
 #include <wlr/types/wlr_subcompositor.h>
 #include <wlr/types/wlr_linux_dmabuf_v1.h>
 #include <wlr/types/wlr_viewporter.h>
+#include <cmath>
 #include <wlr/types/wlr_xdg_shell.h>
 #include <wlr/types/wlr_cursor.h>
 #include <wlr/types/wlr_output.h>
@@ -372,6 +373,14 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     }
     if (w <= 0 || h <= 0) return false;
+    // Échelle de rendu (wp_fractional_scale_v1, lot H) : le client rend un buffer plus grand que sa taille logique ;
+    // l'offscreen est dimensionné à logique × échelle, sinon le buffer serait sous-échantillonné et le gain perdu.
+    // Toutes les coordonnées échangées avec le jeu pour cette fenêtre sont en pixels de capture (cf. window.cpp).
+    const float cap_scale = cache.scale > 0.0f ? cache.scale : 1.0f;
+    if (cap_scale != 1.0f) {
+        w = (int)std::ceil(w * cap_scale);
+        h = (int)std::ceil(h * cap_scale);
+    }
 
     // ---- (Re)création du buffer offscreen + de son mapping -------------
     // Seulement si c'est le premier appel ou si la taille a changé. Le
@@ -561,10 +570,10 @@ bool WlrCompositor::capture_surface_dmabuf(wlr_surface *surface, Ref<Texture2D> 
         // ni de transparent overlay.
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
-        opts.dst_box.x = inst.sx - geo_x;
-        opts.dst_box.y = inst.sy - geo_y;
-        opts.dst_box.width = sub_w;
-        opts.dst_box.height = sub_h;
+        opts.dst_box.x = (int)std::lround((inst.sx - geo_x) * cap_scale);
+        opts.dst_box.y = (int)std::lround((inst.sy - geo_y) * cap_scale);
+        opts.dst_box.width = (int)std::lround(sub_w * cap_scale);
+        opts.dst_box.height = (int)std::lround(sub_h * cap_scale);
         wlr_render_pass_add_texture(pass, &opts);
         blitted++;
     }
@@ -730,6 +739,14 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
         h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     }
     if (w <= 0 || h <= 0) return false;
+    // Échelle de rendu (wp_fractional_scale_v1, lot H) : le client rend un buffer plus grand que sa taille logique ;
+    // l'offscreen est dimensionné à logique × échelle, sinon le buffer serait sous-échantillonné et le gain perdu.
+    // Toutes les coordonnées échangées avec le jeu pour cette fenêtre sont en pixels de capture (cf. window.cpp).
+    const float cap_scale = cache.scale > 0.0f ? cache.scale : 1.0f;
+    if (cap_scale != 1.0f) {
+        w = (int)std::ceil(w * cap_scale);
+        h = (int)std::ceil(h * cap_scale);
+    }
 
     // ---- (Re)création du buffer offscreen + import Vulkan -------------
     // Réallouer si le backend ne correspond pas, ou si la taille dépasse
@@ -912,10 +929,10 @@ bool WlrCompositor::capture_surface_vulkan(wlr_surface *surface, Ref<Texture2D> 
 
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
-        opts.dst_box.x = inst.sx - geo_x;
-        opts.dst_box.y = inst.sy - geo_y;
-        opts.dst_box.width = sub_w;
-        opts.dst_box.height = sub_h;
+        opts.dst_box.x = (int)std::lround((inst.sx - geo_x) * cap_scale);
+        opts.dst_box.y = (int)std::lround((inst.sy - geo_y) * cap_scale);
+        opts.dst_box.width = (int)std::lround(sub_w * cap_scale);
+        opts.dst_box.height = (int)std::lround(sub_h * cap_scale);
 
         wlr_render_pass_add_texture(pass, &opts);
         blitted++;
@@ -1009,6 +1026,14 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         h = surface->current.height > 0 ? surface->current.height : (root_texture ? (int)root_texture->height : 0);
     }
     if (w <= 0 || h <= 0) return false;
+    // Échelle de rendu (wp_fractional_scale_v1, lot H) : le client rend un buffer plus grand que sa taille logique ;
+    // l'offscreen est dimensionné à logique × échelle, sinon le buffer serait sous-échantillonné et le gain perdu.
+    // Toutes les coordonnées échangées avec le jeu pour cette fenêtre sont en pixels de capture (cf. window.cpp).
+    const float cap_scale = cache.scale > 0.0f ? cache.scale : 1.0f;
+    if (cap_scale != 1.0f) {
+        w = (int)std::ceil(w * cap_scale);
+        h = (int)std::ceil(h * cap_scale);
+    }
 
     // Recrée le buffer offscreen si le backend ne correspond pas ou si la
     // capacité est dépassée.
@@ -1094,10 +1119,10 @@ bool WlrCompositor::capture_surface_pixels(wlr_surface *surface, Ref<Texture2D> 
         // render pass.
         wlr_render_texture_options opts = {};
         opts.texture = sub_texture;
-        opts.dst_box.x = inst.sx - geo_x;
-        opts.dst_box.y = inst.sy - geo_y;
-        opts.dst_box.width = sub_w;
-        opts.dst_box.height = sub_h;
+        opts.dst_box.x = (int)std::lround((inst.sx - geo_x) * cap_scale);
+        opts.dst_box.y = (int)std::lround((inst.sy - geo_y) * cap_scale);
+        opts.dst_box.width = (int)std::lround(sub_w * cap_scale);
+        opts.dst_box.height = (int)std::lround(sub_h * cap_scale);
         wlr_render_pass_add_texture(pass, &opts);
         blitted++;
     }
