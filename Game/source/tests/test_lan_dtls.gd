@@ -10,13 +10,13 @@ const LANManager = preload("res://scripts/network/lan_manager.gd")
 
 func test_host_dtls_options_runtime_loadable():
 	var inst: Node = LANManager.new()
-	var opts = inst._load_dtls_options()
+	var opts = inst.session._load_dtls_options()
 	inst.free()
 	return Runner.assert_eq(opts != null, true, "host _load_dtls_options(): paire embarquée fonctionnelle (clé+cert via user://)")
 
 func test_client_dtls_options_runtime_loadable():
 	var inst: Node = LANManager.new()
-	var opts = inst._dtls_client_options()
+	var opts = inst.session._dtls_client_options()
 	inst.free()
 	var ok: bool = opts != null
 	if not ok:

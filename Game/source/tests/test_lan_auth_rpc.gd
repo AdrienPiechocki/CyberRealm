@@ -5,7 +5,7 @@ const Runner = preload("res://tests/runner.gd")
 const LANManager = preload("res://scripts/network/lan_manager.gd")
 
 func _rpc_mode(method: StringName) -> int:
-	var script: GDScript = LANManager
+	var script: GDScript = LANManager.SessionModule
 	var all: Dictionary = script.get_rpc_config()
 	if not all.has(method):
 		return -1

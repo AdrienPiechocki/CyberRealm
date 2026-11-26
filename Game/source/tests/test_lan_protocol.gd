@@ -108,7 +108,7 @@ func _reassemble_chunks(chunks: Array):
 func test_backoff_schedule():
 	var r = true
 	for a in range(0, 7):
-		var d = LANManager.backoff_delay(a)
+		var d = LANManager.SessionModule.backoff_delay(a)
 		if d < 0.0 or d > 2.5:
 			r = false
 	return r
@@ -117,25 +117,25 @@ func test_backoff_grows():
 	# Croissance stricte uniquement avant le plafond (clamp ≤ 2.5 s) : au-delà
 	# (attempt ≥ 3) le délai sature, la croissance stricte n'est plus garantie.
 	var r = true
-	var prev = LANManager.backoff_delay(0)
+	var prev = LANManager.SessionModule.backoff_delay(0)
 	for a in range(1, 3):
-		var d = LANManager.backoff_delay(a)
+		var d = LANManager.SessionModule.backoff_delay(a)
 		if d <= prev:
 			r = false
 		prev = d
 	if r != true: return r
 	# Plafond : jamais au-delà de 2.5 s, même en saturant.
 	for a in range(3, 7):
-		if LANManager.backoff_delay(a) > 2.5:
+		if LANManager.SessionModule.backoff_delay(a) > 2.5:
 			r = false
 	return r
 
 func test_should_reconnect_yes():
-	var r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 2), true, "heartbeat expired → reconnect")
+	var r = Runner.assert_eq(LANManager.SessionModule.should_reconnect(0, 5000, false, 30000, 2), true, "heartbeat expired → reconnect")
 	if r != true: return r
-	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, false, 30000, 12), false, "window exhausted → give up")
+	r = Runner.assert_eq(LANManager.SessionModule.should_reconnect(0, 5000, false, 30000, 12), false, "window exhausted → give up")
 	if r != true: return r
-	r = Runner.assert_eq(LANManager.should_reconnect(0, 5000, true, 30000, 2), false, "session_closed → no reconnect")
+	r = Runner.assert_eq(LANManager.SessionModule.should_reconnect(0, 5000, true, 30000, 2), false, "session_closed → no reconnect")
 	return true
 
 func test_pin_blacklist():
@@ -143,13 +143,13 @@ func test_pin_blacklist():
 	var r = true
 	# 2 premiers échecs : pas de rejet.
 	for i in range(2):
-		if LANManager.pin_attempt("1.2.3.4", false, state) == true:
+		if LANManager.SessionModule.pin_attempt("1.2.3.4", false, state) == true:
 			r = false
 	if r != true: return false
 	# 3e échec : rejet.
-	if LANManager.pin_attempt("1.2.3.4", false, state) == false:
+	if LANManager.SessionModule.pin_attempt("1.2.3.4", false, state) == false:
 		return false
 	# Un succès réarme.
-	if LANManager.pin_attempt("1.2.3.4", true, state) == false:
+	if LANManager.SessionModule.pin_attempt("1.2.3.4", true, state) == false:
 		return true
 	return true

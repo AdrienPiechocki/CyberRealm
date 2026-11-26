@@ -28,15 +28,15 @@ class LogSpyLanManager:
 ## cette attente, une tâche de décodage encore en vol survit à l'objet et le
 ## moteur signale des RefCounted fuités à la sortie.
 func _dispose(inst) -> void:
-	if inst._level_decode_task >= 0:
-		WorkerThreadPool.wait_for_task_completion(inst._level_decode_task)
-		inst._level_decode_task = -1
+	if inst.level_transfer._level_decode_task >= 0:
+		WorkerThreadPool.wait_for_task_completion(inst.level_transfer._level_decode_task)
+		inst.level_transfer._level_decode_task = -1
 	inst.free()
 
-func _spin_until_loaded(inst, var_name: String) -> bool:
+func _spin_until_loaded(inst, holder: Object, var_name: String) -> bool:
 	for i in 2000:
-		inst._poll_pending_scene_loads()
-		if inst.get(var_name):
+		inst.level_transfer._poll_pending_scene_loads()
+		if holder.get(var_name):
 			return true
 		OS.delay_msec(5)
 	return false
@@ -46,7 +46,7 @@ func test_level_queued_not_applied_synchronously():
 	var emitted: Array = []
 	inst.level_apply_requested.connect(func(scene, pos, rot, scl): emitted.append([scene, pos, rot, scl]))
 	var r = Runner.assert_eq(
-		inst._queue_level_scene_load(FIXTURE, Vector3(3, 4, 5), Vector3.ZERO, Vector3.ONE, 1024),
+		inst.level_transfer._queue_level_scene_load(FIXTURE, Vector3(3, 4, 5), Vector3.ZERO, Vector3.ONE, 1024),
 		true,
 		"_queue_level_scene_load démarre un chargement threadé")
 	if r != true: return r
@@ -61,13 +61,13 @@ func test_level_defer_waits_for_pending_avatar_decode():
 	var emitted: Array = []
 	inst.level_apply_requested.connect(func(scene, pos, rot, scl): emitted.append(true))
 	inst._players = {5: {"name": "alice", "color": Color.WHITE}}
-	inst._avatar_blobs = {5: PackedByteArray([1, 2, 3])}
-	inst._pending_avatar_loads = {5: "res://tests/fixtures/fixture_stub.tscn"}
-	inst._defer_or_emit_level_apply(load(FIXTURE), Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	inst.players._avatar_blobs = {5: PackedByteArray([1, 2, 3])}
+	inst.players._pending_avatar_loads = {5: "res://tests/fixtures/fixture_stub.tscn"}
+	inst.level_transfer._defer_or_emit_level_apply(load(FIXTURE), Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
 	var r = Runner.assert_eq(emitted.is_empty(), true,
 		"le niveau différé attend aussi les avatars dont le décodage est EN COURS (pas seulement le blob)")
 	if r != true: return r
-	var d: Dictionary = inst._deferred_level
+	var d: Dictionary = inst.level_transfer._deferred_level
 	r = Runner.assert_eq(d.get("waiting", []), [5],
 		"le peer 5 doit rester dans la liste d'attente tant que son décodage n'est pas fini")
 	_dispose(inst)
@@ -77,12 +77,12 @@ func test_level_applied_via_poll_after_thread_ready():
 	var inst = LANManager.new()
 	var emitted: Array = []
 	inst.level_apply_requested.connect(func(scene, pos, rot, scl): emitted.append([scene, pos, rot, scl]))
-	inst._queue_level_scene_load(FIXTURE, Vector3(3, 4, 5), Vector3.ZERO, Vector3.ONE, 1024)
+	inst.level_transfer._queue_level_scene_load(FIXTURE, Vector3(3, 4, 5), Vector3.ZERO, Vector3.ONE, 1024)
 	# On attend l'APPLICATION du niveau (signal émis par le poll), pas que
 	# _pending_level_load soit non vide : il l'est dès la mise en file, ce qui
 	# faisait sortir le test aussitôt sans rien vérifier (ni libérer inst).
 	for i in 2000:
-		inst._poll_pending_scene_loads()
+		inst.level_transfer._poll_pending_scene_loads()
 		if not emitted.is_empty():
 			break
 		OS.delay_msec(5)
@@ -100,28 +100,28 @@ func test_level_applied_via_poll_after_thread_ready():
 	if r != true:
 		_dispose(inst)
 		return r
-	r = Runner.assert_true(inst._pending_level_load.is_empty(),
+	r = Runner.assert_true(inst.level_transfer._pending_level_load.is_empty(),
 		"la file du niveau doit être vidée après application")
 	_dispose(inst)
 	return r
 
 func test_avatar_queued_then_cached_by_poll():
 	var inst = LANManager.new()
-	inst._avatar_blobs[42] = PackedByteArray([1, 2, 3])
+	inst.players._avatar_blobs[42] = PackedByteArray([1, 2, 3])
 	var r = Runner.assert_eq(
-		inst._queue_avatar_scene_load(FIXTURE, 42),
+		inst.players._queue_avatar_scene_load(FIXTURE, 42),
 		true,
 		"_queue_avatar_scene_load démarre un décodage threadé")
 	if r != true: return r
-	r = Runner.assert_eq(inst._avatar_scene_cache.has(42), false,
+	r = Runner.assert_eq(inst.players._avatar_scene_cache.has(42), false,
 		"le cache avatar ne doit pas être peuplé de façon SYNCHRONE")
 	if r != true: return r
-	if not _spin_until_loaded(inst, "_avatar_scene_cache"):
+	if not _spin_until_loaded(inst, inst.players, "_avatar_scene_cache"):
 		return Runner.assert_true(false, "décodage threadé de l'avatar trop lent (>= 10s)")
-	r = Runner.assert_true(inst._avatar_scene_cache.get(42) is PackedScene,
+	r = Runner.assert_true(inst.players._avatar_scene_cache.get(42) is PackedScene,
 		"le cache avatar contient la PackedScene décodée")
 	if r != true: return r
-	r = Runner.assert_eq(inst._pending_avatar_loads.is_empty(), true,
+	r = Runner.assert_eq(inst.players._pending_avatar_loads.is_empty(), true,
 		"la file avatar doit être vidée après décodage")
 	_dispose(inst)
 	return true
@@ -151,28 +151,28 @@ func test_level_decode_is_not_synchronous() -> Variant:
 		return r
 	var raw := plain.compress(FileAccess.COMPRESSION_ZSTD)
 	r = Runner.assert_true(
-		inst._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
+		inst.level_transfer._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
 		"décodage soumis au pool de threads")
 	if r is String:
 		_dispose(inst)
 		return r
-	r = Runner.assert_true(inst._pending_level_load.is_empty(),
+	r = Runner.assert_true(inst.level_transfer._pending_level_load.is_empty(),
 		"le handler de chunk ne doit RIEN mettre en file de façon synchrone")
 	if r is String:
 		_dispose(inst)
 		return r
 	# Spin : le thread finit, _poll_level_decode met la file en place.
 	for i in 2000:
-		inst._poll_level_decode()
-		if not inst._pending_level_load.is_empty():
+		inst.level_transfer._poll_level_decode()
+		if not inst.level_transfer._pending_level_load.is_empty():
 			break
 		OS.delay_msec(5)
-	r = Runner.assert_true(not inst._pending_level_load.is_empty(),
+	r = Runner.assert_true(not inst.level_transfer._pending_level_load.is_empty(),
 		"la file de chargement est peuplée par le poll, pas par le handler")
 	# Le poll a lancé un chargement threadé (ResourceLoader) que personne ne
 	# réclame : on le récupère pour que le moteur n'en garde pas l'état à la sortie.
-	if not inst._pending_level_load.is_empty():
-		ResourceLoader.load_threaded_get(String(inst._pending_level_load["path"]))
+	if not inst.level_transfer._pending_level_load.is_empty():
+		ResourceLoader.load_threaded_get(String(inst.level_transfer._pending_level_load["path"]))
 	_dispose(inst)
 	return r
 
@@ -187,13 +187,13 @@ func test_level_decode_failure_finalizes_join() -> Variant:
 	# Taille déclarée fausse mais modeste → decompress échoue sans grosse allocation.
 	var raw := PackedByteArray([1, 2, 3])
 	var r: Variant = Runner.assert_true(
-		inst._begin_level_decode(raw, raw.size() + 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE),
+		inst.level_transfer._begin_level_decode(raw, raw.size() + 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE),
 		"tâche soumise")
 	if r is String:
 		_dispose(inst)
 		return r
 	for i in 2000:
-		inst._poll_level_decode()
+		inst.level_transfer._poll_level_decode()
 		if not inst._pending_join:
 			break
 		OS.delay_msec(5)
@@ -231,26 +231,26 @@ func test_level_decode_drop_when_load_already_pending() -> Variant:
 	# File déjà peuplée : marqueur que le poll ne doit JAMAIS écraser.
 	var marker := {"path": "user://already_pending.scn", "pos": Vector3(9, 9, 9),
 		"rot": Vector3.ZERO, "scale": Vector3.ONE, "kb": 1}
-	inst._pending_level_load = marker
+	inst.level_transfer._pending_level_load = marker
 	var raw := plain.compress(FileAccess.COMPRESSION_ZSTD)
 	r = Runner.assert_true(
-		inst._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
+		inst.level_transfer._begin_level_decode(raw, plain.size(), Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE),
 		"décodage soumis au pool de threads")
 	if r is String:
 		_dispose(inst)
 		return r
 	# Spin : le thread fini, _poll_level_decode doit solder la tâche.
 	for i in 2000:
-		inst._poll_level_decode()
-		if inst._level_decode_task < 0:
+		inst.level_transfer._poll_level_decode()
+		if inst.level_transfer._level_decode_task < 0:
 			break
 		OS.delay_msec(5)
-	r = Runner.assert_eq(inst._level_decode_task, -1,
+	r = Runner.assert_eq(inst.level_transfer._level_decode_task, -1,
 		"la tâche de décodage est soldée par le poll")
 	if r is String:
 		_dispose(inst)
 		return r
-	r = Runner.assert_eq(inst._pending_level_load, marker,
+	r = Runner.assert_eq(inst.level_transfer._pending_level_load, marker,
 		"résultat DROPPÉ : la file déjà en attente n'est pas écrasée")
 	if r is String:
 		_dispose(inst)

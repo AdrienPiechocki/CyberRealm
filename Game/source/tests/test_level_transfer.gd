@@ -76,42 +76,42 @@ func test_as_cast_detaches_from_dictionary() -> Variant:
 func test_bake_recv_assembles_in_order_and_completes() -> Variant:
 	var src := _chunks(500, CHUNK)
 	var state: Dictionary = {}
-	LANManager.bake_recv_init(state, 500, 500 * CHUNK, Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE)
+	LANManager.LevelTransferModule.bake_recv_init(state, 500, 500 * CHUNK, Vector3(1, 2, 3), Vector3.ZERO, Vector3.ONE)
 	for i in 499:
-		var r: Variant = Runner.assert_eq(LANManager.bake_recv_append(state, i, src[i]), "more",
+		var r: Variant = Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_append(state, i, src[i]), "more",
 			"chunk %d intermédiaire" % i)
 		if r is String:
 			return r
-	var r: Variant = Runner.assert_eq(LANManager.bake_recv_append(state, 499, src[499]), "complete",
+	var r: Variant = Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_append(state, 499, src[499]), "complete",
 		"dernier chunk = complete")
 	if r is String:
 		return r
-	return Runner.assert_eq(LANManager.bake_recv_payload(state), _concat(src),
+	return Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_payload(state), _concat(src),
 		"octets identiques à la source")
 
 func test_bake_recv_rejects_out_of_order_and_duplicates() -> Variant:
 	var state: Dictionary = {}
 	var c := PackedByteArray([1, 2, 3])
-	LANManager.bake_recv_init(state, 10, 999, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
-	var r: Variant = Runner.assert_eq(LANManager.bake_recv_append(state, 2, c), "reject", "index > next rejeté")
+	LANManager.LevelTransferModule.bake_recv_init(state, 10, 999, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	var r: Variant = Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_append(state, 2, c), "reject", "index > next rejeté")
 	if r is String:
 		return r
-	r = Runner.assert_eq(LANManager.bake_recv_append(state, 0, c), "more", "premier chunk accepté")
+	r = Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_append(state, 0, c), "more", "premier chunk accepté")
 	if r is String:
 		return r
-	r = Runner.assert_eq(LANManager.bake_recv_append(state, 0, c), "reject", "doublon rejeté")
+	r = Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_append(state, 0, c), "reject", "doublon rejeté")
 	if r is String:
 		return r
-	return Runner.assert_eq(LANManager.bake_recv_append(state, 5, PackedByteArray()), "reject",
+	return Runner.assert_eq(LANManager.LevelTransferModule.bake_recv_append(state, 5, PackedByteArray()), "reject",
 		"chunk vide rejeté")
 
 func test_bake_recv_restarts_on_new_total() -> Variant:
 	# Un nouveau transfert (autre session, autre blob) repart de zéro, comme le
 	# faisait déjà le test d'`total` dans _receive_level_baked.
 	var state: Dictionary = {}
-	LANManager.bake_recv_init(state, 10, 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
-	LANManager.bake_recv_append(state, 0, PackedByteArray([9]))
-	LANManager.bake_recv_init(state, 12, 120, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	LANManager.LevelTransferModule.bake_recv_init(state, 10, 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	LANManager.LevelTransferModule.bake_recv_append(state, 0, PackedByteArray([9]))
+	LANManager.LevelTransferModule.bake_recv_init(state, 12, 120, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
 	var r: Variant = Runner.assert_eq(int(state["next"]), 0, "reset complet du compteur")
 	if r is String:
 		return r
@@ -121,13 +121,13 @@ func test_bake_recv_needs_init_on_empty_or_new_total() -> Variant:
 	# Garde de (ré)initialisation (revue finale, Issue 1) : un état vide (pas
 	# de "total") ou un total différent = nouveau transfert → il faut init,
 	# exactement comme avant (le helper ne fait que regrouper ces deux cas).
-	var r: Variant = Runner.assert_true(LANManager.bake_recv_needs_init({}, 10, 0),
+	var r: Variant = Runner.assert_true(LANManager.LevelTransferModule.bake_recv_needs_init({}, 10, 0),
 		"état vide (aucune clé total) → init")
 	if r is String:
 		return r
 	var state: Dictionary = {}
-	LANManager.bake_recv_init(state, 10, 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
-	return Runner.assert_true(LANManager.bake_recv_needs_init(state, 12, 3),
+	LANManager.LevelTransferModule.bake_recv_init(state, 10, 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	return Runner.assert_true(LANManager.LevelTransferModule.bake_recv_needs_init(state, 12, 3),
 		"total différent = autre blob → init")
 
 func test_bake_recv_needs_init_detects_restart_on_ordered_channel() -> Variant:
@@ -138,15 +138,15 @@ func test_bake_recv_needs_init_detects_restart_on_ordered_channel() -> Variant:
 	# puis le chunk 0 APPENDÉ au vieux buffer partiel : corruption silencieuse
 	# si le contenu diffère jamais.
 	var state: Dictionary = {}
-	LANManager.bake_recv_init(state, 10, 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
-	LANManager.bake_recv_append(state, 0, PackedByteArray([1]))
-	LANManager.bake_recv_append(state, 1, PackedByteArray([2]))
-	var r: Variant = Runner.assert_true(LANManager.bake_recv_needs_init(state, 10, 0),
+	LANManager.LevelTransferModule.bake_recv_init(state, 10, 100, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	LANManager.LevelTransferModule.bake_recv_append(state, 0, PackedByteArray([1]))
+	LANManager.LevelTransferModule.bake_recv_append(state, 1, PackedByteArray([2]))
+	var r: Variant = Runner.assert_true(LANManager.LevelTransferModule.bake_recv_needs_init(state, 10, 0),
 		"index 0 alors que next > 0, même total = redémarrage → init")
 	if r is String:
 		return r
 	# Poursuite normale en cours de flux (index == next, même total) : pas d'init.
-	return Runner.assert_true(not LANManager.bake_recv_needs_init(state, 10, 2),
+	return Runner.assert_true(not LANManager.LevelTransferModule.bake_recv_needs_init(state, 10, 2),
 		"index == next en cours de transfert = suite de la série → pas d'init")
 
 func test_bake_recv_append_is_linear() -> Variant:
@@ -154,10 +154,10 @@ func test_bake_recv_append_is_linear() -> Variant:
 	# place, O(chunk) chacun → O(n) total, zéro concaténation finale.
 	var src := _chunks(5813, CHUNK)
 	var state: Dictionary = {}
-	LANManager.bake_recv_init(state, 5813, 5813 * CHUNK, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
+	LANManager.LevelTransferModule.bake_recv_init(state, 5813, 5813 * CHUNK, Vector3.ZERO, Vector3.ZERO, Vector3.ONE)
 	var t0 := Time.get_ticks_msec()
 	for c in src:
-		LANManager.bake_recv_append(state, int(state["next"]), c)
+		LANManager.LevelTransferModule.bake_recv_append(state, int(state["next"]), c)
 	var ms := Time.get_ticks_msec() - t0
 	var r: Variant = Runner.assert_eq(int(state["bytes"]), 5813 * CHUNK, "taille totale")
 	if r is String:
@@ -167,7 +167,7 @@ func test_bake_recv_append_is_linear() -> Variant:
 func test_build_level_chunks_covers_blob_exactly() -> Variant:
 	var blob := PackedByteArray()
 	blob.resize(CHUNK * 3 + 111)
-	var chunks := LANManager.build_level_chunks(blob, CHUNK)
+	var chunks := LANManager.LevelTransferModule.build_level_chunks(blob, CHUNK)
 	var r: Variant = Runner.assert_eq(chunks.size(), 4, "3 chunks pleins + 1 partiel")
 	if r is String:
 		return r
@@ -184,7 +184,7 @@ func test_build_level_chunks_is_linear() -> Variant:
 	var blob := PackedByteArray()
 	blob.resize(CHUNK * 5813)
 	var t0 := Time.get_ticks_msec()
-	var chunks := LANManager.build_level_chunks(blob, CHUNK)
+	var chunks := LANManager.LevelTransferModule.build_level_chunks(blob, CHUNK)
 	var ms := Time.get_ticks_msec() - t0
 	var r: Variant = Runner.assert_eq(chunks.size(), 5813, "5813 chunks")
 	if r is String:
@@ -192,7 +192,7 @@ func test_build_level_chunks_is_linear() -> Variant:
 	return Runner.assert_true(ms < 3000, "découpe unique O(n): %d ms" % ms)
 
 func test_build_level_chunks_empty_blob() -> Variant:
-	return Runner.assert_eq(LANManager.build_level_chunks(PackedByteArray(), CHUNK).size(), 0,
+	return Runner.assert_eq(LANManager.LevelTransferModule.build_level_chunks(PackedByteArray(), CHUNK).size(), 0,
 		"blob vide = aucun chunk")
 
 # ── T3 : cache bake+compress préparé au démarrage de l'hébergement ────
@@ -215,16 +215,16 @@ func test_prepare_level_send_cache_compresses_once() -> Variant:
 	var inst = LANManager.new()
 	inst.level_bake_provider = Callable(self, "_fake_bake")
 	_provider_calls = 0
-	var r: Variant = Runner.assert_true(inst._prepare_level_send_cache(), "préparation OK")
+	var r: Variant = Runner.assert_true(inst.level_transfer._prepare_level_send_cache(), "préparation OK")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_true(not inst._level_compressed_cache.is_empty(), "cache compressé peuplé")
+	r = Runner.assert_true(not inst.level_transfer._level_compressed_cache.is_empty(), "cache compressé peuplé")
 	if r is String:
 		inst.free()
 		return r
-	var first: PackedByteArray = inst._level_compressed_cache.duplicate()
-	r = Runner.assert_true(inst._prepare_level_send_cache(), "second appel OK (déjà prêt)")
+	var first: PackedByteArray = inst.level_transfer._level_compressed_cache.duplicate()
+	r = Runner.assert_true(inst.level_transfer._prepare_level_send_cache(), "second appel OK (déjà prêt)")
 	if r is String:
 		inst.free()
 		return r
@@ -232,7 +232,7 @@ func test_prepare_level_send_cache_compresses_once() -> Variant:
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_eq(inst._level_compressed_cache, first, "pas de recompress")
+	r = Runner.assert_eq(inst.level_transfer._level_compressed_cache, first, "pas de recompress")
 	inst.free()
 	return r
 
@@ -246,27 +246,27 @@ func test_send_level_to_never_bakes_inline() -> Variant:
 	get_tree().root.add_child(inst)
 	inst.level_bake_provider = Callable(self, "_fake_bake")
 	_provider_calls = 0
-	var r: Variant = Runner.assert_true(inst._prepare_level_send_cache(), "cache préparé")
+	var r: Variant = Runner.assert_true(inst.level_transfer._prepare_level_send_cache(), "cache préparé")
 	if r is String:
 		inst.free()
 		return r
-	var compressed_before: PackedByteArray = inst._level_compressed_cache
-	inst._send_level_to(2)
+	var compressed_before: PackedByteArray = inst.level_transfer._level_compressed_cache
+	inst.level_transfer._send_level_to(2)
 	r = Runner.assert_eq(_provider_calls, 1, "toujours 1 seule passe de bake")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_true(not inst._level_compressed_cache.is_empty(),
+	r = Runner.assert_true(not inst.level_transfer._level_compressed_cache.is_empty(),
 		"un prepare réussi ne peut pas laisser le cache compressé vide")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_eq(inst._level_compressed_cache, compressed_before,
+	r = Runner.assert_eq(inst.level_transfer._level_compressed_cache, compressed_before,
 		"_send_level_to ne doit pas recompresser le cache")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_true(inst._level_tcp_server == null,
+	r = Runner.assert_true(inst.level_transfer._level_tcp_server == null,
 		"sans adresse de pair, aucun serveur TCP ne doit être démarré")
 	inst.free()
 	return r
@@ -274,13 +274,13 @@ func test_send_level_to_never_bakes_inline() -> Variant:
 func test_invalidate_clears_both_caches() -> Variant:
 	var inst = LANManager.new()
 	inst.level_bake_provider = Callable(self, "_fake_bake")
-	inst._prepare_level_send_cache()
-	inst._invalidate_level_send_cache()
-	var r: Variant = Runner.assert_true(inst._level_baked_cache.is_empty(), "bake vidé")
+	inst.level_transfer._prepare_level_send_cache()
+	inst.level_transfer._invalidate_level_send_cache()
+	var r: Variant = Runner.assert_true(inst.level_transfer._level_baked_cache.is_empty(), "bake vidé")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_true(inst._level_compressed_cache.is_empty(), "compressé vidé")
+	r = Runner.assert_true(inst.level_transfer._level_compressed_cache.is_empty(), "compressé vidé")
 	inst.free()
 	return r
 
@@ -294,27 +294,27 @@ func test_disconnect_clears_deferred_level_send() -> Variant:
 	# couperait la fonction en plein milieu. Aucune frame ne passe pendant ce
 	# test synchrone → _physics_process de l'instance ne tourne pas.
 	add_child(inst)
-	var r: Variant = Runner.assert_true(not inst._level_send_cache_ready(),
+	var r: Variant = Runner.assert_true(not inst.level_transfer._level_send_cache_ready(),
 		"cache froid : le miss de _send_level_to stage le différé")
 	if r is String:
 		inst.free()
 		return r
-	inst._send_level_to(2)   # miss → id + drapeau, AUCUN RPC (return avant le manifeste)
-	r = Runner.assert_true(inst._defer_level_send.has(2), "peer 2 différé stagé par le miss")
+	inst.level_transfer._send_level_to(2)   # miss → id + drapeau, AUCUN RPC (return avant le manifeste)
+	r = Runner.assert_true(inst.level_transfer._defer_level_send.has(2), "peer 2 différé stagé par le miss")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_true(inst._level_send_deferred, "drapeau différé levé par le miss")
+	r = Runner.assert_true(inst.level_transfer._level_send_deferred, "drapeau différé levé par le miss")
 	if r is String:
 		inst.free()
 		return r
 	inst._disconnect_session()
-	r = Runner.assert_true(inst._defer_level_send.is_empty(),
+	r = Runner.assert_true(inst.level_transfer._defer_level_send.is_empty(),
 		"les pairs en attente du niveau ne survivent pas au disconnect")
 	if r is String:
 		inst.free()
 		return r
-	r = Runner.assert_true(not inst._level_send_deferred,
+	r = Runner.assert_true(not inst.level_transfer._level_send_deferred,
 		"drapeau différé reposé au disconnect")
 	inst.free()
 	return r
