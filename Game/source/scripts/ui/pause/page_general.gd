@@ -143,31 +143,19 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
-	# Disposition des fenêtres retrouvée d'une session à l'autre (lu par window_layouts.gd).
-	var layout_check := CheckButton.new()
-	layout_check.text = "Remember window positions (per level)"
-	layout_check.button_pressed = menu.is_window_layout_enabled()
-	layout_check.custom_minimum_size = Vector2(0, 36)
-	layout_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	layout_check.add_theme_font_size_override("font_size", 14)
-	menu.container.add_child(layout_check)
+	# Reprise de session (lu par window_layouts.gd) : apps relancées au démarrage et fenêtres à leur place.
+	var session_check := CheckButton.new()
+	session_check.text = "Restore the previous session (apps and window positions)"
+	session_check.button_pressed = menu.is_session_restore_enabled()
+	session_check.custom_minimum_size = Vector2(0, 36)
+	session_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	session_check.add_theme_font_size_override("font_size", 14)
+	menu.container.add_child(session_check)
 
-	layout_check.toggled.connect(func(on: bool):
-		menu._settings["remember_window_layout"] = on
-		menu._save_settings()
-	)
-
-	# Reprise de session : relancer au démarrage les apps encore ouvertes à la fermeture du jeu.
-	var reopen_check := CheckButton.new()
-	reopen_check.text = "Reopen the apps of the previous session at startup"
-	reopen_check.button_pressed = menu.is_session_restore_enabled()
-	reopen_check.custom_minimum_size = Vector2(0, 36)
-	reopen_check.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	reopen_check.add_theme_font_size_override("font_size", 14)
-	menu.container.add_child(reopen_check)
-
-	reopen_check.toggled.connect(func(on: bool):
-		menu._settings["reopen_last_session"] = on
+	session_check.toggled.connect(func(on: bool):
+		menu._settings["restore_session"] = on
+		menu._settings.erase("remember_window_layout")
+		menu._settings.erase("reopen_last_session")
 		menu._save_settings()
 	)
 

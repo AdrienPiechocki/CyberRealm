@@ -56,15 +56,17 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   you gave it, hidden / pinned / `force_game` state. Windows are matched by
   app id, then by the closest title (two terminals get two places); dialogs are
   ignored. Stored in `user://window_layouts.json` (64 windows per level),
-  inactive on a level received from a LAN host. Toggle it in the pause menu
-  (General → *Remember window positions*).
+  inactive on a level received from a LAN host.
 - **Session restore** — the apps still open when you quit the game come back
   by themselves at the next launch (same command line and working directory;
   Flatpak apps through `flatpak run <id>`), then take their place as above.
   One launch per process: Firefox with two windows is started once and
   restores its own windows. Apps closed during the game, dialogs, startup apps
-  and the polkit agent are not relaunched. Toggle it in the pause menu
-  (General → *Reopen the apps of the previous session at startup*).
+  and the polkit agent are not relaunched. When you quit, apps are first asked
+  to close (SIGTERM, up to 10 s) so they can save their own state — Firefox
+  reopens its tabs if *Open previous windows and tabs* is set. Both features
+  share one switch in the pause menu (General → *Restore the previous session
+  (apps and window positions)*).
 - **Taskbars** — implements `zwlr_foreign_toplevel_management_v1`, so a taskbar
   launched inside the game (waybar's `wlr/taskbar` module, `lswt`…) lists the
   windows and drives them: clicking a window un-hides it, gives it the keyboard

@@ -561,13 +561,13 @@ func is_fullbody_enabled() -> bool:
 func is_shortcut_inhibit_allowed() -> bool:
 	return bool(_settings.get("allow_shortcut_inhibit", true))
 
-# Les fenêtres retrouvent-elles leur place d'une session à l'autre (window_layouts.gd) ? (GENERAL). Défaut : oui.
-func is_window_layout_enabled() -> bool:
-	return bool(_settings.get("remember_window_layout", true))
-
-# Les apps encore ouvertes à la fermeture du jeu sont-elles relancées au démarrage suivant ? (GENERAL). Défaut : oui.
+# Reprise de la session précédente (window_layouts.gd) : les apps encore ouvertes à la fermeture du jeu sont
+# relancées et les fenêtres retrouvent leur place. (GENERAL). Défaut : oui. Sans réglage enregistré, on reprend les
+# deux anciennes options séparées (remember_window_layout / reopen_last_session) : décochée si l'une l'était.
 func is_session_restore_enabled() -> bool:
-	return bool(_settings.get("reopen_last_session", true))
+	if _settings.has("restore_session"):
+		return bool(_settings["restore_session"])
+	return bool(_settings.get("remember_window_layout", true)) and bool(_settings.get("reopen_last_session", true))
 
 # ── LAN multiplayer ──────────────────────────────────────────────────
 

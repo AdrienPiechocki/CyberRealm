@@ -487,7 +487,8 @@ func _ready() -> void:
 	add_child(window_layouts)
 	window_layouts.setup(compositor, win3d, focus, pins)
 	window_layouts.level_key = Callable(self, "_waypoint_level_key")
-	window_layouts.enabled = Callable(pause_menu, "is_window_layout_enabled")
+	# Une seule option pour les deux : apps relancées ET fenêtres replacées.
+	window_layouts.enabled = Callable(pause_menu, "is_session_restore_enabled")
 	window_layouts.reopen = Callable(pause_menu, "is_session_restore_enabled")
 	compositor.window_unmapped.connect(window_layouts.on_window_unmapped)
 	win3d.window_created.connect(window_layouts.on_window_created)
