@@ -183,6 +183,7 @@ const ZoneSelectModule := preload("res://scripts/windows/focus/zone_select.gd")
 var input: InputModule = null
 var occlusion: OcclusionModule = null
 var remote: RemoteModule = null
+var remote_control: Node = null    # LAN/RemoteControl (posé par wayland_room) : contrôle d'une fenêtre distante
 var titlebar: TitlebarModule = null
 var popups: PopupsModule = null
 var zone_select: ZoneSelectModule = null
@@ -418,6 +419,9 @@ func exit_focus() -> void:
 
 	# Focus distant (vue seule) : pas de fenêtre du compositeur à restaurer.
 	if remote_focus:
+		# Fenêtre sous contrôle : relâcher ce que l'invité tient enfoncé chez le propriétaire.
+		if remote_control != null:
+			remote_control.release_inputs(remote_focus_peer, remote_focus_wid)
 		if remote_focus_rect != null and is_instance_valid(remote_focus_rect):
 			remote_focus_rect.queue_free()
 		remote_focus_rect = null

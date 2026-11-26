@@ -30,6 +30,9 @@ var group_grab_available := false
 var group_grab_active := false
 ## Session multijoueur en cours : entrées CHAT et EMOTES dans le contexte « fps » (posé par wayland_room).
 var social_available := false
+## Libellé de l'entrée « contrôle » d'une fenêtre partagée (lot J) : posé par wayland_room avant show_menu selon la
+## fenêtre visée (« REQUEST CONTROL », « RELEASE CONTROL », « TAKE BACK CONTROL ») ; vide = pas d'entrée.
+var control_label := ""
 
 
 func _ready() -> void:
@@ -156,6 +159,8 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 	# radial ne vise aucune fenêtre, l'entrée serait morte.
 	if context != "binds" and context != "waypoints" and context != "waypoint_slot" and context != "emotes":
 		_append_group_grab(context)
+		if control_label != "" and context in ["window", "focus"]:
+			_items.append({label = control_label, emoji = "🕹️", action = "control"})
 		_append_pin_zoom()
 
 

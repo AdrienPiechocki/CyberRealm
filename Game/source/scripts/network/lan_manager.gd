@@ -110,6 +110,7 @@ const LevelSyncModule := preload("res://scripts/network/lan/level_sync.gd")
 const ChatModule := preload("res://scripts/network/lan/chat.gd")
 const VoiceModule := preload("res://scripts/network/lan/voice.gd")
 const InviteModule := preload("res://scripts/network/lan/invite.gd")
+const RemoteControlModule := preload("res://scripts/network/lan/remote_control.gd")
 var session: SessionModule = null
 var players: PlayersModule = null
 var level_transfer: LevelTransferModule = null
@@ -121,6 +122,7 @@ var level_sync: LevelSyncModule = null
 var chat: ChatModule = null
 var voice: VoiceModule = null
 var invite                         # module Invite (code d'invitation, UPnP)
+var remote_control                 # module RemoteControl (prise de contrôle d'une fenêtre partagée)
 ## Hôte : héberger « par Internet » (identité DTLS propre, PIN long, UPnP, code d'invitation). Voir invite.gd.
 var invite_mode := false
 ## Session par invitation (hôte ou client) : mêmes restrictions qu'en ligne (pas de partage de fenêtres / fichiers,
@@ -172,6 +174,10 @@ func _init() -> void:
 	invite.name = "Invite"
 	invite.lan = self
 	add_child(invite)
+	remote_control = RemoteControlModule.new()
+	remote_control.name = "RemoteControl"
+	remote_control.lan = self
+	add_child(remote_control)
 # Journal protocole (user://lan_debug.log) : diagnostic du join LAN.
 func _lan_log(msg: String, reset := false) -> void:
 	push_warning("LAN: " + msg)
@@ -442,6 +448,7 @@ func _clear_remote_players() -> void:
 func _disconnect_session(keep_context := false) -> void:
 	_peer_pos.clear()
 	invite.stop_host()                  # ports ouverts par UPnP refermés
+	remote_control.reset()
 	invite_mode = false
 	audio_share._stop_audio_share()
 	video_share._stop_video_share()
@@ -660,6 +667,10 @@ func set_cpu_capture_consumer(key: String, active: bool) -> void:
 
 func request_windows_sync() -> void:
 	window_share.request_windows_sync()
+
+## Fenêtre d'un autre joueur actuellement partagée (contenu visible) : condition de la prise de contrôle.
+func is_remote_window_shared(peer_id: int, wid: int) -> bool:
+	return bool((window_share._remote_shared.get(peer_id, {}) as Dictionary).get(wid, false))
 
 func get_remote_window_texture(peer_id: int, wid: int) -> Texture2D:
 	return window_share.get_remote_window_texture(peer_id, wid)

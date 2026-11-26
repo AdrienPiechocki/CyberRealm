@@ -445,9 +445,23 @@ cyberrealm-launch firefox
 4. When you join, the host's current level is streamed to you, so you always
    stand in the same room — even with custom maps and different builds.
 
-Remote windows are view-only: `SUPER+F` opens a fullscreen view of them (with the
-owner's cursor overlaid), `SUPER+P` pins them as PiP. You cannot type or click into
-them.
+Remote windows are view-only by default: `SUPER+F` opens a fullscreen view of them
+(with the owner's cursor overlaid), `SUPER+P` pins them as PiP.
+
+**Taking control of a shared window.** Aim at a shared window of another player and
+press `SUPER+R` (or *REQUEST CONTROL* in the radial menu). Its owner gets a dialog
+saying that you will be able to click and type in that window — in a terminal, that is
+full access to their session — and accepts or declines (declined automatically after
+15 s; *Decline* has the focus). Once granted, the window opens in focus view and your
+mouse and keys go to it; the game's own shortcuts (`SUPER+F` to leave…) stay yours.
+One guest per window. The owner sees your pointer as a dot of your color and takes
+control back with `SUPER+R` / *TAKE BACK CONTROL* while aiming at it, by stopping the
+share (`SUPER+S`) or closing the window; leaving the session ends it too; `SUPER+R`
+again on your side gives it back. On the owner's side, the inputs go straight to the
+compositor (never through the game's keybinds), Ctrl+Alt+F1…F12 is filtered, and they
+are capped (120 pointer moves/s, 120 button/key events/s). Owner and guest share one
+keyboard/pointer seat: a guest key gives the keyboard focus to the controlled window.
+Not available in online sessions.
 
 ### Playing over the Internet (invitation code)
 

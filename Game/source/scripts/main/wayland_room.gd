@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var control_request: CanvasLayer # demande de contrôle d'une fenêtre partagée, cf. scripts/ui/control_request.gd
 var text_input_osk: Node # clavier virtuel sur les champs de texte, cf. scripts/main/text_input_osk.gd
 var window_sharpness: Node # netteté selon la distance, cf. scripts/main/window_sharpness.gd
 var window_audio: Node # son des fenêtres (spatialisé / partagé), cf. scripts/main/window_audio.gd
@@ -782,6 +783,16 @@ func _ready() -> void:
 	text_input_osk.set_script(preload("res://scripts/main/text_input_osk.gd"))
 	add_child(text_input_osk)
 	text_input_osk.setup(compositor, keyboard, pause_menu, func() -> bool: return focus.is_active() or interact_mode_active)
+	# Prise de contrôle d'une fenêtre partagée (réseau : scripts/network/lan/remote_control.gd).
+	lan.remote_control.win3d = win3d
+	focus.remote_control = lan.remote_control
+	control_request = CanvasLayer.new()
+	control_request.name = "ControlRequest"
+	control_request.set_script(preload("res://scripts/ui/control_request.gd"))
+	add_child(control_request)
+	control_request.setup(lan.remote_control, _peer_name, func(wid: int) -> String: return String(win3d.window_titles.get(wid, "window")))
+	lan.remote_control.control_changed.connect(_on_control_changed)
+	lan.remote_control.guest_control_changed.connect(_on_guest_control_changed)
 	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
 	voice_manager = Node.new()
 	voice_manager.name = "VoiceManager"
@@ -1108,6 +1119,12 @@ func _process(delta: float) -> void:
 	# Chat : pendant la saisie, aucun bind ni interaction (les touches vont à la ligne de saisie).
 	if chat_box.is_typing():
 		return
+	# Contrôle d'une fenêtre partagée (lot J) : demander / rendre (fenêtre distante), reprendre (fenêtre locale).
+	# Aussi en mode focus distant ; jamais pendant qu'une fenêtre locale capture les raccourcis.
+	if lan.is_session_active() and not layers.keyboard_busy() and not window_menu.visible \
+			and not (focus.is_active() and not focus.is_remote()) \
+			and Input.is_action_just_pressed("request_control", true):
+		_toggle_control()
 	if lan.is_session_active() and not focus.is_active() and not interact_mode_active \
 			and not layers.keyboard_busy() and not window_menu.visible:
 		if Input.is_action_just_pressed("chat", true) and not chat_box.just_closed():
@@ -1155,6 +1172,7 @@ func _process(delta: float) -> void:
 				and win3d.can_group_grab(aimed["local"])
 			radial_menu.group_grab_active = aimed.has("local") \
 				and win3d.is_group_grabbed(aimed["local"])
+			radial_menu.control_label = _control_label(_control_target())
 			radial_menu.show_menu(ctx)
 
 	_menu_just_closed = false
@@ -1773,8 +1791,62 @@ func _determine_radial_context() -> String:
 		return "window"
 	return "fps"
 
+# ── Prise de contrôle d'une fenêtre partagée (lot J) ──────────────────
+
+func _peer_name(peer: int) -> String:
+	var info: Variant = lan._players.get(peer, {})
+	return String(info.get("name", "Player %d" % peer)) if info is Dictionary else "Player %d" % peer
+
+## Fenêtre concernée : la fenêtre distante du focus distant, sinon celle visée. {} si aucune.
+func _control_target() -> Dictionary:
+	if focus.is_active():
+		if focus.is_remote():
+			return {"remote_peer": focus.get_remote_peer(), "remote_wid": focus.get_remote_wid()}
+		return {}
+	return _raycast_window_target(_aim_pos())
+
+func _control_label(t: Dictionary) -> String:
+	if not lan.is_session_active() or lan.online_restricted():
+		return ""
+	if t.has("remote_peer"):
+		if lan.remote_control.is_controlling(t["remote_peer"], t["remote_wid"]):
+			return "RELEASE CONTROL"
+		return "REQUEST CONTROL" if lan.is_remote_window_shared(t["remote_peer"], t["remote_wid"]) else ""
+	if t.has("local") and lan.remote_control.controller_of(t["local"]) != -1:
+		return "TAKE BACK CONTROL"
+	return ""
+
+func _toggle_control() -> void:
+	var t := _control_target()
+	var rc = lan.remote_control
+	if t.has("remote_peer"):
+		var peer: int = t["remote_peer"]
+		var wid: int = t["remote_wid"]
+		if rc.is_controlling(peer, wid):
+			rc.release_control(peer, wid)
+		elif _control_label(t) == "REQUEST CONTROL" and rc.request_control(peer, wid):
+			chat_box.add_system("Control of %s's window requested…" % _peer_name(peer))
+	elif t.has("local") and rc.controller_of(t["local"]) != -1:
+		rc.revoke(t["local"])
+
+## Invité : le propriétaire a accordé / refusé / retiré le contrôle de sa fenêtre.
+func _on_control_changed(owner: int, wid: int, active: bool) -> void:
+	if active:
+		chat_box.add_system("You control %s's window: your mouse and keys go to it in focus view" % _peer_name(owner))
+		if not (focus.is_active() and focus.is_remote()):
+			focus.enter_remote_focus(owner, wid, lan.get_remote_window_texture(owner, wid))
+	else:
+		chat_box.add_system("You don't control %s's window" % _peer_name(owner))
+
+## Propriétaire : un invité prend / perd le contrôle d'une de mes fenêtres.
+func _on_guest_control_changed(guest: int, wid: int, active: bool) -> void:
+	chat_box.add_system("%s %s « %s »" % [_peer_name(guest), "now controls" if active else "no longer controls",
+		String(win3d.window_titles.get(wid, "window"))])
+
 func _on_radial_action(action: String) -> void:
 	match action:
+		"control":
+			_toggle_control()
 		"window_menu":
 			_open_window_menu()
 		"layer_interact":

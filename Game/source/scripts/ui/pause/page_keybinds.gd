@@ -13,7 +13,7 @@ const REMAPPABLE_ACTIONS := [
 	"look_up", "look_down", "look_left", "look_right",
 	"interact_mode", "layer_interact", "window_menu", "radial_menu",
 	"grab", "focus_window", "pin_window", "kill_window", "hide_window", "share_window",
-	"screenshot", "force_game", "release_shortcuts", "freecam", "toggle_tps", "toggle_ui", "chat", "push_to_talk",
+	"screenshot", "force_game", "release_shortcuts", "freecam", "toggle_tps", "toggle_ui", "chat", "push_to_talk", "request_control",
 	"emote_wave", "emote_point", "emote_clap", "emote_thumbsup", "emote_laugh", "emote_dance", "emote_sit", "emote_shrug",
 	"left_click", "right_click", "middle_click", "scroll_up", "scroll_down",
 ]

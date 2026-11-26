@@ -100,6 +100,9 @@ func set_remote_cursor_state(peer_id: int, wid: int, state) -> void:
 func _update_remote_cursor() -> void:
 	if not fm.remote_focus or fm.remote_cursor_overlay == null:
 		return
+	if controlled():
+		_show_guest_cursor(fm.mouse_pos)      # sous contrôle : notre pointeur, pas celui du propriétaire
+		return
 	if fm.remote_cursor_state.is_empty():
 		_hide_remote_cursor()
 		return
@@ -140,6 +143,84 @@ func _update_remote_cursor() -> void:
 	fm.remote_cursor_overlay.position = offset \
 		+ Vector2(px / tex_size.x, py / tex_size.y) * displayed \
 		- hotspot * scale
+	fm.remote_cursor_overlay.visible = true
+
+# ── Contrôle de la fenêtre distante (lot J) ─────────────────────────
+
+func controlled() -> bool:
+	return fm.remote_focus and fm.remote_control != null \
+		and fm.remote_control.is_controlling(fm.remote_focus_peer, fm.remote_focus_wid)
+
+## Zone affichée de la texture distante (STRETCH_KEEP_ASPECT_CENTERED) : [offset, taille], vide si indisponible.
+func _displayed_area() -> Array:
+	if fm.remote_focus_rect == null or not is_instance_valid(fm.remote_focus_rect) or fm.remote_focus_rect.texture == null:
+		return []
+	var tex_size := fm.remote_focus_rect.texture.get_size()
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		return []
+	var rrect := fm.remote_focus_rect.get_global_rect()
+	var aspect := tex_size.x / tex_size.y
+	var rect_aspect := rrect.size.x / maxf(rrect.size.y, 0.001)
+	var displayed: Vector2
+	if aspect > rect_aspect:
+		displayed = Vector2(rrect.size.x, rrect.size.x / aspect)
+	else:
+		displayed = Vector2(rrect.size.y * aspect, rrect.size.y)
+	return [rrect.position + (rrect.size - displayed) / 2.0, displayed]
+
+## Position écran -> (u, v) de la fenêtre ; Vector2(-1, -1) hors de l'image.
+func screen_to_uv(pos: Vector2) -> Vector2:
+	var area := _displayed_area()
+	if area.is_empty():
+		return Vector2(-1, -1)
+	var uv: Vector2 = (pos - (area[0] as Vector2)) / (area[1] as Vector2)
+	if uv.x < 0.0 or uv.y < 0.0 or uv.x > 1.0 or uv.y > 1.0:
+		return Vector2(-1, -1)
+	return uv
+
+const MOUSE_BUTTONS := {MOUSE_BUTTON_LEFT: 0x110, MOUSE_BUTTON_RIGHT: 0x111, MOUSE_BUTTON_MIDDLE: 0x112,
+	MOUSE_BUTTON_XBUTTON1: 0x113, MOUSE_BUTTON_XBUTTON2: 0x114}
+
+## Entrée de l'invité vers la fenêtre contrôlée. Les raccourcis du jeu (sortie du focus…) restent au jeu.
+func handle_controlled_event(event: InputEvent) -> void:
+	var rc: Node = fm.remote_control
+	var peer := fm.remote_focus_peer
+	var wid := fm.remote_focus_wid
+	if event is InputEventMouseMotion:
+		var uv := screen_to_uv(event.position)
+		if uv.x >= 0.0:
+			rc.send_pointer(peer, wid, uv)
+		_show_guest_cursor(event.position)
+	elif event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		var uv := screen_to_uv(mb.position)
+		if uv.x >= 0.0:
+			rc.send_pointer(peer, wid, uv)
+		match mb.button_index:
+			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN:
+				if mb.pressed:
+					rc.send_axis(peer, wid, 0.0, -120.0 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 120.0)
+			MOUSE_BUTTON_WHEEL_LEFT, MOUSE_BUTTON_WHEEL_RIGHT:
+				if mb.pressed:
+					rc.send_axis(peer, wid, -120.0 if mb.button_index == MOUSE_BUTTON_WHEEL_LEFT else 120.0, 0.0)
+			_:
+				if MOUSE_BUTTONS.has(mb.button_index) and (uv.x >= 0.0 or not mb.pressed):
+					rc.send_button(peer, wid, MOUSE_BUTTONS[mb.button_index], mb.pressed)
+	elif event is InputEventKey:
+		var key := event as InputEventKey
+		if key.echo:
+			return
+		if key.pressed and fm.input._is_compositor_shortcut(key):
+			return
+		var code := key.physical_keycode if key.physical_keycode != 0 else key.keycode
+		rc.send_key(peer, wid, int(code), int(key.location), key.pressed)
+
+func _show_guest_cursor(pos: Vector2) -> void:
+	if fm.remote_cursor_overlay == null:
+		return
+	fm.remote_cursor_overlay.texture = fm.remote_cursor_fallback_tex
+	fm.remote_cursor_overlay.size = fm.remote_cursor_fallback_tex.get_size()
+	fm.remote_cursor_overlay.position = pos
 	fm.remote_cursor_overlay.visible = true
 
 func _hide_remote_cursor() -> void:

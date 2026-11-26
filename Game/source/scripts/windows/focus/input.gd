@@ -594,9 +594,11 @@ func handle_input_event(event: InputEvent) -> bool:
 		if not skey.echo and InputMap.event_is_action(skey, "screenshot", true):
 			fm.zone_select._start_zone_selection()
 			return true
-	# Focus distant (vue seule) : tout est consommé, rien n'est forwardé
-	# (focus_stack est vide pour le focus distant).
+	# Focus distant : tout est consommé. Vue seule, sauf si le propriétaire nous a confié le contrôle de la
+	# fenêtre (lot J) : souris et clavier lui sont alors transmis (focus/remote.gd).
 	if fm.remote_focus:
+		if fm.remote.controlled():
+			fm.remote.handle_controlled_event(event)
 		return true
 	if not fm.focus_mode or fm.focus_stack.is_empty():
 		return false
@@ -719,7 +721,7 @@ func _shortcuts_inhibited() -> bool:
 func _is_compositor_shortcut(event: InputEventKey) -> bool:
 	if not event.pressed:
 		return false
-	for action in ["focus_window", "kill_window", "force_game"]:
+	for action in ["focus_window", "kill_window", "force_game", "request_control"]:
 		if InputMap.event_is_action(event, action, true):
 			return true
 	return false
