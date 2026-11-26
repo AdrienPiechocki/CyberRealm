@@ -282,3 +282,63 @@ func test_manager_passes_gain_to_compositor():
 	var r: Variant = Runner.assert_eq(vm.compositor.gain_db, 12.0, "gain du menu transmis au compositeur")
 	_free_manager(vm)
 	return r
+
+
+## Encodage à la demande : seules les trames envoyées passent par l'encodeur, le niveau décodé reste celui envoyé
+## même quand l'activation vocale n'en laisse passer qu'une partie.
+func test_raw_poll_then_encode_only_sent_frames():
+	if not ClassDB.class_exists("WlrCompositor"):
+		return true
+	var comp: Object = ClassDB.instantiate("WlrCompositor")
+	if not comp.has_method("voice_poll_raw"):
+		comp.free()
+		return "extension sans voice_poll_raw (recompiler)"
+	comp.voice_feed_samples(_sine(48000))
+	var frames: Array = comp.voice_poll_raw()
+	var r: Variant = Runner.assert_true(frames.size() == 50 and (frames[0]["pcm"] as PackedFloat32Array).size() == 960,
+			"50 trames brutes de 960 échantillons")
+	if r is String: comp.free(); return r
+	var sum := 0.0
+	var n := 0
+	var seq := 0
+	for i in frames.size():
+		if i % 5 >= 2:
+			continue                                     # activation vocale : 2 trames sur 5
+		seq += 1
+		for v in comp.voice_decode(3, seq, comp.voice_encode(frames[i]["pcm"])):
+			sum += v.x * v.x
+			n += 1
+	r = Runner.assert_approx(sqrt(sum / n), 0.3 / sqrt(2.0), 0.03, "niveau décodé = niveau envoyé")
+	if r is String: comp.free(); return r
+	r = Runner.assert_true(comp.voice_encode(PackedFloat32Array([0.1])).is_empty(), "trame de mauvaise taille refusée")
+	comp.free()
+	return r
+
+class FakeRawComp extends FakeComp:
+	var encoded := 0
+	func voice_poll_raw() -> Array:
+		var out: Array = []
+		for f in voice_poll():
+			out.append({"pcm": PackedFloat32Array(), "rms": f["rms"]})
+		return out
+	func voice_encode(_pcm: PackedFloat32Array) -> PackedByteArray:
+		encoded += 1
+		return PackedByteArray([1, 2])
+
+func test_manager_encodes_only_sent_frames():
+	var vm := _manager()
+	var old_comp: Node = vm.compositor
+	var comp := FakeRawComp.new()
+	vm.compositor = comp
+	vm._process(0.016)
+	comp.frames = [_frame(0.001), _frame(0.2), _frame(0.001), _frame(0.001)]
+	vm._mic_target = ""                              # micro ouvert sur la nouvelle doublure
+	vm._last_loud = -100000
+	vm._process(0.016)
+	var r: Variant = Runner.assert_eq(comp.encoded, vm.lan.voice.sent.size(), "une trame encodée par trame envoyée")
+	if r is String: vm.compositor = old_comp; comp.free(); _free_manager(vm); return r
+	r = Runner.assert_eq(vm.lan.voice.sent, [1, 2, 3], "voix puis maintien (300 ms), pas le silence d'avant")
+	vm.compositor = old_comp
+	comp.free()
+	_free_manager(vm)
+	return r

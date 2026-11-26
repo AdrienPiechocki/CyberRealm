@@ -57,6 +57,8 @@ func _voice_up(seq: Variant, data: Variant) -> void:
 func _voice_down(from_id: Variant, seq: Variant, data: Variant) -> void:
 	if lan.is_host or multiplayer.get_remote_sender_id() != 1:
 		return
+	if lan.session != null and lan.session.has_method("note_host_alive"):
+		lan.session.note_host_alive()
 	if from_id is int and seq is int and data is PackedByteArray and (data as PackedByteArray).size() <= MAX_PACKET:
 		_dbg_counts["down"] += 1
 		voice_packet.emit(from_id, seq, data)

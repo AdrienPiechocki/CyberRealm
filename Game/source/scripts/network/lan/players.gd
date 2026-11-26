@@ -702,6 +702,7 @@ func _avatar_recv_chunk(from_id: int, index: int, total: int, uncompressed_size:
 		return      # le serveur dédié ne décode aucun avatar ; l'émetteur annoncé doit être l'émetteur réel
 	if total < 1 or uncompressed_size < 1 or chunk.is_empty() or index < 0 or index >= total:
 		return
+	lan.session.note_host_alive()   # arrive par l'hôte (relais) : il est vivant, même si son heartbeat est en retard
 	# Nouveau transfert de cet émetteur : repart de zéro.
 	var slot: Dictionary = _avatar_receive_slots.get(from_id, {})
 	if slot.is_empty() or int(slot.get("total", -1)) != total or int(slot.get("size", -1)) != uncompressed_size:

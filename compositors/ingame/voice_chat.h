@@ -9,6 +9,7 @@
 
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -39,7 +40,17 @@ public:
 
 	// Trames de 20 ms encodées depuis le dernier appel : [{data, rms}]. rms = niveau
 	// de la trame (0..1) APRÈS le gain, pour l'activation vocale et l'indicateur de niveau.
+	// ATTENTION : toutes les trames passent par l'encodeur. Si l'appelant n'en envoie qu'une partie
+	// (activation vocale), le décodeur d'en face n'a plus la même suite de trames que l'encodeur (OPUS
+	// code chaque trame par rapport aux précédentes) : son dégradé et 20-30 dB trop faible. Utiliser
+	// poll_raw() + encode() pour n'encoder que les trames envoyées.
 	Array poll();
+
+	// Trames de 20 ms NON encodées depuis le dernier appel : [{pcm: PackedFloat32Array (FRAME, mono, gain
+	// appliqué), rms}]. L'appelant choisit lesquelles envoyer et les passe à encode(), dans l'ordre.
+	Array poll_raw();
+	// Encode une trame (FRAME échantillons mono) ; vide si la taille est fausse ou en cas d'erreur.
+	PackedByteArray encode(const PackedFloat32Array &pcm);
 
 	// Gain appliqué au micro avant l'encodage (dB, borné à [0, MAX_GAIN_DB]) : un micro faible (micro intégré d'un
 	// portable) arrive à un niveau normal chez les autres joueurs. Écrêtage doux au-delà de la pleine échelle.
@@ -78,6 +89,7 @@ private:
 	std::map<int, PeerDecoder> decoders;
 
 	void push_samples(const float *samples, uint32_t n, uint32_t stride_floats);
+	bool take_frame(float *frame, double &rms); // une trame du tampon, gain appliqué ; false si pas assez d'échantillons
 	bool ensure_encoder();
 };
 

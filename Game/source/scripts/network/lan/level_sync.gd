@@ -195,6 +195,7 @@ func _sync_level_state(delta: float) -> void:
 func _level_sync(state: Array) -> void:
 	if lan.is_host or multiplayer.get_remote_sender_id() != 1:
 		return
+	lan.session.note_host_alive()
 	for e in state:
 		if e is Array and e.size() == 2 and e[1] is Transform3D:
 			_level_sync_target[String(e[0])] = e[1]

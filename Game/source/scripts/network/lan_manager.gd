@@ -410,7 +410,7 @@ func _process(_delta: float) -> void:
 					_lan_log("heartbeat late by %d ms" % late)
 				session._last_heartbeat_sent_msec = now
 				session._host_heartbeat.rpc()
-		elif not is_host and SessionModule.heartbeat_reconnect_should_arm(not _pending_join, session._last_heartbeat_msec, now, SessionModule.HOST_HEARTBEAT_TIMEOUT_MSEC, _last_level_chunk_msec):
+		elif not is_host and SessionModule.heartbeat_reconnect_should_arm(not _pending_join, session.host_alive_msec(), now, SessionModule.HOST_HEARTBEAT_TIMEOUT_MSEC, _last_level_chunk_msec):
 			session._on_host_heartbeat_timeout()
 
 # ── Helpers ──────────────────────────────────────────────────────────

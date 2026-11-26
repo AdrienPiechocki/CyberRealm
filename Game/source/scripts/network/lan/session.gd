@@ -34,6 +34,11 @@ var _pin_fail_counts: Dictionary = {}
 var _last_join_encrypted := false
 # ── Heartbeat / reconnexion (C1/C2) ──────────────────────────────────
 var _last_heartbeat_msec := 0
+## Client : dernière donnée reçue de l'hôte (morceaux d'avatar, synchro du décor, voix…). Un gros transfert relayé
+## par un serveur en ligne retarde le heartbeat (message fiable, en file derrière les données) de plus de
+## HOST_HEARTBEAT_TIMEOUT_MSEC alors que l'hôte est bien vivant : le client se reconnectait (rechargement complet du
+## niveau, mémoire épuisée sur un gros niveau). Toute donnée reçue compte donc comme signe de vie.
+var _last_host_traffic_msec := 0
 var _session_closed_received := false
 var _last_heartbeat_sent_msec := 0
 var _reconnecting := false
@@ -358,6 +363,15 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false, route: Str
 	lan._set_status("Connecting to %s:%d…" % [ip, LanManager.PORT])
 	return true
 
+## Client : une donnée de l'hôte vient d'arriver (voir _last_host_traffic_msec).
+func note_host_alive() -> void:
+	if not lan.is_host:
+		_last_host_traffic_msec = Time.get_ticks_msec()
+
+## Dernier signe de vie de l'hôte : heartbeat ou n'importe quelle donnée reçue.
+func host_alive_msec() -> int:
+	return maxi(_last_heartbeat_msec, _last_host_traffic_msec)
+
 ## Heartbeat de l'hôte vers les clients (fiabilité de session).
 @rpc("authority", "reliable")
 func _host_heartbeat() -> void:
@@ -584,6 +598,7 @@ func _on_connected_to_server() -> void:
 	_reconnecting = false
 	_reconnect_attempts = 0
 	_last_heartbeat_msec = Time.get_ticks_msec()
+	_last_host_traffic_msec = 0
 	# Miroir des scripts utilisateur reparti à zéro : le niveau et les avatars
 	# de CETTE session réinstalleront leurs lots avant tout chargement de blob.
 	UserScriptMirror.clear()
@@ -726,7 +741,7 @@ func _on_server_disconnected() -> void:
 func _should_attempt_reconnect() -> bool:
 	if lan.is_host or not LanManager.session_active or _session_closed_received:
 		return false
-	return should_reconnect(_last_heartbeat_msec, Time.get_ticks_msec(),
+	return should_reconnect(host_alive_msec(), Time.get_ticks_msec(),
 		_session_closed_received, RECONNECT_WINDOW_MSEC, _reconnect_attempts)
 
 ## Heartbeat expiré côté client → on considère l'hôte injoignable. Garde-fous :
@@ -758,7 +773,7 @@ func _begin_reconnect() -> void:
 	# Heartbeat revenu pendant l'attente du backoff (la session s'est établie
 	# entretemps, le réseau est vivant) → annuler le reconnect, on garde la
 	# session au lieu de l'arracher (boucle de rejoin constatée en réel).
-	if heartbeat_cancel_reconnect(not lan._pending_join, _last_heartbeat_msec, Time.get_ticks_msec(), HOST_HEARTBEAT_TIMEOUT_MSEC):
+	if heartbeat_cancel_reconnect(not lan._pending_join, host_alive_msec(), Time.get_ticks_msec(), HOST_HEARTBEAT_TIMEOUT_MSEC):
 		lan._lan_log("reconnect cancelled — heartbeat resumed")
 		_reconnecting = false
 		return
@@ -786,8 +801,12 @@ func _on_peer_connected(id: int) -> void:
 # thread principal pendant un stream partagé. Défaut ENet (5000/30000 ms)
 # coupe la session après ~5 s sans ACK, trop juste quand l'encodage/décodage
 # JPEG vidéo monopolise le thread principal.
-const ENET_THROTTLE_INTERVAL_MSEC := 5000   # valeurs par défaut d'ENet
-const ENET_THROTTLE_ACCELERATION := 2
+const ENET_THROTTLE_INTERVAL_MSEC := 5000   # valeur par défaut d'ENet
+# Accélération = ENET_PEER_PACKET_THROTTLE_SCALE (32) : au premier accusé de réception, le limiteur revient au
+# maximum (rien n'est jeté). Avec la valeur d'ENet (2), un limiteur tombé à 1/32 pendant la connexion (échange des
+# avatars et du niveau, avant cette configuration) remontait de 2 en 2 et restait bloqué vers 9/32 faute de trafic
+# fiable : ~70 % de la voix jetée chez l'émetteur (mesuré : serveur dédié + 2 clients headless).
+const ENET_THROTTLE_ACCELERATION := 32
 const ENET_TIMEOUT_LIMIT := 64
 const ENET_TIMEOUT_MIN := 15000
 const ENET_TIMEOUT_MAX := 90000

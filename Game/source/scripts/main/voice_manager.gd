@@ -86,7 +86,10 @@ func _process(delta: float) -> void:
 		var ptt: bool = mode == "ptt" and Input.is_action_pressed("push_to_talk") \
 				and (not can_push_to_talk.is_valid() or bool(can_push_to_talk.call()))
 		mic_level *= exp(-delta * 6.0)       # retombe en ~0,5 s, quelle que soit la cadence d'affichage
-		for frame in compositor.voice_poll():
+		# Lecture SANS encodage, puis encodage des seules trames envoyées : l'encodeur OPUS et le décodeur d'en face
+		# voient exactement la même suite de trames (OPUS code chaque trame par rapport aux précédentes).
+		var raw: bool = compositor.has_method("voice_poll_raw")
+		for frame in (compositor.voice_poll_raw() if raw else compositor.voice_poll()):
 			if _dbg:
 				_dbg_tx["polled"] += 1
 			mic_level = maxf(mic_level, float(frame["rms"]))
@@ -100,8 +103,11 @@ func _process(delta: float) -> void:
 					_last_loud = now
 				send = now - _last_loud <= VAD_HANGOVER_MSEC
 			if send:
+				var data: PackedByteArray = compositor.voice_encode(frame["pcm"]) if raw else frame["data"]
+				if data.is_empty():
+					continue
 				_seq += 1
-				lan.voice.send(_seq, frame["data"])
+				lan.voice.send(_seq, data)
 				local_speaking = true
 				if _dbg:
 					_dbg_tx["n"] += 1

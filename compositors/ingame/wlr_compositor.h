@@ -1310,6 +1310,8 @@ public:
     void voice_stop() { voice_chat.stop(); }
     bool voice_is_active() const { return voice_chat.is_active(); }
     Array voice_poll() { return voice_chat.poll(); }
+    Array voice_poll_raw() { return voice_chat.poll_raw(); }
+    PackedByteArray voice_encode(const PackedFloat32Array &pcm) { return voice_chat.encode(pcm); }
     PackedVector2Array voice_decode(int peer, int seq, const PackedByteArray &data) { return voice_chat.decode(peer, seq, data); }
     void voice_forget(int peer) { voice_chat.forget(peer); }
     void voice_feed_samples(const PackedFloat32Array &s) { voice_chat.feed(s.ptr(), (int)s.size()); }

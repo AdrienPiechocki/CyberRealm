@@ -81,3 +81,22 @@ func test_watchdog_ignored_while_level_transfer_progresses() -> Variant:
 		LANManager.SessionModule.heartbeat_reconnect_should_arm(true, 0, 10000, 4000, 3000, 5000),
 		true,
 		"chunk ancien (> 5 s) = watchdog armé comme avant")
+## Un gros transfert relayé retarde le heartbeat : toute donnée reçue de l'hôte compte comme signe de vie, le
+## client ne se reconnecte pas pendant que l'avatar d'un arrivant lui parvient.
+func test_host_traffic_counts_as_alive():
+	var lan: Node = LANManager.new()
+	var s = lan.session
+	s._last_heartbeat_msec = 1000
+	s.note_host_alive()
+	var now := Time.get_ticks_msec()
+	var r: Variant = Runner.assert_true(s.host_alive_msec() >= now - 5, "donnée reçue : hôte vivant")
+	if r is String: lan.free(); return r
+	r = Runner.assert_true(not LANManager.SessionModule.heartbeat_reconnect_should_arm(true, s.host_alive_msec(), now + 3000, 4000),
+			"heartbeat vieux mais données récentes : pas de reconnexion")
+	if r is String: lan.free(); return r
+	lan.is_host = true
+	s._last_host_traffic_msec = 0
+	s.note_host_alive()
+	r = Runner.assert_eq(s._last_host_traffic_msec, 0, "l'hôte lui-même n'enregistre rien")
+	lan.free()
+	return r

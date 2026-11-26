@@ -210,6 +210,29 @@ void VoiceChat::set_gain_db(float db) {
 	gain = std::pow(10.0f, gain_db / 20.0f);
 }
 
+bool VoiceChat::take_frame(float *frame, double &rms) {
+	{
+		std::lock_guard<std::mutex> lk(ring_mutex);
+		if (ring_count < (size_t)FRAME) {
+			return false;
+		}
+		for (int i = 0; i < FRAME; i++) {
+			frame[i] = ring[(ring_head + i) % RING_CAPACITY];
+		}
+		ring_head = (ring_head + FRAME) % RING_CAPACITY;
+		ring_count -= FRAME;
+	}
+	double sum = 0.0;
+	for (int i = 0; i < FRAME; i++) {
+		if (gain != 1.0f) {
+			frame[i] = soft_clip(frame[i] * gain);
+		}
+		sum += (double)frame[i] * frame[i];
+	}
+	rms = std::sqrt(sum / FRAME);
+	return true;
+}
+
 Array VoiceChat::poll() {
 	Array out;
 	if (!encoder) {
@@ -217,25 +240,8 @@ Array VoiceChat::poll() {
 	}
 	float frame[FRAME];
 	unsigned char packet[MAX_PACKET];
-	while (true) {
-		{
-			std::lock_guard<std::mutex> lk(ring_mutex);
-			if (ring_count < (size_t)FRAME) {
-				break;
-			}
-			for (int i = 0; i < FRAME; i++) {
-				frame[i] = ring[(ring_head + i) % RING_CAPACITY];
-			}
-			ring_head = (ring_head + FRAME) % RING_CAPACITY;
-			ring_count -= FRAME;
-		}
-		double sum = 0.0;
-		for (int i = 0; i < FRAME; i++) {
-			if (gain != 1.0f) {
-				frame[i] = soft_clip(frame[i] * gain);
-			}
-			sum += (double)frame[i] * frame[i];
-		}
+	double rms = 0.0;
+	while (take_frame(frame, rms)) {
 		int len = opus_encode_float(static_cast<OpusEncoder *>(encoder), frame, FRAME, packet, MAX_PACKET);
 		if (len <= 0) {
 			continue;
@@ -245,10 +251,43 @@ Array VoiceChat::poll() {
 		memcpy(data.ptrw(), packet, len);
 		Dictionary e;
 		e["data"] = data;
-		e["rms"] = std::sqrt(sum / FRAME);
+		e["rms"] = rms;
 		out.push_back(e);
 	}
 	return out;
+}
+
+Array VoiceChat::poll_raw() {
+	Array out;
+	if (!encoder) {
+		return out;
+	}
+	float frame[FRAME];
+	double rms = 0.0;
+	while (take_frame(frame, rms)) {
+		PackedFloat32Array pcm;
+		pcm.resize(FRAME);
+		memcpy(pcm.ptrw(), frame, sizeof(frame));
+		Dictionary e;
+		e["pcm"] = pcm;
+		e["rms"] = rms;
+		out.push_back(e);
+	}
+	return out;
+}
+
+PackedByteArray VoiceChat::encode(const PackedFloat32Array &pcm) {
+	PackedByteArray data;
+	if (pcm.size() != FRAME || !ensure_encoder()) {
+		return data;
+	}
+	unsigned char packet[MAX_PACKET];
+	int len = opus_encode_float(static_cast<OpusEncoder *>(encoder), pcm.ptr(), FRAME, packet, MAX_PACKET);
+	if (len > 0) {
+		data.resize(len);
+		memcpy(data.ptrw(), packet, len);
+	}
+	return data;
 }
 
 PackedVector2Array VoiceChat::decode(int peer, int seq, const PackedByteArray &data) {
