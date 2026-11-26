@@ -535,9 +535,11 @@ func _ready() -> void:
 
 	compositor.start_headless()
 	# Son spatialisé des fenêtres : les apps lancées par le jeu visent la sortie « cyberrealm-spatial », qui n'existe
-	# que si l'option est active (window_audio.gd) ; absente, elles gardent la sortie par défaut. PULSE_SINK
-	# seulement : PIPEWIRE_NODE viserait aussi les flux d'enregistrement des apps PipeWire natives.
+	# que si l'option est active (window_audio.gd) ; absente, elles gardent la sortie par défaut. PULSE_SINK pour les
+	# apps PulseAudio, PIPEWIRE_NODE pour les apps PipeWire natives (mpv). Vérifié : un flux d'ENREGISTREMENT qui
+	# vise une sortie reste sur le micro par défaut (WirePlumber ne le relie pas au monitor de la sortie).
 	compositor.set_app_env("PULSE_SINK", "cyberrealm-spatial")
+	compositor.set_app_env("PIPEWIRE_NODE", "cyberrealm-spatial")
 	# Purge un éventuel handshake de capture périmé : si le jeu ou portal-wlr
 	# s'est terminé pendant l'attente d'un choix (cyberrealm-capture-pending),
 	# le fichier reste dans $XDG_RUNTIME_DIR entre deux sessions. Sans purge,
