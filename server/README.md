@@ -164,8 +164,9 @@ props in server mode: no weather, day/night, windows or player). Then:
   loses at most the last 10 s (Godot headless dies on SIGTERM without notice). The file carries the blob's SHA-256:
   after `install-server.sh blob NEW` the old state is ignored and kept as `.state.old`.
 - **Reset**: an admin (pause menu → Multiplayer → *Server*: unlock with the admin password, then *Reset world*,
-  click twice) erases the state; players are told and disconnected, and the server exits with code 75 so systemd
-  restarts it fresh (`Restart=on-failure`; by hand, start it again). Join again once it is back.
+  click twice) erases the state and puts every prop back in its original place, intact, on the server and on every
+  client, without restarting the server or disconnecting anyone (levels implement `net_reset()` on their
+  `net_snapshot` nodes; the Morrowind props do).
 
 ## Current limits
 

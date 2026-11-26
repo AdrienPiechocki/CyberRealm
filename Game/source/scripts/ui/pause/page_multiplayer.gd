@@ -433,8 +433,8 @@ func _add_server_admin() -> void:
 			reset.text = "Click again to reset the world for everyone"
 			return
 		lan.send_level_message("admin_reset_world")
-		reset.text = "Reset requested…"
-		reset.disabled = true
+		reset.text = "Reset world (moved / broken objects)"
+		armed[0] = false
 	)
 
 func _on_admin_changed(_is_admin: bool) -> void:

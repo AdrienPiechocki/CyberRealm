@@ -116,7 +116,8 @@ func _accept_level_msg_down(topic: String, data: Variant) -> void:
 		lan.admin_changed.emit(lan.session.admin)
 		return
 	if topic == "world_reset":
-		lan._set_status("World reset by the admin — the server restarts, join again in a moment")
+		_reset_local()
+		lan._set_status("World reset by the admin")
 		return
 	lan.level_message.emit(topic, data, 1)
 
@@ -309,6 +310,25 @@ func _receive_snapshot_chunk(sender: int, part: Variant, index: Variant, total: 
 	if index == total - 1:
 		apply_snapshot({part: _snap_rx[part]})
 		_snap_rx.erase(part)
+
+## Serveur : remet le décor à son état d'origine (objets déplacés / cassés), ici puis chez tous les clients.
+func reset_world() -> void:
+	if not lan.is_host:
+		return
+	_reset_local()
+	broadcast_level_message("world_reset", null)
+
+## Nœuds du groupe net_snapshot : net_reset() ; client : plus aucune cible de synchro (sinon les objets
+## retourneraient à leur dernière position reçue). Le serveur réémet ensuite l'état des nœuds encore synchronisés.
+func _reset_local() -> void:
+	if not lan.is_host:
+		_level_sync_target.clear()
+		_level_sync_snapped.clear()
+	if lan._level_root == null or not is_inside_tree():
+		return
+	for n in get_tree().get_nodes_in_group(SNAPSHOT_GROUP):
+		if lan._level_root.is_ancestor_of(n) and n.has_method("net_reset"):
+			n.call("net_reset")
 
 ## Client : demande l'instantané au serveur (niveau chargé).
 func request_snapshot() -> void:

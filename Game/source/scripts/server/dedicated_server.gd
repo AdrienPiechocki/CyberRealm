@@ -24,11 +24,10 @@ var lan: Node = null
 # change, au plus toutes les SAVE_INTERVAL secondes, et rechargé au démarrage AVANT l'ouverture du port. Godot
 # headless meurt sans notification sur SIGTERM : un arrêt du service perd au plus les SAVE_INTERVAL dernières
 # secondes. Le fichier porte l'empreinte du blob : un autre niveau (blob réexporté) l'invalide (renommé en .old).
-# Un admin peut réinitialiser le monde (message « admin_reset_world ») : état effacé, joueurs prévenus, puis le
-# processus quitte avec RESET_EXIT_CODE et systemd le relance à neuf (Restart=on-failure).
+# Un admin peut réinitialiser le monde (message « admin_reset_world ») : état effacé et décor remis à son état
+# d'origine chez tout le monde, sans redémarrage ni déconnexion (level_sync.reset_world).
 const SAVE_INTERVAL := 10.0
 const STATE_VERSION := 1
-const RESET_EXIT_CODE := 75
 var state_path := ""
 var _blob_sha := ""
 var _last_state := PackedByteArray()
@@ -143,14 +142,11 @@ func _load_state() -> void:
 
 ## Admin : remise à zéro du monde. Les joueurs sont prévenus, puis le serveur redémarre (systemd).
 func _reset_world(by_peer: int) -> void:
-	print("[server] monde réinitialisé par l'admin (pair %d) — redémarrage" % by_peer)
+	print("[server] monde réinitialisé par l'admin (pair %d)" % by_peer)
 	if state_path != "" and FileAccess.file_exists(state_path):
 		DirAccess.remove_absolute(state_path)
-	state_path = ""                                   # plus d'enregistrement d'ici l'arrêt
-	lan.broadcast_level_message("world_reset", null)
-	await get_tree().create_timer(1.0).timeout        # le message part avant la fermeture
-	lan.disconnect_session()
-	get_tree().quit(RESET_EXIT_CODE)
+	_last_state = PackedByteArray()
+	lan.level_sync.reset_world()      # sur place : décor d'origine ici et chez les clients, sans déconnexion
 
 static func _sha256_hex(bytes: PackedByteArray) -> String:
 	var h := HashingContext.new()

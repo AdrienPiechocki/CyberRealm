@@ -71,6 +71,8 @@ const LevelSync = preload("res://scripts/network/lan/level_sync.gd")
 
 class Snap extends Node3D:
 	var applied: Array = []
+	var resets := 0
+	func net_reset() -> void: resets += 1
 	func net_snapshot() -> Array: return [["b", 3], ["m", 4, Transform3D(Basis.IDENTITY, Vector3(1, 2, 3))]]
 	func net_apply_snapshot(e: Array) -> void: applied = e
 
@@ -181,4 +183,20 @@ func test_reset_world_only_for_admin_on_dedicated():
 	lan.level_sync._accept_admin_reset_for_test(5)
 	r = Runner.assert_eq(asked, [5], "admin : demande transmise")
 	w[0].free(); w[1].free()
+	return r
+
+func test_reset_world_in_place():
+	var host := _world(true)
+	var sent: Array = []
+	host[0].level_sync.reset_world()
+	var r: Variant = Runner.assert_eq(host[3].resets, 1, "serveur : net_reset sur les nœuds du groupe")
+	host[0].free(); host[1].free()
+	if r is String: return r
+	var client := _world(false)
+	var ls: Node = client[0].level_sync
+	ls._level_sync_target["Crate"] = Transform3D(Basis.IDENTITY, Vector3(9, 9, 9))
+	ls._reset_local()
+	r = Runner.assert_true(client[3].resets == 1 and ls._level_sync_target.is_empty(),
+		"client : net_reset et plus de cible de synchro (les objets ne repartent pas vers l'ancienne place)")
+	client[0].free(); client[1].free()
 	return r
