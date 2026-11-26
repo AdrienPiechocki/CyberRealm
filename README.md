@@ -71,8 +71,10 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   cyberrealm-desktop-bridge` (Python + PyGObject, started with the portals, JSON
   lines on stdin/stdout, stops when the game does), which listens to the game's
   private D-Bus *and* the desktop's: media players of both; notifications of the
-  apps in the game (it serves `org.freedesktop.Notifications` there if no other
-  server does) and of the desktop (read-only). Each player sees their own data;
+  apps in the game (read-only when another server runs there, e.g. DankMaterialShell
+  started with the game — its popups keep working; it serves
+  `org.freedesktop.Notifications` itself only if nobody took the name 20 s after
+  start) and of the desktop (read-only). Each player sees their own data;
   General → *Notifications in the world*: full / app only / count only.
 - **Explicit sync (experimental)** — `wp_linux_drm_syncobj_v1`, announced only
   with `CYBERREALM_EXPLICIT_SYNC=1` and when the wlroots renderer supports

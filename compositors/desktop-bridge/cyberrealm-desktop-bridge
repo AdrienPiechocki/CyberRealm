@@ -18,9 +18,10 @@ MPRIS (org.mpris.MediaPlayer2.*) sur les deux bus :
   La position des lecteurs en lecture est relue chaque seconde ICI (MPRIS ne la signale pas).
 
 Notifications :
-  * bus du jeu : le pont POSSÈDE org.freedesktop.Notifications si le nom est libre (serveur de notifications des
-    apps du jeu : Notify, CloseNotification, ActionInvoked, NotificationClosed) ; sinon (un autre serveur, ex. la
-    barre lancée dans le jeu), il l'observe en lecture seule comme le bus de l'hôte ;
+  * bus du jeu : un autre serveur (ex. DankMaterialShell lancé au démarrage du jeu) garde TOUJOURS la priorité —
+    ses popups doivent continuer de s'afficher. Le pont observe donc d'abord en lecture seule ; il ne devient
+    serveur (Notify, CloseNotification, ActionInvoked, NotificationClosed) que si personne n'a pris le nom au bout
+    de SERVE_GRACE_SEC, et alors avec ALLOW_REPLACEMENT (un serveur qui demande à le remplacer l'obtient) ;
   * bus de l'hôte : observation des appels Notify (BecomeMonitor), lecture seule.
   -> {"type": "notification", "bus", "id", "app", "summary", "body", "actions": [[clé, libellé]…], "actionable"}
   -> {"type": "notification_closed", "bus", "id"}
@@ -38,6 +39,7 @@ PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 NOTIF_NAME = "org.freedesktop.Notifications"
 NOTIF_PATH = "/org/freedesktop/Notifications"
 MAX_TEXT = 512
+SERVE_GRACE_SEC = 20       # délai laissé aux apps de démarrage (barre, démon de notifications) pour prendre le nom
 
 NOTIF_XML = """<node>
   <interface name="org.freedesktop.Notifications">
@@ -203,10 +205,37 @@ class Bus:
         self.conn.call(name, MPRIS_PATH, PLAYER_IFACE, method, args, None, 0, 2000, None, None)
 
     # ── Notifications servies (bus du jeu) ──────────────────────────────
+    def _name_has_owner(self):
+        try:
+            return self.conn.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus",
+                                       "NameHasOwner", GLib.Variant("(s)", (NOTIF_NAME,)), GLib.VariantType("(b)"),
+                                       0, 2000, None).unpack()[0]
+        except GLib.Error:
+            return True
+
+    def watch_notifications(self):
+        """Bus du jeu : observer si un serveur existe (ou apparaît) ; sinon le devenir après SERVE_GRACE_SEC."""
+        self.conn.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                                   "/org/freedesktop/DBus", NOTIF_NAME, Gio.DBusSignalFlags.NONE, self._on_notif_owner)
+        if self._name_has_owner():
+            start_monitor(self.label, self.address)
+        GLib.timeout_add_seconds(SERVE_GRACE_SEC, self._maybe_serve)
+
+    def _on_notif_owner(self, conn, sender, path, iface, signal, params):
+        _name, _old, new = params.unpack()
+        if new and new != self.conn.get_unique_name():
+            start_monitor(self.label, self.address)     # un autre serveur : lecture seule
+
+    def _maybe_serve(self):
+        if not self._name_has_owner():
+            self.serve_notifications()
+        return False
+
     def serve_notifications(self):
         info = Gio.DBusNodeInfo.new_for_xml(NOTIF_XML).interfaces[0]
         self.conn.register_object(NOTIF_PATH, info, self._notif_call, None, None)
-        Gio.bus_own_name_on_connection(self.conn, NOTIF_NAME, Gio.BusNameOwnerFlags.DO_NOT_QUEUE,
+        Gio.bus_own_name_on_connection(self.conn, NOTIF_NAME,
+                                       Gio.BusNameOwnerFlags.DO_NOT_QUEUE | Gio.BusNameOwnerFlags.ALLOW_REPLACEMENT,
                                        self._name_acquired, self._name_lost)
 
     def _name_acquired(self, conn, name):
@@ -215,7 +244,7 @@ class Bus:
 
     def _name_lost(self, conn, name):
         if self.notif_server:
-            log(f"{self.label}: nom {NOTIF_NAME} perdu")
+            log(f"{self.label}: nom {NOTIF_NAME} cédé à un autre serveur")
         self.notif_server = False
         start_monitor(self.label, self.address)     # un autre serveur : observation en lecture seule
 
@@ -336,7 +365,7 @@ def main():
     for b in buses.values():
         b.start_mpris()
     if "game" in buses:
-        buses["game"].serve_notifications()
+        buses["game"].watch_notifications()
     if "host" in buses:
         start_monitor("host", buses["host"].address)
     emit({"type": "ready", "buses": list(buses.keys())})

@@ -289,8 +289,9 @@ the editor, then place and scale them like any node; their front faces +Z):
 
 Each player sees **their own** data (nothing is sent over the network); a click acts only for the player who
 clicked. Players are those of apps running in the game *and* on your desktop; notifications are those of apps in
-the game (CyberRealm serves them, with their actions, unless another notification server runs in the game) and of
-your desktop (read-only). General → *Notifications in the world* chooses what boards show: full content, app name
+the game and of your desktop. A notification server running in the game (e.g. DankMaterialShell as a startup app)
+always keeps priority and keeps showing its popups; the boards then only read the notifications. CyberRealm serves
+them itself (with clickable actions) only if no server took the name 20 s after the game started. General → *Notifications in the world* chooses what boards show: full content, app name
 only, or the count only. On a dedicated server these objects stay empty.
 
 **Your own objects** can use the same bridge: `get_tree().get_first_node_in_group("desktop_bridge")` returns the
