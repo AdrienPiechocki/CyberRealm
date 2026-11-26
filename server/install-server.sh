@@ -323,6 +323,8 @@ if [[ "${ONLINE:-0}" == "1" ]]; then
     # Mode Internet : TLS réel, mot de passe par l'environnement (jamais en argument), chiffrement toujours actif.
     export CYBERREALM_PASSWORD="$PIN"
     args+=("--online" "--tls-cert=$TLS_CERT" "--tls-key=$TLS_KEY")
+    # Le serveur ne répond à la localisation sur le réseau local (joueurs de la même box) que pour son nom.
+    [[ -n "${DOMAIN:-}" ]] && args+=("--domain=$DOMAIN")
 else
     args+=("--pin=$PIN")
     [[ "${DTLS:-1}" == "0" ]] && args+=("--no-dtls")
@@ -464,8 +466,15 @@ open_firewall() {
         log "ouverture des ports dans ufw"
         ufw allow "$PORT_GAME/udp" >/dev/null
         ufw allow "$PORT_LEVEL/tcp" >/dev/null
-        # La découverte UDP (9999) n'existe pas en mode online : port à ne PAS ouvrir.
-        if [[ "${ONLINE:-$(conf_get ONLINE)}" != 1 ]]; then ufw allow "$PORT_DISCOVERY/udp" >/dev/null; fi
+        if [[ "${ONLINE:-$(conf_get ONLINE)}" != 1 ]]; then
+            ufw allow "$PORT_DISCOVERY/udp" >/dev/null
+        else
+            # Online : pas de découverte, seulement la localisation par nom — et pour le réseau local uniquement
+            # (les joueurs derrière la même box, qui ne joignent pas toujours l'IP publique : pas de NAT loopback).
+            for net in 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16; do
+                ufw allow from "$net" to any port "$PORT_DISCOVERY" proto udp >/dev/null
+            done
+        fi
     else
         warn "ufw absent ou inactif : ouvre toi-même UDP $PORT_GAME et $PORT_DISCOVERY, TCP $PORT_LEVEL si besoin."
     fi

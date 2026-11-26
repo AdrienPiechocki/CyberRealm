@@ -95,7 +95,7 @@ What online mode changes:
 | Server identity | embedded key (public in the repo), not verified | **real certificate, fully verified** by the client (chain + name); no downgrade |
 | Login | 4-digit PIN over an RPC | **long password (12+), checked by the engine before the peer can send any RPC**; 8 s to authenticate |
 | Brute force | 30 s per-IP lock | per-IP lock **doubling** 30 s → 1 h, plus a global cap of 40 attempts/min; password compared as SHA-256 |
-| Discovery (UDP 9999) | on | **off** |
+| Discovery (UDP 9999) | on | **off** — only answers « who serves `<domain>`? » from private (LAN) addresses |
 | Custom avatars | scripts travel and run | **no code accepted**: an avatar carrying scripts/scripted resources/sub-scenes is replaced by the default one; the server decodes no avatar |
 | Window/audio/video/file sharing | on | **off** (RPCs ignored) |
 | Level download | integrity by TCP only | **SHA-256 announced over the authenticated channel and checked** before the level is used |
@@ -103,6 +103,13 @@ What online mode changes:
 | systemd | — | sandboxed (no new privileges, read-only system, private /tmp, minimal capabilities) |
 
 Players can also trust a private CA by dropping its certificate in `user://server_ca.crt`.
+
+Players on the **server's own network** join by the same name, with no `/etc/hosts` entry: many routers do not loop a
+packet aimed at their own public IP back inside (no "NAT loopback"), so before joining by name the client asks the local
+network which machine serves that name (UDP 9999 broadcast, under half a second) and connects to it directly. The
+certificate is still verified against the name, so a forged answer only makes the handshake fail. The server answers
+only private source addresses, and only for its `--domain` (written by `install-server.sh`); `--open-firewall` opens
+UDP 9999 to private ranges only. Do not forward UDP 9999 on the router.
 
 Remaining limits, honestly: a flood of UDP packets can still saturate the Pi's link (use your router/ISP protections);
 the server is as trustworthy as the level you export (players run its scripts); the engine's own parsers (images,

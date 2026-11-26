@@ -39,6 +39,7 @@ var _last_heartbeat_sent_msec := 0
 var _reconnecting := false
 var _reconnect_attempts := 0
 var _reconnect_ip := ""
+var _locating := false                       # join par nom : recherche du serveur sur le réseau local en cours
 var _invite_cert := ""            # client : certificat épinglé du code d'invitation (vide : join classique)
 var _reconnect_pin := ""
 # Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
@@ -270,8 +271,10 @@ func host_game() -> bool:
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
 	if lan.invite_mode:
 		lan.invite.start_host(lan._pin)       # ports (UPnP) + code d'invitation, en arrière-plan
-	elif not lan.online:
-		lan.discovery._start_responder()      # la découverte UDP n'a pas sa place sur Internet (et divulgue nom/adresses)
+	else:
+		# En ligne, le répondeur ne sert QUE la localisation par nom, au réseau local (pas de découverte : elle
+		# divulguerait nom et adresses) — voir discovery.gd, LOCATE_QUERY.
+		lan.discovery._start_responder()
 	lan._announced = false
 	lan.players._avatar_sent_to.clear()
 	lan.players._avatar_send_cache = PackedByteArray()
@@ -294,7 +297,7 @@ func host_game() -> bool:
 
 # ── Join ─────────────────────────────────────────────────────────────
 
-func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
+func join_game(ip: String, pin: String = "", encrypted: bool = false, route: String = "") -> bool:
 	if LanManager.session_active:
 		lan._set_status("Already in a LAN session")
 		return false
@@ -307,14 +310,21 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 	if not _reconnecting:
 		_reconnect_ip = ip
 		_reconnect_pin = pin.strip_edges()
-	var peer := ENetMultiplayerPeer.new()
-	var err := peer.create_client(ip, LanManager.PORT, 8)
-	if err != OK:
-		lan._set_status("Connection error: " + error_string(err))
-		return false
 	# Un NOM d'hôte (pas une IP) = serveur en ligne : certificat vérifié OBLIGATOIRE, pas de repli vers le mode
 	# non vérifié, authentification par le moteur. Une IP reste le mode LAN historique (chiffrement sans identité).
 	var online_join := _is_hostname(ip)
+	if online_join and route == "":
+		# Recherche (brève) du serveur sur le réseau local, puis join effectif par _locate_then_join.
+		if _locating:
+			return false                     # double clic pendant la recherche
+		_locate_then_join(ip, pin, encrypted)
+		return true
+	var target := route if route != "" else ip
+	var peer := ENetMultiplayerPeer.new()
+	var err := peer.create_client(target, LanManager.PORT, 8)
+	if err != OK:
+		lan._set_status("Connection error: " + error_string(err))
+		return false
 	if online_join:
 		if peer.host.dtls_client_setup(ip, _verified_client_options()) != OK:
 			peer.close()
@@ -323,7 +333,7 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 		lan.session_encrypted = true
 		lan.session_online = true
 		_setup_engine_auth()
-		lan._lan_log("DTLS: certificat vérifié exigé (client → %s)" % ip)
+		lan._lan_log("DTLS: certificat vérifié exigé (client → %s via %s)" % [ip, target])
 	elif _invite_cert != "":
 		# Code d'invitation : seul le certificat de CET hôte est accepté (épinglage), sinon pas de connexion.
 		var tls: TLSOptions = lan.InviteModule.client_tls(_invite_cert)
@@ -411,6 +421,27 @@ static func _sha256_of(bytes: PackedByteArray) -> PackedByteArray:
 		ctx.update(bytes.slice(i, mini(i + step, bytes.size())))
 		i += step
 	return ctx.finish()
+
+## Adresse à joindre pour le serveur `host` : son adresse sur le réseau local s'il y est (la box ne fait pas
+## toujours le « NAT loopback » vers sa propre IP publique), sinon le nom lui-même. Le certificat reste vérifié
+## contre `host` dans tous les cas (dtls_client_setup reçoit le nom, pas l'adresse).
+func _locate_then_join(host: String, pin: String, encrypted: bool) -> void:
+	_locating = true
+	var target := await _route_to(host)
+	_locating = false
+	if not LanManager.session_active:
+		join_game(host, pin, encrypted, target)
+
+func _route_to(host: String) -> String:
+	var resolved := IP.resolve_hostname(host, IP.TYPE_IPV4)
+	if resolved != "" and LanManager.DiscoveryModule.is_private_ipv4(resolved):
+		return host                      # le nom mène déjà au réseau local (DNS local, /etc/hosts)
+	lan._set_status("Looking for %s on the local network…" % host)
+	var local: String = await lan.discovery.locate_online_server(host)
+	if local != "":
+		lan._lan_log("online: %s trouvé sur le réseau local (%s)" % [host, local])
+		return local
+	return host
 
 ## Nom d'hôte « public » (play.exemple.org) = serveur en ligne ; IP, nom court (raspberrypi) ou nom du réseau local
 ## (.local, .lan…) = LAN, mode historique. « localhost » compte comme en ligne (essais avec un vrai certificat).

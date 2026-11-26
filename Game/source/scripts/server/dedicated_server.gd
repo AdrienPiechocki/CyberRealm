@@ -56,6 +56,7 @@ func _ready() -> void:
 	lan.online = args.has("online")
 	lan.tls_cert_path = String(args.get("tls-cert", ""))
 	lan.tls_key_path = String(args.get("tls-key", ""))
+	lan.online_domain = String(args.get("domain", ""))
 	lan.max_players = int(args.get("max-players", 8))
 	lan.encryption_enabled = not args.has("no-dtls")
 	# Chat vocal : relayé par défaut (y compris en online) ; --no-voice coupe le relais.
@@ -84,7 +85,7 @@ func _ready() -> void:
 		get_tree().quit(4)
 		return
 	if lan.online:
-		print("[server] MODE ONLINE : TLS réel, authentification moteur, découverte désactivée — UDP %d, TCP %d" % [lan.PORT, lan.LEVEL_TCP_PORT])
+		print("[server] MODE ONLINE : TLS réel, authentification moteur, découverte désactivée (localisation par nom : LAN seulement) — UDP %d, TCP %d" % [lan.PORT, lan.LEVEL_TCP_PORT])
 		print("[server] mot de passe défini (%d caractères) ; admin : %s" % [lan.get_pin().length(),
 				"mot de passe défini" if lan.admin_password != "" else "désactivé"])
 	else:

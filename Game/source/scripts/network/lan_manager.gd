@@ -43,6 +43,8 @@ var dedicated := false
 var online := false
 var tls_cert_path := ""
 var tls_key_path := ""
+## Nom public du serveur en ligne (--domain) : il ne répond à la localisation LAN que pour ce nom ("" = tout nom).
+var online_domain := ""
 ## Client : session « en ligne » (hôte joint par NOM, certificat vérifié, authentification moteur). Mêmes restrictions.
 var session_online := false
 ## Client : la session a un serveur dédié (renseigné par le serveur à l'inscription). Le décor physique est alors
