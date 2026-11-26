@@ -13,6 +13,10 @@
 [ext_resource type="PackedScene" uid="uid://dbt10mmmsxoem" path="res://assets/Space Station/table.fbx" id="11_40jy2"]
 [ext_resource type="PackedScene" uid="uid://brdv1bfld6o2" path="res://assets/Space Station/computer-wide.fbx" id="15_82cfe"]
 [ext_resource type="PackedScene" uid="uid://dxdeo8biidht4" path="res://assets/Space Station/pipe-bend.fbx" id="16_gunhw"]
+[ext_resource type="PackedScene" path="res://scenes/objects/media_player.tscn" id="obj_media_player"]
+[ext_resource type="PackedScene" path="res://scenes/objects/notification_board.tscn" id="obj_notification_board"]
+[ext_resource type="PackedScene" path="res://scenes/objects/system_monitor.tscn" id="obj_system_monitor"]
+[ext_resource type="PackedScene" path="res://scenes/objects/wall_clock.tscn" id="obj_wall_clock"]
 
 [sub_resource type="PanoramaSkyMaterial" id="PanoramaSkyMaterial_64w2a"]
 panorama = ExtResource("2_fpun6")
@@ -319,3 +323,17 @@ transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 0, -2.5, -1.5)
 
 [node name="floor4" parent="Space Station/ROOM" unique_id=446538686 instance=ExtResource("3_m0xki")]
 transform = Transform3D(4, 0, 0, 0, 4, 0, 0, 0, 4, 4, -2.5, -1.5)
+
+[node name="DesktopObjects" type="Node3D" parent="."]
+
+[node name="MediaPlayer" parent="DesktopObjects" instance=ExtResource("obj_media_player")]
+transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -10.8007, 0.2, 0.3515)
+
+[node name="NotificationBoard" parent="DesktopObjects" instance=ExtResource("obj_notification_board")]
+transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -10.0936, 0.15, -0.3556)
+
+[node name="SystemMonitor" parent="DesktopObjects" instance=ExtResource("obj_system_monitor")]
+transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -9.3865, 0.2, -1.0627)
+
+[node name="WallClock" parent="DesktopObjects" instance=ExtResource("obj_wall_clock")]
+transform = Transform3D(0.70710677, 0, 0.70710677, 0, 1, 0, -0.70710677, 0, 0.70710677, -10.0936, 0.82, -0.3556)
