@@ -25,11 +25,16 @@ func _process(_delta: float) -> void:
 	if _arrow.visible:
 		_arrow.position = get_viewport().get_mouse_position()
 
+## Flèche de base du jeu (pointe en (0, 0)) : aussi utilisée pour le curseur d'une fenêtre distante en focus
+## (scripts/windows/focus/remote.gd), pour avoir partout le même pointeur.
+const ARROW_POINTS: Array[Vector2] = [
+	Vector2(0, 0), Vector2(0, 17), Vector2(4, 13), Vector2(7, 20),
+	Vector2(10, 19), Vector2(7, 12), Vector2(12, 12)]
+const ARROW_OUTLINE := 1.5
+
 class _CursorShape extends Node2D:
-	var points := PackedVector2Array([
-		Vector2(0, 0), Vector2(0, 17), Vector2(4, 13), Vector2(7, 20),
-		Vector2(10, 19), Vector2(7, 12), Vector2(12, 12)])
+	var points := PackedVector2Array(ARROW_POINTS)
 
 	func _draw() -> void:
 		draw_colored_polygon(points, Color.WHITE)
-		draw_polyline(points + PackedVector2Array([points[0]]), Color.BLACK, 1.5, true)
+		draw_polyline(points + PackedVector2Array([points[0]]), Color.BLACK, ARROW_OUTLINE, true)

@@ -26,6 +26,12 @@ const VIDEO_PACKET_SINGLE_MAX := 40000 # paquet ≤ ceci : 1 RPC (≤ 32 fragmen
 const VIDEO_CHUNK_SIZE := 30000 # au-delà : découpage, chaque morceau ≤ 1 vague ENet
 const VIDEO_CHUNK_STALE_MSEC := 2000 # purge des assemblages de chunks incomplets
 const VIDEO_MAX_AHEAD := 6 # flow control : ≤ 6 frames non appliquées en vol par peer. À 60 ips (16,7 ms/frame) et ~20 ms de RTT ACK, il faut ≥ 2-3 frames en vol : 6 laisse la marge contre les sursauts réseau sans gonfler la latence
+# Fenêtre adaptative : en ligne (relais du serveur, Internet), l'aller-retour frame -> ACK dépasse vite les 100 ms
+# que couvrent 6 frames à 60 ips ; le flow control sautait alors des P-frames, ce qui casse le décodage jusqu'à la
+# keyframe suivante (vidéo figée par à-coups). La fenêtre couvre 1,5 × l'aller-retour mesuré (+2), bornée à
+# VIDEO_MAX_AHEAD_SEC de vidéo pour ne pas gonfler la latence sur un lien saturé.
+const VIDEO_MAX_AHEAD_SEC := 0.5
+const VIDEO_SENT_LOG_MAX := 240 # horodatages d'envoi gardés par fenêtre et par peer (mesure de l'aller-retour)
 const VIDEO_NACK_GAP_MSEC := 500 # demande de keyframe (NACK) au plus 2×/s par fenêtre
 
 # ── Stream vidéo inter-frame (encodeur C++ VideoShare) ───────────────
@@ -41,6 +47,10 @@ var _video_config_sent := {}
 var _video_last_sent := {}
 # peer -> {wid -> seq} : dernière seq que le récepteur a confirmée appliquée.
 var _video_acked := {}
+# peer -> {wid -> {seq -> msec}} : heure d'envoi des frames (aller-retour mesuré à l'ACK).
+var _video_sent_msec := {}
+# peer -> ms : aller-retour frame -> ACK lissé (-1 tant qu'aucune mesure).
+var _video_rtt := {}
 # from -> {wid -> {codec, w, h}} : configs reçues (côté récepteur).
 var _video_configs := {}
 # from -> {wid -> seq} : dernière seq appliquée sur le quad distant.
@@ -122,6 +132,8 @@ func _stop_video_share() -> void:
 	_video_config_sent.clear()
 	_video_last_sent.clear()
 	_video_acked.clear()
+	_video_sent_msec.clear()
+	_video_rtt.clear()
 
 # Applique les réglages de partage vidéo (menu pause) : bitrate (bits/s),
 # codec ("auto" | "h264" | "av1") et fps. Si le partage est actif, il est
@@ -226,7 +238,7 @@ func _drain_video_packets() -> void:
 				# appliquées en route, on saute les P-frames (la prochaine
 				# keyframe le resynchronisera) pour ne pas saturer ENet.
 				var last_sent: int = sent.get(wid, -1)
-				if acked >= 0 and last_sent - acked >= VIDEO_MAX_AHEAD:
+				if acked >= 0 and last_sent - acked >= video_max_ahead(pid):
 					sent[wid] = seq
 					continue
 			if not _video_config_sent.get(pid, {}).has(wid):
@@ -236,15 +248,16 @@ func _drain_video_packets() -> void:
 				continue
 			_send_video_packet(pid, wid, seq, keyframe, data)
 			sent[wid] = seq
+			_note_video_sent(pid, wid, seq)
 			_video_diag_sent += 1
 			_video_diag_bytes += data.size()
 	var now := Time.get_ticks_msec()
 	if now - _video_diag_last_log >= 1000:
 		_video_diag_last_log = now
 		if _video_diag_sent > 0:
-			print("[video] diag tx: %d pkt/s %.1f KB/s pending=%d windows=%d" % [
+			print("[video] diag tx: %d pkt/s %.1f KB/s pending=%d windows=%d rtt=%s" % [
 				_video_diag_sent, float(_video_diag_bytes) / 1024.0,
-				lan.compositor.video_share_pending(), _video_windows_sent.size()])
+				lan.compositor.video_share_pending(), _video_windows_sent.size(), str(_video_rtt)])
 		_video_diag_sent = 0
 		_video_diag_bytes = 0
 
@@ -356,7 +369,40 @@ func _ack_video_seq(seqs: Dictionary) -> void:
 		var s := int(seqs[wid])
 		if s > int(cur.get(wid, -1)):
 			cur[wid] = s
+			_note_video_acked(from, int(wid), s, Time.get_ticks_msec())
 	_video_acked[from] = cur
+
+## Frames autorisées en vol vers `pid` (voir VIDEO_MAX_AHEAD_SEC).
+func video_max_ahead(pid: int) -> int:
+	return max_ahead_for(float(_video_rtt.get(pid, -1.0)), _video_fps)
+
+static func max_ahead_for(rtt_ms: float, fps: int) -> int:
+	var cap := maxi(VIDEO_MAX_AHEAD, ceili(fps * VIDEO_MAX_AHEAD_SEC))
+	if rtt_ms <= 0.0:
+		return VIDEO_MAX_AHEAD
+	return clampi(ceili(fps * rtt_ms / 1000.0 * 1.5) + 2, VIDEO_MAX_AHEAD, cap)
+
+func _note_video_sent(pid: int, wid: int, seq: int) -> void:
+	if not _video_sent_msec.has(pid):
+		_video_sent_msec[pid] = {}
+	var per: Dictionary = _video_sent_msec[pid]
+	if not per.has(wid):
+		per[wid] = {}
+	var stamps: Dictionary = per[wid]
+	stamps[seq] = Time.get_ticks_msec()
+	if stamps.size() > VIDEO_SENT_LOG_MAX:
+		stamps.erase(stamps.keys().min())
+
+## ACK de `seq` : aller-retour mesuré sur cette frame (lissé), horodatages antérieurs purgés.
+func _note_video_acked(pid: int, wid: int, seq: int, now: int) -> void:
+	var stamps: Dictionary = _video_sent_msec.get(pid, {}).get(wid, {})
+	if stamps.has(seq):
+		var sample := float(now - int(stamps[seq]))
+		var prev := float(_video_rtt.get(pid, -1.0))
+		_video_rtt[pid] = sample if prev < 0.0 else prev * 0.8 + sample * 0.2
+	for k in stamps.keys():
+		if int(k) <= seq:
+			stamps.erase(k)
 
 # Réception d'une frame vidéo : chunké ou non, on vérifie la séquence, on
 # enfile le paquet pour le décodeur worker (qui applique ensuite la texture

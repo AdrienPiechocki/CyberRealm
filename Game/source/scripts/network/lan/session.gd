@@ -840,6 +840,8 @@ func _on_peer_disconnected(id: int) -> void:
 	lan.window_share._last_applied_version.erase(id)
 	lan.window_share._last_acked_version.erase(id)
 	lan.video_share._video_last_sent.erase(id)
+	lan.video_share._video_sent_msec.erase(id)
+	lan.video_share._video_rtt.erase(id)
 	lan.video_share._video_acked.erase(id)
 	lan.video_share._video_config_sent.erase(id)
 	lan.video_share._video_ack_pending.erase(id)

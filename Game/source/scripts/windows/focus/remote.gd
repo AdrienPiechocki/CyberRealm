@@ -7,45 +7,42 @@ extends Node
 const FocusMode := preload("res://scripts/windows/focus_mode.gd")
 var fm: FocusMode = null
 
-# Bitmap 16×16 de la flèche de secours (pointe vers le coin haut-gauche,
-# hotspot (0,0)) : affichée quand l'application du propriétaire utilise le
-# curseur système (aucun set_cursor custom) — le cas le plus courant.
-const REMOTE_CURSOR_BITMAP := [
-	"1...............",
-	"11..............",
-	"111.............",
-	"1111............",
-	"11111...........",
-	"111111..........",
-	"1111111.........",
-	"11111111........",
-	"111111111.......",
-	"1111111111......",
-	"11111111111.....",
-	".111111111......",
-	"..1111111.......",
-	"...11111........",
-	"....111.........",
-	"................",
-]
+const KmsCursor := preload("res://scripts/kms_cursor.gd")
+const CURSOR_SS := 4            # sur-échantillonnage du rendu de la flèche (bords lissés)
 
+# Flèche de secours : la flèche de BASE du jeu (kms_cursor.gd), rendue une fois en image lissée (contour noir,
+# intérieur blanc, hotspot (0,0)). Affichée pour le pointeur de l'invité sous contrôle, et quand l'application du
+# propriétaire utilise le curseur système (aucun set_cursor custom) — le cas le plus courant.
 func _make_remote_cursor_fallback() -> ImageTexture:
-	var img := Image.create(32, 32, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0, 0, 0, 0))
-	for y in range(16):
-		for x in range(16):
-			if REMOTE_CURSOR_BITMAP[y][x] != "1":
-				continue
-			for oy in range(2):
-				for ox in range(2):
-					# Ombre portée décalée d'un pixel en bas-droite (clampée aux
-					# bords de l'image 32×32)
-					var sx := x * 2 + ox + 1
-					var sy := y * 2 + oy + 1
-					if sx < 32 and sy < 32:
-						img.set_pixel(sx, sy, Color(0, 0, 0, 0.6))
-					img.set_pixel(x * 2 + ox, y * 2 + oy, Color(1, 1, 1, 1))
+	var pts := PackedVector2Array(KmsCursor.ARROW_POINTS)
+	var half := KmsCursor.ARROW_OUTLINE / 2.0
+	var w := 16
+	var h := 24
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	for y in h:
+		for x in w:
+			var white := 0
+			var black := 0
+			for sy in CURSOR_SS:
+				for sx in CURSOR_SS:
+					var p := Vector2(x + (sx + 0.5) / CURSOR_SS, y + (sy + 0.5) / CURSOR_SS) - Vector2(1, 1)
+					if _edge_distance(pts, p) <= half:
+						black += 1
+					elif Geometry2D.is_point_in_polygon(p, pts):
+						white += 1
+			var n := float(CURSOR_SS * CURSOR_SS)
+			var a := (white + black) / n
+			if a > 0.0:
+				var c := white / float(white + black)
+				img.set_pixel(x, y, Color(c, c, c, a))
 	return ImageTexture.create_from_image(img)
+
+static func _edge_distance(pts: PackedVector2Array, p: Vector2) -> float:
+	var best := INF
+	for i in pts.size():
+		var q := Geometry2D.get_closest_point_to_segment(p, pts[i], pts[(i + 1) % pts.size()])
+		best = minf(best, q.distance_to(p))
+	return best
 
 # Affiche en plein écran une fenêtre d'un AUTRE joueur (vue seule) : aucun
 # input forwardé, pas de kill, seul le raccourci de sortie fonctionne. La
@@ -136,13 +133,15 @@ func _update_remote_cursor() -> void:
 	var img_tex: Texture2D = custom if custom != null else fm.remote_cursor_fallback_tex
 	var img_size := img_tex.get_size()
 	fm.remote_cursor_overlay.texture = img_tex
-	var hotspot: Vector2 = fm.remote_cursor_state.get("hotspot", Vector2.ZERO)
+	var hotspot: Vector2 = fm.remote_cursor_state.get("hotspot", Vector2.ZERO) if custom != null else Vector2(1, 1)
 	var px := float(fm.remote_cursor_state.get("x", 0.0))
 	var py := float(fm.remote_cursor_state.get("y", 0.0))
-	fm.remote_cursor_overlay.size = img_size * scale
+	# Image de l'application : à l'échelle de la fenêtre affichée ; flèche de base : à sa taille d'écran normale.
+	var cscale := scale if custom != null else Vector2.ONE
+	fm.remote_cursor_overlay.size = img_size * cscale
 	fm.remote_cursor_overlay.position = offset \
 		+ Vector2(px / tex_size.x, py / tex_size.y) * displayed \
-		- hotspot * scale
+		- hotspot * cscale
 	fm.remote_cursor_overlay.visible = true
 
 # ── Contrôle de la fenêtre distante (lot J) ─────────────────────────
@@ -220,7 +219,7 @@ func _show_guest_cursor(pos: Vector2) -> void:
 		return
 	fm.remote_cursor_overlay.texture = fm.remote_cursor_fallback_tex
 	fm.remote_cursor_overlay.size = fm.remote_cursor_fallback_tex.get_size()
-	fm.remote_cursor_overlay.position = pos
+	fm.remote_cursor_overlay.position = pos - Vector2(1, 1)     # pointe de la flèche (image décalée d'1 px : contour)
 	fm.remote_cursor_overlay.visible = true
 
 func _hide_remote_cursor() -> void:

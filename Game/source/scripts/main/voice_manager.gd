@@ -30,6 +30,12 @@ var _players: Dictionary = {}            # peer -> {player, playback, spatial}
 var _last_heard: Dictionary = {}         # peer -> ms
 var _speaking_shown: Dictionary = {}     # peer -> bool
 var local_speaking := false
+# Diagnostic (CYBERREALM_VOICE_DEBUG=1), une ligne par seconde : envoi (trames, volume moyen du micro) et, par
+# interlocuteur, réception (trames, décodées, refusées, volume moyen décodé, lecteur 2D/3D, distance, bus).
+var _dbg := OS.get_environment("CYBERREALM_VOICE_DEBUG") == "1"
+var _dbg_t := 0
+var _dbg_tx := {"n": 0, "rms": 0.0, "polled": 0}
+var _dbg_rx: Dictionary = {}             # peer -> {n, dec, empty, refused, rms}
 
 func setup(p_compositor: Object, p_lan: Node, p_settings: Node) -> void:
 	compositor = p_compositor
@@ -64,6 +70,8 @@ func _process(_delta: float) -> void:
 		var ptt: bool = mode == "ptt" and Input.is_action_pressed("push_to_talk") \
 				and (not can_push_to_talk.is_valid() or bool(can_push_to_talk.call()))
 		for frame in compositor.voice_poll():
+			if _dbg:
+				_dbg_tx["polled"] += 1
 			var send := false
 			if mode == "ptt":
 				send = ptt
@@ -75,7 +83,41 @@ func _process(_delta: float) -> void:
 				_seq += 1
 				lan.voice.send(_seq, frame["data"])
 				local_speaking = true
+				if _dbg:
+					_dbg_tx["n"] += 1
+					_dbg_tx["rms"] += float(frame["rms"])
 	_update_speaking()
+	if _dbg:
+		_dbg_print(mode)
+
+func _dbg_print(mode: String) -> void:
+	var now := Time.get_ticks_msec()
+	if now - _dbg_t < 1000:
+		return
+	_dbg_t = now
+	if _dbg_tx["polled"] > 0 or _dbg_tx["n"] > 0:
+		print("[voice tx] mode=%s mic=%s polled=%d sent=%d mic_rms=%.4f" % [mode, _mic_target, _dbg_tx["polled"],
+				_dbg_tx["n"], _dbg_tx["rms"] / maxf(_dbg_tx["n"], 1)])
+	_dbg_tx = {"n": 0, "rms": 0.0, "polled": 0}
+	var bus := AudioServer.get_bus_index(BUS)
+	var cam := get_viewport().get_camera_3d() if is_inside_tree() else null
+	for peer in _dbg_rx:
+		var d: Dictionary = _dbg_rx[peer]
+		var e: Dictionary = _players.get(peer, {})
+		var kind := "none"
+		var dist := -1.0
+		var playing := false
+		if not e.is_empty() and is_instance_valid(e["player"]):
+			kind = "3d" if bool(e["spatial"]) else "2d"
+			playing = bool(e["player"].get("playing"))
+			if e["player"] is Node3D and cam != null:
+				dist = (e["player"] as Node3D).global_position.distance_to(cam.global_position)
+		print("[voice rx %d] recv=%d played=%d empty=%d refused=%d rms=%.4f player=%s playing=%s dist=%.1f vol=%.2f muted=%s bus=%d bus_db=%.1f bus_mute=%s paused=%s" % [
+				peer, d["n"], d["dec"], d["empty"], d["refused"], d["rms"] / maxf(d["dec"], 1), kind, playing, dist,
+				float(volumes.get(peer, 1.0)), muted.has(peer), bus,
+				AudioServer.get_bus_volume_db(bus) if bus >= 0 else 0.0, AudioServer.is_bus_mute(bus) if bus >= 0 else false,
+				get_tree().paused if is_inside_tree() else false])
+	_dbg_rx.clear()
 
 func _close_mic() -> void:
 	if compositor != null and _mic_target != "<closed>":
@@ -89,11 +131,26 @@ func _on_packet(from_id: int, seq: int, data: PackedByteArray) -> void:
 	if muted.has(from_id):
 		return
 	var pcm: PackedVector2Array = compositor.voice_decode(from_id, seq, data)
+	var d: Dictionary = {}
+	if _dbg:
+		d = _dbg_rx.get(from_id, {"n": 0, "dec": 0, "empty": 0, "refused": 0, "rms": 0.0})
+		_dbg_rx[from_id] = d
+		d["n"] += 1
 	if pcm.is_empty():
+		if _dbg:
+			d["empty"] += 1
 		return
 	var pb := _playback_for(from_id)
 	if pb != null and pb.can_push_buffer(pcm.size()):
 		pb.push_buffer(pcm)
+		if _dbg:
+			d["dec"] += 1
+			var sum := 0.0
+			for v in pcm:
+				sum += v.x * v.x
+			d["rms"] += sqrt(sum / pcm.size())
+	elif _dbg:
+		d["refused"] += 1
 
 func _playback_for(peer: int) -> AudioStreamGeneratorPlayback:
 	var spatial := bool(settings.is_voice_spatial())
