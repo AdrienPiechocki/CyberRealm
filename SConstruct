@@ -117,6 +117,16 @@ ext_image_capture_source_header = env.Command(
     "wayland-scanner server-header $SOURCE $TARGET",
 )
 
+# wp-cursor-shape-v1 (staging) : wlr_cursor_shape_v1.h inclut
+# "cursor-shape-v1-protocol.h" (enum des formes), non fourni par wlroots.
+cursor_shape_xml = "/usr/share/wayland-protocols/staging/cursor-shape/cursor-shape-v1.xml"
+cursor_shape_header = env.Command(
+    "compositors/protocols/cursor-shape-v1-protocol.h",
+    cursor_shape_xml,
+    "wayland-scanner server-header $SOURCE $TARGET",
+)
+env.Depends(sources, cursor_shape_header)
+
 env.Depends(sources, ext_image_copy_capture_header)
 env.Depends(sources, ext_image_capture_source_header)
 

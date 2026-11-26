@@ -849,6 +849,7 @@ void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
         WindowCursorState &cs = self->window_cursor[window_id];
         cs.window_id = window_id;
         cs.hidden = false;
+        cs.shape_name.clear();
         if (cs.surface != event->surface) {
             if (cs.surface) {
                 wl_list_remove(&cs.commit_listener.link);
@@ -893,15 +894,8 @@ void WlrCompositor::on_request_set_cursor(wl_listener *listener, void *data) {
         WindowCursorState &cs = self->window_cursor[window_id];
         cs.window_id = window_id;
         cs.hidden = true;
-        if (cs.surface) {
-            wl_list_remove(&cs.commit_listener.link);
-            wl_list_remove(&cs.client_commit_listener.link);
-            wl_list_remove(&cs.destroy_listener.link);
-            wl_list_init(&cs.commit_listener.link);
-            wl_list_init(&cs.client_commit_listener.link);
-            wl_list_init(&cs.destroy_listener.link);
-        }
-        cs.surface = nullptr;
+        cs.shape_name.clear();
+        detach_cursor_surface(cs);
         if (dbg) fprintf(stderr, "waylandgodot: set_cursor NULL window=%d kept_image=%s serial=%llu\n",
             window_id, cs.image.is_valid() ? "yes" : "no", (unsigned long long)cs.serial);
     }
@@ -955,36 +949,9 @@ bool WlrCompositor::capture_window_cursor(WindowCursorState &cs, wlr_buffer *buf
         wlr_buffer_end_data_ptr_access(buffer);
         return false;
     }
-    // ARGB8888 (DRM) = BGRA little-endian, alpha prémultipliée.
-    // Conversion en RGBA8 Godot (alpha straight).
-    PackedByteArray px;
-    px.resize((int64_t)w * h * 4);
-    uint8_t *dst = px.ptrw();
-    const uint8_t *src = static_cast<const uint8_t *>(data);
-    for (int y = 0; y < h; y++) {
-        const uint8_t *srow = src + (size_t)y * stride;
-        uint8_t *drow = dst + (size_t)y * w * 4;
-        for (int x = 0; x < w; x++) {
-            uint8_t b = srow[x * 4 + 0];
-            uint8_t g = srow[x * 4 + 1];
-            uint8_t r = srow[x * 4 + 2];
-            uint8_t a = srow[x * 4 + 3];
-            if (a == 0) {
-                r = g = b = 0;
-            } else if (a != 255) {
-                r = (uint8_t)(((int)r * 255) / a);
-                g = (uint8_t)(((int)g * 255) / a);
-                b = (uint8_t)(((int)b * 255) / a);
-            }
-            drow[x * 4 + 0] = r;
-            drow[x * 4 + 1] = g;
-            drow[x * 4 + 2] = b;
-            drow[x * 4 + 3] = a;
-        }
-    }
+    godot::Ref<godot::Image> img = image_from_argb8888(
+        static_cast<const uint8_t *>(data), w, h, stride);
     wlr_buffer_end_data_ptr_access(buffer);
-    godot::Ref<godot::Image> img = godot::Image::create_from_data(
-        w, h, false, godot::Image::FORMAT_RGBA8, px);
     cs.image = img;
     cs.serial++;
     return true;

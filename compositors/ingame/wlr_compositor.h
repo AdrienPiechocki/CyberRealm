@@ -16,6 +16,7 @@
 
 #include <set>
 #include <string>
+#include <vector>
 
 #include "vulkan_dmauf.h"
 #include "audio_share.h"
@@ -66,6 +67,9 @@ extern "C" {
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/types/wlr_idle_notify_v1.h>
 #include <wlr/types/wlr_idle_inhibit_v1.h>
+#include <wlr/types/wlr_cursor_shape_v1.h>
+#include <wlr/types/wlr_foreign_toplevel_management_v1.h>
+#include <wlr/types/wlr_keyboard_shortcuts_inhibit_v1.h>
 }
 
 namespace godot {
@@ -272,6 +276,19 @@ struct WindowState {
 
     class WlrCompositor *owner = nullptr;
     bool decoration_server_side = false;
+
+    // Handle zwlr-foreign-toplevel-management-v1 (barres de tâches : module
+    // wlr/taskbar de waybar…). Créé au map, détruit à l'unmap. Les requêtes
+    // (activer, minimiser, fermer, plein écran) remontent au jeu par le
+    // signal toplevel_request : c'est lui qui décide (cacher le quad, mode
+    // focus…) puis renvoie l'état via set_toplevel_minimized/fullscreen.
+    wlr_foreign_toplevel_handle_v1 *mgmt_handle = nullptr;
+    wl_listener mgmt_request_activate_listener{};
+    wl_listener mgmt_request_minimize_listener{};
+    wl_listener mgmt_request_maximize_listener{};
+    wl_listener mgmt_request_fullscreen_listener{};
+    wl_listener mgmt_request_close_listener{};
+    wl_listener mgmt_destroy_listener{};
 };
 
 // Source de capture fenêtre pour ext_image_copy_capture : permet à portal-wlr
@@ -467,6 +484,11 @@ struct WindowCursorState {
     // système (sinon double curseur : celui du jeu + la flèche KDE).
     bool hidden = false;
     godot::Ref<godot::Image> image;   // dernière image RGBA8 capturée (ou null)
+    // Forme wp_cursor_shape_v1 courante (nom xcursor, ex. "text") quand le
+    // curseur vient d'une forme et non d'une surface ; "" sinon. Évite de
+    // ré-incrémenter serial (et de renvoyer l'image en LAN) quand le client
+    // redemande la même forme à chaque entrée du pointeur.
+    std::string shape_name;
 
     class WlrCompositor *owner = nullptr;
 };
@@ -601,6 +623,75 @@ class WlrCompositor : public Node {
     bool capture_window_cursor(WindowCursorState &cs, wlr_buffer *buffer);
     // Détache listeners + surface + image d'un état curseur de fenêtre.
     void clear_window_cursor(int window_id);
+    // Détache la surface curseur (listeners) d'un état, sans toucher à l'image.
+    static void detach_cursor_surface(WindowCursorState &cs);
+    // ARGB8888 prémultiplié (buffers wl_shm, images xcursor) -> Image RGBA8.
+    static godot::Ref<godot::Image> image_from_argb8888(const uint8_t *src, int w, int h, size_t stride);
+    // Fenêtre qui a le focus pointeur du seat (surface racine), -1 sinon.
+    int pointer_focus_window_id();
+
+    // --- wp_cursor_shape_v1 (cursor_shape.cpp) --------------------------
+    // Les clients récents (GTK 4, Qt ≥ 6.6) demandent une FORME (« text »,
+    // « pointer »…) au lieu d'envoyer une surface curseur. On la convertit en
+    // image xcursor dans le même WindowCursorState que les curseurs-surfaces :
+    // le mode focus, l'overlay KMS et le miroir LAN la voient sans rien changer.
+    wlr_cursor_shape_manager_v1 *cursor_shape_manager = nullptr;
+    wl_listener cursor_shape_request_listener{};
+    bool cursor_shape_listening = false;
+    static void on_cursor_shape_request(wl_listener *listener, void *data);
+
+    // --- zwlr_foreign_toplevel_management_v1 (foreign_toplevel_mgmt.cpp) --
+    wlr_foreign_toplevel_manager_v1 *foreign_toplevel_manager = nullptr;
+    void create_toplevel_mgmt_handle(WindowState &ws);
+    static void destroy_toplevel_mgmt_handle(WindowState &ws);
+    // (Re)calcule l'état « activated » de chaque handle d'après le focus
+    // clavier du seat. Appelé à chaque changement de focus clavier.
+    void sync_toplevel_mgmt_activated();
+    static void on_mgmt_request_activate(wl_listener *listener, void *data);
+    static void on_mgmt_request_minimize(wl_listener *listener, void *data);
+    static void on_mgmt_request_maximize(wl_listener *listener, void *data);
+    static void on_mgmt_request_fullscreen(wl_listener *listener, void *data);
+    static void on_mgmt_request_close(wl_listener *listener, void *data);
+    static void on_mgmt_destroy(wl_listener *listener, void *data);
+    void set_toplevel_minimized(int window_id, bool minimized);
+    void set_toplevel_fullscreen(int window_id, bool fullscreen);
+
+    // Focus clavier du seat : alimente l'état « activated » des handles
+    // foreign-toplevel et l'activation des inhibiteurs de raccourcis.
+    wl_listener keyboard_focus_change_listener{};
+    bool keyboard_focus_listening = false;
+    static void on_keyboard_focus_change(wl_listener *listener, void *data);
+    // Fenêtre (toplevel) d'une surface : racine, ou toplevel parent d'un popup.
+    int window_id_for_surface(wlr_surface *surface);
+    // Fenêtre qui a le focus clavier du seat, -1 sinon.
+    int keyboard_focus_window_id();
+
+    // --- zwp_keyboard_shortcuts_inhibit_v1 (shortcuts_inhibit.cpp) -------
+    // Une VM, un client de bureau à distance… demande à recevoir Super,
+    // Alt+Tab, etc. Le JEU désigne la seule fenêtre autorisée
+    // (set_shortcuts_inhibit_window : la fenêtre en mode focus, si l'option
+    // le permet) ; l'inhibiteur n'est actif que si cette fenêtre a AUSSI le
+    // focus clavier. Le jeu lit is_shortcuts_inhibited() pour court-circuiter
+    // ses propres raccourcis.
+    struct ShortcutsInhibitorState {
+        wlr_keyboard_shortcuts_inhibitor_v1 *inhibitor = nullptr;
+        wl_listener destroy_listener{};
+        class WlrCompositor *owner = nullptr;
+    };
+    wlr_keyboard_shortcuts_inhibit_manager_v1 *shortcuts_inhibit_manager = nullptr;
+    wl_listener new_shortcuts_inhibitor_listener{};
+    bool shortcuts_inhibit_listening = false;
+    std::vector<ShortcutsInhibitorState *> shortcuts_inhibitors;
+    int shortcuts_inhibit_window_id = -1;      // fenêtre autorisée par le jeu
+    int shortcuts_inhibit_active_window_id = -1; // fenêtre dont l'inhibiteur est actif
+    static void on_new_shortcuts_inhibitor(wl_listener *listener, void *data);
+    static void on_shortcuts_inhibitor_destroy(wl_listener *listener, void *data);
+    // Active/désactive les inhibiteurs selon la fenêtre autorisée et le
+    // focus clavier ; émet shortcuts_inhibit_changed si l'état change.
+    void update_shortcuts_inhibitors();
+    void set_shortcuts_inhibit_window(int window_id);
+    bool is_shortcuts_inhibited() const;
+    bool window_requests_shortcuts_inhibit(int window_id);
 
     std::unordered_map<int, WindowState> windows;
     int next_window_id = 1;

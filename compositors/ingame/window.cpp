@@ -162,6 +162,9 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
         }
     }
 
+    // Handle zwlr-foreign-toplevel-management-v1 (barres de tâches).
+    self->create_toplevel_mgmt_handle(*ws);
+
     UtilityFunctions::print("waylandgodot: toplevel mapped id=", ws->id,
         " app_id=", app_id, " title=\"", title, "\" size=",
         ws->toplevel->base->surface->current.width, "x",
@@ -179,6 +182,7 @@ void WlrCompositor::on_toplevel_map(wl_listener *listener, void *data) {
 void WlrCompositor::on_toplevel_unmap(wl_listener *listener, void *data) {
     WindowState *ws = wl_container_of(listener, ws, unmap_listener);
     WlrCompositor *self = ws->owner;
+    destroy_toplevel_mgmt_handle(*ws);
     self->emit_signal("window_unmapped", ws->id);
     // Fenêtre fermée : rafraîchit le snapshot X11 (fenêtres/apps retirées).
     self->x11_resolver.request_refresh();
@@ -195,6 +199,10 @@ void WlrCompositor::on_toplevel_set_title(wl_listener *listener, void *data) {
             .app_id = ws->toplevel->app_id ? ws->toplevel->app_id : "",
         };
         wlr_ext_foreign_toplevel_handle_v1_update_state(ws->foreign_handle, &state);
+    }
+    if (ws->mgmt_handle) {
+        wlr_foreign_toplevel_handle_v1_set_title(ws->mgmt_handle,
+            ws->toplevel->title ? ws->toplevel->title : "");
     }
 
     // Le titre peut changer à tout moment (xdg-shell set_title, avant OU
@@ -223,6 +231,7 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
         wlr_ext_foreign_toplevel_handle_v1_destroy(ws->foreign_handle);
         ws->foreign_handle = nullptr;
     }
+    destroy_toplevel_mgmt_handle(*ws);
 
     // Retire les trackers de sous-surfaces (et leurs listeners des signaux
     // des surfaces, qui peuvent survivre à la fenêtre).

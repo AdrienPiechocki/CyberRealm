@@ -189,6 +189,11 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("get_window_list"), &WlrCompositor::get_window_list);
     ClassDB::bind_method(D_METHOD("close_window", "window_id"), &WlrCompositor::close_window);
+    ClassDB::bind_method(D_METHOD("set_toplevel_minimized", "window_id", "minimized"), &WlrCompositor::set_toplevel_minimized);
+    ClassDB::bind_method(D_METHOD("set_toplevel_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_toplevel_fullscreen);
+    ClassDB::bind_method(D_METHOD("set_shortcuts_inhibit_window", "window_id"), &WlrCompositor::set_shortcuts_inhibit_window);
+    ClassDB::bind_method(D_METHOD("is_shortcuts_inhibited"), &WlrCompositor::is_shortcuts_inhibited);
+    ClassDB::bind_method(D_METHOD("window_requests_shortcuts_inhibit", "window_id"), &WlrCompositor::window_requests_shortcuts_inhibit);
 
     ClassDB::bind_method(D_METHOD("release_all_keys"), &WlrCompositor::release_all_keys);
 
@@ -209,6 +214,17 @@ void WlrCompositor::_bind_methods() {
         PropertyInfo(Variant::STRING, "title"),
         PropertyInfo(Variant::STRING, "app_id")));
     ADD_SIGNAL(MethodInfo("window_unmapped", PropertyInfo(Variant::INT, "id")));
+    // Requête d'une barre de tâches (zwlr_foreign_toplevel_management_v1) :
+    // action = "activate" | "minimize" | "maximize" | "fullscreen" | "close".
+    ADD_SIGNAL(MethodInfo("toplevel_request",
+        PropertyInfo(Variant::INT, "window_id"),
+        PropertyInfo(Variant::STRING, "action"),
+        PropertyInfo(Variant::BOOL, "value")));
+    // Inhibiteur de raccourcis (zwp_keyboard_shortcuts_inhibit_v1) activé /
+    // désactivé pour une fenêtre.
+    ADD_SIGNAL(MethodInfo("shortcuts_inhibit_changed",
+        PropertyInfo(Variant::INT, "window_id"),
+        PropertyInfo(Variant::BOOL, "active")));
     ADD_SIGNAL(MethodInfo("window_decorations_changed",
         PropertyInfo(Variant::INT, "id"),
         PropertyInfo(Variant::BOOL, "server_side")));
@@ -396,6 +412,18 @@ WlrCompositor::~WlrCompositor() {
             wl_list_remove(&pointer_grab_end_listener.link);
         if (!wl_list_empty(&request_set_cursor_listener.link))
             wl_list_remove(&request_set_cursor_listener.link);
+        if (cursor_shape_listening) {
+            wl_list_remove(&cursor_shape_request_listener.link);
+            cursor_shape_listening = false;
+        }
+        if (keyboard_focus_listening) {
+            wl_list_remove(&keyboard_focus_change_listener.link);
+            keyboard_focus_listening = false;
+        }
+        if (shortcuts_inhibit_listening) {
+            wl_list_remove(&new_shortcuts_inhibitor_listener.link);
+            shortcuts_inhibit_listening = false;
+        }
 
         // Détruire le curseur AVANT le display (wlr_cursor/wlr_cursor_manager
         // dépendent du display pour leurs ressources internes).
@@ -1136,6 +1164,38 @@ void WlrCompositor::start_headless() {
     // curseur de l'application en focus.
     request_set_cursor_listener.notify = WlrCompositor::on_request_set_cursor;
     wl_signal_add(&seat->events.request_set_cursor, &request_set_cursor_listener);
+
+    // wp_cursor_shape_v1 : curseur demandé par forme (cursor_shape.cpp).
+    cursor_shape_manager = wlr_cursor_shape_manager_v1_create(display, 1);
+    if (cursor_shape_manager) {
+        cursor_shape_request_listener.notify = WlrCompositor::on_cursor_shape_request;
+        wl_signal_add(&cursor_shape_manager->events.request_set_shape, &cursor_shape_request_listener);
+        cursor_shape_listening = true;
+    } else {
+        UtilityFunctions::printerr("waylandgodot: failed to create wp_cursor_shape_manager_v1 global");
+    }
+
+    // Focus clavier du seat : état « activated » des handles foreign-toplevel
+    // et activation des inhibiteurs de raccourcis (foreign_toplevel_mgmt.cpp).
+    keyboard_focus_change_listener.notify = WlrCompositor::on_keyboard_focus_change;
+    wl_signal_add(&seat->keyboard_state.events.focus_change, &keyboard_focus_change_listener);
+    keyboard_focus_listening = true;
+
+    // zwlr_foreign_toplevel_management_v1 : barres de tâches (waybar wlr/taskbar…).
+    foreign_toplevel_manager = wlr_foreign_toplevel_manager_v1_create(display);
+    if (!foreign_toplevel_manager) {
+        UtilityFunctions::printerr("waylandgodot: failed to create zwlr_foreign_toplevel_manager_v1 global");
+    }
+
+    // zwp_keyboard_shortcuts_inhibit_v1 : VM / bureau à distance (shortcuts_inhibit.cpp).
+    shortcuts_inhibit_manager = wlr_keyboard_shortcuts_inhibit_v1_create(display);
+    if (shortcuts_inhibit_manager) {
+        new_shortcuts_inhibitor_listener.notify = WlrCompositor::on_new_shortcuts_inhibitor;
+        wl_signal_add(&shortcuts_inhibit_manager->events.new_inhibitor, &new_shortcuts_inhibitor_listener);
+        shortcuts_inhibit_listening = true;
+    } else {
+        UtilityFunctions::printerr("waylandgodot: failed to create zwp_keyboard_shortcuts_inhibit_manager_v1 global");
+    }
 
     new_toplevel_listener.notify = WlrCompositor::on_new_toplevel;
     wl_signal_add(&xdg_shell->events.new_toplevel, &new_toplevel_listener);
