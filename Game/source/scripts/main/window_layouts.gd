@@ -226,6 +226,9 @@ func _resolve_launch(id: int) -> void:
 	live["bin"] = launch_bin(info)
 	if String(info.get("flatpak_id", "")) == "" and TERMINALS.has(String(live["bin"])):
 		live["argv0"] = String(info["argv"][0])
+	var moz := mozilla_profile_of(pid)
+	if moz != "":
+		live["moz_profile"] = moz
 
 func _session_from_live() -> Array:
 	var out: Array = []
@@ -255,6 +258,8 @@ func _session_from_live() -> Array:
 		if not by_pid.has(live["pid"]):
 			by_pid[live["pid"]] = {"key": str(live["pid"]), "pid": live["pid"], "cmd": live["cmd"], "bin": live["bin"],
 				"app_id": app_id, "uids": []}
+			if live.has("moz_profile"):
+				by_pid[live["pid"]]["moz_profile"] = live["moz_profile"]
 			out.append(by_pid[live["pid"]])
 		by_pid[live["pid"]]["uids"].append_array(uids)
 	return out
@@ -281,6 +286,13 @@ func restore_session(startup_commands: Array) -> Array:
 			var app := String(item.get("app_id", ""))
 			_expected[app] = _expected.get(app, []) + uids
 	_expect_left = EXPECT_WINDOW_SEC
+	# Firefox (et dérivés) : le jeu l'a fermé proprement, il ne proposerait pas de restaurer ses onglets. Le réglage
+	# à usage unique browser.sessionstore.resume_session_once (celui de Firefox quand il redémarre après une mise à
+	# jour) lui fait rouvrir sa session précédente ; il le remet lui-même à false ensuite.
+	for item in items:
+		var prof := String(item.get("moz_profile", ""))
+		if prof != "":
+			resume_mozilla_session_once(prof)
 	for cmd in cmds:
 		compositor.launch_app(cmd)
 	if not cmds.is_empty():
@@ -427,6 +439,45 @@ static func launch_bin(info: Dictionary) -> String:
 		return flatpak
 	var argv: Variant = info.get("argv", [])
 	return String(argv[0]).get_file() if not argv.is_empty() else ""
+
+## Profil Firefox / Thunderbird / LibreWolf d'un processus en cours : dossier du `.parentlock` qu'il tient ouvert.
+## Vide si ce n'est pas une app Mozilla (ou /proc illisible).
+static func mozilla_profile_of(pid: int) -> String:
+	var d := DirAccess.open("/proc/%d/fd" % pid)
+	if d == null:
+		return ""
+	for f in d.get_files():
+		var target := d.read_link(f)
+		if target.ends_with("/.parentlock"):
+			return target.get_base_dir()
+	return ""
+
+## Active browser.sessionstore.resume_session_once dans prefs.js du profil (Firefox fermé).
+static func resume_mozilla_session_once(profile_dir: String) -> bool:
+	var path := profile_dir.path_join("prefs.js")
+	if not FileAccess.file_exists(path):
+		return false
+	var text := prefs_with_resume_once(FileAccess.get_file_as_string(path))
+	var tmp := path + ".cyberrealm-tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		return false
+	f.store_string(text)
+	f.close()
+	return DirAccess.rename_absolute(tmp, path) == OK
+
+const RESUME_ONCE_PREF := "browser.sessionstore.resume_session_once"
+
+## prefs.js avec le réglage à true (ligne existante remplacée, sinon ajoutée). Logique pure, testée.
+static func prefs_with_resume_once(text: String) -> String:
+	var lines: Array = []
+	for l in text.split("\n"):
+		if not l.contains('"%s"' % RESUME_ONCE_PREF):
+			lines.append(l)
+	while not lines.is_empty() and String(lines[-1]).strip_edges() == "":
+		lines.pop_back()
+	lines.append('user_pref("%s", true);' % RESUME_ONCE_PREF)
+	return "\n".join(lines) + "\n"
 
 ## Commandes à relancer : une par processus de la session, sauf les exécutables déjà lancés comme startup apps.
 static func session_commands(session: Array, startup_commands: Array) -> Array:

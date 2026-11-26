@@ -85,8 +85,13 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   in front of you as usual, and places of older sessions are forgotten.
   When you quit, every window is first asked to close, as if you clicked its
   close button, then apps still running get SIGTERM (5 s each step) — so they
-  save their own state: Firefox offers to restore its tabs (History → *Restore
-  previous session*, or automatically with *Open previous windows and tabs*).
+  save their own state. Firefox (and LibreWolf, Thunderbird…) then reopens its
+  tabs by itself: before relaunching it, the game sets the one-shot pref
+  `browser.sessionstore.resume_session_once` in its profile (found through the
+  `.parentlock` it held open), the pref Firefox uses itself when it restarts
+  for an update, and that it resets afterwards. Limit: with several Firefox
+  windows, only the last one closed keeps its tabs (Firefox forgets windows
+  closed before its last one).
   Not restored: apps closed during the game, dialogs, the polkit agent, and
   terminal tabs beyond the first one of each window.
   Stored in `user://window_layouts.json`; per level, inactive on a level

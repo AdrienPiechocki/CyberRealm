@@ -434,3 +434,11 @@ func test_startup_app_windows_get_their_place_without_relaunch():
 	r = Runner.assert_true(l2.win3d.applied.has(8), "mais sa fenêtre retrouve sa place")
 	_cleanup()
 	return r
+
+func test_firefox_resume_once_pref():
+	var before := 'user_pref("a", 1);\nuser_pref("browser.sessionstore.resume_session_once", false);\nuser_pref("b", 2);\n\n'
+	var after := Layouts.prefs_with_resume_once(before)
+	var r: Variant = Runner.assert_eq(after, 'user_pref("a", 1);\nuser_pref("b", 2);\nuser_pref("browser.sessionstore.resume_session_once", true);\n',
+		"ligne existante remplacée par true, à la fin")
+	if r is String: return r
+	return Runner.assert_eq(Layouts.prefs_with_resume_once(""), 'user_pref("browser.sessionstore.resume_session_once", true);\n', "prefs.js vide")
