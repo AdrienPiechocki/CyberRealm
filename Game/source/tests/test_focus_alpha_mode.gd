@@ -136,3 +136,52 @@ func test_cpu_consumer_is_released_within_probe_timeout() -> Variant:
 		return "la copie CPU ne doit jamais rester demandee au-dela du delai de salve"
 	_teardown()
 	return true
+# ── Occludeur plein écran : pas de recalage à chaque frame ────────────
+# Chaque nouveau transform d'occludeur fait reconstruire au module raycast la
+# scène Embree du niveau entier (nproc-2 threads). La caméra suit la tête
+# animée de l'avatar, donc bouge de quelques mm à chaque frame : recaler
+# l'occludeur à chaque frame coûtait ~6 cœurs en continu (Firefox en focus).
+func _setup_occluder() -> Camera3D:
+	var player := Node3D.new()
+	var cam := Camera3D.new()
+	cam.name = "Camera3D"
+	player.add_child(cam)
+	focus.add_child(player)
+	focus.player = player
+	focus.occlusion._ensure_world_occluder()
+	focus._world_occluder.visible = true
+	focus.occlusion._update_world_occluder()
+	return cam
+
+func test_occluder_ignores_head_jitter() -> Variant:
+	if _setup() != true:
+		return "setup"
+	var cam := _setup_occluder()
+	var before: Transform3D = focus._world_occluder.global_transform
+	cam.position += Vector3(0.004, -0.003, 0.002)
+	cam.rotation.x += deg_to_rad(0.5)
+	focus.occlusion._update_world_occluder()
+	if not focus._world_occluder.global_transform.is_equal_approx(before):
+		_teardown()
+		return "un tremblement de tête de quelques mm ne doit pas déplacer l'occludeur"
+	_teardown()
+	return true
+
+func test_occluder_follows_real_camera_move() -> Variant:
+	if _setup() != true:
+		return "setup"
+	var cam := _setup_occluder()
+	var before: Transform3D = focus._world_occluder.global_transform
+	cam.position += Vector3(0.0, 0.0, -0.1)
+	focus.occlusion._update_world_occluder()
+	if focus._world_occluder.global_transform.is_equal_approx(before):
+		_teardown()
+		return "un vrai déplacement de caméra doit recaler l'occludeur"
+	before = focus._world_occluder.global_transform
+	cam.rotation.y += deg_to_rad(15.0)
+	focus.occlusion._update_world_occluder()
+	if focus._world_occluder.global_transform.is_equal_approx(before):
+		_teardown()
+		return "une vraie rotation de caméra doit recaler l'occludeur"
+	_teardown()
+	return true

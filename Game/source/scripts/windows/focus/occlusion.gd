@@ -17,8 +17,20 @@ var fm: FocusMode = null
 # winding, occlusion valide quel que soit l'angle.
 
 const OCCLUDER_DIST := 0.12 # m devant la caméra (> near plane par défaut 0.05)
-const OCCLUDER_MARGIN := 1.4 # marge de couverture du frustum
+const OCCLUDER_MARGIN := 2.0 # marge de couverture du frustum (absorbe les tolérances ci-dessous)
 const OCCLUDER_THICKNESS := 0.02 # m, épaisseur du box
+
+# Le module raycast reconstruit TOUTE la scène Embree (BVH du niveau entier,
+# sur nproc-2 threads) dès qu'un occludeur change de transform. Or la caméra
+# n'est jamais tout à fait immobile en focus : elle suit la tête animée de
+# l'avatar (set_head_follow, respiration de l'idle). Recaler l'occludeur à
+# chaque frame coûtait ~6 cœurs en continu. On ne le déplace donc que si la
+# caméra s'est éloignée de la pose de référence au-delà de ces seuils ; la
+# marge ci-dessus garantit que le frustum reste couvert entre-temps.
+const OCCLUDER_MOVE_TOLERANCE := 0.02 # m
+const OCCLUDER_TURN_TOLERANCE := 0.995 # cos de l'angle (~5.7°) entre axes de visée
+var _occluder_ref_xform := Transform3D()
+var _occluder_ref_valid := false
 
 # ── Transparence du focus vs occlusion ───────────────────────────────
 # Une fenêtre semi-transparente (Konsole…) laisse voir la scène 3D derrière
@@ -45,6 +57,7 @@ func _ensure_world_occluder() -> void:
 	fm._world_occluder.occluder = box
 	fm._world_occluder.visible = false
 	fm.add_child(fm._world_occluder)
+	_occluder_ref_valid = false
 
 # Repositionne l'occludeur devant la caméra courante. Appelé chaque frame en
 # focus : la caméra est normalement figée par le focus, mais rester correct
@@ -69,10 +82,21 @@ func _update_world_occluder() -> void:
 		vh = 2.0 * OCCLUDER_DIST * tan(half_fov)
 		vw = vh * aspect
 	var box := fm._world_occluder.occluder as BoxOccluder3D
-	box.size = Vector3(vw * OCCLUDER_MARGIN, vh * OCCLUDER_MARGIN, OCCLUDER_THICKNESS)
+	var size := Vector3(vw * OCCLUDER_MARGIN, vh * OCCLUDER_MARGIN, OCCLUDER_THICKNESS)
+	var cam_xf := cam.global_transform
+	var size_changed := not box.size.is_equal_approx(size)
+	if not size_changed and _occluder_ref_valid \
+			and cam_xf.origin.distance_to(_occluder_ref_xform.origin) < OCCLUDER_MOVE_TOLERANCE \
+			and cam_xf.basis.z.normalized().dot(_occluder_ref_xform.basis.z.normalized()) > OCCLUDER_TURN_TOLERANCE \
+			and cam_xf.basis.y.normalized().dot(_occluder_ref_xform.basis.y.normalized()) > OCCLUDER_TURN_TOLERANCE:
+		return
+	_occluder_ref_xform = cam_xf
+	_occluder_ref_valid = true
+	if size_changed:
+		box.size = size
 	fm._world_occluder.global_transform = Transform3D(
-		cam.global_transform.basis,
-		cam.global_position - cam.global_transform.basis.z.normalized() * OCCLUDER_DIST)
+		cam_xf.basis,
+		cam_xf.origin - cam_xf.basis.z.normalized() * OCCLUDER_DIST)
 
 # Analyse par SALVE l'alpha du contenu de la fenêtre focus LOCALE : une seule
 # décision par focus (le contenu change rarement d'opacité en cours de
