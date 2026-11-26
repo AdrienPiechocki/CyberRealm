@@ -564,6 +564,10 @@ func is_shortcut_inhibit_allowed() -> bool:
 # Reprise de la session précédente (window_layouts.gd) : les apps encore ouvertes à la fermeture du jeu sont
 # relancées et les fenêtres retrouvent leur place. (GENERAL). Défaut : oui. Sans réglage enregistré, on reprend les
 # deux anciennes options séparées (remember_window_layout / reopen_last_session) : décochée si l'une l'était.
+# Bulles de chat au-dessus des avatars (MULTIPLAYER). Défaut : oui.
+func is_chat_bubbles_enabled() -> bool:
+	return bool(_settings.get("chat_bubbles", true))
+
 func is_session_restore_enabled() -> bool:
 	if _settings.has("restore_session"):
 		return bool(_settings["restore_session"])

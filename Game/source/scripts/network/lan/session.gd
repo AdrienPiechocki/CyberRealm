@@ -742,6 +742,7 @@ func _set_peer_timeout(id: int) -> void:
 	peer.set_timeout(ENET_TIMEOUT_LIMIT, ENET_TIMEOUT_MIN, ENET_TIMEOUT_MAX)
 
 func _on_peer_disconnected(id: int) -> void:
+	lan.chat.forget_peer(id)
 	lan.players._avatar_blobs.erase(id)
 	lan.players._avatar_send_queue.erase(id)
 	_pending_auth.erase(id)

@@ -28,6 +28,8 @@ var group_grab_available := false
 # libellé de l'entrée : « GRAB GROUP » ne propose rien pendant la saisie, il faut
 # que le joueur voie que l'action est de lâcher.
 var group_grab_active := false
+## Session multijoueur en cours : entrées CHAT et EMOTES dans le contexte « fps » (posé par wayland_room).
+var social_available := false
 
 
 func _ready() -> void:
@@ -85,6 +87,9 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			_items.append({label = "KEYBOARD MODE", emoji = "⌨️", action = "interact"})
 			_items.append({label = "BINDS", emoji = "🎮", action = "binds"})
 			_items.append({label = "WAYPOINTS", emoji = "📍", action = "waypoints"})
+			if social_available:
+				_items.append({label = "CHAT", emoji = "💬", action = "chat"})
+				_items.append({label = "EMOTES", emoji = "🙂", action = "emotes"})
 		"window":
 			_items.append({label = "WINDOW MENU", emoji = "🪟", action = "window_menu"})
 			_items.append({label = "MOUSE MODE", emoji = "🖱️", action = "layer_interact"})
@@ -106,6 +111,10 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 			_items.append({label = "ADD HERE", emoji = "➕", action = "waypoint_add"})
 			for slot in binds:
 				_items.append({label = "WAYPOINT %d" % int(slot), emoji = "📍", action = "waypoint:%d" % int(slot)})
+		"emotes":
+			# `binds` = [{id, emoji}] du catalogue (wayland_room le fournit, cf. scripts/network/lan/chat.gd).
+			for e in binds:
+				_items.append({label = String(e["id"]).to_upper(), emoji = String(e["emoji"]), action = "emote:" + String(e["id"])})
 		"waypoint_slot":
 			var slot := int(binds[0]) if binds.size() > 0 else 0
 			_items.append({label = "GO TO %d" % slot, emoji = "📍", action = "waypoint_go:%d" % slot})
@@ -145,7 +154,7 @@ func _build_items(context: String, _target_wid: int = -1, binds: Array = []) -> 
 	#
 	# « GRAB GROUP » n'existe que dans le contexte « window » : ailleurs le
 	# radial ne vise aucune fenêtre, l'entrée serait morte.
-	if context != "binds" and context != "waypoints" and context != "waypoint_slot":
+	if context != "binds" and context != "waypoints" and context != "waypoint_slot" and context != "emotes":
 		_append_group_grab(context)
 		_append_pin_zoom()
 

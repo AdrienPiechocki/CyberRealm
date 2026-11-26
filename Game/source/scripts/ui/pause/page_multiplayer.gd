@@ -10,6 +10,7 @@ var menu: PauseMenu = null
 # Page LAN
 var _lan_status_label: Label = null
 var _lan_players_label: Label = null
+var _lan_mute_box: VBoxContainer = null   # une case « Mute » par autre joueur (chat, emotes)
 var _lan_results_box: VBoxContainer = null
 var _lan_status_text := ""
 var _lan_pin_label: Label = null
@@ -129,7 +130,20 @@ func _show_lan() -> void:
 	_lan_players_label.add_theme_font_size_override("font_size", 13)
 	_lan_players_label.add_theme_color_override("font_color", Color(0.6, 0.65, 0.75))
 	menu.container.add_child(_lan_players_label)
+	_lan_mute_box = VBoxContainer.new()
+	menu.container.add_child(_lan_mute_box)
 	_update_lan_players_label()
+
+	# Bulles de chat au-dessus des avatars (lu par chat_box.gd à chaque message).
+	var bubbles_check := CheckButton.new()
+	bubbles_check.text = "Chat bubbles above players"
+	bubbles_check.button_pressed = menu.is_chat_bubbles_enabled()
+	bubbles_check.add_theme_font_size_override("font_size", 14)
+	menu.container.add_child(bubbles_check)
+	bubbles_check.toggled.connect(func(on: bool):
+		menu._settings["chat_bubbles"] = on
+		menu._save_settings()
+	)
 	
 	menu.container.add_child(menu._make_section("Video share"))
 
@@ -255,6 +269,7 @@ func _render_lan_pin() -> void:
 func _update_lan_players_label() -> void:
 	if _lan_players_label == null:
 		return
+	_rebuild_mute_box()
 	if menu._lan_roster.is_empty():
 		_lan_players_label.text = ""
 		return
@@ -262,6 +277,27 @@ func _update_lan_players_label() -> void:
 	for p in menu._lan_roster:
 		parts.append("• %s (%d)" % [String(p.get("name", "?")), int(p.get("id", 0))])
 	_lan_players_label.text = "Players:\n" + "\n".join(parts)
+
+## Une case « Mute » par autre joueur : ses messages et emotes ne s'affichent plus (local, non transmis).
+func _rebuild_mute_box() -> void:
+	if _lan_mute_box == null or not is_instance_valid(_lan_mute_box):
+		return
+	for c in _lan_mute_box.get_children():
+		c.queue_free()
+	var lan: Node = menu._lan
+	if lan == null or not ("chat" in lan) or lan.chat == null or not lan.multiplayer.has_multiplayer_peer():
+		return
+	var me: int = lan.multiplayer.get_unique_id()
+	for p in menu._lan_roster:
+		var id := int(p.get("id", 0))
+		if id == me or id == 0:
+			continue
+		var cb := CheckButton.new()
+		cb.text = "Mute %s" % String(p.get("name", "?"))
+		cb.button_pressed = lan.chat.is_muted(id)
+		cb.add_theme_font_size_override("font_size", 13)
+		cb.toggled.connect(func(on: bool): lan.chat.set_muted(id, on))
+		_lan_mute_box.add_child(cb)
 
 func set_lan_discovery_results(results: Array) -> void:
 	if menu._current_view != "lan" or _lan_results_box == null:

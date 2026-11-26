@@ -159,6 +159,18 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   node; default first). Your choice is persisted and the actual scene is baked
   with embedded assets and streamed to peers — everyone sees your real model,
   animations included.
+- **Text chat & emotes** — press `T` (or `Enter`, remappable *chat*) to type,
+  `Esc` to cancel, `Enter` to send; on a gamepad, **CHAT** in the radial menu
+  opens it with the virtual keyboard. Messages fade after 10 s (`T` shows the
+  last 50) and appear as bubbles above the speaker (Multiplayer page). `/wave`,
+  `/point`, `/clap`, `/thumbsup`, `/laugh`, `/dance`, `/sit`, `/shrug` (or the
+  radial **EMOTES** sub-menu, or the optional *emote_…* keybinds) show an emoji
+  above your head and play the avatar's `emote_<id>` animation when it has one
+  (dance and sit last until you move). The host or the dedicated server checks
+  every message (registered player, 280 characters, 5 messages / 5 s, 1 emote
+  / s) and relays it; text is never interpreted as markup. Mute a player from
+  the Multiplayer page (local only). Allowed in online mode; the dedicated
+  server writes the chat to its log.
 - **Window sharing** — select a window in the navigation menu and hit **SHARE**:
   its live content is streamed (H.264/AV1 inter-frame through a VAAPI hardware
   encoder, with a JPEG-per-frame fallback) and shown on a real quad in the other
@@ -449,6 +461,7 @@ networks. Full details: `Game/source/user/README.md`.
 | `SUPER+SHIFT+Esc`    | Take back the shortcuts captured by a VM / remote desktop in focus mode |
 | `Print Screen`       | Take a full-screen screenshot                     |
 | `Esc`                | Pause menu (keybinds, startup apps, LAN Game)     |
+| `T` / `Enter`        | Open the chat (multiplayer)                       |
 
 All keybinds can be remapped from the pause menu — each action has an
 independent keyboard/mouse and gamepad binding, both editable.
@@ -586,4 +599,5 @@ fps-color; fps-size; cursor-active-color; }`, `radial { ring-radius;
 ring-width; center-radius; gap-size; selector-width; decorator-width;
 ring-color; ring-selected-color; ring-stroke-color; selector-color;
 decorator-color; center-color; center-stroke-color; title-color;
-title-font-size; emoji-size; }` and `tutorial { dim-color; }`.
+title-font-size; emoji-size; }`, `tutorial { dim-color; }` and `chat {
+background-color; color; font-size; fade-delay; }` (`fade-delay` in seconds).

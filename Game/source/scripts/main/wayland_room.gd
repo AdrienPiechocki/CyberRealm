@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var chat_box: Control # chat textuel et emotes (multijoueur), cf. scripts/ui/chat_box.gd
 var window_layouts: Node # disposition des fenêtres retrouvée, cf. scripts/main/window_layouts.gd
 var toplevel_bridge: Node # barres de tâches + raccourcis capturés par une fenêtre, cf. scripts/main/toplevel_bridge.gd
 var global_shortcuts: Node # raccourcis globaux (portail GlobalShortcuts), cf. scripts/input/global_shortcuts.gd
@@ -738,6 +739,16 @@ func _ready() -> void:
 	)
 	lan.session_state_changed.connect(pause_menu.set_lan_connected)
 	lan.players_changed.connect(pause_menu.set_lan_players)
+	# Chat textuel et emotes (scripts/ui/chat_box.gd, réseau : scripts/network/lan/chat.gd).
+	chat_box = Control.new()
+	chat_box.name = "ChatBox"
+	chat_box.set_script(preload("res://scripts/ui/chat_box.gd"))
+	ui.add_child(chat_box)
+	chat_box.setup(lan, keyboard)
+	chat_box.avatar_for = _avatar_for_peer
+	chat_box.bubbles_enabled = Callable(pause_menu, "is_chat_bubbles_enabled")
+	chat_box.typing_changed.connect(func(typing: bool): player.chat_typing = typing)
+	lan.session_state_changed.connect(func(active: bool): radial_menu.social_available = active)
 	lan.discovery_results.connect(pause_menu.set_lan_discovery_results)
 	lan.pin_changed.connect(pause_menu.set_lan_pin)
 	lan.windows_provider = win3d.get_windows_state
@@ -1044,6 +1055,18 @@ func _process(delta: float) -> void:
 	if pause_menu.visible:
 		return
 
+	# Chat : pendant la saisie, aucun bind ni interaction (les touches vont à la ligne de saisie).
+	if chat_box.is_typing():
+		return
+	if lan.is_session_active() and not focus.is_active() and not interact_mode_active \
+			and not layers.keyboard_busy() and not window_menu.visible:
+		if Input.is_action_just_pressed("chat", true) and not chat_box.just_closed():
+			chat_box.open()
+			return
+		for emote in lan.chat.EMOTES:
+			if Input.is_action_just_pressed("emote_" + emote, true):
+				lan.chat.send_emote(emote)
+
 	# Prompt de partage de fichiers (drag & drop sur un avatar) : modal,
 	# le monde est gelé comme pour le menu pause.
 	if file_share != null and file_share.is_modal_open():
@@ -1302,6 +1325,9 @@ func _process(delta: float) -> void:
 	
 
 func _input(event: InputEvent) -> void:
+	# Saisie du chat : les touches vont à la ligne de saisie, rien au monde ni aux fenêtres.
+	if chat_box != null and chat_box.is_typing():
+		return
 	# Tout input (même celui du joueur qui ne vise aucune surface : WASD,
 	# caméra) réarme le timer d'inactivité du compositeur — sans ça, les
 	# clients abonnés à ext-idle-notify-v1 verraient la session passer idle
@@ -1784,8 +1810,17 @@ func _on_radial_action(action: String) -> void:
 			radial_menu.show_menu("waypoints", -1, $Waypoints.used_slots())
 		"waypoint_add":
 			$Waypoints.add_here()
+		"chat":
+			chat_box.open(true)
+		"emotes":
+			var list: Array = []
+			for id in lan.chat.EMOTES:
+				list.append({"id": id, "emoji": lan.chat.EMOTES[id][0]})
+			radial_menu.show_menu("emotes", -1, list)
 		_:
-			if action.begins_with("waypoint:"):
+			if action.begins_with("emote:"):
+				lan.chat.send_emote(action.substr(6))
+			elif action.begins_with("waypoint:"):
 				radial_menu.show_menu("waypoint_slot", -1, [int(action.substr(9))])
 			elif action.begins_with("waypoint_go:"):
 				$Waypoints.goto_slot(int(action.substr(12)))
@@ -2048,6 +2083,12 @@ func _setup_waypoints() -> void:
 	add_child(wp)
 
 # Clé du niveau courant : uid de sa scène (sinon chemin). "" sur un niveau d'hôte LAN.
+## Avatar d'un joueur pour le chat (bulles, emotes) : le sien (vue TPS / corps visible) ou celui d'un autre.
+func _avatar_for_peer(peer_id: int) -> Node:
+	if lan.multiplayer.has_multiplayer_peer() and peer_id == lan.multiplayer.get_unique_id():
+		return _body_avatar if _body_avatar != null and is_instance_valid(_body_avatar) else null
+	return lan.get_remote_players().get(peer_id)
+
 func _waypoint_level_key() -> String:
 	if _level_swapped or _level_path == "":
 		return ""
@@ -2055,5 +2096,5 @@ func _waypoint_level_key() -> String:
 	return ResourceUID.id_to_text(uid) if uid != ResourceUID.INVALID_ID else _level_path
 
 func _waypoints_allowed() -> bool:
-	return not (player.freecam_active or focus.is_active() or interact_mode_active or layers.keyboard_busy()
+	return not (player.freecam_active or focus.is_active() or interact_mode_active or layers.keyboard_busy() or chat_box.is_typing()
 			or window_menu.visible or capture_selector.visible or pause_menu.visible)

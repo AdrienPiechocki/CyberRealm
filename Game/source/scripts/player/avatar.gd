@@ -511,6 +511,17 @@ func _directional_requested() -> bool:
 # État « loco » : BlendSpace2D (x = vitesse latérale, y = vitesse avant, en m/s) -> TimeScale. L'idle est au centre :
 # repos -> marche -> course se mélangent en continu. État « jump » : l'animation de saut, en fondu.
 
+# ── Emotes et bulles de chat ────────────────────────────────────────────
+## Une emote d'un pas plus rapide que ça (m/s) est interrompue : le joueur repart.
+const EMOTE_MOVE_CANCEL := 0.6
+const EMOTE_ICON_SEC := 3.0
+const BUBBLE_SEC := 5.0
+var _emote_anim: StringName = &""   # animation d'emote en cours (« emote_<id> »), &"" sinon
+var _emote_loop := false            # dure jusqu'au prochain mouvement (dance, sit)
+var _emote_started := false         # l'arbre a bien atteint l'état d'emote
+var _emote_icon: Label3D = null
+var _bubble: Label3D = null
+
 var _use_tree := false
 var _tree: AnimationTree = null
 var _tree_playback: AnimationNodeStateMachinePlayback = null
@@ -626,6 +637,17 @@ func _update_tree(delta: float) -> void:
 	var s := 1.0 if m <= _loco_top else clampf(m / _loco_top, 1.0, walk_speed_scale_max)
 	_tree.set("parameters/loco/ts/scale", s)
 	_is_grounded = _compute_grounded(delta)
+	if _emote_anim != &"" and _tree_playback != null:
+		var ecur := _tree_playback.get_current_node()
+		if ecur == _emote_anim:
+			_emote_started = true
+		if _loco_vel.length() > EMOTE_MOVE_CANCEL or not _is_grounded:
+			_tree_playback.travel(&"loco")
+			_emote_anim = &""
+		elif _emote_started and ecur != _emote_anim:
+			_emote_anim = &""          # emote jouée une fois, revenue d'elle-même à la locomotion
+		else:
+			return
 	if _tree_playback != null and anim_jump != &"" and _anim_player.has_animation(anim_jump):
 		var cur := _tree_playback.get_current_node()
 		if not _is_grounded and cur != &"jump":
@@ -663,6 +685,14 @@ func _update_animation(delta: float) -> void:
 	else:
 		_walking = _speed_smooth > walk_speed_threshold
 
+	if _emote_anim != &"":
+		var finished := not _emote_loop and (not _anim_player.is_playing() or _anim_player.current_animation != _emote_anim)
+		if _walking or not _is_grounded or finished:
+			_emote_anim = &""
+			_current_anim = &""          # la locomotion reprend au prochain choix
+		else:
+			return
+
 	var target: StringName = &""
 	if not _is_grounded and anim_jump != &"":
 		target = anim_jump
@@ -685,6 +715,97 @@ func _update_animation(delta: float) -> void:
 			want = clampf(_speed_smooth / _walk_ref, walk_speed_scale_min, walk_speed_scale_max)
 	_anim_player.speed_scale = lerpf(_anim_player.speed_scale, want, 1.0 - exp(-10.0 * delta))
 
+
+## Emote d'un joueur : l'emoji apparaît au-dessus de sa tête, et l'animation « emote_<id> » de la scène d'avatar est
+## jouée si elle existe (une fois, ou jusqu'au prochain mouvement si `looping`). Un mouvement ou un saut l'interrompt.
+func play_emote(id: String, emoji: String, looping: bool) -> void:
+	_show_emote_icon(emoji)
+	var anim := StringName("emote_" + id)
+	if _anim_player == null or not _anim_player.has_animation(anim):
+		return
+	_emote_anim = anim
+	_emote_loop = looping
+	_emote_started = false
+	if _use_tree and is_inside_tree():
+		if _tree == null:
+			_build_tree()
+		_ensure_emote_state(anim, looping)
+		if _tree_playback != null:
+			_tree_playback.travel(anim)
+	else:
+		_anim_player.play(anim, 0.25)
+		_current_anim = anim
+
+## Bulle de chat au-dessus de la tête (dernier message, BUBBLE_SEC secondes).
+func show_chat_bubble(text: String) -> void:
+	if _bubble == null:
+		_bubble = _make_overhead_label(32, 0.35)
+		_bubble.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_bubble.width = 700.0
+		_bubble.modulate = Color(1, 1, 1, 1)
+	_bubble.text = text
+	_flash_label(_bubble, BUBBLE_SEC)
+
+func _show_emote_icon(emoji: String) -> void:
+	if _emote_icon == null:
+		_emote_icon = _make_overhead_label(96, 0.75)
+	_emote_icon.text = emoji
+	_flash_label(_emote_icon, EMOTE_ICON_SEC)
+
+## Label3D au-dessus du nom du joueur (décalé de `above` mètres), toujours face caméra, police avec emoji.
+func _make_overhead_label(font_size: int, above: float) -> Label3D:
+	var l := Label3D.new()
+	l.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	l.font_size = font_size
+	l.outline_size = 8
+	l.no_depth_test = true
+	l.render_priority = 100
+	l.outline_render_priority = 99
+	var font := SystemFont.new()
+	font.font_names = PackedStringArray(["Noto Sans", "DejaVu Sans", "Noto Color Emoji"])
+	l.font = font
+	var base := Vector3(0, 1.8, 0)
+	if _label != null and is_instance_valid(_label) and _label.is_inside_tree() and is_inside_tree():
+		base = to_local(_label.global_position)
+	l.position = base + Vector3(0, above, 0)
+	l.visible = false
+	add_child(l)
+	return l
+
+func _flash_label(l: Label3D, secs: float) -> void:
+	l.visible = true
+	l.modulate.a = 1.0
+	if not l.is_inside_tree():
+		return
+	var tw: Tween = l.get_meta("tween") if l.has_meta("tween") else null
+	if tw != null and tw.is_valid():
+		tw.kill()
+	tw = l.create_tween()
+	tw.tween_interval(secs)
+	tw.tween_property(l, "modulate:a", 0.0, 0.5)
+	tw.tween_callback(func(): l.visible = false)
+	l.set_meta("tween", tw)
+
+## Ajoute (une fois) l'état d'emote à la machine à états de locomotion : fondu depuis la locomotion, retour
+## automatique en fin d'animation pour une emote ponctuelle.
+func _ensure_emote_state(anim: StringName, looping: bool) -> void:
+	if _tree == null:
+		return
+	var sm := _tree.tree_root as AnimationNodeStateMachine
+	if sm == null or sm.has_node(anim):
+		return
+	var node := AnimationNodeAnimation.new()
+	node.animation = anim
+	sm.add_node(anim, node)
+	var tr_in := AnimationNodeStateMachineTransition.new()
+	tr_in.xfade_time = 0.25
+	sm.add_transition(&"loco", anim, tr_in)
+	var tr_out := AnimationNodeStateMachineTransition.new()
+	tr_out.xfade_time = 0.25
+	if not looping:
+		tr_out.switch_mode = AnimationNodeStateMachineTransition.SWITCH_MODE_AT_END
+		tr_out.advance_mode = AnimationNodeStateMachineTransition.ADVANCE_MODE_AUTO
+	sm.add_transition(anim, &"loco", tr_out)
 
 func _update_transparency() -> void:
 	if local_player == null or not is_instance_valid(local_player):

@@ -149,6 +149,15 @@ watch out for that on modest machines.
   textured ones (their materials are duplicated automatically).
 - The player name (NameLabel) is visible through walls.
 
+### Emotes
+
+When a player uses an emote (`/wave`, radial menu *EMOTES*…), an emoji appears above their head on every
+machine. If your avatar's `AnimationPlayer` has an animation named `emote_<id>`, it is played too:
+`emote_wave`, `emote_point`, `emote_clap`, `emote_thumbsup`, `emote_laugh`, `emote_dance`, `emote_sit`,
+`emote_shrug`. One-shot emotes go back to idle at the end of the animation; `emote_dance` and `emote_sit`
+last until the player moves (loop them in the editor). Moving or jumping interrupts any emote. Missing
+animations are fine: the emoji alone is shown.
+
 ### First person / third person (full body awareness)
 
 Each player sees **their own avatar** (the one they picked) as a body in first

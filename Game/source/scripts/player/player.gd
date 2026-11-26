@@ -56,6 +56,8 @@ var pin_zoom_active := false
 # (join pas encore finalisé). Gèle déplacement et caméra ; Escape (menu pause)
 # reste fonctionnel pour pouvoir annuler la connexion.
 var input_locked := false
+## Saisie du chat en cours (chat_box.gd) : ni déplacement ni binds du joueur.
+var chat_typing := false
 # Référence paresseuse au compositeur, pour connaître la layer qui
 # détient le focus clavier (rofi, menu waybar...).
 var _compositor: WlrCompositor = null
@@ -135,7 +137,7 @@ func _physics_process(delta):
 	if velocity.y > jump_speed:
 		velocity.y = jump_speed
 	velocity.y += -gravity * delta
-	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or session_locked or pin_zoom_active or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
+	if $WindowMenuLayer/WindowMenu.visible or $PauseMenuLayer/PauseMenu.visible or focus_mode_active or _keyboard_busy() or input_locked or chat_typing or session_locked or pin_zoom_active or $RadialMenuLayer/RadialMenu.visible or $TutorialLayer/Tutorial.visible:
 		velocity.x = 0
 		velocity.z = 0
 		move_and_slide()
@@ -411,6 +413,9 @@ func _on_menu_visibility_changed() -> void:
 func _input(event):
 	if _pad_diag:
 		_pad_diag_event(event)
+	# Saisie du chat : les touches vont à la ligne de saisie (Échap la ferme, cf. chat_box.gd).
+	if chat_typing:
+		return
 	# Caméra libre : le joueur n'est plus pilotable — seuls la gestion du
 	# menu pause (Escape) reste ici, tout le reste de l'input est géré par
 	# le nœud FreeCam.

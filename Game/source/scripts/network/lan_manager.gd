@@ -107,6 +107,7 @@ const VideoShareModule := preload("res://scripts/network/lan/video_share.gd")
 const AudioShareModule := preload("res://scripts/network/lan/audio_share.gd")
 const DiscoveryModule := preload("res://scripts/network/lan/discovery.gd")
 const LevelSyncModule := preload("res://scripts/network/lan/level_sync.gd")
+const ChatModule := preload("res://scripts/network/lan/chat.gd")
 var session: SessionModule = null
 var players: PlayersModule = null
 var level_transfer: LevelTransferModule = null
@@ -115,6 +116,7 @@ var video_share: VideoShareModule = null
 var audio_share: AudioShareModule = null
 var discovery: DiscoveryModule = null
 var level_sync: LevelSyncModule = null
+var chat: ChatModule = null
 
 func _init() -> void:
 	session = SessionModule.new()
@@ -149,6 +151,10 @@ func _init() -> void:
 	level_sync.name = "LevelSync"
 	level_sync.lan = self
 	add_child(level_sync)
+	chat = ChatModule.new()
+	chat.name = "Chat"
+	chat.lan = self
+	add_child(chat)
 # Journal protocole (user://lan_debug.log) : diagnostic du join LAN.
 func _lan_log(msg: String, reset := false) -> void:
 	push_warning("LAN: " + msg)
