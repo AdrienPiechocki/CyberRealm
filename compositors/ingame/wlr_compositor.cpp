@@ -162,6 +162,15 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
     ClassDB::bind_method(D_METHOD("set_cpu_capture_requested", "requested"), &WlrCompositor::set_cpu_capture_requested);
     ClassDB::bind_method(D_METHOD("start_audio_share"), &WlrCompositor::start_audio_share);
+    ClassDB::bind_method(D_METHOD("audio_set_spatial_sink", "on"), &WlrCompositor::audio_set_spatial_sink);
+    ClassDB::bind_method(D_METHOD("audio_drain_pcm"), &WlrCompositor::audio_drain_pcm);
+    ClassDB::bind_method(D_METHOD("audio_pids"), &WlrCompositor::audio_pids);
+    ClassDB::bind_method(D_METHOD("audio_routed_pids"), &WlrCompositor::audio_routed_pids);
+    ClassDB::bind_method(D_METHOD("audio_encode", "key", "pcm"), &WlrCompositor::audio_encode);
+    ClassDB::bind_method(D_METHOD("audio_decode_window", "key", "packet"), &WlrCompositor::audio_decode_window);
+    ClassDB::bind_method(D_METHOD("audio_forget", "key"), &WlrCompositor::audio_forget);
+    ClassDB::bind_method(D_METHOD("audio_forget_encoder", "key"), &WlrCompositor::audio_forget_encoder);
+    ClassDB::bind_method(D_METHOD("set_app_env", "name", "value"), &WlrCompositor::set_app_env);
     ClassDB::bind_method(D_METHOD("stop_audio_share"), &WlrCompositor::stop_audio_share);
     ClassDB::bind_method(D_METHOD("poll_audio_packet"), &WlrCompositor::poll_audio_packet);
     ClassDB::bind_method(D_METHOD("audio_decode", "packet", "sender_id"), &WlrCompositor::audio_decode);
@@ -1911,13 +1920,45 @@ void WlrCompositor::launch_polkit_agent() {
 // le pid de l'enfant ou -1 si fork échoue. launch_app() l'utilise avec $HOME ;
 // launch_portals() avec le dossier du binaire du jeu pour résoudre ses chemins
 // relatifs (portal-wlr dans build/portal) sans imposer ce CWD aux apps.
+// Environnement ajouté aux apps (WlrCompositor::app_env), lu par fork_launch dans l'enfant.
+static std::vector<std::pair<std::string, std::string>> g_app_env;
+
+void WlrCompositor::set_app_env(const String &name, const String &value) {
+    std::string n = name.utf8().get_data();
+    std::string v = value.utf8().get_data();
+    for (auto &kv : app_env) {
+        if (kv.first == n) {
+            kv.second = v;
+            g_app_env = app_env;
+            return;
+        }
+    }
+    app_env.emplace_back(n, v);
+    g_app_env = app_env;
+}
+
+static std::string shell_quote(const std::string &v) {
+    std::string out = "'";
+    for (char c : v) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    return out + "'";
+}
+
 static pid_t fork_launch(const String &command, const String &cwd) {
+    // Variables ajoutées par des « export » en tête de la commande, préparées AVANT fork : l'enfant d'un processus
+    // multi-thread ne doit plus allouer de mémoire (setenv) avant exec.
+    std::string full;
+    for (const auto &kv : g_app_env) {
+        full += "export " + kv.first + "=" + shell_quote(kv.second) + "; ";
+    }
+    full += command.utf8().get_data();
     pid_t pid = fork();
     if (pid == 0) {
         setsid();
         if (!cwd.is_empty()) chdir(cwd.utf8().get_data());
-        CharString cmd = command.utf8();
-        execl("/bin/sh", "sh", "-c", cmd.get_data(), (char *)nullptr);
+        execl("/bin/sh", "sh", "-c", full.c_str(), (char *)nullptr);
         _exit(127);
     }
     return pid;

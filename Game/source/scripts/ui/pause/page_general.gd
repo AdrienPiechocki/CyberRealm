@@ -143,6 +143,22 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
+	# Son des fenêtres (lu à chaque frame par window_audio.gd) : directement, ou depuis le quad de chaque fenêtre.
+	var audio_row := HBoxContainer.new()
+	audio_row.add_child(menu._make_row_label("Window sound"))
+	var audio_opt := OptionButton.new()
+	var audio_modes := ["normal", "spatial"]
+	audio_opt.add_item("Normal (apps play directly)")
+	audio_opt.add_item("Spatial (sound comes from each window)")
+	audio_opt.selected = audio_modes.find(menu.get_window_audio_mode())
+	audio_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	audio_row.add_child(audio_opt)
+	menu.container.add_child(audio_row)
+	audio_opt.item_selected.connect(func(i: int):
+		menu._settings["window_audio"] = audio_modes[i]
+		menu._save_settings()
+	)
+
 	# Reprise de session (lu par window_layouts.gd) : apps relancées au démarrage et fenêtres à leur place.
 	var session_check := CheckButton.new()
 	session_check.text = "Restore the previous session (apps and window positions)"

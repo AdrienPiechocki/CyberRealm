@@ -584,6 +584,12 @@ func is_voice_echo_cancel() -> bool:
 func get_voice_volume() -> float:
 	return float(_settings.get("voice_volume", 1.0))
 
+# Son des fenêtres (GENERAL, window_audio.gd) : "normal" (défaut, les apps jouent directement) ou "spatial" (le son
+# sort du quad de chaque fenêtre).
+func get_window_audio_mode() -> String:
+	var m := String(_settings.get("window_audio", "normal"))
+	return m if m in ["normal", "spatial"] else "normal"
+
 # Bulles de chat au-dessus des avatars (MULTIPLAYER). Défaut : oui.
 func is_chat_bubbles_enabled() -> bool:
 	return bool(_settings.get("chat_bubbles", true))

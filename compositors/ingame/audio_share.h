@@ -2,6 +2,10 @@
 #define AUDIO_SHARE_H
 
 #include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/array.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -85,6 +89,25 @@ public:
 	// Renvoie un tableau vide si le paquet est invalide.
 	PackedByteArray decode_opus_packet(const PackedByteArray &p_in, int p_sender);
 
+	// --- Son par fenêtre (spatialisé localement, flux par fenêtre en LAN) ---
+	// Vide les rings et renvoie le PCM capturé PAR PID ({pid: PackedVector2Array},
+	// stéréo 48 kHz). Ne pas mélanger avec poll_opus_packet (les deux vident les rings).
+	Dictionary drain_pcm();
+	// PIDs des applications qui ont actuellement un flux de sortie audio.
+	PackedInt32Array audio_pids();
+	// PIDs dont le flux de sortie est relié à la sortie `sink_name` : seules ces apps doivent être rejouées par le
+	// jeu (une app non redirigée joue déjà directement : la rejouer la ferait entendre deux fois).
+	PackedInt32Array routed_pids(const String &sink_name);
+	// Encode le PCM d'une clé (fenêtre) en paquets OPUS de 20 ms ([seq u32 LE][payload]).
+	Array encode_pcm(int key, const PackedVector2Array &pcm);
+	// Décode un paquet d'une clé (émetteur:fenêtre) ; pertes comblées comme decode_opus_packet.
+	PackedVector2Array decode_pcm(const String &key, const PackedByteArray &packet);
+	void forget_codec(const String &key);
+	void forget_encoder(int key);
+	// Sortie muette `name` (null sink) liée à la connexion PipeWire : les apps lancées par le jeu y sont dirigées
+	// (PULSE_SINK / PIPEWIRE_NODE) ; elle disparaît avec le jeu, même en cas de crash. Démarre la capture au besoin.
+	bool set_spatial_sink(bool on, const String &name);
+
 	// Callbacks statiques PipeWire (publiques : référencées par les tables de
 	// pointeurs const au namespace scope). Les types spa sont qualifiés avec
 	// :: pour désigner le namespace global (sinon le struct serait résolu en
@@ -138,6 +161,23 @@ private:
 	// thread PipeWire (callbacks registry/node/client) ou sous
 	// pw_thread_loop_lock (set_target_pids → apply_targets).
 	std::unordered_map<uint32_t, int> node_pids;
+	// node_id -> media.class (« Stream/Output/Audio » = une app qui joue du son).
+	std::unordered_map<uint32_t, std::string> node_classes;
+	std::unordered_map<uint32_t, std::string> node_names;      // node_id -> node.name
+	std::unordered_map<uint32_t, std::pair<uint32_t, uint32_t>> links; // link_id -> (nœud de sortie, nœud d'entrée)
+	void *spatial_sink_proxy = nullptr; // pw_proxy* de la sortie muette
+	struct KeyEncoder {
+		void *enc = nullptr;           // OpusEncoder*
+		std::vector<float> pending;    // stéréo entrelacé, < 20 ms
+		uint32_t seq = 0;
+	};
+	struct KeyDecoder {
+		void *dec = nullptr;           // OpusDecoder*
+		uint32_t last = 0;
+		bool first = true;
+	};
+	std::unordered_map<int, KeyEncoder> key_encoders;
+	std::unordered_map<std::string, KeyDecoder> key_decoders;
 	// PIDs ciblés (fenêtres partagées). Protégé par le lock de la boucle PW ;
 	// poll_opus_packet ne le lit pas.
 	std::vector<int> target_pids;

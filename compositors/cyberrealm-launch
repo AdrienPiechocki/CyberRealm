@@ -44,6 +44,10 @@ if [ -n "$rt" ] && [ -e "$rt/cyberrealm-0" ]; then
     export MOZ_ENABLE_WAYLAND=1
     # export GTK_THEME=Adwaita:dark
     export QT_QPA_PLATFORMTHEME=kde
+    # Son spatialisé des fenêtres : le jeu crée la sortie « cyberrealm-spatial » quand l'option est active (les
+    # apps y vont alors et le jeu rejoue leur son depuis leur fenêtre) ; absente, elles gardent la sortie par défaut.
+    # PULSE_SINK seulement (lecture des apps PulseAudio) : PIPEWIRE_NODE viserait aussi leurs flux d'enregistrement.
+    export PULSE_SINK=cyberrealm-spatial
 
     # Bus D-Bus session privé du jeu (adresse écrite par le jeu dans
     # $XDG_RUNTIME_DIR/cyberrealm-session-bus). Sans ça, les apps utilisent

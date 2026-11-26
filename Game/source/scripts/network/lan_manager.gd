@@ -354,7 +354,6 @@ func _physics_process(delta: float) -> void:
 	window_share._drain_encoded_frames()
 	video_share._drain_video_packets()
 	video_share._process_video_receiver()
-	audio_share._sync_audio_state()
 	window_share._drain_decoded_frames()
 
 func _process(_delta: float) -> void:

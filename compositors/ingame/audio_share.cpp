@@ -114,6 +114,12 @@ AudioShare::~AudioShare() {
 	if (opus_decoder) {
 		opus_decoder_destroy(static_cast<OpusDecoder *>(opus_decoder));
 	}
+	for (auto &kv : key_encoders) {
+		opus_encoder_destroy(static_cast<OpusEncoder *>(kv.second.enc));
+	}
+	for (auto &kv : key_decoders) {
+		opus_decoder_destroy(static_cast<OpusDecoder *>(kv.second.dec));
+	}
 }
 
 bool AudioShare::is_active() const {
@@ -173,6 +179,10 @@ void AudioShare::stop() {
 	if (thread_loop) {
 		pw_thread_loop_stop((pw_thread_loop *)thread_loop);
 	}
+	if (spatial_sink_proxy) {
+		pw_proxy_destroy((pw_proxy *)spatial_sink_proxy);
+		spatial_sink_proxy = nullptr;
+	}
 	{
 		std::lock_guard<std::mutex> lk(streams_mutex);
 		for (AudioCaptureStream *s : streams) {
@@ -208,6 +218,9 @@ void AudioShare::stop() {
 	}
 	pending_client_binds.clear();
 	node_pids.clear();
+	node_classes.clear();
+	node_names.clear();
+	links.clear();
 	client_pids.clear();
 	node_clients.clear();
 	target_pids.clear();
@@ -250,6 +263,15 @@ void AudioShare::on_registry_global(uint32_t id, const char *type, const struct 
 		node_pids[id] = -1;
 		bind_node_for_info(id);
 	}
+	// Liens : qui joue vers la sortie de spatialisation (routed_pids). Les props globales d'un lien portent ses
+	// nœuds de sortie et d'entrée.
+	if (strcmp(type, PW_TYPE_INTERFACE_Link) == 0 && props) {
+		const char *o = spa_dict_lookup(props, "link.output.node");
+		const char *i = spa_dict_lookup(props, "link.input.node");
+		if (o && i) {
+			links[id] = {(uint32_t)strtoul(o, nullptr, 10), (uint32_t)strtoul(i, nullptr, 10)};
+		}
+	}
 	// Les clients : leur event info porte application.process.id (fixé par le
 	// core, fiable). On les bind tous — c'est le chemin fiable pour retrouver
 	// le PID d'un node externe (node → client.id → client → pid).
@@ -276,6 +298,15 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 	// on garde le bind vivant tant que les props complètes ne sont pas là.
 	if (info != nullptr && info->props != nullptr) {
 		const char *node_name = spa_dict_lookup(info->props, "node.name");
+		const char *media_class = spa_dict_lookup(info->props, "media.class");
+		// Les mises à jour suivantes d'un nœud n'apportent souvent qu'une partie des props : ne pas effacer ce qui
+		// est déjà connu.
+		if (media_class) {
+			node_classes[id] = media_class;
+		}
+		if (node_name) {
+			node_names[id] = node_name;
+		}
 		// Le PID direct (application.process.id) n'est PAS fiable pour les
 		// apps externes (absentes de haruna/cava). On lit client.id puis on
 		// résout via le client (→ application.process.id du client).
@@ -284,6 +315,12 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 		if (client_id_s && *client_id_s) {
 			client_id = (uint32_t)strtoul(client_id_s, nullptr, 10);
 			node_clients[id] = client_id;
+		} else {
+			// Mise à jour partielle (sans client.id) : on garde le client déjà connu.
+			auto known = node_clients.find(id);
+			if (known != node_clients.end()) {
+				client_id = known->second;
+			}
 		}
 		int pid = -1;
 		if (client_id > 0) {
@@ -294,6 +331,11 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 		} else {
 			const char *proc_id = spa_dict_lookup(info->props, "application.process.id");
 			pid = (proc_id && *proc_id) ? (int)strtol(proc_id, nullptr, 10) : -1;
+		}
+		// Un PID déjà résolu n'est jamais remplacé par -1 (mise à jour partielle des props).
+		auto prev = node_pids.find(id);
+		if (pid <= 0 && prev != node_pids.end() && prev->second > 0) {
+			pid = prev->second;
 		}
 		node_pids[id] = pid;
 		if (pid > 0) {
@@ -374,6 +416,9 @@ void AudioShare::bind_node_for_info(uint32_t id) {
 
 void AudioShare::on_registry_global_remove(uint32_t id) {
 	node_pids.erase(id);
+	node_classes.erase(id);
+	node_names.erase(id);
+	links.erase(id);
 	node_clients.erase(id);
 	auto it = pending_node_binds.find(id);
 	if (it != pending_node_binds.end()) {
@@ -480,11 +525,24 @@ void AudioShare::apply_targets() {
 		if (find_stream_for_pid(pid) != nullptr) {
 			continue; // déjà capturé
 		}
+		// Le flux de SORTIE de l'app (Stream/Output/Audio) d'abord : une app qui enregistre aussi (micro, visio)
+		// a un second nœud de capture qu'il ne faut pas écouter.
+		uint32_t chosen = 0;
 		for (const auto &kv : node_pids) {
-			if (kv.second == pid) {
-				create_stream_for(kv.first, pid);
+			if (kv.second != pid) {
+				continue;
+			}
+			auto c = node_classes.find(kv.first);
+			if (c != node_classes.end() && c->second == "Stream/Output/Audio") {
+				chosen = kv.first;
 				break;
 			}
+			if (chosen == 0) {
+				chosen = kv.first;
+			}
+		}
+		if (chosen != 0) {
+			create_stream_for(chosen, pid);
 		}
 	}
 }
@@ -751,6 +809,236 @@ PackedByteArray AudioShare::decode_opus_packet(const PackedByteArray &p_in, int 
 	out.resize((int)(frames_out * AUDIO_CHANNELS * sizeof(int16_t)));
 	memcpy(out.ptrw(), pcm.data(), frames_out * AUDIO_CHANNELS * sizeof(int16_t));
 	return out;
+}
+
+// ---------------------------------------------------------------------
+// Son par fenêtre
+// ---------------------------------------------------------------------
+
+bool AudioShare::set_spatial_sink(bool on, const String &name) {
+	if (on && !thread_loop && !start()) {
+		return false;
+	}
+	if (!thread_loop) {
+		return !on;
+	}
+	pw_thread_loop_lock((pw_thread_loop *)thread_loop);
+	bool ok = true;
+	if (on && !spatial_sink_proxy) {
+		CharString n = name.utf8();
+		pw_properties *p = pw_properties_new(
+			"factory.name", "support.null-audio-sink",
+			"node.name", n.get_data(),
+			"node.description", "CyberRealm spatial audio",
+			"media.class", "Audio/Sink",
+			"audio.channels", "2",
+			"audio.position", "FL,FR",
+			"object.linger", "false",
+			// Jamais choisie comme sortie par défaut d'une app qui ne la demande pas.
+			"priority.session", "0",
+			"priority.driver", "0",
+			nullptr);
+		spatial_sink_proxy = pw_core_create_object((pw_core *)core, "adapter", PW_TYPE_INTERFACE_Node,
+			PW_VERSION_NODE, &p->dict, 0);
+		pw_properties_free(p);
+		ok = spatial_sink_proxy != nullptr;
+		UtilityFunctions::print("waylandgodot: audio: spatial sink ", name, ok ? " created" : " creation FAILED");
+	} else if (!on && spatial_sink_proxy) {
+		pw_proxy_destroy((pw_proxy *)spatial_sink_proxy);
+		spatial_sink_proxy = nullptr;
+		UtilityFunctions::print("waylandgodot: audio: spatial sink removed");
+	}
+	pw_thread_loop_unlock((pw_thread_loop *)thread_loop);
+	return ok;
+}
+
+PackedInt32Array AudioShare::audio_pids() {
+	PackedInt32Array out;
+	if (!thread_loop) {
+		return out;
+	}
+	pw_thread_loop_lock((pw_thread_loop *)thread_loop);
+	for (const auto &kv : node_pids) {
+		if (kv.second <= 0) {
+			continue;
+		}
+		auto c = node_classes.find(kv.first);
+		if (c != node_classes.end() && c->second == "Stream/Output/Audio" && !out.has(kv.second)) {
+			out.push_back(kv.second);
+		}
+	}
+	pw_thread_loop_unlock((pw_thread_loop *)thread_loop);
+	return out;
+}
+
+PackedInt32Array AudioShare::routed_pids(const String &sink_name) {
+	PackedInt32Array out;
+	if (!thread_loop) {
+		return out;
+	}
+	std::string want = sink_name.utf8().get_data();
+	pw_thread_loop_lock((pw_thread_loop *)thread_loop);
+	for (const auto &l : links) {
+		auto in_name = node_names.find(l.second.second);
+		if (in_name == node_names.end() || in_name->second != want) {
+			continue;
+		}
+		auto pid = node_pids.find(l.second.first);
+		if (pid != node_pids.end() && pid->second > 0 && !out.has(pid->second)) {
+			out.push_back(pid->second);
+		}
+	}
+	pw_thread_loop_unlock((pw_thread_loop *)thread_loop);
+	return out;
+}
+
+Dictionary AudioShare::drain_pcm() {
+	Dictionary out;
+	std::lock_guard<std::mutex> lk(streams_mutex);
+	for (AudioCaptureStream *s : streams) {
+		PackedVector2Array frames;
+		{
+			std::lock_guard<std::mutex> rlk(s->ring_mutex);
+			if (s->ring_count == 0) {
+				continue;
+			}
+			frames.resize((int64_t)s->ring_count);
+			Vector2 *w = frames.ptrw();
+			for (size_t i = 0; i < s->ring_count; i++) {
+				size_t src = (s->ring_head + i) % RING_CAPACITY_FRAMES;
+				w[i] = Vector2(s->ring[src * AUDIO_CHANNELS + 0], s->ring[src * AUDIO_CHANNELS + 1]);
+			}
+			s->ring_head = (s->ring_head + s->ring_count) % RING_CAPACITY_FRAMES;
+			s->ring_count = 0;
+		}
+		if (out.has(s->pid)) {
+			// Plusieurs nœuds pour un même PID : mélange sur la longueur commune.
+			PackedVector2Array prev = out[s->pid];
+			int64_t n = prev.size() < frames.size() ? prev.size() : frames.size();
+			Vector2 *w = prev.ptrw();
+			const Vector2 *r = frames.ptr();
+			for (int64_t i = 0; i < n; i++) {
+				w[i] = Vector2(limit_sample(w[i].x + r[i].x), limit_sample(w[i].y + r[i].y));
+			}
+			out[s->pid] = prev;
+		} else {
+			out[s->pid] = frames;
+		}
+	}
+	return out;
+}
+
+Array AudioShare::encode_pcm(int key, const PackedVector2Array &pcm) {
+	Array out;
+	KeyEncoder &ke = key_encoders[key];
+	if (!ke.enc) {
+		int error = 0;
+		OpusEncoder *enc = opus_encoder_create(AUDIO_RATE, AUDIO_CHANNELS, OPUS_APPLICATION_AUDIO, &error);
+		if (error != OPUS_OK || !enc) {
+			return out;
+		}
+		opus_encoder_ctl(enc, OPUS_SET_BITRATE(OPUS_BITRATE));
+		opus_encoder_ctl(enc, OPUS_SET_COMPLEXITY(OPUS_COMPLEXITY));
+		ke.enc = enc;
+	}
+	const Vector2 *r = pcm.ptr();
+	for (int64_t i = 0; i < pcm.size(); i++) {
+		ke.pending.push_back(r[i].x);
+		ke.pending.push_back(r[i].y);
+	}
+	const size_t frame_floats = (size_t)OPUS_FRAME_SIZE * AUDIO_CHANNELS;
+	size_t off = 0;
+	uint8_t packet[4 + 1500];
+	while (ke.pending.size() - off >= frame_floats) {
+		packet[0] = (uint8_t)(ke.seq & 0xFF);
+		packet[1] = (uint8_t)((ke.seq >> 8) & 0xFF);
+		packet[2] = (uint8_t)((ke.seq >> 16) & 0xFF);
+		packet[3] = (uint8_t)((ke.seq >> 24) & 0xFF);
+		ke.seq++;
+		int written = opus_encode_float(static_cast<OpusEncoder *>(ke.enc), ke.pending.data() + off,
+			OPUS_FRAME_SIZE, packet + 4, (opus_int32)(sizeof(packet) - 4));
+		off += frame_floats;
+		if (written < 0) {
+			continue;
+		}
+		PackedByteArray b;
+		b.resize(4 + written);
+		memcpy(b.ptrw(), packet, (size_t)(4 + written));
+		out.push_back(b);
+	}
+	ke.pending.erase(ke.pending.begin(), ke.pending.begin() + (long)off);
+	return out;
+}
+
+PackedVector2Array AudioShare::decode_pcm(const String &key, const PackedByteArray &p_in) {
+	PackedVector2Array out;
+	if (p_in.size() < 5) {
+		return out;
+	}
+	std::string k = key.utf8().get_data();
+	KeyDecoder &kd = key_decoders[k];
+	if (!kd.dec) {
+		int error = 0;
+		OpusDecoder *dec = opus_decoder_create(AUDIO_RATE, AUDIO_CHANNELS, &error);
+		if (error != OPUS_OK || !dec) {
+			key_decoders.erase(k);
+			return out;
+		}
+		kd.dec = dec;
+	}
+	const uint8_t *in = reinterpret_cast<const uint8_t *>(p_in.ptr()) + 4;
+	const opus_int32 in_len = (opus_int32)p_in.size() - 4;
+	const uint32_t seq = (uint32_t)p_in[0] | ((uint32_t)p_in[1] << 8)
+		| ((uint32_t)p_in[2] << 16) | ((uint32_t)p_in[3] << 24);
+	int concealed = 0;
+	const int32_t diff = (int32_t)(seq - kd.last);
+	if (!kd.first && diff > 1 && diff < SEQ_RESYNC_GAP) {
+		concealed = diff - 1 > MAX_PLC_FRAMES ? MAX_PLC_FRAMES : diff - 1;
+	}
+	if (!kd.first && diff <= 0 && diff > -SEQ_RESYNC_GAP) {
+		return out; // doublon ou paquet en retard
+	}
+	kd.first = false;
+	kd.last = seq;
+	std::vector<float> pcm((size_t)(concealed + 1) * OPUS_FRAME_SIZE * AUDIO_CHANNELS);
+	OpusDecoder *dec = static_cast<OpusDecoder *>(kd.dec);
+	for (int i = 0; i < concealed; i++) {
+		if (opus_decode_float(dec, nullptr, 0, pcm.data() + (size_t)i * OPUS_FRAME_SIZE * AUDIO_CHANNELS,
+				OPUS_FRAME_SIZE, 0) < 0) {
+			concealed = i;
+			break;
+		}
+	}
+	int decoded = opus_decode_float(dec, in, in_len,
+		pcm.data() + (size_t)concealed * OPUS_FRAME_SIZE * AUDIO_CHANNELS, OPUS_FRAME_SIZE, 0);
+	if (decoded < 0) {
+		decoded = 0;
+	}
+	const size_t n = (size_t)concealed * OPUS_FRAME_SIZE + (size_t)decoded;
+	out.resize((int64_t)n);
+	Vector2 *w = out.ptrw();
+	for (size_t i = 0; i < n; i++) {
+		w[i] = Vector2(pcm[i * AUDIO_CHANNELS], pcm[i * AUDIO_CHANNELS + 1]);
+	}
+	return out;
+}
+
+void AudioShare::forget_codec(const String &key) {
+	auto it = key_decoders.find(key.utf8().get_data());
+	if (it == key_decoders.end()) {
+		return;
+	}
+	opus_decoder_destroy(static_cast<OpusDecoder *>(it->second.dec));
+	key_decoders.erase(it);
+}
+
+void AudioShare::forget_encoder(int key) {
+	auto it = key_encoders.find(key);
+	if (it == key_encoders.end()) {
+		return;
+	}
+	opus_encoder_destroy(static_cast<OpusEncoder *>(it->second.enc));
+	key_encoders.erase(it);
 }
 
 } // namespace godot

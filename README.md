@@ -51,6 +51,19 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
+- **Spatial window sound** (pause menu → General → *Window sound*) — in
+  *Spatial* mode the sound of each app comes from its window in the room (3D,
+  fading out with distance); in focus mode the focused window plays at full
+  volume, a hidden window is quieter, a pinned one plays in 2D, and a program
+  without a window (a `paplay` in a terminal) sounds from its parent's window.
+  How: apps launched by the game get `PULSE_SINK=cyberrealm-spatial`; the game
+  creates that silent output only in Spatial mode (tied to its PipeWire
+  connection, so it vanishes if the game crashes), apps switch to it by
+  themselves and the game replays their sound. Only apps actually linked to it
+  are replayed, so nothing is ever heard twice; desktop apps are never touched
+  and nothing is stored by WirePlumber. Limits: native PipeWire clients (mpv's
+  default `ao=pipewire`) and apps started before this version keep playing
+  directly.
 - **Session restore** — the apps still open when you quit the game come back
   by themselves at the next launch, each window at its place (position,
   orientation, the size you gave it, hidden / pinned / `force_game` state).
@@ -191,8 +204,9 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   are **view-only**: `F` opens a fullscreen view-only focus mode, `P` pins them
   as PiP — no remote input, no kill. The owner's pointer position and custom
   cursor are mirrored on remote views.
-- **Shared audio** — the audio of the *shared* windows is captured
-  per-application (PipeWire) and streamed as OPUS to the other players, so you
+- **Shared audio** — the audio of each *shared* window is captured
+  per-application (PipeWire) and streamed as its own OPUS stream to the other
+  players, who hear it coming from that window's quad in their room, so you
   can watch and listen together.
 - **Custom levels over LAN** — the host bakes its current level (default or
   `res://user/`) into a self-contained binary blob (`LevelBaker`), compresses it

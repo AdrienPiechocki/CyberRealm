@@ -29,6 +29,7 @@ var presenter: Node3D # présente le viewport à l'output headless pour OBS
 const AppThemeScript := preload("res://scripts/ui/app_theme.gd")
 
 var _app_theme_timer: Timer
+var window_audio: Node # son des fenêtres (spatialisé / partagé), cf. scripts/main/window_audio.gd
 var voice_manager: Node # chat vocal, cf. scripts/main/voice_manager.gd
 var chat_box: Control # chat textuel et emotes (multijoueur), cf. scripts/ui/chat_box.gd
 var window_layouts: Node # disposition des fenêtres retrouvée, cf. scripts/main/window_layouts.gd
@@ -533,6 +534,10 @@ func _ready() -> void:
 	win3d.window_created.connect(fx.on_window_created)
 
 	compositor.start_headless()
+	# Son spatialisé des fenêtres : les apps lancées par le jeu visent la sortie « cyberrealm-spatial », qui n'existe
+	# que si l'option est active (window_audio.gd) ; absente, elles gardent la sortie par défaut. PULSE_SINK
+	# seulement : PIPEWIRE_NODE viserait aussi les flux d'enregistrement des apps PipeWire natives.
+	compositor.set_app_env("PULSE_SINK", "cyberrealm-spatial")
 	# Purge un éventuel handshake de capture périmé : si le jeu ou portal-wlr
 	# s'est terminé pendant l'attente d'un choix (cyberrealm-capture-pending),
 	# le fichier reste dans $XDG_RUNTIME_DIR entre deux sessions. Sans purge,
@@ -751,6 +756,13 @@ func _ready() -> void:
 	chat_box.bubbles_enabled = Callable(pause_menu, "is_chat_bubbles_enabled")
 	chat_box.typing_changed.connect(func(typing: bool): player.chat_typing = typing)
 	lan.session_state_changed.connect(func(active: bool): radial_menu.social_available = active)
+	# Son des fenêtres : spatialisé (option) et partagé par fenêtre (scripts/main/window_audio.gd).
+	window_audio = Node.new()
+	window_audio.name = "WindowAudio"
+	window_audio.set_script(preload("res://scripts/main/window_audio.gd"))
+	add_child(window_audio)
+	window_audio.setup(compositor, win3d, focus, pins, lan, pause_menu)
+	compositor.window_unmapped.connect(window_audio.on_window_unmapped)
 	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
 	voice_manager = Node.new()
 	voice_manager.name = "VoiceManager"

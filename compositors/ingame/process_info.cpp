@@ -45,6 +45,8 @@ static std::string flatpak_app_id(pid_t pid) {
     return std::string();
 }
 
+static bool read_stat(pid_t pid, long &ppid, long &tpgid);
+
 Dictionary WlrCompositor::get_process_info(int pid) {
     Dictionary info;
     if (pid <= 0) {
@@ -81,6 +83,8 @@ Dictionary WlrCompositor::get_process_info(int pid) {
     info["exe"] = String::utf8(read_link(base + "/exe").c_str());
     info["comm"] = String::utf8(comm.c_str());
     info["flatpak_id"] = String::utf8(flatpak_app_id((pid_t)pid).c_str());
+    long ppid = 0, tpgid = 0;
+    info["ppid"] = read_stat((pid_t)pid, ppid, tpgid) ? (int)ppid : -1;
     return info;
 }
 

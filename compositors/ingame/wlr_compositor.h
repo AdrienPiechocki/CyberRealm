@@ -1251,6 +1251,20 @@ public:
     PackedVector2Array voice_decode(int peer, int seq, const PackedByteArray &data) { return voice_chat.decode(peer, seq, data); }
     void voice_forget(int peer) { voice_chat.forget(peer); }
     void voice_feed_samples(const PackedFloat32Array &s) { voice_chat.feed(s.ptr(), (int)s.size()); }
+    // Son par fenêtre (audio_share.cpp) : sortie muette pour la spatialisation, PCM par PID, codecs par fenêtre.
+    bool audio_set_spatial_sink(bool on) { return audio_share.set_spatial_sink(on, String(SPATIAL_SINK_NAME)); }
+    Dictionary audio_drain_pcm() { return audio_share.drain_pcm(); }
+    PackedInt32Array audio_pids() { return audio_share.audio_pids(); }
+    PackedInt32Array audio_routed_pids() { return audio_share.routed_pids(String(SPATIAL_SINK_NAME)); }
+    Array audio_encode(int key, const PackedVector2Array &pcm) { return audio_share.encode_pcm(key, pcm); }
+    PackedVector2Array audio_decode_window(const String &key, const PackedByteArray &packet) { return audio_share.decode_pcm(key, packet); }
+    void audio_forget(const String &key) { audio_share.forget_codec(key); }
+    void audio_forget_encoder(int key) { audio_share.forget_encoder(key); }
+    static constexpr const char *SPATIAL_SINK_NAME = "cyberrealm-spatial";
+    // Variables d'environnement ajoutées aux apps lancées par le jeu (launch_app) : PULSE_SINK / PIPEWIRE_NODE vers
+    // la sortie muette de spatialisation. Absente (son normal), les apps retombent sur la sortie par défaut.
+    std::vector<std::pair<std::string, std::string>> app_env;
+    void set_app_env(const String &name, const String &value);
     bool start_audio_share();
     void stop_audio_share();
     Dictionary poll_audio_packet();
