@@ -8,6 +8,7 @@ extends Node
 ##          -- [res://user/Levels/<Nom>/level.tscn] [level.crblob]
 ##   2. Sur le serveur :          godot --headless --path Game/source scenes/dedicated_server.tscn \\
 ##          -- --blob=level.crblob [--pin=1234] [--name=Serveur] [--max-players=8] [--no-dtls] [--no-voice]
+##             [--state=fichier]  (état du monde, défaut : <blob>.state ; --state= vide : pas de persistance)
 ##   Online (Internet) : ... -- --online --tls-cert=fullchain.pem --tls-key=privkey.pem  (mot de passe >= 12 caractères,
 ##   de préférence via CYBERREALM_PASSWORD) — voir docs/dedicated-server.md.
 ##   Admin : variable d'environnement CYBERREALM_ADMIN_PASSWORD (ou --admin-password=…, visible dans `ps`).
@@ -17,6 +18,21 @@ extends Node
 const LanScript := preload("res://scripts/network/lan_manager.gd")
 
 var lan: Node = null
+
+# ── Persistance du monde ────────────────────────────────────────────────
+# L'état du décor (objets déplacés, cassés… : l'instantané de level_sync.gd) est écrit dans `state_path` dès qu'il
+# change, au plus toutes les SAVE_INTERVAL secondes, et rechargé au démarrage AVANT l'ouverture du port. Godot
+# headless meurt sans notification sur SIGTERM : un arrêt du service perd au plus les SAVE_INTERVAL dernières
+# secondes. Le fichier porte l'empreinte du blob : un autre niveau (blob réexporté) l'invalide (renommé en .old).
+# Un admin peut réinitialiser le monde (message « admin_reset_world ») : état effacé, joueurs prévenus, puis le
+# processus quitte avec RESET_EXIT_CODE et systemd le relance à neuf (Restart=on-failure).
+const SAVE_INTERVAL := 10.0
+const STATE_VERSION := 1
+const RESET_EXIT_CODE := 75
+var state_path := ""
+var _blob_sha := ""
+var _last_state := PackedByteArray()
+var _save_cd := SAVE_INTERVAL
 
 func _ready() -> void:
 	var args := _parse_args(OS.get_cmdline_user_args())
@@ -53,6 +69,14 @@ func _ready() -> void:
 		return
 	add_child(level)
 	lan.setup(level, String(args.get("name", "CyberRealm Server")), Color.WHITE)
+	# État sauvegardé : appliqué une fois les scripts du niveau prêts (objets créés à leur _ready), AVANT host_game :
+	# aucun joueur ne voit le monde d'origine.
+	state_path = String(args.get("state", blob_path + ".state")) if args.get("state", null) != true else ""
+	_blob_sha = _sha256_hex(blob["bytes"])
+	for _i in 2:
+		await get_tree().physics_frame
+	_load_state()
+	lan.world_reset_requested.connect(_reset_world)
 	lan.level_bake_provider = func() -> Dictionary: return blob
 	lan.status_changed.connect(func(t: String): print("[server] ", t))
 	lan.players_changed.connect(func(roster: Array): print("[server] players: ", roster.size()))
@@ -69,6 +93,70 @@ func _ready() -> void:
 		print("[server] PIN: ", lan.get_pin(), " — UDP %d (+%d découverte), TCP %d" % [
 				lan.PORT, lan.DISCOVERY_PORT, lan.LEVEL_TCP_PORT])
 
+
+func _process(delta: float) -> void:
+	if state_path == "" or lan == null:
+		return
+	_save_cd -= delta
+	if _save_cd <= 0.0:
+		_save_cd = SAVE_INTERVAL
+		_save_state()
+
+func _save_state() -> void:
+	var parts: Dictionary = lan.level_sync.build_snapshot()
+	var bytes := var_to_bytes({"version": STATE_VERSION, "blob": _blob_sha, "parts": parts})
+	if bytes == _last_state:
+		return
+	var tmp := state_path + ".tmp"
+	var f := FileAccess.open(tmp, FileAccess.WRITE)
+	if f == null:
+		push_warning("dedicated_server: état non enregistré (%s)" % error_string(FileAccess.get_open_error()))
+		return
+	f.store_buffer(bytes)
+	f.close()
+	DirAccess.rename_absolute(tmp, state_path)       # remplacement atomique : jamais de fichier à moitié écrit
+	_last_state = bytes
+
+func _load_state() -> void:
+	if state_path == "" or not FileAccess.file_exists(state_path):
+		print("[server] monde neuf (pas d'état enregistré)")
+		return
+	var v: Variant = bytes_to_var(FileAccess.get_file_as_bytes(state_path))    # jamais d'objets (bytes_to_var)
+	if not (v is Dictionary) or int(v.get("version", 0)) != STATE_VERSION or not (v.get("parts") is Dictionary):
+		push_warning("dedicated_server: état illisible, ignoré : " + state_path)
+		DirAccess.rename_absolute(state_path, state_path + ".old")
+		return
+	if String(v.get("blob", "")) != _blob_sha:
+		print("[server] l'état enregistré correspond à un autre niveau : ignoré (renommé en .old)")
+		DirAccess.rename_absolute(state_path, state_path + ".old")
+		return
+	var parts: Dictionary = v["parts"]
+	for part in parts:
+		if not (parts[part] is Array) or not lan.level_sync.snapshot_part_ok(String(part)):
+			parts.erase(part)
+	lan.level_sync.apply_snapshot(parts, true)
+	_last_state = FileAccess.get_file_as_bytes(state_path)
+	var n := 0
+	for part in parts:
+		n += (parts[part] as Array).size()
+	print("[server] état du monde rechargé (%d entrées)" % n)
+
+## Admin : remise à zéro du monde. Les joueurs sont prévenus, puis le serveur redémarre (systemd).
+func _reset_world(by_peer: int) -> void:
+	print("[server] monde réinitialisé par l'admin (pair %d) — redémarrage" % by_peer)
+	if state_path != "" and FileAccess.file_exists(state_path):
+		DirAccess.remove_absolute(state_path)
+	state_path = ""                                   # plus d'enregistrement d'ici l'arrêt
+	lan.broadcast_level_message("world_reset", null)
+	await get_tree().create_timer(1.0).timeout        # le message part avant la fermeture
+	lan.disconnect_session()
+	get_tree().quit(RESET_EXIT_CODE)
+
+static func _sha256_hex(bytes: PackedByteArray) -> String:
+	var h := HashingContext.new()
+	h.start(HashingContext.HASH_SHA256)
+	h.update(bytes)
+	return h.finish().hex_encode()
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:

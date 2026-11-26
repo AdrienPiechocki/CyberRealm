@@ -150,12 +150,28 @@ props in server mode: no weather, day/night, windows or player). Then:
   nodes carrying the `lan_sync_dynamic` metadata).
 - Solo and LAN-host play are unchanged: props stay local (`CYBERREALM_LOCAL_PROPS=1` forces this on a client).
 
+## Late joiners, distance checks and world persistence
+
+- **Late joiners**: once a player has loaded the level it asks for a **snapshot** (`level_ready`); the server sends
+  the transforms of every synced node plus, for each node of the level's `net_snapshot` group, what its
+  `net_snapshot()` returns (the Morrowind level: broken props and moved props), applied by `net_apply_snapshot()`.
+- **Distance checks**: the server knows every player's last position (`lan.peer_position(peer)`,
+  `lan.peer_within(peer, pos, radius)`). Network interactions are refused beyond 3 m + 1.5 m; the Morrowind props
+  refuse a grab beyond 4.5 m, a push beyond 3.5 m, a hold target farther than 4 m from the player. Teleports (50 m+
+  jumps) are logged, not refused.
+- **Persistence**: the same snapshot is saved to `<blob>.state` (default; `--state=FILE`, `--state=` to disable)
+  whenever it changes, at most every 10 s, and reloaded at startup **before** the port opens. A stopped service
+  loses at most the last 10 s (Godot headless dies on SIGTERM without notice). The file carries the blob's SHA-256:
+  after `install-server.sh blob NEW` the old state is ignored and kept as `.state.old`.
+- **Reset**: an admin (pause menu → Multiplayer → *Server*: unlock with the admin password, then *Reset world*,
+  click twice) erases the state; players are told and disconnected, and the server exits with code 75 so systemd
+  restarts it fresh (`Restart=on-failure`; by hand, start it again). Join again once it is back.
+
 ## Current limits
 
 - Exposing a server without `--online` (LAN mode) on the Internet is **not safe**: the 4-digit PIN and the unverified
   DTLS key do not protect it. Use `--online`.
-- Late joiners receive the level as exported: props moved or broken before they joined are not replayed yet.
-- Basic validation only (message sizes, impulse/throw speed clamps): a modified client could still ask to grab a
-  prop from anywhere. Distance checks against the player's synced position are a possible next step.
+- A modified client can still lie about its own position (positions are not physically validated); actions on
+  props are only accepted near the position it reports.
 - The RPC node path is identical on server and clients (`/root/WaylandRoom/LAN`): `scenes/dedicated_server.tscn`'s root
   must keep the name `WaylandRoom`.

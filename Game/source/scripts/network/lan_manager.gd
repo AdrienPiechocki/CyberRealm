@@ -597,6 +597,8 @@ func online_restricted() -> bool:
 # (--admin-password / CYBERREALM_ADMIN_PASSWORD). Les scripts de niveau interrogent is_admin() pour réserver des
 # réglages (ex. options du niveau) à ce joueur. Hors serveur dédié, l'hôte LAN est toujours admin de sa session.
 signal admin_changed(is_admin: bool)       # client : mon statut d'admin a changé
+## Serveur dédié : un admin a demandé la remise à zéro du monde (dedicated_server.gd s'en charge).
+signal world_reset_requested(by_peer: int)
 var admin_password := ""                   # serveur : vide = pas d'admin possible
 
 func _find_local_player() -> Node3D:

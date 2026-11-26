@@ -146,6 +146,7 @@ func _show_lan() -> void:
 	)
 
 	_add_voice_settings()
+	_add_server_admin()
 	
 	menu.container.add_child(menu._make_section("Video share"))
 
@@ -323,6 +324,55 @@ func _rebuild_mute_box() -> void:
 			vol.value_changed.connect(func(v: float): vm.set_volume(id, v))
 			row.add_child(vol)
 		_lan_mute_box.add_child(row)
+
+## Serveur dédié : connexion admin et remise à zéro du monde (le serveur efface l'état enregistré et redémarre).
+## Visible seulement dans une session sur serveur dédié.
+func _add_server_admin() -> void:
+	var lan: Node = menu._lan
+	if lan == null or not bool(lan.get("session_dedicated")):
+		return
+	menu.container.add_child(menu._make_section("Server"))
+	var status := Label.new()
+	menu.container.add_child(status)
+	var row := HBoxContainer.new()
+	var pw := LineEdit.new()
+	pw.secret = true
+	pw.placeholder_text = "Admin password"
+	pw.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(pw)
+	var unlock: Button = menu._make_btn("Unlock as admin")
+	row.add_child(unlock)
+	menu.container.add_child(row)
+	var reset: Button = menu._make_btn("Reset world (moved / broken objects)", "warning-button")
+	menu.container.add_child(reset)
+	var refresh := func() -> void:
+		if not is_instance_valid(status):
+			return
+		var is_admin: bool = lan.is_admin()
+		status.text = "You are the server admin" if is_admin else "Admin: locked"
+		row.visible = not is_admin
+		reset.disabled = not is_admin
+	refresh.call()
+	unlock.pressed.connect(func(): lan.request_admin(pw.text); pw.text = "")
+	if not lan.admin_changed.is_connected(_on_admin_changed):
+		lan.admin_changed.connect(_on_admin_changed)
+	set_meta("admin_refresh", refresh)
+	var armed := [false]
+	reset.pressed.connect(func():
+		if not armed[0]:
+			armed[0] = true
+			reset.text = "Click again to reset the world for everyone"
+			return
+		lan.send_level_message("admin_reset_world")
+		reset.text = "Reset requested…"
+		reset.disabled = true
+	)
+
+func _on_admin_changed(_is_admin: bool) -> void:
+	if has_meta("admin_refresh"):
+		var f: Callable = get_meta("admin_refresh")
+		if f.is_valid():
+			f.call()
 
 ## Chat vocal : mode du micro (désactivé par défaut), seuil de l'activation vocale, voix spatialisée,
 ## annulation d'écho de PipeWire, volume général. Lus à chaque frame par voice_manager.gd.

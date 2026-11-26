@@ -125,3 +125,60 @@ func test_snapshot_build_on_host_and_apply_on_client():
 	r = Runner.assert_eq(ls._level_sync_target.get("Crate"), host[2].transform, "transformation du décor à appliquer")
 	host[0].free(); host[1].free(); client[0].free(); client[1].free()
 	return r
+
+# ── Persistance du monde (serveur dédié) ───────────────────────────────────
+
+const DedicatedServer = preload("res://scripts/server/dedicated_server.gd")
+const STATE := "user://test_world.state"
+
+func _server_with_world() -> Array:
+	var w := _world(true)
+	var ds: Node = DedicatedServer.new()
+	ds.lan = w[0]
+	ds.state_path = STATE
+	ds._blob_sha = "blob-A"
+	return [ds] + w
+
+func _free_server(x: Array) -> void:
+	x[0].free(); x[1].free(); x[2].free()
+
+func test_world_state_saved_and_reloaded():
+	if FileAccess.file_exists(STATE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(STATE))
+	var a := _server_with_world()
+	a[3].position = Vector3(7, 0, 0)
+	a[1].level_sync._level_sync_by_path["Crate"] = a[3]
+	a[0]._save_state()
+	_free_server(a)
+	var b := _server_with_world()
+	b[1].is_host = false                    # au rechargement le serveur n'héberge pas encore
+	b[0]._load_state()
+	var r: Variant = Runner.assert_eq(b[3].position, Vector3(7, 0, 0), "transformation du décor rechargée")
+	if r is String: _free_server(b); return r
+	r = Runner.assert_eq(b[4].applied.size(), 2, "net_apply_snapshot reçoit les objets enregistrés")
+	_free_server(b)
+	if r is String: return r
+	var c := _server_with_world()
+	c[0]._blob_sha = "blob-B"                 # niveau réexporté
+	c[0]._load_state()
+	r = Runner.assert_true(c[4].applied.is_empty() and FileAccess.file_exists(STATE + ".old") and not FileAccess.file_exists(STATE),
+		"autre niveau : état ignoré et mis de côté (.old)")
+	_free_server(c)
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(STATE + ".old"))
+	return r
+
+func test_reset_world_only_for_admin_on_dedicated():
+	var w := _world(true)
+	var lan: Node = w[0]
+	lan.dedicated = true
+	var asked: Array = []
+	lan.world_reset_requested.connect(func(p): asked.append(p))
+	lan._players[5] = {"name": "Bob"}
+	lan.level_sync._accept_admin_reset_for_test(5)
+	var r: Variant = Runner.assert_eq(asked, [], "non-admin : refusé")
+	if r is String: w[0].free(); w[1].free(); return r
+	lan.session._admins[5] = true
+	lan.level_sync._accept_admin_reset_for_test(5)
+	r = Runner.assert_eq(asked, [5], "admin : demande transmise")
+	w[0].free(); w[1].free()
+	return r

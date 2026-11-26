@@ -8,6 +8,11 @@ var lan: LanManager = null
 
 const LEVEL_MSG_TOPIC_MAX := 48
 
+## Remise à zéro du monde : seulement d'un admin, sur un serveur dédié (isolé pour les tests).
+func _accept_admin_reset_for_test(from: int) -> void:
+	if lan.dedicated and lan.is_admin(from):
+		lan.world_reset_requested.emit(from)
+
 ## Client -> serveur.
 func send_level_message(topic: String, data: Variant = null, reliable := true) -> void:
 	if not LanManager.session_active or lan.is_host:
@@ -90,6 +95,9 @@ func _accept_level_msg_up(topic: String, data: Variant) -> void:
 	if topic == "level_ready":
 		send_snapshot_to(from)        # un client vient de charger le niveau : état courant du décor
 		return
+	if topic == "admin_reset_world":
+		_accept_admin_reset_for_test(from)
+		return
 	lan.level_message.emit(topic, data, from)
 
 @rpc("authority", "call_remote", "reliable", 1)
@@ -106,6 +114,9 @@ func _accept_level_msg_down(topic: String, data: Variant) -> void:
 	if topic == "admin_status":
 		lan.session.admin = data == true
 		lan.admin_changed.emit(lan.session.admin)
+		return
+	if topic == "world_reset":
+		lan._set_status("World reset by the admin — the server restarts, join again in a moment")
 		return
 	lan.level_message.emit(topic, data, 1)
 
@@ -233,8 +244,9 @@ func build_snapshot() -> Dictionary:
 				parts[str(lan._level_root.get_path_to(n))] = entries
 	return parts
 
-## Applique un instantané au niveau local (client à l'arrivée, ou serveur qui recharge son état sauvegardé).
-func apply_snapshot(parts: Dictionary) -> void:
+## Applique un instantané au niveau local : client à l'arrivée (transformations lissées), ou `local` (serveur qui
+## recharge son état sauvegardé, avant même d'héberger) : transformations posées directement.
+func apply_snapshot(parts: Dictionary, local := false) -> void:
 	if lan._level_root == null:
 		return
 	for part in parts:
@@ -246,7 +258,7 @@ func apply_snapshot(parts: Dictionary) -> void:
 				var n := lan._level_root.get_node_or_null(NodePath(e[0])) as Node3D
 				if n == null:
 					continue
-				if lan.is_host:
+				if lan.is_host or local:
 					n.transform = e[1]
 				else:
 					_level_sync_target[String(e[0])] = e[1]
