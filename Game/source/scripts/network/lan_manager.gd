@@ -109,6 +109,7 @@ const DiscoveryModule := preload("res://scripts/network/lan/discovery.gd")
 const LevelSyncModule := preload("res://scripts/network/lan/level_sync.gd")
 const ChatModule := preload("res://scripts/network/lan/chat.gd")
 const VoiceModule := preload("res://scripts/network/lan/voice.gd")
+const InviteModule := preload("res://scripts/network/lan/invite.gd")
 var session: SessionModule = null
 var players: PlayersModule = null
 var level_transfer: LevelTransferModule = null
@@ -119,6 +120,12 @@ var discovery: DiscoveryModule = null
 var level_sync: LevelSyncModule = null
 var chat: ChatModule = null
 var voice: VoiceModule = null
+var invite                         # module Invite (code d'invitation, UPnP)
+## Hôte : héberger « par Internet » (identité DTLS propre, PIN long, UPnP, code d'invitation). Voir invite.gd.
+var invite_mode := false
+## Session par invitation (hôte ou client) : mêmes restrictions qu'en ligne (pas de partage de fenêtres / fichiers,
+## pas de scripts d'avatar), sauf si le joueur fait confiance à ses invités comme sur un LAN.
+var invite_trusted := false
 
 func _init() -> void:
 	session = SessionModule.new()
@@ -161,6 +168,10 @@ func _init() -> void:
 	voice.name = "Voice"
 	voice.lan = self
 	add_child(voice)
+	invite = InviteModule.new()
+	invite.name = "Invite"
+	invite.lan = self
+	add_child(invite)
 # Journal protocole (user://lan_debug.log) : diagnostic du join LAN.
 func _lan_log(msg: String, reset := false) -> void:
 	push_warning("LAN: " + msg)
@@ -430,6 +441,8 @@ func _clear_remote_players() -> void:
 
 func _disconnect_session(keep_context := false) -> void:
 	_peer_pos.clear()
+	invite.stop_host()                  # ports ouverts par UPnP refermés
+	invite_mode = false
 	audio_share._stop_audio_share()
 	video_share._stop_video_share()
 	session._pending_auth.clear()
@@ -590,7 +603,11 @@ func in_dedicated_session() -> bool:
 
 ## true en mode online (serveur ou client) : fonctions entre joueurs coupées (fenêtres, audio, vidéo, fichiers).
 func online_restricted() -> bool:
-	return online or session_online
+	return online or session_online or (invite_session() and not invite_trusted)
+
+## true pendant une session ouverte par code d'invitation (hôte invite_mode, ou client qui a rejoint avec un code).
+func invite_session() -> bool:
+	return (is_host and invite_mode) or (not is_host and session != null and session._invite_cert != "")
 
 # ── Administrateur (serveur dédié) ───────────────────────────────────
 # Sur un serveur dédié personne n'est « l'hôte » : un joueur devient ADMIN en donnant le mot de passe du serveur
@@ -675,7 +692,28 @@ func unregister_level_sync(n: Node3D) -> void:
 	level_sync.unregister_level_sync(n)
 
 func host_game() -> bool:
+	invite_mode = false
 	return session.host_game()
 
+## Héberger par Internet : le code d'invitation arrive par invite.invite_ready (UPnP dans un thread).
+func host_invite() -> bool:
+	if online or dedicated:
+		return false
+	invite_mode = true
+	var ok := session.host_game()
+	if not ok:
+		invite_mode = false
+	return ok
+
 func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
+	session._invite_cert = ""
 	return session.join_game(ip, pin, encrypted)
+
+## Rejoindre avec un code d'invitation « CR1-… » : adresse, mot de passe et certificat épinglé de l'hôte.
+func join_invite(code: String) -> bool:
+	var inv: Dictionary = InviteModule.decode_invite(code)
+	if inv.is_empty():
+		_set_status("Invalid invitation code")
+		return false
+	session._invite_cert = String(inv["cert"])
+	return session.join_game(String(inv["addr"]), String(inv["pin"]), true)

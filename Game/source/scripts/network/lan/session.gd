@@ -39,6 +39,7 @@ var _last_heartbeat_sent_msec := 0
 var _reconnecting := false
 var _reconnect_attempts := 0
 var _reconnect_ip := ""
+var _invite_cert := ""            # client : certificat épinglé du code d'invitation (vide : join classique)
 var _reconnect_pin := ""
 # Timeout de vérification PIN côté client (ms). Si l'hôte ne répond pas, déconnexion.
 const AUTH_TIMEOUT_MSEC := 10000
@@ -223,6 +224,14 @@ func host_game() -> bool:
 			return false
 		lan.session_encrypted = true
 		lan._lan_log("DTLS: certificat réel chargé (online)")
+	elif lan.invite_mode:
+		# Invitation : identité propre à cet hôte (jamais la clé embarquée, commune à tous), chiffrement obligatoire.
+		if peer.host.dtls_server_setup(lan.invite.server_tls()) != OK:
+			peer.close()
+			lan._set_status("Cannot host over the Internet: DTLS setup failed")
+			return false
+		lan.session_encrypted = true
+		lan._lan_log("DTLS: identité d'invitation (hôte)")
 	elif lan.encryption_enabled:
 		var dtls := _load_dtls_options()
 		if dtls != null:
@@ -238,7 +247,7 @@ func host_game() -> bool:
 	lan.is_host = true
 	lan.session_state_changed.emit(true)
 	lan.level_sync._refresh_level_sync()
-	lan._pin = lan.forced_pin if lan.forced_pin != "" else lan._generate_pin()
+	lan._pin = lan.forced_pin if lan.forced_pin != "" else (lan.InviteModule.random_pin() if lan.invite_mode else lan._generate_pin())
 	lan.pin_changed.emit(lan._pin)
 	lan._lan_log("host password set" if lan.online else "host PIN: " + lan._pin)
 	# Miroir des scripts utilisateur reparti à zéro pour cette session (les
@@ -259,7 +268,9 @@ func host_game() -> bool:
 		lan._players[multiplayer.get_unique_id()] = {"name": lan.player_name, "color": lan.player_color}
 	multiplayer.peer_connected.connect(_on_peer_connected)
 	multiplayer.peer_disconnected.connect(_on_peer_disconnected)
-	if not lan.online:
+	if lan.invite_mode:
+		lan.invite.start_host(lan._pin)       # ports (UPnP) + code d'invitation, en arrière-plan
+	elif not lan.online:
 		lan.discovery._start_responder()      # la découverte UDP n'a pas sa place sur Internet (et divulgue nom/adresses)
 	lan._announced = false
 	lan.players._avatar_sent_to.clear()
@@ -274,7 +285,10 @@ func host_game() -> bool:
 	if not lan.level_transfer._prepare_level_send_cache():
 		lan._lan_log("level cache prepare failed")
 	lan._lan_log("host_game — waiting for clients", true)
-	lan._set_status("Hosting on %s:%d — open UDP port %d (and %d) and TCP port %d in the firewall if a client can't connect%s" % [lan._local_ip(), LanManager.PORT, LanManager.PORT, LanManager.DISCOVERY_PORT, LanManager.LEVEL_TCP_PORT, " (TLS ON)" if lan.session_encrypted else ""])
+	if lan.invite_mode:
+		lan._set_status("Hosting over the Internet — preparing the invitation code (UPnP)…")
+	else:
+		lan._set_status("Hosting on %s:%d — open UDP port %d (and %d) and TCP port %d in the firewall if a client can't connect%s" % [lan._local_ip(), LanManager.PORT, LanManager.PORT, LanManager.DISCOVERY_PORT, LanManager.LEVEL_TCP_PORT, " (TLS ON)" if lan.session_encrypted else ""])
 	lan._emit_players()
 	return true
 
@@ -310,6 +324,15 @@ func join_game(ip: String, pin: String = "", encrypted: bool = false) -> bool:
 		lan.session_online = true
 		_setup_engine_auth()
 		lan._lan_log("DTLS: certificat vérifié exigé (client → %s)" % ip)
+	elif _invite_cert != "":
+		# Code d'invitation : seul le certificat de CET hôte est accepté (épinglage), sinon pas de connexion.
+		var tls: TLSOptions = lan.InviteModule.client_tls(_invite_cert)
+		if tls == null or peer.host.dtls_client_setup(lan.InviteModule.CN, tls) != OK:
+			peer.close()
+			lan._set_status("Invalid invitation code (certificate)")
+			return false
+		lan.session_encrypted = true
+		lan._lan_log("DTLS: certificat épinglé (invitation → %s)" % ip)
 	elif encrypted:
 		var dtls := _dtls_client_options()
 		if dtls != null:
@@ -653,6 +676,9 @@ func _on_connection_failed() -> void:
 			lan._set_status("Authentication refused by the server — wrong password (12+ characters, not the LAN PIN), or temporarily locked out after repeated failures.")
 		else:
 			lan._set_status("Connection failed — server unreachable, or its TLS certificate is not valid for this name (the name must match the certificate).")
+	elif _invite_cert != "":
+		lan._disconnect_session()
+		lan._set_status("Connection failed — host unreachable (it must forward UDP %d and TCP %d, or have UPnP), or the host is not the one of this invitation code (certificate mismatch). Ask for a fresh code." % [LanManager.PORT, LanManager.LEVEL_TCP_PORT])
 	else:
 		lan._disconnect_session()
 		var tls_hint := " TLS était activé sur le Join — si l'hôte ne chiffre pas, retentez sans TLS." if _last_join_encrypted else ""

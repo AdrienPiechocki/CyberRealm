@@ -736,6 +736,8 @@ func _ready() -> void:
 	pause_menu.fullbody_changed.connect(func(_on): _refresh_body_view())
 	_spawn_body_avatar.call_deferred()
 	pause_menu.lan_host_requested.connect(lan.host_game)
+	pause_menu.lan_host_invite_requested.connect(lan.host_invite)
+	pause_menu.lan_join_invite_requested.connect(lan.join_invite)
 	pause_menu.lan_join_requested.connect(lan.join_game)
 	pause_menu.lan_disconnect_requested.connect(lan.disconnect_session)
 	pause_menu.lan_discover_requested.connect(lan.discover_games)

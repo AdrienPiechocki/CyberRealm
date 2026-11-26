@@ -54,6 +54,7 @@ func _show_lan() -> void:
 		menu.lan_host_requested.emit()
 	)
 	menu.container.add_child(host_btn)
+	_add_invite_host()
 
 	# PIN label (visible when hosting — shows the generated PIN) + bouton 👁
 	# pour le masquer à l'écran sans l'oublier (état persistant dans le membre).
@@ -82,7 +83,7 @@ func _show_lan() -> void:
 	var join_row := HBoxContainer.new()
 	join_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_lan_ip_edit = menu._make_line_edit()
-	_lan_ip_edit.placeholder_text = "Host IP or name (ex: 192.168.1.5 / play.example.org)"
+	_lan_ip_edit.placeholder_text = "Host IP, name or invitation code (192.168.1.5 / play.example.org / CR1-…)"
 	join_row.add_child(_lan_ip_edit)
 	_lan_pin_edit = menu._make_line_edit()
 	_lan_pin_edit.placeholder_text = "PIN / password"
@@ -101,7 +102,9 @@ func _show_lan() -> void:
 	join_btn.pressed.connect(func():
 		var ip := _lan_ip_edit.text.strip_edges()
 		var pin := _lan_pin_edit.text.strip_edges()
-		if ip != "":
+		if ip.begins_with("CR1-"):
+			menu.lan_join_invite_requested.emit(ip)          # code d'invitation : adresse, mot de passe, certificat
+		elif ip != "":
 			menu.lan_join_requested.emit(ip, pin, _lan_encryption_btn.button_pressed)
 	)
 	join_row.add_child(join_btn)
@@ -324,6 +327,61 @@ func _rebuild_mute_box() -> void:
 			vol.value_changed.connect(func(v: float): vm.set_volume(id, v))
 			row.add_child(vol)
 		_lan_mute_box.add_child(row)
+
+## Héberger par Internet : bouton, puis code d'invitation à copier (cf. scripts/network/lan/invite.gd).
+func _add_invite_host() -> void:
+	var lan: Node = menu._lan
+	if lan == null or lan.get("invite") == null:
+		return
+	var btn: Button = menu._make_btn("Host over the Internet (invitation code)")
+	btn.tooltip_text = "Opens the ports on your router (UPnP) and gives a code to send to your friends.\nThe code contains your address, a long random password and this machine's certificate."
+	btn.pressed.connect(func(): menu.lan_host_invite_requested.emit())
+	btn.visible = not menu._lan_connected
+	menu.container.add_child(btn)
+	var trust := CheckButton.new()
+	trust.text = "Trust invited players like on a LAN (window & file sharing, avatar scripts)"
+	trust.tooltip_text = "Off: sessions by invitation code (hosted or joined) get the online restrictions."
+	trust.button_pressed = bool(lan.get("invite_trusted"))
+	trust.toggled.connect(func(on: bool): lan.invite_trusted = on)
+	menu.container.add_child(trust)
+	var box := VBoxContainer.new()
+	menu.container.add_child(box)
+	var show_code := func(code: String, status: String) -> void:
+		if not is_instance_valid(box):
+			return
+		for c in box.get_children():
+			c.queue_free()
+		if code == "":
+			return
+		var info := Label.new()
+		info.text = status
+		info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		info.add_theme_font_size_override("font_size", 12)
+		box.add_child(info)
+		var row := HBoxContainer.new()
+		var field := LineEdit.new()
+		field.text = code
+		field.editable = false
+		field.secret = true                  # le code contient le mot de passe : masqué à l'écran (stream…)
+		field.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		row.add_child(field)
+		var copy: Button = menu._make_btn("Copy code")
+		copy.pressed.connect(func():
+			DisplayServer.clipboard_set(code)
+			copy.text = "Copied")
+		row.add_child(copy)
+		box.add_child(row)
+	if bool(lan.get("is_host")) and String(lan.invite.invite_code) != "":
+		show_code.call(lan.invite.invite_code, "Invitation code (send it privately: it contains the password)")
+	set_meta("invite_show", show_code)
+	if not lan.invite.invite_ready.is_connected(_on_invite_ready):
+		lan.invite.invite_ready.connect(_on_invite_ready)
+
+func _on_invite_ready(code: String, status: String) -> void:
+	if has_meta("invite_show"):
+		var f: Callable = get_meta("invite_show")
+		if f.is_valid():
+			f.call(code, status + "\nInvitation code (send it privately: it contains the password):")
 
 ## Serveur dédié : connexion admin et remise à zéro du monde (le serveur efface l'état enregistré et redémarre).
 ## Visible seulement dans une session sur serveur dédié.

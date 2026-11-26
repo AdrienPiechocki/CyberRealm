@@ -9,6 +9,8 @@ signal pins_opacity_changed(percent: int)
 signal pins_position_changed(position: String)
 signal pins_size_divisor_changed(divisor: float)
 signal lan_host_requested
+signal lan_host_invite_requested
+signal lan_join_invite_requested(code: String)
 signal lan_join_requested(ip: String, pin: String, encrypted: bool)
 signal lan_video_settings_changed(bitrate: int, codec: String, fps: int)
 signal tutorial_requested

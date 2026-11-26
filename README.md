@@ -425,6 +425,22 @@ Remote windows are view-only: `SUPER+F` opens a fullscreen view of them (with th
 owner's cursor overlaid), `SUPER+P` pins them as PiP. You cannot type or click into
 them.
 
+### Playing over the Internet (invitation code)
+
+Without a dedicated server, a player can host for friends outside the local network: pause menu → Multiplayer →
+**Host over the Internet (invitation code)**.
+
+- The game asks the router to open UDP **7777** and TCP **7778** (UPnP; closed again when the session ends). Without
+  UPnP, forward those two ports to the host machine by hand. Behind a CGNAT (no public IPv4) this cannot work: use a
+  dedicated server.
+- It shows a code `CR1-…` (masked; **Copy code**) holding the public address, a long random password (instead of the
+  4-digit PIN) and **this machine's own certificate** (generated once, `user://certs/host_invite.*`, never the shared
+  one in `certs/`). Send it privately: it contains the password.
+- Friends paste the code in the **Join** address field. Their game accepts only that certificate (pinning): another
+  machine, even with the address and password, fails the DTLS handshake.
+- Sessions by invitation get the **online restrictions** (no window, sound or file sharing, no avatar scripts)
+  unless the player ticks **Trust invited players like on a LAN** — host and guests each decide for themselves.
+
 ### LAN security
 
 Joining is protected by a 4-digit **PIN** the host shares with its friends (shown
@@ -542,7 +558,8 @@ choice is fed back to the portal and OBS starts streaming the game view.
   requires wlroots 0.19.
 - The GDExtension must be rebuilt if your wlroots version differs (see the
   `pkg-config` line in `SConstruct`).
-- LAN multiplayer is local-network only (no NAT traversal / internet play).
+- Internet play: either host with an **invitation code** (needs UPnP or two forwarded ports; no NAT hole punching,
+  no relay), or run the dedicated server in `--online` mode (`server/README.md`).
 - Remote windows are view-only: input is never forwarded to another player's
   compositor.
 - Audio sharing matches applications by PID. For X11 windows the real PID is
