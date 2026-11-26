@@ -52,7 +52,7 @@ func _place_flush_pair() -> Variant:
 	win3d.active_window_id = WID
 	# Une seule fenêtre inventorie ses recouvrements : c'est ce que fait le
 	# déplacement réel en tête de frame.
-	win3d._sync_snap_monitoring(WID)
+	win3d.snap._sync_snap_monitoring(WID)
 	# Le recouvrement de deux Area3D est un état du moteur physique : il
 	# n'existe qu'après un pas de simulation.
 	await get_tree().physics_frame
@@ -75,7 +75,7 @@ func test_new_snap_is_refused_while_snapping_is_disabled() -> Variant:
 		return ctx
 	# Garde-fou du harnais : sans recouvrement réel des zones, la position des
 	# quads ne produirait aucun collage et la suite ne prouverait rien.
-	var snap: Dictionary = win3d._find_snap(Vector3.ZERO)
+	var snap: Dictionary = win3d.snap._find_snap(Vector3.ZERO)
 	var res: Variant = Runner.assert_eq(int(snap.get("wid", -1)), NEI,
 		"deux fenêtres bord à bord doivent se coller quand le collage est actif")
 	if _fail(res):
@@ -83,7 +83,7 @@ func test_new_snap_is_refused_while_snapping_is_disabled() -> Variant:
 	if not win3d.has_method("set_snapping_enabled"):
 		return _teardown("windows_3d n'expose pas set_snapping_enabled()")
 	win3d.set_snapping_enabled(false)
-	res = Runner.assert_true(win3d._find_snap(Vector3.ZERO).is_empty(),
+	res = Runner.assert_true(win3d.snap._find_snap(Vector3.ZERO).is_empty(),
 		"le collage coupé doit refuser un nouveau raccord entre zones jointives")
 	if _fail(res):
 		return _teardown(res)
@@ -99,17 +99,17 @@ func test_established_snap_survives_disabling() -> Variant:
 		return _teardown("windows_3d n'expose pas set_snapping_enabled()")
 	# Collage établi par le vrai chemin : ce que renvoie la détection, écrit par
 	# _set_snap.
-	win3d._set_snap(WID, win3d._find_snap(Vector3.ZERO))
+	win3d.snap._set_snap(WID, win3d.snap._find_snap(Vector3.ZERO))
 	var res: Variant = Runner.assert_true(win3d.snapped_to.has(WID),
 		"le collage doit s'établir avant la coupure, sinon le test ne prouve rien")
 	if _fail(res):
 		return _teardown(res)
 	win3d.set_snapping_enabled(false)
-	res = Runner.assert_true(not win3d._find_snap(Vector3.ZERO).is_empty(),
+	res = Runner.assert_true(not win3d.snap._find_snap(Vector3.ZERO).is_empty(),
 		"couper la détection ne doit pas arracher un collage déjà établi")
 	if _fail(res):
 		return _teardown(res)
-	res = Runner.assert_true(win3d._find_snap(FAR_AWAY).is_empty(),
+	res = Runner.assert_true(win3d.snap._find_snap(FAR_AWAY).is_empty(),
 		"un collage établi doit rester lâchable en tirant le pointeur au loin")
 	return _teardown(res)
 

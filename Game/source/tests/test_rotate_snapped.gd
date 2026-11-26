@@ -79,12 +79,12 @@ func _build_world() -> Variant:
 	win3d.active_window_id = WID
 	# Une seule fenêtre inventorie ses recouvrements : c'est ce que fait le
 	# déplacement réel en tête de frame.
-	win3d._sync_snap_monitoring(WID)
+	win3d.snap._sync_snap_monitoring(WID)
 	# Le recouvrement de deux Area3D est un état du moteur physique : il
 	# n'existe qu'après un pas de simulation.
 	await get_tree().physics_frame
 	await get_tree().physics_frame
-	win3d._set_snap(WID, win3d._find_snap(Vector3.ZERO))
+	win3d.snap._set_snap(WID, win3d.snap._find_snap(Vector3.ZERO))
 	if not win3d.snapped_to.has(WID):
 		return "les deux fenêtres bord à bord ne se sont pas collées"
 	return true
@@ -102,9 +102,9 @@ func _fail(res: Variant) -> bool:
 
 # Fige les repères avant une série de rotations.
 func _mark() -> void:
-	var area: Area3D = win3d._snap_pivot_area(WID)
+	var area: Area3D = win3d.snap._snap_pivot_area(WID)
 	_axis = area.global_transform.basis.y.normalized()
-	_before = win3d._stored_basis(WID)
+	_before = win3d.snap._stored_basis(WID)
 
 # Angle déjà parcouru autour de l'axe du pivot, mesuré sur un vecteur
 # perpendiculaire à cet axe (la profondeur de la fenêtre) : c'est l'angle que
@@ -115,7 +115,7 @@ func _mark() -> void:
 # On ramène donc la mesure dans le sens de l'angle appliqué, pour que le test
 # se lise comme la constante qu'il vérifie.
 func _turned() -> float:
-	return -_before.z.signed_angle_to(win3d._stored_basis(WID).z, _axis)
+	return -_before.z.signed_angle_to(win3d.snap._stored_basis(WID).z, _axis)
 
 # Une action Input maintenue, simulée SANS manette : c'est la branche molette
 # qui s'exerce.
@@ -170,18 +170,18 @@ func test_a_gamepad_button_is_read_as_a_gamepad_scroll() -> Variant:
 	if _fail(ctx):
 		return ctx
 	await _press_pad(JOY_BUTTON_LEFT_SHOULDER)
-	var res: Variant = Runner.assert_true(win3d._scroll_from_gamepad("scroll_up", WITH_PAD),
+	var res: Variant = Runner.assert_true(win3d.snap._scroll_from_gamepad("scroll_up", WITH_PAD),
 		"la gâchette haute pressée doit être reconnue comme manette")
 	if _fail(res):
 		await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
 		return _teardown(res)
-	res = Runner.assert_true(not win3d._scroll_from_gamepad("scroll_down", WITH_PAD),
+	res = Runner.assert_true(not win3d.snap._scroll_from_gamepad("scroll_down", WITH_PAD),
 		"et elle ne doit rien faire pour l'autre sens")
 	if _fail(res):
 		await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
 		return _teardown(res)
 	await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
-	res = Runner.assert_true(not win3d._scroll_from_gamepad("scroll_up", WITH_PAD),
+	res = Runner.assert_true(not win3d.snap._scroll_from_gamepad("scroll_up", WITH_PAD),
 		"le relâchement doit être vu : pas d'état collé")
 	return _teardown(res)
 
@@ -195,18 +195,18 @@ func test_pad_devices_never_query_the_device_minus_one() -> Variant:
 	var any_pad := InputEventJoypadButton.new()
 	any_pad.device = -1
 	any_pad.button_index = JOY_BUTTON_LEFT_SHOULDER
-	var res: Variant = Runner.assert_eq(Windows3DScript._pad_devices(any_pad, [0]), [0],
+	var res: Variant = Runner.assert_eq(Windows3DScript.SnapModule._pad_devices(any_pad, [0]), [0],
 		"un bind « n'importe quelle manette » doit se résoudre sur les manettes branchées")
 	if _fail(res):
 		return res
 	var one_pad := InputEventJoypadButton.new()
 	one_pad.device = 2
 	one_pad.button_index = JOY_BUTTON_LEFT_SHOULDER
-	res = Runner.assert_eq(Windows3DScript._pad_devices(one_pad, [0]), [0, 2],
+	res = Runner.assert_eq(Windows3DScript.SnapModule._pad_devices(one_pad, [0]), [0, 2],
 		"un bind sur une manette précise doit rester interrogeable")
 	if _fail(res):
 		return res
-	res = Runner.assert_true(not Windows3DScript._pad_devices(any_pad, [0, 3]).has(-1),
+	res = Runner.assert_true(not Windows3DScript.SnapModule._pad_devices(any_pad, [0, 3]).has(-1),
 		"le -1 ne doit jamais être interrogé")
 	return res
 
@@ -221,12 +221,12 @@ func test_rotate_snapped_turns_by_exactly_the_given_angle() -> Variant:
 		"aucun cran avant le scroll")
 	if _fail(res):
 		return _teardown(res)
-	win3d._rotate_snapped(TEST_ANGLE)
+	win3d.snap._rotate_snapped(TEST_ANGLE)
 	res = Runner.assert_approx(_turned(), TEST_ANGLE, TOL,
 		"doit tourner de exactement l'angle demandé")
 	if _fail(res):
 		return _teardown(res)
-	win3d._rotate_snapped(-TEST_ANGLE)
+	win3d.snap._rotate_snapped(-TEST_ANGLE)
 	res = Runner.assert_approx(_turned(), 0.0, TOL,
 		"un cran inverse doit ramener à l'angle de départ")
 	return _teardown(res)
@@ -238,18 +238,18 @@ func test_a_held_trigger_accumulates_a_quarter_turn_per_second() -> Variant:
 	var ctx: Variant = await _build_world()
 	if _fail(ctx):
 		return ctx
-	var res: Variant = Runner.assert_approx(win3d.SNAP_ROTATE_RATE, deg_to_rad(90.0), TOL,
+	var res: Variant = Runner.assert_approx(win3d.snap.SNAP_ROTATE_RATE, deg_to_rad(90.0), TOL,
 		"le taux de la manette est un quart de tour par seconde")
 	if _fail(res):
 		return _teardown(res)
 	_mark()
-	win3d._rotate_snapped(win3d.SNAP_ROTATE_RATE * FRAME)
+	win3d.snap._rotate_snapped(win3d.snap.SNAP_ROTATE_RATE * FRAME)
 	res = Runner.assert_approx(_turned(), deg_to_rad(1.5), TOL,
 		"une frame de gâchette vaut 1.5°, pas un cran de 15°")
 	if _fail(res):
 		return _teardown(res)
 	for i in 59:
-		win3d._rotate_snapped(win3d.SNAP_ROTATE_RATE * FRAME)
+		win3d.snap._rotate_snapped(win3d.snap.SNAP_ROTATE_RATE * FRAME)
 	res = Runner.assert_approx(_turned(), deg_to_rad(90.0), TOL,
 		"une seconde de gâchette doit tourner d'un quart de tour")
 	return _teardown(res)
@@ -264,14 +264,14 @@ func test_a_held_gamepad_scroll_turns_at_the_rate() -> Variant:
 		return ctx
 	await _press_pad(JOY_BUTTON_LEFT_SHOULDER)
 	_mark()
-	win3d._rotate_from_scroll(FRAME, WITH_PAD)
+	win3d.snap._rotate_from_scroll(FRAME, WITH_PAD)
 	var res: Variant = Runner.assert_approx(_turned(), deg_to_rad(1.5), TOL,
 		"une frame de gâchette vaut 1.5°, pas un cran de 15°")
 	if _fail(res):
 		await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
 		return _teardown(res)
 	for i in 59:
-		win3d._rotate_from_scroll(FRAME, WITH_PAD)
+		win3d.snap._rotate_from_scroll(FRAME, WITH_PAD)
 	res = Runner.assert_approx(_turned(), deg_to_rad(90.0), TOL,
 		"une seconde de gâchette doit tourner d'un quart de tour")
 	if _fail(res):
@@ -280,7 +280,7 @@ func test_a_held_gamepad_scroll_turns_at_the_rate() -> Variant:
 	# Relâchée : plus rien ne doit tourner, sinon la fenêtre continuerait sa
 	# route toute seule une fois la gâchette lâchée.
 	await _release_pad(JOY_BUTTON_LEFT_SHOULDER)
-	win3d._rotate_from_scroll(FRAME, WITH_PAD)
+	win3d.snap._rotate_from_scroll(FRAME, WITH_PAD)
 	res = Runner.assert_approx(_turned(), deg_to_rad(90.0), TOL,
 		"une gâchette relâchée ne doit plus rien faire")
 	return _teardown(res)
@@ -295,12 +295,12 @@ func test_a_wheel_event_turns_at_three_times_the_pad_rate() -> Variant:
 		return ctx
 	_mark()
 	_press("scroll_up")
-	win3d._rotate_from_scroll(FRAME)
+	win3d.snap._rotate_from_scroll(FRAME)
 	var res: Variant = Runner.assert_approx(_turned(), WHEEL_FRAME_ANGLE, TOL,
 		"le scroll souris doit appliquer 3 × le taux")
 	if _fail(res):
 		return _teardown(res)
-	win3d._rotate_from_scroll(FRAME)
+	win3d.snap._rotate_from_scroll(FRAME)
 	res = Runner.assert_approx(_turned(), 2.0 * WHEEL_FRAME_ANGLE, TOL,
 		"et autant à la frame suivante, pas le taux de la manette")
 	if _fail(res):
@@ -308,7 +308,7 @@ func test_a_wheel_event_turns_at_three_times_the_pad_rate() -> Variant:
 	_release_scroll()
 	_mark()
 	_press("scroll_down")
-	win3d._rotate_from_scroll(FRAME)
+	win3d.snap._rotate_from_scroll(FRAME)
 	res = Runner.assert_approx(_turned(), -WHEEL_FRAME_ANGLE, TOL,
 		"scroll_down doit tourner dans l'autre sens")
 	return _teardown(res)

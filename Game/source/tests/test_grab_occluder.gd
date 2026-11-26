@@ -82,7 +82,7 @@ func test_occluder_hidden_while_grabbed() -> Variant:
 	ok = _assert_occluder("pendant le grab", false)
 	if ok != true:
 		return ok
-	win3d.release_window_grab(7)
+	win3d.grab.release_window_grab(7)
 	if win3d.is_moving:
 		return "is_moving devrait être inactif après release_window_grab"
 	ok = _assert_occluder("après le grab", true)
@@ -114,7 +114,7 @@ func test_grab_then_hide_keeps_occluder_hidden() -> Variant:
 	if build != true:
 		return build
 	win3d.toggle_grab_window(7)
-	win3d.release_window_grab(7)
+	win3d.grab.release_window_grab(7)
 	win3d.toggle_hide(7)
 	var ok: Variant = _assert_occluder("fenêtre cachée", false)
 	if ok != true:
@@ -140,11 +140,11 @@ func test_menu_grab_uses_spawn_distance() -> Variant:
 	if absf(win3d.move_depth - Windows3DScript.SPAWN_DISTANCE) > 0.001:
 		_teardown()
 		return "grab menu : move_depth %.2f, attendu %.2f" % [win3d.move_depth, Windows3DScript.SPAWN_DISTANCE]
-	win3d.release_window_grab(7)
+	win3d.grab.release_window_grab(7)
 	win3d.toggle_grab_window(7)
 	if absf(win3d.move_depth - 15.0) > 0.001:
 		_teardown()
 		return "grab ordinaire : move_depth %.2f, attendu 15.00" % win3d.move_depth
-	win3d.release_window_grab(7)
+	win3d.grab.release_window_grab(7)
 	_teardown()
 	return true

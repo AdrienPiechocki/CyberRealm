@@ -492,18 +492,18 @@ func test_toggle_hide_disables_frame_colliders() -> Variant:
 func test_visual_half_extent_includes_frame_and_bar() -> Variant:
 	var d: Dictionary = Decoration.titlebar_metrics(0.01)
 	var r = Runner.assert_approx(
-		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).x, 1.6 + SHIPPED_BORDER * 0.01, 0.001,
+		Windows3DScript.SnapModule.visual_half_extent(Vector2(3.2, 2.0), d).x, 1.6 + SHIPPED_BORDER * 0.01, 0.001,
 		"demi-largeur visible = contenu + cadre")
 	if _fail(r):
 		return r
 	return Runner.assert_approx(
-		Windows3DScript.visual_half_extent(Vector2(3.2, 2.0), d).y, 1.0 + (0.2 + SHIPPED_BORDER * 0.01) / 2.0, 0.001,
+		Windows3DScript.SnapModule.visual_half_extent(Vector2(3.2, 2.0), d).y, 1.0 + (0.2 + SHIPPED_BORDER * 0.01) / 2.0, 0.001,
 		"demi-hauteur visible = contenu + barre + cadre")
 
 func test_visual_center_is_offset_by_the_frame_asymmetry() -> Variant:
 	var d: Dictionary = Decoration.titlebar_metrics(0.01)
 	var up := Vector3(0.0, 1.0, 0.0)
-	var got: Vector3 = Windows3DScript.visual_center(Vector3(2.0, 3.0, 4.0), up, d)
+	var got: Vector3 = Windows3DScript.SnapModule.visual_center(Vector3(2.0, 3.0, 4.0), up, d)
 	var want := Vector3(2.0, 3.0 + (0.2 - SHIPPED_BORDER * 0.01) / 2.0, 4.0)
 	var r = Runner.assert_true(got.is_equal_approx(want),
 		"centre visuel décalé vers le haut de (barre - cadre)/2 : %s != %s" % [got, want])
@@ -511,7 +511,7 @@ func test_visual_center_is_offset_by_the_frame_asymmetry() -> Variant:
 		return r
 	# Cadre et barre de même épaisseur : plus rien à décaler.
 	return Runner.assert_eq(
-		Windows3DScript.visual_center(Vector3.ZERO, up,
+		Windows3DScript.SnapModule.visual_center(Vector3.ZERO, up,
 			{"border": 0.2, "titlebar": 0.2}),
 		Vector3.ZERO, "barre = cadre => aucun décalage")
 
@@ -737,7 +737,7 @@ func test_frame_edge_starts_a_resize() -> Variant:
 	await get_tree().physics_frame
 	Input.action_press("left_click")
 	await get_tree().physics_frame
-	win3d._handle_decoration_edge(frame, cam.global_position, dir)
+	win3d.pointer._handle_decoration_edge(frame, cam.global_position, dir)
 	var r = Runner.assert_true(win3d.is_resizing, "un clic sur le cadre doit démarrer un resize")
 	if _fail(r):
 		return r

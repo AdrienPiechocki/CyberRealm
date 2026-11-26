@@ -95,7 +95,7 @@ func test_titlebar_click_starts_a_top_resize() -> Variant:
 	await get_tree().physics_frame
 	Input.action_press("left_click")
 	await get_tree().physics_frame
-	win3d._handle_titlebar(bar_body, aim[0], aim[1])
+	win3d.pointer._handle_titlebar(bar_body, aim[0], aim[1])
 	var res: Variant = Runner.assert_true(win3d.is_resizing,
 		"le clic sur la barre de titre doit démarrer un redimensionnement")
 	if _fail(res):
@@ -117,37 +117,37 @@ func test_unshared_top_resize_stays_flat() -> Variant:
 		return build
 	var quad: Node3D = _quad()
 	var aim := _aim()
-	win3d._start_resize(WID, quad, aim[0], aim[1], "top")
+	win3d.grab._start_resize(WID, quad, aim[0], aim[1], "top")
 	var res: Variant = Runner.assert_true(win3d.is_resizing,
 		"_start_resize doit armer le redimensionnement")
 	if _fail(res):
 		return res
 	# Sans voisine sur le haut, le resize par le haut reste plan : le regard
 	# vertical est la hauteur, il ne doit pas devenir de la profondeur.
-	res = Runner.assert_eq(win3d.resize_hinge_mode, "",
+	res = Runner.assert_eq(win3d.grab.resize_hinge_mode, "",
 		"un redimensionnement par le haut sans voisine ne doit pas être en charnière")
 	if _fail(res):
 		return res
 	# L'état de départ est celui d'un resize de bord, sinon le premier frame de
 	# drag partirait d'une référence fausse (mesh, position, ratio px/unité).
-	res = Runner.assert_eq(win3d.window_start_size, SURFACE,
+	res = Runner.assert_eq(win3d.grab.window_start_size, SURFACE,
 		"la taille de surface de départ doit être figée")
 	if _fail(res):
 		return res
-	res = Runner.assert_eq(win3d.window_start_content_offset, CONTENT_OFFSET,
+	res = Runner.assert_eq(win3d.grab.window_start_content_offset, CONTENT_OFFSET,
 		"le content_offset de départ doit être figé")
 	if _fail(res):
 		return res
-	res = Runner.assert_eq(win3d.window_start_mesh_size, (quad.mesh as QuadMesh).size,
+	res = Runner.assert_eq(win3d.grab.window_start_mesh_size, (quad.mesh as QuadMesh).size,
 		"la taille monde de départ doit être figée")
 	if _fail(res):
 		return res
-	res = Runner.assert_eq(win3d.window_start_local_pos, quad.position,
+	res = Runner.assert_eq(win3d.grab.window_start_local_pos, quad.position,
 		"la position locale de départ doit être figée")
 	if _fail(res):
 		return res
 	var cam: Camera3D = player.get_node("Camera3D")
-	res = Runner.assert_approx(win3d.resize_depth,
+	res = Runner.assert_approx(win3d.grab.resize_depth,
 		cam.global_position.distance_to(quad.global_position), 0.001,
 		"la profondeur de drag doit être la distance caméra -> quad")
 	if _fail(res):
@@ -161,7 +161,7 @@ func test_top_resize_detaches_the_occluder() -> Variant:
 		return build
 	var quad: Node3D = _quad()
 	var aim := _aim()
-	win3d._start_resize(WID, quad, aim[0], aim[1], "top")
+	win3d.grab._start_resize(WID, quad, aim[0], aim[1], "top")
 	var occ := quad.get_node_or_null("Occluder") as OccluderInstance3D
 	if occ == null:
 		return "Occluder manquant sur le quad %d" % WID
@@ -177,21 +177,21 @@ func test_pulling_up_grows_the_window() -> Variant:
 	# 300 px par unité en y.
 	var px_per_unit := Vector2(SURFACE.x / 3.2, SURFACE.y / 2.0)
 	var res: Variant = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "top",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "top",
 			Vector2(0.0, 0.2), px_per_unit),
 		Vector2(800.0, 660.0),
 		"tirer le bord haut vers le HAUT doit agrandir (et rien d'autre)")
 	if _fail(res):
 		return res
 	res = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "top",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "top",
 			Vector2(0.0, -0.2), px_per_unit),
 		Vector2(800.0, 540.0),
 		"tirer vers le bas doit rétrécir, le bord haut reste en place")
 	if _fail(res):
 		return res
 	res = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "top",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "top",
 			Vector2(0.5, 0.2), px_per_unit),
 		Vector2(800.0, 660.0),
 		"un drag de hauteur ne doit jamais toucher la largeur")
@@ -203,7 +203,7 @@ func test_other_edges_keep_their_axis() -> Variant:
 	var px_per_unit := Vector2(250.0, 300.0)
 	# Sens opposé en bas : grandit vers l'extérieur, donc vers le BAS.
 	var res: Variant = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "bottom",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "bottom",
 			Vector2(0.0, 0.2), px_per_unit),
 		Vector2(800.0, 540.0),
 		"bord bas tiré vers le haut : la fenêtre rétrécit")
@@ -211,21 +211,21 @@ func test_other_edges_keep_their_axis() -> Variant:
 		return res
 	# Coin bas-gauche : les deux axes bougent, un bord haut/bas ne l'est pas.
 	res = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "bottomleft",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "bottomleft",
 			Vector2(0.2, 0.1), px_per_unit),
 		Vector2(750.0, 570.0),
 		"un coin déplace les deux axes")
 	if _fail(res):
 		return res
 	res = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "right",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "right",
 			Vector2(0.2, 0.4), px_per_unit),
 		Vector2(850.0, 600.0),
 		"un bord latéral ignore le déplacement vertical")
 	if _fail(res):
 		return res
 	res = Runner.assert_eq(
-		Windows3DScript.resized_surface_size(SURFACE, "",
+		Windows3DScript.GrabModule.resized_surface_size(SURFACE, "",
 			Vector2(0.2, 0.4), px_per_unit),
 		SURFACE,
 		"sans côté tiré, rien ne bouge")

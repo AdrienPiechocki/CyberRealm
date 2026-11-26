@@ -53,12 +53,12 @@ func _build_world(with_neighbour: bool) -> Variant:
 	win3d.active_window_id = WID
 	# Une seule fenêtre inventorie ses recouvrements : c'est ce que fait le
 	# déplacement réel en tête de frame.
-	win3d._sync_snap_monitoring(WID)
+	win3d.snap._sync_snap_monitoring(WID)
 	# Le recouvrement de deux Area3D est un état du moteur physique : il
 	# n'existe qu'après un pas de simulation.
 	await get_tree().physics_frame
 	await get_tree().physics_frame
-	win3d._set_snap(WID, win3d._find_snap(Vector3.ZERO))
+	win3d.snap._set_snap(WID, win3d.snap._find_snap(Vector3.ZERO))
 	if not win3d.snapped_to.has(WID):
 		return "les deux fenêtres bord à bord ne se sont pas collées"
 	return true
@@ -113,7 +113,7 @@ func test_group_grab_is_unavailable_when_the_neighbour_is_gone() -> Variant:
 	if not win3d.has_method("can_group_grab"):
 		return _teardown("windows_3d n'expose pas can_group_grab()")
 	var gone: MeshInstance3D = win3d.quads[NEI]
-	win3d._erase_window_state(NEI)
+	win3d.snap._erase_window_state(NEI)
 	gone.queue_free()
 	win3d.quads.erase(NEI)
 	var res: Variant = Runner.assert_true(win3d.snapped_to[WID].get("wid", -1) == NEI,
@@ -139,11 +139,11 @@ func test_group_grab_toggles_off() -> Variant:
 		"la première validation doit saisir le groupe")
 	if _fail(res):
 		return _teardown(res)
-	res = Runner.assert_eq(win3d._group_rel.size(), 1,
+	res = Runner.assert_eq(win3d.grab._group_rel.size(), 1,
 		"la voisine doit rejoindre le groupe")
 	if _fail(res):
 		return _teardown(res)
-	res = Runner.assert_true(win3d._group_rel.has(NEI),
+	res = Runner.assert_true(win3d.grab._group_rel.has(NEI),
 		"le groupe doit porter la voisine collée")
 	if _fail(res):
 		return _teardown(res)
@@ -153,11 +153,11 @@ func test_group_grab_toggles_off() -> Variant:
 		"la seconde validation doit relâcher le groupe")
 	if _fail(res):
 		return _teardown(res)
-	res = Runner.assert_true(not win3d.is_window_grabbed(WID),
+	res = Runner.assert_true(not win3d.grab.is_window_grabbed(WID),
 		"plus aucune fenêtre ne doit rester saisie après le relâchement")
 	if _fail(res):
 		return _teardown(res)
-	res = Runner.assert_true(win3d._group_rel.is_empty(),
+	res = Runner.assert_true(win3d.grab._group_rel.is_empty(),
 		"le groupe doit être vidé, sinon les voisins restent détachés du monde")
 	return _teardown(res)
 
