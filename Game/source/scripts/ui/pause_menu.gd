@@ -586,9 +586,9 @@ func is_voice_echo_cancel() -> bool:
 func get_voice_volume() -> float:
 	return float(_settings.get("voice_volume", 1.0))
 
-## Gain du micro (dB, 0 à +24) appliqué avant l'encodage (VoiceChat::set_gain_db).
+## Gain du micro (dB, 0 à +40) appliqué avant l'encodage (VoiceChat::set_gain_db).
 func get_voice_mic_gain_db() -> float:
-	return clampf(float(_settings.get("voice_mic_gain_db", 0.0)), 0.0, 24.0)
+	return clampf(float(_settings.get("voice_mic_gain_db", 0.0)), 0.0, 40.0)
 
 ## Micro du chat vocal : nom du nœud PipeWire ("" = source par défaut). Voir scripts/main/mic_sources.gd.
 func get_voice_mic() -> String:

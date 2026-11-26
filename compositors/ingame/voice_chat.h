@@ -27,7 +27,7 @@ public:
 	static constexpr int BITRATE = 24000;
 	static constexpr int MAX_PACKET = 400;      // octets (borne réseau, cf. scripts/network/lan/voice.gd)
 	static constexpr int MAX_PLC_FRAMES = 3;    // pertes comblées au-delà : nouvelle prise de parole
-	static constexpr float MAX_GAIN_DB = 24.0f;  // gain du micro : 0 à +24 dB
+	static constexpr float MAX_GAIN_DB = 40.0f;  // gain du micro : 0 à +40 dB (micros numériques intégrés AMD : son vers -60 dB, aucun gain matériel)
 
 	VoiceChat();
 	~VoiceChat();
@@ -76,6 +76,12 @@ private:
 	void *encoder = nullptr;     // OpusEncoder*
 	float gain_db = 0.0f;
 	float gain = 1.0f;           // linéaire (lu par poll(), thread principal)
+	// Filtre anti-composante continue (passe-haut ~40 Hz), avant le gain et la mesure : certains micros (micro
+	// numérique intégré d'un portable) sortent un décalage de zéro bien plus fort que le son lui-même. Sans lui, le
+	// niveau affiché et l'activation vocale mesuraient ce décalage, que l'encodeur OPUS supprime ensuite (voix reçue
+	// ~24 dB plus bas qu'affiché).
+	float dc_x1 = 0.0f;
+	float dc_y1 = 0.0f;
 
 	std::mutex ring_mutex;
 	std::vector<float> ring;     // mono, RATE

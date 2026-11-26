@@ -271,7 +271,7 @@ func test_mic_gain_amplifies_before_encoding():
 	var r: Variant = Runner.assert_approx(float(frames[5]["rms"]), 0.3 / sqrt(2.0), 0.02, "+20 dB : niveau ×10 (rms après gain)")
 	if r is String: comp.free(); return r
 	comp.voice_set_gain_db(99.0)
-	r = Runner.assert_eq(comp.voice_get_gain_db(), 24.0, "gain borné à +24 dB")
+	r = Runner.assert_eq(comp.voice_get_gain_db(), 40.0, "gain borné à +40 dB")
 	comp.free()
 	return r
 
@@ -341,4 +341,20 @@ func test_manager_encodes_only_sent_frames():
 	vm.compositor = old_comp
 	comp.free()
 	_free_manager(vm)
+	return r
+
+
+## Micro avec une forte composante continue (micro numérique intégré) : elle est retirée avant la mesure et le gain,
+## le niveau mesuré est celui du son réel (que l'encodeur garde), plus celui du décalage.
+func test_dc_offset_removed_before_level_and_gain():
+	if not ClassDB.class_exists("WlrCompositor"):
+		return true
+	var comp: Object = ClassDB.instantiate("WlrCompositor")
+	var s := _sine(48000, 300.0, 0.002)
+	for i in s.size():
+		s[i] += 0.05                                     # décalage 25 × plus fort que le son
+	comp.voice_feed_samples(s)
+	var frames: Array = comp.voice_poll_raw()
+	var r: Variant = Runner.assert_approx(float(frames[40]["rms"]), 0.002 / sqrt(2.0), 0.0003, "niveau = son réel, sans le décalage")
+	comp.free()
 	return r

@@ -496,12 +496,13 @@ func _add_voice_settings() -> void:
 	)
 
 	var vol_row := HBoxContainer.new()
-	vol_row.add_child(menu._make_row_label("Voice volume"))
+	vol_row.add_child(menu._make_row_label("Others' voices volume"))
 	var vol := HSlider.new()
 	vol.min_value = 0.0
 	vol.max_value = 2.0
 	vol.step = 0.05
 	vol.value = menu.get_voice_volume()
+	vol.tooltip_text = "Volume of the OTHER players' voices on this PC (up to 200 %)."
 	vol.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	vol_row.add_child(vol)
 	menu.container.add_child(vol_row)
@@ -581,12 +582,13 @@ func _add_mic_device_row() -> ProgressBar:
 	menu.container.add_child(row)
 
 	var gain_row := HBoxContainer.new()
-	gain_row.add_child(menu._make_row_label("Microphone gain"))
+	gain_row.add_child(menu._make_row_label("My mic gain"))
 	var gain := HSlider.new()
 	gain.min_value = 0.0
-	gain.max_value = 24.0
+	gain.max_value = 40.0
 	gain.step = 1.0
 	gain.value = menu.get_voice_mic_gain_db()
+	gain.tooltip_text = "Amplifies YOUR microphone on this PC, before it is sent: raise it if the others hear you too quietly."
 	gain.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	gain_row.add_child(gain)
 	var gain_label := Label.new()

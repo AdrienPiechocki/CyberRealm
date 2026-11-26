@@ -63,6 +63,8 @@ bool VoiceChat::ensure_encoder() {
 	ring.assign(RING_CAPACITY, 0.0f);
 	ring_head = 0;
 	ring_count = 0;
+	dc_x1 = 0.0f;
+	dc_y1 = 0.0f;
 	return true;
 }
 
@@ -223,10 +225,13 @@ bool VoiceChat::take_frame(float *frame, double &rms) {
 		ring_count -= FRAME;
 	}
 	double sum = 0.0;
+	const float r = 0.995f;      // pôle du passe-haut : ~38 Hz à 48 kHz
 	for (int i = 0; i < FRAME; i++) {
-		if (gain != 1.0f) {
-			frame[i] = soft_clip(frame[i] * gain);
-		}
+		float x = frame[i];
+		float y = x - dc_x1 + r * dc_y1;
+		dc_x1 = x;
+		dc_y1 = y;
+		frame[i] = gain != 1.0f ? soft_clip(y * gain) : y;
 		sum += (double)frame[i] * frame[i];
 	}
 	rms = std::sqrt(sum / FRAME);
