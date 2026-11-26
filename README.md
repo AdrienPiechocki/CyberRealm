@@ -51,22 +51,27 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
 - **Custom binds radial** — the radial menu's BINDS action opens a sub-menu
   listing all custom key binds, each showing its key combo and target command.
   Selecting one launches the command via the compositor.
-- **Windows remember their place** — when an app opens again, its window
-  goes back where you left it on that level: position, orientation, the size
-  you gave it, hidden / pinned / `force_game` state. Windows are matched by
-  app id, then by the closest title (two terminals get two places); dialogs are
-  ignored. Stored in `user://window_layouts.json` (64 windows per level),
-  inactive on a level received from a LAN host.
 - **Session restore** — the apps still open when you quit the game come back
-  by themselves at the next launch (same command line and working directory;
-  Flatpak apps through `flatpak run <id>`), then take their place as above.
-  One launch per process: Firefox with two windows is started once and
-  restores its own windows. Apps closed during the game, dialogs, startup apps
-  and the polkit agent are not relaunched. When you quit, apps are first asked
-  to close (SIGTERM, up to 10 s) so they can save their own state — Firefox
-  reopens its tabs if *Open previous windows and tabs* is set. Both features
-  share one switch in the pause menu (General → *Restore the previous session
-  (apps and window positions)*).
+  by themselves at the next launch, each window at its place (position,
+  orientation, the size you gave it, hidden / pinned / `force_game` state).
+  Apps are relaunched with their command line and working directory (Flatpak
+  apps through `flatpak run <id>`), once per process: Firefox with two windows
+  is started once and reopens its own windows. Terminals (Konsole, kitty,
+  foot, Alacritty…) are reopened window by window with the program that was
+  running in the foreground (`cava`, `vim`…) in its directory; the shell takes
+  over when it exits. Only those windows (and those of the startup apps) get
+  their place back, for 90 s after launch: a window you open yourself appears
+  in front of you as usual, and places of older sessions are forgotten.
+  When you quit, every window is first asked to close, as if you clicked its
+  close button, then apps still running get SIGTERM (5 s each step) — so they
+  save their own state: Firefox offers to restore its tabs (History → *Restore
+  previous session*, or automatically with *Open previous windows and tabs*).
+  Not restored: apps closed during the game, dialogs, the polkit agent;
+  terminal tabs become separate windows only for the first tab of each window.
+  Stored in `user://window_layouts.json`; per level, inactive on a level
+  received from a LAN host (apps are still relaunched). One switch in the
+  pause menu (General → *Restore the previous session (apps and window
+  positions)*).
 - **Taskbars** — implements `zwlr_foreign_toplevel_management_v1`, so a taskbar
   launched inside the game (waybar's `wlr/taskbar` module, `lswt`…) lists the
   windows and drives them: clicking a window un-hides it, gives it the keyboard

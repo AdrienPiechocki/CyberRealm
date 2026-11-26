@@ -18,6 +18,8 @@ class FakeCompositor extends Node:
 	func get_window_pid(id: int) -> int: return int(pids.get(id, -1))
 	func get_process_info(pid: int) -> Dictionary: return procs.get(pid, {})
 	func launch_app(cmd: String) -> void: launched.append(cmd)
+	var jobs: Dictionary = {}          # pid du terminal -> [jobs]
+	func get_terminal_jobs(pid: int) -> Array: return jobs.get(pid, [])
 
 class FakeWin3D extends Node:
 	var window_app_ids: Dictionary = {}
@@ -62,6 +64,20 @@ func _map(l: Node, id: int, app: String, title: String) -> void:
 	l.win3d.window_app_ids[id] = app
 	l.win3d.window_titles[id] = title
 	l.on_window_created(id, null)
+
+## Fenêtre d'une app relançable (processus `pid`, argv).
+func _map_app(l: Node, id: int, app: String, title: String, pid: int, argv: Array, cwd := "") -> void:
+	l.compositor.pids[id] = pid
+	l.compositor.procs[pid] = {"argv": PackedStringArray(argv), "cwd": cwd, "exe": "/usr/bin/" + String(argv[0]), "comm": String(argv[0])}
+	_map(l, id, app, title)
+
+## Session suivante : nouvelles doublures, même fichier, apps de la session précédente relancées.
+func _next_session(startup: Array = []) -> Node:
+	_cleanup_nodes_only()
+	var l := _session()
+	l.reopen = func() -> bool: return true
+	l.restore_session(startup)
+	return l
 
 func _layout(origin: Vector3, hidden := false) -> Dictionary:
 	return {"transform": Transform3D(Basis.IDENTITY, origin), "size": Vector2(3, 2), "user_sized": true,
@@ -115,16 +131,14 @@ func test_transform_round_trip_and_invalid():
 
 func test_window_found_again_next_session():
 	var l := _session()
-	_map(l, 1, "kitty", "zsh")
+	_map_app(l, 1, "mpv", "film.mkv", 100, ["mpv", "film.mkv"])
 	l.win3d.layouts[1] = _layout(Vector3(4, 1, -2), true)
 	l.pins.pinned[1] = true
 	l.focus.forced[1] = 1
-	l.on_window_unmapped(1)          # relevé à la fermeture
-	l.save_now()
-	_cleanup_nodes_only()
+	l.freeze_session()               # le jeu quitte
 
-	var l2 := _session()
-	_map(l2, 7, "kitty", "zsh")
+	var l2 := _next_session()
+	_map(l2, 7, "mpv", "film.mkv")
 	var applied: Array = l2.win3d.applied.get(7, [])
 	var r: Variant = Runner.assert_true(not applied.is_empty() and (applied[0] as Transform3D).origin.is_equal_approx(Vector3(4, 1, -2)),
 		"position restaurée")
@@ -144,21 +158,19 @@ func test_window_found_again_next_session():
 
 func test_two_windows_same_app_get_distinct_entries():
 	var l := _session()
-	_map(l, 1, "kitty", "zsh")
-	_map(l, 2, "kitty", "zsh")
+	_map_app(l, 1, "mpv", "a", 100, ["mpv", "a"])
+	_map_app(l, 2, "mpv", "b", 101, ["mpv", "b"])
 	l.win3d.layouts[1] = _layout(Vector3(1, 0, 0))
 	l.win3d.layouts[2] = _layout(Vector3(2, 0, 0))
-	l.on_window_unmapped(1)
-	l.on_window_unmapped(2)
-	l.save_now()
-	_cleanup_nodes_only()
+	l.freeze_session()
 
-	var l2 := _session()
-	_map(l2, 5, "kitty", "zsh")
-	_map(l2, 6, "kitty", "zsh")
+	var l2 := _next_session()
+	_map(l2, 5, "mpv", "a")
+	_map(l2, 6, "mpv", "b")
 	var a: Vector3 = (l2.win3d.applied[5][0] as Transform3D).origin
 	var b: Vector3 = (l2.win3d.applied[6][0] as Transform3D).origin
-	var r: Variant = Runner.assert_true(not a.is_equal_approx(b), "deux places distinctes")
+	var r: Variant = Runner.assert_true(a.is_equal_approx(Vector3(1, 0, 0)) and b.is_equal_approx(Vector3(2, 0, 0)),
+		"chaque fenêtre retrouve SA place (départage par titre)")
 	_cleanup()
 	return r
 
@@ -275,8 +287,8 @@ func test_session_survives_quit_and_is_restored():
 	var l := _session()
 	l.reopen = func() -> bool: return true
 	l.compositor.pids[1] = 100
-	l.compositor.procs[100] = {"argv": PackedStringArray(["kitty"]), "cwd": "/tmp", "exe": "/usr/bin/kitty", "comm": "kitty"}
-	_map(l, 1, "kitty", "zsh")
+	l.compositor.procs[100] = {"argv": PackedStringArray(["mpv"]), "cwd": "/tmp", "exe": "/usr/bin/mpv", "comm": "mpv"}
+	_map(l, 1, "mpv", "film")
 	l.compositor.pids[2] = 200
 	l.compositor.procs[200] = {"argv": PackedStringArray(["firefox"]), "cwd": "", "exe": "/usr/lib/firefox/firefox", "comm": "firefox"}
 	_map(l, 2, "firefox", "Mozilla Firefox")
@@ -293,7 +305,7 @@ func test_session_survives_quit_and_is_restored():
 	var l2 := _session()
 	l2.reopen = func() -> bool: return true
 	var cmds: Array = l2.restore_session([])
-	var r: Variant = Runner.assert_eq(cmds, ["cd '/tmp' 2>/dev/null; exec 'kitty'"], "seule kitty (ouverte à la fermeture) revient")
+	var r: Variant = Runner.assert_eq(cmds, ["cd '/tmp' 2>/dev/null; exec 'mpv'"], "seul mpv (ouvert à la fermeture) revient")
 	if r is String: _cleanup(); return r
 	r = Runner.assert_eq(l2.compositor.launched, cmds, "lancée par le compositeur")
 	if r is String: _cleanup(); return r
@@ -342,5 +354,83 @@ func test_relaunched_app_gets_its_own_entries_whatever_its_title():
 	if r is String: _cleanup(); return r
 	l2.on_window_texture_updated(9, ImageTexture.new(), 10, 10)
 	r = Runner.assert_true(l2.pins.pinned.has(9), "et son épinglage")
+	_cleanup()
+	return r
+
+# ── Terminaux et nouvelles fenêtres ─────────────────────────────────────────
+
+func test_terminal_command_keeps_foreground_program():
+	var job := {"cwd": "/home/a", "fg_argv": PackedStringArray(["cava"]), "fg_cwd": "/home/a/music"}
+	var cmd := Layouts.terminal_command("/usr/bin/konsole", "konsole", job)
+	var r: Variant = Runner.assert_eq(cmd,
+		"cd '/home/a/music' 2>/dev/null; exec '/usr/bin/konsole' --workdir '/home/a/music' -e sh -c ''\\''cava'\\''; exec \"${SHELL:-sh}\"'",
+		"konsole -e cava dans son dossier, puis le shell")
+	if r is String: return r
+	r = Runner.assert_eq(Layouts.terminal_command("kitty", "kitty", {"cwd": "/tmp", "fg_argv": PackedStringArray()}),
+		"cd '/tmp' 2>/dev/null; exec 'kitty' --directory '/tmp'", "sans programme : juste le dossier")
+	return r
+
+func test_terminal_windows_relaunched_one_by_one_with_their_program():
+	var l := _session()
+	_map_app(l, 1, "org.kde.konsole", "cava", 300, ["konsole"])
+	_map_app(l, 2, "org.kde.konsole", "~", 300, ["konsole"])     # 2e fenêtre du même processus Konsole
+	l.compositor.jobs[300] = [{"cwd": "/a", "fg_argv": PackedStringArray(["cava"]), "fg_cwd": "/a"},
+		{"cwd": "/b", "fg_argv": PackedStringArray(), "fg_cwd": ""}]
+	l.win3d.layouts[1] = _layout(Vector3(1, 0, 0))
+	l.win3d.layouts[2] = _layout(Vector3(2, 0, 0))
+	l.freeze_session()
+	var l2 := _next_session()
+	var cmds: Array = l2.compositor.launched
+	var r: Variant = Runner.assert_eq(cmds.size(), 2, "une relance par fenêtre de terminal")
+	if r is String: _cleanup(); return r
+	r = Runner.assert_true(String(cmds[0]).contains("cava") and String(cmds[0]).contains("'/a'"), "1re fenêtre : cava dans /a")
+	if r is String: _cleanup(); return r
+	r = Runner.assert_true(not String(cmds[1]).contains("cava") and String(cmds[1]).contains("'/b'"), "2e fenêtre : shell dans /b")
+	_cleanup()
+	return r
+
+func test_new_window_is_not_placed_and_old_places_are_forgotten():
+	var l := _session()
+	_map_app(l, 1, "org.kde.konsole", "~", 300, ["konsole"])
+	l.win3d.layouts[1] = _layout(Vector3(9, 9, 9))
+	l._snapshot(1)
+	l.on_window_unmapped(1)          # fermée pendant la partie : sa place est oubliée
+	l.save_now()
+	var l2 := _next_session()
+	_map(l2, 4, "org.kde.konsole", "~")   # ouverte à la main par le joueur
+	var r: Variant = Runner.assert_true(not l2.win3d.applied.has(4), "nouvelle fenêtre : placée normalement")
+	if r is String: _cleanup(); return r
+	var levels: Variant = JSON.parse_string(FileAccess.get_file_as_string(SAVE)).get("levels", {})
+	var old := 0
+	for k in levels:
+		for e in levels[k]:
+			if e.get("transform", []).slice(9, 12) == [9.0, 9.0, 9.0]:
+				old += 1
+	r = Runner.assert_eq(old, 0, "la place d'une fenêtre fermée en cours de partie n'est plus dans le fichier")
+	_cleanup()
+	return r
+
+func test_expected_windows_expire():
+	var l := _session()
+	_map_app(l, 1, "mpv", "a", 100, ["mpv", "a"])
+	l.win3d.layouts[1] = _layout(Vector3(1, 0, 0))
+	l.freeze_session()
+	var l2 := _next_session()
+	l2._process(Layouts.EXPECT_WINDOW_SEC + 1.0)
+	_map(l2, 5, "mpv", "a")          # revenue trop tard : traitée comme une nouvelle fenêtre
+	var r: Variant = Runner.assert_true(not l2.win3d.applied.has(5), "attente expirée")
+	_cleanup()
+	return r
+
+func test_startup_app_windows_get_their_place_without_relaunch():
+	var l := _session()
+	_map_app(l, 1, "waybar", "waybar", 100, ["waybar"])
+	l.win3d.layouts[1] = _layout(Vector3(3, 0, 0))
+	l.freeze_session()
+	var l2 := _next_session(["waybar -c /x"])
+	var r: Variant = Runner.assert_eq(l2.compositor.launched, [], "startup app pas relancée deux fois")
+	if r is String: _cleanup(); return r
+	_map(l2, 8, "waybar", "waybar")
+	r = Runner.assert_true(l2.win3d.applied.has(8), "mais sa fenêtre retrouve sa place")
 	_cleanup()
 	return r

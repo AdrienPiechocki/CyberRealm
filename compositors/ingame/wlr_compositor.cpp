@@ -149,6 +149,7 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("is_window_fullscreen_requested", "window_id"), &WlrCompositor::is_window_fullscreen_requested);
     ClassDB::bind_method(D_METHOD("get_window_parent_id", "window_id"), &WlrCompositor::get_window_parent_id);
     ClassDB::bind_method(D_METHOD("get_process_info", "pid"), &WlrCompositor::get_process_info);
+    ClassDB::bind_method(D_METHOD("get_terminal_jobs", "pid"), &WlrCompositor::get_terminal_jobs);
     ClassDB::bind_method(D_METHOD("set_x11_display", "display_name"), &WlrCompositor::set_x11_display);
     ClassDB::bind_method(D_METHOD("get_window_geometry", "window_id"), &WlrCompositor::get_window_geometry);
     ClassDB::bind_method(D_METHOD("get_window_cpu_image", "window_id"), &WlrCompositor::get_window_cpu_image);
@@ -2037,6 +2038,26 @@ static void reap_zombies() {
 // aux groupes des enfants directs — des daemons lancés par un script comme
 // `dms run` font setsid()/setpgid() et échappent à leur groupe), période de
 // grâce de 2 s pour laisser un arrêt propre, puis SIGKILL aux survivants.
+// Attend la fin des processus `pids` (max timeout_ms) en continuant de servir
+// le protocole Wayland (destructions de surfaces, allers-retours…).
+bool WlrCompositor::wait_apps_exit(const std::vector<pid_t> &pids, int timeout_ms) {
+    uint32_t start = get_time_msec();
+    while ((int)(uint32_t)(get_time_msec() - start) < timeout_ms) {
+        reap_zombies();
+        if (!any_alive(pids)) {
+            return true;
+        }
+        if (display && event_loop) {
+            wl_display_flush_clients(display);
+            wl_event_loop_dispatch(event_loop, 50);
+        } else {
+            usleep(50 * 1000);
+        }
+    }
+    reap_zombies();
+    return !any_alive(pids);
+}
+
 void WlrCompositor::terminate_window_apps(int timeout_ms) {
     // Depuis le destructeur : ne plus servir le protocole (les callbacks
     // émettraient des signaux vers un objet Godot à demi détruit).
@@ -2044,9 +2065,11 @@ void WlrCompositor::terminate_window_apps(int timeout_ms) {
         return;
     }
     std::vector<pid_t> apps;
+    std::vector<int> ids;
     pid_t self_pid = getpid();
     for (auto &pair : windows) {
         WindowState &ws = pair.second;
+        ids.push_back(pair.first);
         // X11 : PID réel de l'app (le client Wayland est le satellite, qui
         // doit rester en vie tant que les apps X11 se ferment).
         pid_t pid = ws.xwayland ? (pid_t)get_window_pid(pair.first) : ws.pid;
@@ -2060,27 +2083,29 @@ void WlrCompositor::terminate_window_apps(int timeout_ms) {
     if (apps.empty()) {
         return;
     }
-    for (pid_t pid : apps) {
-        kill(pid, SIGTERM);
-    }
-    UtilityFunctions::print("waylandgodot: closing ", (int)apps.size(), " app(s) cleanly...");
     uint32_t start = get_time_msec();
-    while ((int)(uint32_t)(get_time_msec() - start) < timeout_ms) {
-        reap_zombies();
-        if (!any_alive(apps)) {
-            break;
+    // 1. Comme un clic sur la croix de chaque fenêtre (xdg_toplevel.close ;
+    //    WM_DELETE_WINDOW pour X11 via le satellite) : l'app quitte par son
+    //    chemin normal et enregistre son état (Firefox : sa session, qu'il
+    //    propose ensuite de restaurer). SIGTERM, lui, fait quitter Firefox
+    //    comme après un crash.
+    UtilityFunctions::print("waylandgodot: closing ", (int)apps.size(), " app(s) cleanly...");
+    for (int id : ids) {
+        close_window(id);
+    }
+    bool done = wait_apps_exit(apps, timeout_ms / 2);
+    // 2. Apps restées ouvertes (dialogue « enregistrer ? », app qui ne quitte
+    //    pas à la fermeture de sa dernière fenêtre…) : SIGTERM.
+    if (!done) {
+        for (pid_t pid : apps) {
+            if (process_is_alive(pid)) {
+                kill(pid, SIGTERM);
+            }
         }
-        // Continuer de répondre aux clients (destructions de surfaces,
-        // allers-retours, presse-papiers…) pendant leur fermeture.
-        if (display && event_loop) {
-            wl_display_flush_clients(display);
-            wl_event_loop_dispatch(event_loop, 50);
-        } else {
-            usleep(50 * 1000);
-        }
+        done = wait_apps_exit(apps, timeout_ms / 2);
     }
     UtilityFunctions::print("waylandgodot: apps closed after ", (int)(uint32_t)(get_time_msec() - start), " ms",
-        any_alive(apps) ? " (some still running, terminating the rest)" : "");
+        done ? "" : " (some still running, terminating the rest)");
 }
 
 // Appelé par le script Godot juste avant get_tree().quit() et par le

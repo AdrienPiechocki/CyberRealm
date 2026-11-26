@@ -962,6 +962,9 @@ class WlrCompositor : public Node {
     // Comment relancer le processus `pid` (reprise de session) : argv, cwd, exe,
     // comm, flatpak_id ("" hors Flatpak). Vide si le processus n'existe plus.
     Dictionary get_process_info(int pid);
+    // Shells enfants directs d'un terminal (un par onglet/fenêtre) : shell_pid,
+    // cwd, fg_argv (programme au premier plan, vide si aucun), fg_cwd.
+    Array get_terminal_jobs(int pid);
 
     void set_x11_display(const String &display_name);
 
@@ -1123,11 +1126,13 @@ public:
     String get_wayland_socket_name() const;
     void launch_app(const String &command);
     void shutdown_apps();
-    // Fermeture propre des applications qui possèdent une fenêtre (SIGTERM à
-    // elles seules, protocole Wayland servi pendant l'attente), avant l'arrêt
-    // du reste de l'arbre par shutdown_apps().
+    // Fermeture propre des applications qui possèdent une fenêtre : demande
+    // de fermeture de chaque fenêtre, puis SIGTERM aux apps restantes, le
+    // protocole Wayland étant servi pendant l'attente ; avant l'arrêt du
+    // reste de l'arbre par shutdown_apps().
     static constexpr int APP_CLOSE_GRACE_MS = 10000;
     void terminate_window_apps(int timeout_ms);
+    bool wait_apps_exit(const std::vector<pid_t> &pids, int timeout_ms);
     void set_portal_backend(const String &backend);
     String get_portal_backend() const;
 

@@ -1,21 +1,22 @@
 extends Node
-## Disposition des fenêtres retrouvée d'une session à l'autre.
+## Reprise de session : les fenêtres de la session précédente reviennent, à leur place.
 ##
-## Quand une fenêtre apparaît, si une disposition enregistrée lui correspond sur ce niveau (même app_id, titre le plus
-## proche), elle reprend sa place (position, orientation, taille monde et taille en pixels si le joueur l'avait
-## redimensionnée) et son état (cachée, épinglée, force_game). Les fenêtres vivantes sont relevées toutes les
-## POLL_INTERVAL secondes et à leur fermeture ; le fichier est réécrit au plus toutes les SAVE_DEBOUNCE secondes.
+## Les applications encore ouvertes quand le jeu s'arrête sont relancées au démarrage suivant (restore_session), avec
+## leur ligne de commande et leur dossier courant (Flatpak : `flatpak run <id>`), une fois par processus (Firefox et
+## ses deux fenêtres = un seul lancement). Un terminal (Konsole, kitty…) est relancé fenêtre par fenêtre avec le
+## programme qui tournait au premier plan (cava, vim…) dans son dossier. La liste est reconstruite à chaque écriture
+## du fichier et figée par freeze_session() juste avant que le jeu ne ferme les apps en quittant. Les « startup apps »
+## (même exécutable) ne sont pas relancées une seconde fois, mais leurs fenêtres retrouvent aussi leur place.
 ##
-## Données : user://window_layouts.json = { "<clé de niveau>": [entrée, …] }, au plus MAX_ENTRIES entrées par
-## niveau (les plus anciennes, d'après last_seen, sont retirées). La clé de niveau est celle des waypoints : sur un
-## niveau reçu d'un hôte LAN elle est vide et la fonction est inactive. Ignorées : fenêtres sans app_id, boîtes de
-## dialogue (fenêtre parente).
+## Les fenêtres de ces apps (et SEULEMENT elles, pendant EXPECT_WINDOW_SEC après le démarrage) reprennent leur place
+## (position, orientation, taille monde et en pixels si le joueur l'avait redimensionnée) et leur état (cachée,
+## épinglée, force_game) : une fenêtre ouverte ensuite par le joueur apparaît normalement devant lui. Les fenêtres
+## vivantes sont relevées toutes les POLL_INTERVAL secondes et à leur fermeture ; le fichier n'est réécrit qu'au plus
+## toutes les SAVE_DEBOUNCE secondes et ne garde que les entrées de la session en cours (et celles attendues).
 ##
-## Reprise de session : les applications encore ouvertes quand le jeu s'arrête sont relancées au démarrage suivant
-## (restore_session), avec leur ligne de commande et leur dossier courant (Flatpak : `flatpak run <id>`), une fois
-## par processus (Firefox et ses deux fenêtres = un seul lancement). La liste est reconstruite à chaque écriture du
-## fichier et figée par freeze_session() juste avant que le jeu ne ferme les apps en quittant. Les apps déjà
-## présentes dans les « startup apps » (même exécutable) ne sont pas relancées une seconde fois.
+## Données : user://window_layouts.json = {version, levels: {"<clé de niveau>": [entrée…]}, session: [app…]}. La
+## clé de niveau est celle des waypoints : sur un niveau reçu d'un hôte LAN elle est vide, la disposition est alors
+## inactive (les apps restent suivies pour la relance). Ignorées : fenêtres sans app_id, boîtes de dialogue.
 ##
 ## Créé par wayland_room.gd, qui lui branche window_created (après la création du quad), window_unmapped (AVANT les
 ## autres gestionnaires, pour relever l'état épinglé / focus avant qu'il ne soit défait) et window_texture_updated.
@@ -24,6 +25,22 @@ const SAVE_PATH := "user://window_layouts.json"
 const MAX_ENTRIES := 64
 const SAVE_DEBOUNCE := 2.0
 const POLL_INTERVAL := 2.0
+const EXPECT_WINDOW_SEC := 90.0   # délai laissé aux apps relancées pour rouvrir leurs fenêtres
+
+## Terminaux relancés fenêtre par fenêtre avec leur programme au premier plan : option de dossier, option qui
+## précède la commande ("" = la commande suit directement).
+const TERMINALS := {
+	"konsole": ["--workdir", "-e"],
+	"kitty": ["--directory", ""],
+	"alacritty": ["--working-directory", "-e"],
+	"foot": ["--working-directory", ""],
+	"gnome-terminal": ["--working-directory", "--"],
+	"kgx": ["--working-directory", "--"],
+	"ptyxis": ["--working-directory", "--"],
+	"wezterm": ["start --cwd", "--"],
+	"xterm": ["", "-e"],
+	"st": ["", "-e"],
+}
 
 var compositor: Object = null
 var win3d: Node = null
@@ -41,6 +58,7 @@ var _pending_pin: Dictionary = {} # window_id -> true : à épingler dès la pre
 var _session: Array = []       # [{pid, cmd, bin, app_id}] : apps ouvertes (dernière écriture / session précédente)
 var _frozen := false           # le jeu quitte : la liste de session n'est plus reconstruite
 var _expected: Dictionary = {} # app_id -> [uid…] : entrées des fenêtres des apps relancées par la reprise de session
+var _expect_left := 0.0        # secondes restantes pendant lesquelles _expected est valable
 var _dirty := false
 var _save_cd := 0.0
 var _poll_cd := 0.0
@@ -53,6 +71,10 @@ func setup(p_compositor: Object, p_win3d: Node, p_focus: Node, p_pins: Node) -> 
 	_load()
 
 func _process(delta: float) -> void:
+	if _expect_left > 0.0:
+		_expect_left -= delta
+		if _expect_left <= 0.0:
+			_expected.clear()        # apps relancées qui n'ont pas rouvert toutes leurs fenêtres : tant pis
 	_poll_cd -= delta
 	if _poll_cd <= 0.0:
 		_poll_cd = POLL_INTERVAL
@@ -91,11 +113,10 @@ func on_window_created(id: int, _quad: Node) -> void:
 	var key := _key()
 	var entries: Array = _data.get(key, [])
 	var title := String(win3d.window_titles.get(id, ""))
-	# App relancée par la reprise de session : elle reprend les entrées de SES fenêtres de la session précédente,
-	# quel que soit son titre au démarrage (Firefox s'ouvre sur « Mozilla Firefox » avant de restaurer ses onglets).
-	var idx := take_expected(_expected, entries, app_id, _consumed)
-	if idx == -1:
-		idx = match_entry(entries, app_id, title, _consumed)
+	# Seule une fenêtre ATTENDUE (app relancée par la reprise de session, startup app) reprend une place : celle
+	# d'une fenêtre de son app à la session précédente, la plus proche par le titre (Firefox s'ouvre sur « Mozilla
+	# Firefox » avant de restaurer ses onglets : à défaut, la plus récente). Toute autre fenêtre est nouvelle.
+	var idx := take_expected(_expected, entries, app_id, title, _consumed)
 	var entry: Dictionary
 	if idx == -1:
 		entry = {"uid": _new_uid(), "app_id": app_id, "title": title}
@@ -203,20 +224,39 @@ func _resolve_launch(id: int) -> void:
 	live["pid"] = pid
 	live["cmd"] = build_command(info)
 	live["bin"] = launch_bin(info)
+	if String(info.get("flatpak_id", "")) == "" and TERMINALS.has(String(live["bin"])):
+		live["argv0"] = String(info["argv"][0])
 
 func _session_from_live() -> Array:
 	var out: Array = []
 	var by_pid := {}
-	for id in _live:
+	var term_jobs := {}     # pid du terminal -> [jobs], lus une fois
+	var term_used := {}     # pid du terminal -> nombre de fenêtres déjà associées à un job
+	var ids := _live.keys()
+	ids.sort()              # ordre d'ouverture des fenêtres ≈ ordre de création des shells
+	for id in ids:
 		var live: Dictionary = _live[id]
 		if not live.has("cmd"):
 			continue
+		var uids: Array = [live["uid"]] if String(live["uid"]) != "" else []
+		var app_id := String(win3d.window_app_ids.get(id, ""))
+		# Terminal : une relance par fenêtre, avec ce qui tourne dedans maintenant.
+		if live.has("argv0"):
+			var pid: int = live["pid"]
+			if not term_jobs.has(pid):
+				term_jobs[pid] = compositor.get_terminal_jobs(pid)
+			var n: int = term_used.get(pid, 0)
+			term_used[pid] = n + 1
+			var jobs: Array = term_jobs[pid]
+			var job: Dictionary = jobs[n] if n < jobs.size() else {}
+			out.append({"key": "%d:%d" % [pid, n], "pid": pid, "bin": live["bin"], "app_id": app_id, "uids": uids,
+				"cmd": terminal_command(String(live["argv0"]), String(live["bin"]), job)})
+			continue
 		if not by_pid.has(live["pid"]):
-			by_pid[live["pid"]] = {"pid": live["pid"], "cmd": live["cmd"], "bin": live["bin"],
-				"app_id": String(win3d.window_app_ids.get(id, "")), "uids": []}
+			by_pid[live["pid"]] = {"key": str(live["pid"]), "pid": live["pid"], "cmd": live["cmd"], "bin": live["bin"],
+				"app_id": app_id, "uids": []}
 			out.append(by_pid[live["pid"]])
-		if String(live["uid"]) != "":
-			by_pid[live["pid"]]["uids"].append(live["uid"])
+		by_pid[live["pid"]]["uids"].append_array(uids)
 	return out
 
 ## Le jeu quitte : fige la liste des apps ouvertes AVANT que shutdown_apps() ne les ferme, et l'écrit.
@@ -234,11 +274,13 @@ func restore_session(startup_commands: Array) -> Array:
 		return []
 	var items := session_items(_session, startup_commands)
 	var cmds: Array = items.map(func(e): return String(e["cmd"]))
-	for item in items:
+	# Fenêtres attendues : celles des apps relancées ET des startup apps (lancées par wayland_room).
+	for item in _session:
 		var uids: Variant = item.get("uids", [])
 		if uids is Array and not (uids as Array).is_empty():
 			var app := String(item.get("app_id", ""))
 			_expected[app] = _expected.get(app, []) + uids
+	_expect_left = EXPECT_WINDOW_SEC
 	for cmd in cmds:
 		compositor.launch_app(cmd)
 	if not cmds.is_empty():
@@ -251,8 +293,20 @@ func save_now() -> void:
 	_dirty = false
 	if not _frozen:
 		_session = _session_from_live()
+	# On ne garde que les entrées utiles à la prochaine reprise : fenêtres ouvertes, fenêtres de la session figée,
+	# fenêtres attendues qui ne sont pas encore revenues. Les places des sessions plus anciennes sont oubliées.
+	var keep := {}
+	for id in _live:
+		keep[String(_live[id]["uid"])] = true
+	for item in _session:
+		for uid in item.get("uids", []):
+			keep[String(uid)] = true
+	for app in _expected:
+		for uid in _expected[app]:
+			keep[String(uid)] = true
 	var out := {}
 	for key in _data:
+		_data[key] = (_data[key] as Array).filter(func(e): return keep.has(String(e.get("uid", ""))))
 		var kept := trim_entries(_data[key], MAX_ENTRIES)
 		# Entrées jamais relevées (fenêtre fermée avant le premier relevé) : rien à retrouver.
 		kept = kept.filter(func(e): return e.has("transform"))
@@ -378,17 +432,50 @@ static func launch_bin(info: Dictionary) -> String:
 static func session_commands(session: Array, startup_commands: Array) -> Array:
 	return session_items(session, startup_commands).map(func(e): return String(e["cmd"]))
 
-## Index de la première entrée attendue (app relancée) pour cet app_id, retirée de la liste ; -1 si aucune.
-static func take_expected(expected: Dictionary, entries: Array, app_id: String, consumed: Dictionary) -> int:
+## Index de l'entrée attendue (app relancée) à attribuer à une fenêtre de cet app_id, retirée de la liste ; -1 si
+## aucune. Parmi les entrées attendues : la plus proche par le titre (voir match_entry).
+static func take_expected(expected: Dictionary, entries: Array, app_id: String, title: String, consumed: Dictionary) -> int:
 	var uids: Array = expected.get(app_id, [])
-	while not uids.is_empty():
-		var uid := String(uids.pop_front())
-		if consumed.has(uid):
-			continue
-		for i in entries.size():
-			if String(entries[i].get("uid", "")) == uid:
-				return i
-	return -1
+	if uids.is_empty():
+		return -1
+	var wanted := {}
+	for uid in uids:
+		wanted[String(uid)] = true
+	var sub: Array = []
+	var sub_idx: Array = []
+	for i in entries.size():
+		if wanted.has(String(entries[i].get("uid", ""))):
+			sub.append(entries[i])
+			sub_idx.append(i)
+	var k := match_entry(sub, app_id, title, consumed)
+	if k == -1:
+		return -1
+	uids.erase(String(sub[k]["uid"]))
+	return int(sub_idx[k])
+
+## Commande qui rouvre un terminal dans le dossier du shell, avec le programme qui tournait au premier plan ; le
+## shell reprend la main quand ce programme se termine.
+static func terminal_command(argv0: String, bin: String, job: Dictionary) -> String:
+	var spec: Array = TERMINALS.get(bin, ["", "-e"])
+	var fg: Variant = job.get("fg_argv", PackedStringArray())
+	var has_fg: bool = (fg is PackedStringArray or fg is Array) and not fg.is_empty()
+	var cwd := String(job.get("fg_cwd", "")) if has_fg and String(job.get("fg_cwd", "")) != "" else String(job.get("cwd", ""))
+	var parts: Array = [shell_quote(argv0)]
+	if cwd != "" and String(spec[0]) != "":
+		for opt in String(spec[0]).split(" "):
+			parts.append(opt)
+		parts.append(shell_quote(cwd))
+	if has_fg:
+		var inner: Array = []
+		for a in fg:
+			inner.append(shell_quote(String(a)))
+		if String(spec[1]) != "":
+			parts.append(String(spec[1]))
+		parts.append_array(["sh", "-c", shell_quote(" ".join(inner) + "; exec \"${SHELL:-sh}\"")])
+	var run := " ".join(parts)
+	if cwd != "":
+		return "cd %s 2>/dev/null; exec %s" % [shell_quote(cwd), run]
+	return "exec " + run
 
 ## Entrées de session à relancer (voir session_commands).
 static func session_items(session: Array, startup_commands: Array) -> Array:
@@ -402,12 +489,12 @@ static func session_items(session: Array, startup_commands: Array) -> Array:
 			if p.size() >= 3:
 				startup_bins[p[2]] = true
 	var out: Array = []
-	var seen_pid := {}
+	var seen := {}
 	for e in session:
-		var pid: Variant = e.get("pid", -1)
-		if seen_pid.has(pid) or startup_bins.has(String(e.get("bin", ""))):
+		var key := String(e.get("key", str(e.get("pid", -1))))
+		if seen.has(key) or startup_bins.has(String(e.get("bin", ""))):
 			continue
-		seen_pid[pid] = true
+		seen[key] = true
 		out.append(e)
 	return out
 
