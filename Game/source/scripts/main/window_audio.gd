@@ -19,6 +19,19 @@ const BUFFER_SEC := 0.3
 # Silence d'amorce au démarrage, et à nouveau après chaque sous-alimentation (skips).
 const REMOTE_PREBUFFER_SEC := 0.1
 const REMOTE_REFILL_SEC := 0.06
+# Rattrapage : sans lui, chaque sous-alimentation ajoutait 60 ms de silence jamais repris et le retard du son (et
+# de l'image, calée dessus) grimpait toute la session. Au-delà de la cible, les paquets quasi silencieux sont jetés
+# (inaudible), les autres légèrement accélérés (≤ 5 %) ; très loin de la cible, des paquets entiers sont jetés.
+# La cible s'allonge de 40 ms par sous-alimentation des 10 dernières secondes (réseau irrégulier).
+const REMOTE_TARGET_MIN_MSEC := 100.0
+const REMOTE_TARGET_MAX_MSEC := 250.0
+const REMOTE_TARGET_PER_SKIP_MSEC := 40.0
+const REMOTE_SKIP_MEMORY_MSEC := 10000
+const CATCHUP_START_MSEC := 20.0     # tolérance au-delà de la cible
+const CATCHUP_MAX_SPEEDUP := 0.05
+const CATCHUP_HARD_MSEC := 250.0     # au-delà (cible + ceci) : paquets jetés quel que soit leur contenu
+const SILENCE_RMS := 0.005           # ≈ -46 dBFS
+const DIAG_MSEC := 2000
 const MAX_DISTANCE := 30.0
 const HIDDEN_DB := -6.0
 const ANCESTOR_DEPTH := 8
@@ -41,6 +54,7 @@ var _owner_cache: Dictionary = {}        # pid -> {wid, t}
 var _last_owner: Dictionary = {}         # pid -> wid (dernière fenêtre de ce PID qui avait le focus)
 var _players: Dictionary = {}            # clé -> {player, playback, mode}
 var _refresh_cd := 0.0
+var _diag_last := 0
 
 func setup(p_compositor: Object, p_win3d: Node, p_focus: Node, p_pins: Node, p_lan: Node, p_settings: Node) -> void:
 	compositor = p_compositor
@@ -245,9 +259,15 @@ func _push(key: String, quad: Node3D, mode: String, db: float, frames: PackedVec
 			# Le générateur a manqué d'échantillons : reconstituer un coussin.
 			e["skips"] = skips
 			_push_silence(e, REMOTE_REFILL_SEC)
+			var hist: Array = e.get("skip_times", [])
+			hist.append(Time.get_ticks_msec())
+			e["skip_times"] = hist
+			e["n_skips"] = int(e.get("n_skips", 0)) + 1
 	if key.begins_with("r:"):
 		e["t_push"] = Time.get_ticks_msec()
-	if pb.can_push_buffer(frames.size()):
+		frames = _catch_up(e, pb, frames)
+		_diag_remote()
+	if not frames.is_empty() and pb.can_push_buffer(frames.size()):
 		pb.push_buffer(frames)
 
 ## Retard (msec) entre l'arrivée du son de la fenêtre `wid` de `from` et sa sortie : échantillons en attente dans le
@@ -261,6 +281,83 @@ func remote_playout_msec(from: int, wid: int) -> float:
 		return 0.0
 	var queued := int(e["capacity"]) - pb.get_frames_available()
 	return maxf(0.0, float(queued) / 48.0 + AudioServer.get_output_latency() * 1000.0)
+
+## Retard visé pour un son distant : le coussin d'amorce, allongé par les sous-alimentations récentes.
+func _remote_target_msec(e: Dictionary) -> float:
+	var now := Time.get_ticks_msec()
+	var hist: Array = e.get("skip_times", [])
+	while not hist.is_empty() and now - int(hist[0]) > REMOTE_SKIP_MEMORY_MSEC:
+		hist.pop_front()
+	return minf(REMOTE_TARGET_MIN_MSEC + REMOTE_TARGET_PER_SKIP_MSEC * hist.size(), REMOTE_TARGET_MAX_MSEC)
+
+func _queued_msec(e: Dictionary, pb: AudioStreamGeneratorPlayback) -> float:
+	if not e.has("capacity"):
+		return 0.0
+	return float(int(e["capacity"]) - pb.get_frames_available()) / 48.0
+
+## Ramène le retard du son distant vers sa cible (voir CATCHUP_*) ; renvoie les échantillons à pousser.
+func _catch_up(e: Dictionary, pb: AudioStreamGeneratorPlayback, frames: PackedVector2Array) -> PackedVector2Array:
+	var target := _remote_target_msec(e)
+	var queued := _queued_msec(e, pb)
+	e["target_ms"] = target
+	e["queued_ms"] = queued
+	var plan := catch_up_plan(queued - target, rms(frames))
+	if plan <= 0.0:
+		e["trimmed"] = float(e.get("trimmed", 0.0)) + frames.size() / 48.0
+		return PackedVector2Array()
+	if plan > 1.0:
+		var out := time_compress(frames, plan)
+		e["trimmed"] = float(e.get("trimmed", 0.0)) + (frames.size() - out.size()) / 48.0
+		return out
+	return frames
+
+## Décision de rattrapage pour `excess` ms au-delà de la cible : 1.0 = tel quel, 0.0 = paquet jeté,
+## > 1.0 = facteur d'accélération.
+static func catch_up_plan(excess: float, level: float) -> float:
+	if excess <= CATCHUP_START_MSEC:
+		return 1.0
+	if excess > CATCHUP_HARD_MSEC or level < SILENCE_RMS:
+		return 0.0
+	return 1.0 + minf(CATCHUP_MAX_SPEEDUP, excess / 2000.0)
+
+static func rms(frames: PackedVector2Array) -> float:
+	if frames.is_empty():
+		return 0.0
+	var acc := 0.0
+	for f in frames:
+		acc += f.x * f.x + f.y * f.y
+	return sqrt(acc / (2.0 * frames.size()))
+
+## Accélère `frames` d'un facteur `ratio` (interpolation linéaire).
+static func time_compress(frames: PackedVector2Array, ratio: float) -> PackedVector2Array:
+	var n := frames.size()
+	var m := int(floor(float(n) / ratio))
+	if n < 2 or m >= n or m <= 0:
+		return frames
+	var out := PackedVector2Array()
+	out.resize(m)
+	var step := float(n - 1) / float(maxi(m - 1, 1))
+	for i in m:
+		var x := i * step
+		var j := mini(int(x), n - 2)
+		out[i] = frames[j].lerp(frames[j + 1], x - j)
+	return out
+
+## Diagnostic (≤ 1 ligne / 2 s) : retard du son de chaque fenêtre distante.
+func _diag_remote() -> void:
+	var now := Time.get_ticks_msec()
+	if now - _diag_last < DIAG_MSEC:
+		return
+	_diag_last = now
+	var parts := PackedStringArray()
+	for key in _players:
+		if not String(key).begins_with("r:"):
+			continue
+		var e: Dictionary = _players[key]
+		parts.append("%s buffered=%dms target=%dms skips=%d trimmed=%dms" % [key, roundi(float(e.get("queued_ms", 0.0))),
+			roundi(float(e.get("target_ms", 0.0))), int(e.get("n_skips", 0)), roundi(float(e.get("trimmed", 0.0)))])
+	if not parts.is_empty():
+		print("[audio] diag rx: ", ", ".join(parts))
 
 func _push_silence(e: Dictionary, sec: float) -> void:
 	var pb := e["playback"] as AudioStreamGeneratorPlayback

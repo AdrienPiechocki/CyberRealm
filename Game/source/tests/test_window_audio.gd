@@ -236,3 +236,35 @@ func test_remote_window_audio_follows_local_normal_mode():
 	rq.free()
 	_cleanup()
 	return r
+
+func test_catch_up_plan():
+	var r: Variant = Runner.assert_eq(WindowAudio.catch_up_plan(10.0, 0.2), 1.0, "proche de la cible : tel quel")
+	if r is String: return r
+	r = Runner.assert_eq(WindowAudio.catch_up_plan(80.0, 0.0), 0.0, "silence en trop : jeté")
+	if r is String: return r
+	r = Runner.assert_approx(WindowAudio.catch_up_plan(80.0, 0.2), 1.04, 0.001, "son en trop : accéléré")
+	if r is String: return r
+	r = Runner.assert_approx(WindowAudio.catch_up_plan(200.0, 0.2), 1.05, 0.001, "accélération plafonnée")
+	if r is String: return r
+	return Runner.assert_eq(WindowAudio.catch_up_plan(400.0, 0.2), 0.0, "très loin : paquet jeté")
+
+func test_time_compress_keeps_ends():
+	var f := PackedVector2Array()
+	for i in 960:
+		f.append(Vector2(i, -i))
+	var out := WindowAudio.time_compress(f, 1.05)
+	var r: Variant = Runner.assert_eq(out.size(), 914, "960 / 1,05")
+	if r is String: return r
+	return Runner.assert_true(out[0] == f[0] and out[out.size() - 1].is_equal_approx(f[959]), "extrémités conservées")
+
+func test_remote_delay_drains_back_to_target():
+	var wa := _make()
+	wa.settings.mode = "normal"
+	_tick(wa)
+	# Paquets silencieux en rafale (aucun mixage en headless) : le tampon ne dépasse pas cible + tolérance.
+	for i in 30:
+		wa.lan.audio_share.window_audio_received.emit(5, 9, _frames())
+	var e: Dictionary = wa._players["r:5:9"]
+	var q: float = wa._queued_msec(e, e["playback"])
+	_cleanup()
+	return Runner.assert_true(q <= 100.0 + 20.0 + 20.0, "retard contenu : %.0f ms" % q)
