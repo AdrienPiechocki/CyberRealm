@@ -513,9 +513,15 @@ void VideoShare::reconcile_windows() {
 					close(w->fd);
 					w->fd = -1;
 				}
-				destroy_encoder(w);
-				delete w;
 			}
+			// delete HORS de la portée du lock_guard : sinon son destructeur
+			// déverrouille encode_mutex (offset 0 de la struct) dans la mémoire
+			// déjà libérée, écrasant le pointeur tcache du bloc → tas corrompu,
+			// crash au malloc suivant du worker ou à sa sortie (retrait d'un
+			// partage). Sans risque : windows_mutex est tenu, et tout autre
+			// accès à w (thread principal) le prend avant encode_mutex.
+			destroy_encoder(w);
+			delete w;
 			it = windows.erase(it);
 		} else {
 			++it;
