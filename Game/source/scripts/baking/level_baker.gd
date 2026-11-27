@@ -586,19 +586,26 @@ static func _embed_mesh(r: Mesh, cache: Dictionary) -> Mesh:
 				dup.surface_set_material(i, _embed(mat, cache))
 		cache[r] = dup
 		return dup
+	# Copie des surfaces dans leur forme sérialisée (_surfaces : buffers GPU
+	# tels quels). Une reconstruction via surface_get_arrays() +
+	# add_surface_from_arrays() perdait les LOD (16 000 surfaces du niveau
+	# Morrowind → 3× plus de primitives rendues chez le client), la
+	# compression des attributs (+50 % de sommets) et le shadow mesh.
 	var new_mesh := ArrayMesh.new()
-	var count := r.get_surface_count()
-	for i in count:
-		var arrays := r.surface_get_arrays(i)
-		var mat := r.surface_get_material(i)
-		var prim = r.surface_get_primitive_type(i)
-		if mat != null:
-			mat = _embed(mat, cache)
-		new_mesh.add_surface_from_arrays(prim, arrays)
-		new_mesh.surface_set_material(new_mesh.get_surface_count() - 1, mat)
 	for i in r.get_blend_shape_count():
 		new_mesh.add_blend_shape(r.get_blend_shape_name(i))
+	new_mesh.blend_shape_mode = (r as ArrayMesh).blend_shape_mode
+	var surfaces: Array = (r.get("_surfaces") as Array).duplicate()
+	for i in surfaces.size():
+		var s: Dictionary = (surfaces[i] as Dictionary).duplicate()
+		var mat = s.get("material")
+		if mat is Material:
+			s["material"] = _embed(mat, cache)
+		surfaces[i] = s
+	new_mesh.set("_surfaces", surfaces)
 	new_mesh.custom_aabb = r.custom_aabb
+	if (r as ArrayMesh).shadow_mesh != null and (r as ArrayMesh).shadow_mesh != r:
+		new_mesh.shadow_mesh = _embed_mesh((r as ArrayMesh).shadow_mesh, cache) as ArrayMesh
 	cache[r] = new_mesh
 	return new_mesh
 
