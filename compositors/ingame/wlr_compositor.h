@@ -1010,6 +1010,7 @@ private:
     uint32_t get_time_msec();
 
     void notify_pointer_motion_on_surface(wlr_surface *surface, double surface_x, double surface_y);
+    void notify_pointer_motion_in_tree(wlr_surface *root, double x, double y);
 
     // Compile et applique le keymap xkb du clavier virtuel à partir de
     // keyboard_layout/keyboard_variant, puis ré-active NumLock et notifie

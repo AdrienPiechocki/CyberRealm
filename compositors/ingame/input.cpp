@@ -182,9 +182,15 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
     // EXCEPTION : pendant un drag actif (wl_data_device), il n'y a plus de
     // grab popup (le grab drag l'a remplacé) et entrer les popups doit être
     // permis pour que la cible de drop puisse être un popup.
-    if (seat->pointer_state.focused_surface != surface &&
+    // Comparaison par RACINE : une sous-surface de popup compte comme le popup
+    // (entrer sa sous-surface pendant le clic ferme aussi le menu, et passer
+    // d'une sous-surface à l'autre du même popup est permis).
+    wlr_surface *root = wlr_surface_get_root_surface(surface);
+    wlr_surface *focused_root = seat->pointer_state.focused_surface
+        ? wlr_surface_get_root_surface(seat->pointer_state.focused_surface) : nullptr;
+    if (focused_root != root &&
         seat->pointer_state.button_count > 0 && !seat->drag) {
-        wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(surface);
+        wlr_xdg_surface *xdg = wlr_xdg_surface_try_from_wlr_surface(root);
         if (xdg && xdg->role == WLR_XDG_SURFACE_ROLE_POPUP) {
             return;
         }
@@ -196,12 +202,56 @@ void WlrCompositor::notify_pointer_motion_on_surface(wlr_surface *surface, doubl
     wlr_seat_pointer_notify_motion(seat, time, surface_x, surface_y);
     wlr_seat_pointer_notify_frame(seat);
 }
+// Décalage d'une surface par rapport à la racine de son arbre de sous-surfaces.
+// false si `surface` n'appartient pas à l'arbre de `root`.
+static bool subsurface_offset_in_tree(wlr_surface *root, wlr_surface *surface, double *ox, double *oy) {
+    double x = 0.0, y = 0.0;
+    while (surface && surface != root) {
+        wlr_subsurface *sub = wlr_subsurface_try_from_wlr_surface(surface);
+        if (!sub) return false;
+        x += sub->current.x;
+        y += sub->current.y;
+        surface = sub->parent;
+    }
+    if (surface != root) return false;
+    *ox = x;
+    *oy = y;
+    return true;
+}
+// Mouvement pointeur dans l'arbre d'une surface racine (toplevel ou popup) :
+// le focus va à la (sous-)surface réellement sous le curseur, selon les
+// régions d'entrée, comme dans les autres compositeurs. Firefox dessine
+// certains menus (historique des champs de formulaire) dans une SOUS-SURFACE
+// de sa fenêtre et non dans un xdg_popup : avec le focus sur la racine, le
+// survol et le clic marchaient (Firefox les reroute) mais la molette faisait
+// défiler la page au lieu de la liste.
+// Bouton enfoncé : grab implicite, le focus reste sur la surface de l'appui
+// (coordonnées reconverties dans son repère), comme wlroots/KWin.
+void WlrCompositor::notify_pointer_motion_in_tree(wlr_surface *root, double x, double y) {
+    if (!root || !seat) return;
+    wlr_surface *focused = seat->pointer_state.focused_surface;
+    double ox = 0.0, oy = 0.0;
+    if (seat->pointer_state.button_count > 0 && !seat->drag && focused && focused != root &&
+            subsurface_offset_in_tree(root, focused, &ox, &oy)) {
+        notify_pointer_motion_on_surface(focused, x - ox, y - oy);
+        return;
+    }
+    double sx = x, sy = y;
+    wlr_surface *target = wlr_surface_surface_at(root, x, y, &sx, &sy);
+    if (!target) {
+        // Hors de toute région d'entrée (marge d'ombre…) : la racine, comme avant.
+        target = root;
+        sx = x;
+        sy = y;
+    }
+    notify_pointer_motion_on_surface(target, sx, sy);
+}
 void WlrCompositor::forward_pointer_motion(int window_id, double surface_x, double surface_y) {
     notify_activity();
     WindowState *ws = find_window(window_id);
     if (!ws) return;
     // Pixels de capture -> coordonnées logiques (échelle de la fenêtre, cf. set_window_scale).
-    notify_pointer_motion_on_surface(ws->toplevel->base->surface, surface_x / ws->scale, surface_y / ws->scale);
+    notify_pointer_motion_in_tree(ws->toplevel->base->surface, surface_x / ws->scale, surface_y / ws->scale);
 }
 void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y) {
     notify_activity();
@@ -211,7 +261,7 @@ void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x,
     ps->last_pointer_x = surface_x / sc;
     ps->last_pointer_y = surface_y / sc;
     ps->has_pointer_pos = true;
-    notify_pointer_motion_on_surface(ps->popup->base->surface, ps->last_pointer_x, ps->last_pointer_y);
+    notify_pointer_motion_in_tree(ps->popup->base->surface, ps->last_pointer_x, ps->last_pointer_y);
 }
 void WlrCompositor::release_stale_button(uint32_t button) {
     if (!seat) return;
@@ -346,10 +396,14 @@ void WlrCompositor::forward_pointer_axis_popup(int popup_id, double delta_x, dou
     if (!ps || !seat || !ps->popup || !ps->popup->base) return;
 
     wlr_surface *surface = ps->popup->base->surface;
-    if (seat->pointer_state.focused_surface != surface && ps->has_pointer_pos) {
-        notify_pointer_motion_on_surface(surface, ps->last_pointer_x, ps->last_pointer_y);
+    auto in_popup = [&]() {
+        wlr_surface *f = seat->pointer_state.focused_surface;
+        return f && wlr_surface_get_root_surface(f) == surface;
+    };
+    if (!in_popup() && ps->has_pointer_pos) {
+        notify_pointer_motion_in_tree(surface, ps->last_pointer_x, ps->last_pointer_y);
     }
-    if (seat->pointer_state.focused_surface != surface) {
+    if (!in_popup()) {
         static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
         if (dbg) {
             fprintf(stderr, "waylandgodot: axis popup %d dropped: focus=%p buttons=%u has_pos=%d\n",
