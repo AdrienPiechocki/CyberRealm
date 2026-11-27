@@ -21,6 +21,7 @@ extends Node
 ##   focus-mode              État du focus
 ##   layer-interact          Toggle mode interaction layer
 ##   keyboard-layout [l] [v] Get/set layout clavier
+##   mem [n]                 Mémoire GPU : textures/buffers + n plus grosses textures
 ##   quit                    Quitter le jeu
 
 var compositor: WlrCompositor
@@ -114,12 +115,133 @@ func _dispatch(cmd: String, args: String) -> Dictionary:
 			return _cmd_keyboard_layout(args)
 		"overlay-bind":
 			return _cmd_overlay_bind(args)
+		"mem":
+			return _cmd_mem(args)
 		"quit":
 			return _cmd_quit()
 		_:
 			return {"ok": false, "error": " unknown command: " + cmd}
 
 # ── Commandes ──────────────────────────────────────────────────────
+
+static func _mem_tex_format(t: Texture2D) -> int:
+	if t.has_method("get_format"):
+		return int(t.call("get_format"))
+	return -1
+
+# Taille GPU estimée : RGB8 est stocké en RGBA8 côté GPU ; × 4/3 pour les mipmaps.
+static func _mem_tex_bytes(t: Texture2D) -> int:
+	var px := float(t.get_width() * t.get_height())
+	var bpp := 4.0
+	match _mem_tex_format(t):
+		Image.FORMAT_L8, Image.FORMAT_R8: bpp = 1.0
+		Image.FORMAT_LA8, Image.FORMAT_RG8: bpp = 2.0
+		Image.FORMAT_RGBAH: bpp = 8.0
+		Image.FORMAT_RGBAF: bpp = 16.0
+		Image.FORMAT_DXT1, Image.FORMAT_RGTC_R, Image.FORMAT_ETC2_RGB8: bpp = 0.5
+		Image.FORMAT_DXT3, Image.FORMAT_DXT5, Image.FORMAT_RGTC_RG, Image.FORMAT_BPTC_RGBA, \
+				Image.FORMAT_BPTC_RGBF, Image.FORMAT_BPTC_RGBFU, Image.FORMAT_ETC2_RGBA8, Image.FORMAT_ASTC_4x4: bpp = 1.0
+	return int(px * bpp * 4.0 / 3.0)
+
+func _mem_collect(n: Node, texs: Dictionary, seen: Dictionary) -> void:
+	if n is GeometryInstance3D:
+		var gi := n as GeometryInstance3D
+		_mem_collect_res(gi.material_override, texs, seen)
+		_mem_collect_res(gi.material_overlay, texs, seen)
+		if n is MeshInstance3D:
+			var mi := n as MeshInstance3D
+			for i in mi.get_surface_override_material_count():
+				_mem_collect_res(mi.get_surface_override_material(i), texs, seen)
+			_mem_collect_res(mi.mesh, texs, seen)
+		elif n is MultiMeshInstance3D and (n as MultiMeshInstance3D).multimesh != null:
+			_mem_collect_res((n as MultiMeshInstance3D).multimesh.mesh, texs, seen)
+	elif n is WorldEnvironment:
+		_mem_collect_res((n as WorldEnvironment).environment, texs, seen)
+	for c in n.get_children():
+		_mem_collect(c, texs, seen)
+
+func _mem_collect_res(r: Resource, texs: Dictionary, seen: Dictionary) -> void:
+	if r == null or seen.has(r):
+		return
+	seen[r] = true
+	if r is Texture2D:
+		texs[r] = true
+		return
+	if r is Mesh:
+		for i in (r as Mesh).get_surface_count():
+			_mem_collect_res((r as Mesh).surface_get_material(i), texs, seen)
+		return
+	if r is ShaderMaterial:
+		var sm := r as ShaderMaterial
+		if sm.shader != null:
+			for u in sm.shader.get_shader_uniform_list():
+				var v = sm.get_shader_parameter(u["name"])
+				if v is Resource:
+					_mem_collect_res(v, texs, seen)
+		_mem_collect_res(sm.next_pass, texs, seen)
+		return
+	for p in r.get_property_list():
+		if p["usage"] & PROPERTY_USAGE_STORAGE and p["type"] == TYPE_OBJECT:
+			var v = r.get(p["name"])
+			if v is Resource:
+				_mem_collect_res(v, texs, seen)
+
+# Diagnostic mémoire GPU : totaux du RenderingDevice (allocations VMA), puis
+# textures regroupées par origine (dossier du resource_path, « (embarquée) »
+# pour celles des blobs/ImageTexture) et les n plus grosses. Sert à comparer
+# avec la GTT/Shmem mesurée côté pilote (fdinfo, /proc/meminfo).
+func _cmd_mem(args: String) -> Dictionary:
+	var top_n := int(args) if args.is_valid_int() else 15
+	var mb := func(b: float) -> String: return "%.0f MB" % (b / 1048576.0)
+	var lines: Array[String] = []
+	var rd := RenderingServer.get_rendering_device()
+	if rd != null:
+		lines.append("RD total=%s textures=%s buffers=%s" % [
+			mb.call(rd.get_memory_usage(RenderingDevice.MEMORY_TOTAL)),
+			mb.call(rd.get_memory_usage(RenderingDevice.MEMORY_TEXTURES)),
+			mb.call(rd.get_memory_usage(RenderingDevice.MEMORY_BUFFERS))])
+	lines.append("RS video=%s texture=%s buffer=%s" % [
+		mb.call(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_VIDEO_MEM_USED)),
+		mb.call(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TEXTURE_MEM_USED)),
+		mb.call(RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_BUFFER_MEM_USED))])
+	lines.append("static=%s objects=%d resources=%d nodes=%d" % [
+		mb.call(OS.get_static_memory_usage()),
+		int(Performance.get_monitor(Performance.OBJECT_COUNT)),
+		int(Performance.get_monitor(Performance.OBJECT_RESOURCE_COUNT)),
+		int(Performance.get_monitor(Performance.OBJECT_NODE_COUNT))])
+	# Textures référencées par la scène (matériaux des GeometryInstance3D et
+	# des meshes), taille GPU estimée d'après le format (mipmaps comprises).
+	var texs := {}
+	_mem_collect(get_tree().root, texs, {})
+	var groups := {}
+	var total := 0
+	var rows: Array = []
+	for t: Texture2D in texs:
+		var b := _mem_tex_bytes(t)
+		total += b
+		var path := t.resource_path
+		var key := "(embarquée)"
+		if path.contains("::"):
+			key = path.get_slice("::", 0) + " (sous-ressource)"
+		elif not path.is_empty():
+			key = path.get_base_dir()
+		var g: Dictionary = groups.get(key, {"bytes": 0, "n": 0})
+		g["bytes"] = int(g["bytes"]) + b
+		g["n"] = int(g["n"]) + 1
+		groups[key] = g
+		rows.append([b, t])
+	lines.append("textures de la scène : %d, ~%s" % [texs.size(), mb.call(total)])
+	var keys := groups.keys()
+	keys.sort_custom(func(x, y): return int(groups[x]["bytes"]) > int(groups[y]["bytes"]))
+	for k in keys.slice(0, top_n):
+		lines.append("  %8s  %5d tex  %s" % [mb.call(groups[k]["bytes"]), int(groups[k]["n"]), k])
+	rows.sort_custom(func(x, y): return int(x[0]) > int(y[0]))
+	lines.append("plus grosses :")
+	for r in rows.slice(0, top_n):
+		var t: Texture2D = r[1]
+		lines.append("  %8s  %dx%d %s fmt=%d  %s" % [mb.call(r[0]), t.get_width(), t.get_height(),
+			t.get_class(), _mem_tex_format(t), t.resource_path.right(80)])
+	return {"ok": true, "output": "\n".join(lines)}
 
 func _cmd_launch(cmd: String) -> Dictionary:
 	if cmd.is_empty():
