@@ -634,6 +634,9 @@ bool VideoShare::ensure_encoder(VideoEncodeWindow *w) {
 		// sortie des paquets. Pour du streaming LAN temps réel, le gain de
 		// latence vaut mieux que les ~10-15 % de compression des B-frames.
 		ctx->max_b_frames = 0;
+		// Une image à la fois dans le pipeline matériel (2 par défaut) : chaque paquet sort dès que SON image est
+		// encodée, au lieu d'attendre la suivante (~16-33 ms de latence en moins, sensible en contrôle à distance).
+		av_opt_set_int(ctx->priv_data, "async_depth", 1, 0);
 		if (avcodec_open2(ctx, codec, nullptr) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: avcodec_open2(", name, ") failed");
 			av_buffer_unref(&frames_ref);

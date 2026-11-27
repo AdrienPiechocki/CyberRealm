@@ -61,6 +61,16 @@ func test_snap_delay_drops_audio_wait():
 	if r is String: return r
 	return Runner.assert_true(po.current_delay() < 50.0, "retard ramené à la gigue")
 
+## Sous contrôle, la pire gigue n'est plus attendue : retard borné, l'image en retard passe tout de suite.
+func test_controlled_caps_delay():
+	var po := VideoPlayout.new()
+	po.controlled = true
+	po.push(0, 1000, 1010, _img())
+	po.push(1, 1016, 1226, _img())                   # 200 ms de gigue
+	var shown = po.pop_due(1230)
+	return Runner.assert_true(shown != null and po.current_delay() <= VideoPlayout.CONTROLLED_MAX_DELAY_MSEC,
+		"retard borné sous contrôle")
+
 func test_queue_is_bounded():
 	var po := VideoPlayout.new()
 	for i in 30:

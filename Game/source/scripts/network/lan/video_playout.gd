@@ -12,6 +12,10 @@ const WINDOW_MSEC := 3000      # fenêtre de mesure de la gigue
 const MARGIN_MSEC := 6.0       # au-delà de la pire gigue vue
 const MIN_DELAY_MSEC := 10.0
 const MAX_DELAY_MSEC := 250.0
+# Fenêtre contrôlée par ce joueur : la latence de l'action à l'image prime. Une image arrivée au-delà de ce retard est
+# montrée tout de suite (un peu moins régulier) au lieu de tout retarder de la pire gigue vue (relais du serveur :
+# 150-250 ms mesurés).
+const CONTROLLED_MAX_DELAY_MSEC := 40.0
 const DECAY_MSEC_PER_SEC := 30.0 # baisse du retard : progressive (quelques images un peu plus tôt, pas de saut)
 const MAX_QUEUED := 10         # images RGBA en attente (1080p ≈ 8 Mo chacune)
 
@@ -54,7 +58,8 @@ func push(seq: int, t_capture: int, now: int, img: Image) -> void:
 
 ## Retard visé : gigue mesurée, ou `min_delay` (son de la fenêtre) s'il est plus grand.
 func target_delay(min_delay: float) -> float:
-	return clampf(maxf(_jitter + MARGIN_MSEC, min_delay), MIN_DELAY_MSEC, MAX_DELAY_MSEC)
+	return clampf(maxf(_jitter + MARGIN_MSEC, min_delay), MIN_DELAY_MSEC,
+		CONTROLLED_MAX_DELAY_MSEC if controlled else MAX_DELAY_MSEC)
 
 ## Le retard rejoint la cible dès la prochaine image au lieu de baisser progressivement (prise de contrôle : la
 ## réactivité prime, une seule image sautée).
