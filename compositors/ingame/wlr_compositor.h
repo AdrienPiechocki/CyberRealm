@@ -1364,6 +1364,8 @@ public:
     void video_decoder_configure(const String &key, const String &codec, int width, int height);
     Ref<Image> video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe);
     void video_decoder_reset(const String &key);
+    void video_decoder_submit(const String &key, const PackedByteArray &packet, bool keyframe, int64_t seq);
+    Array video_decoder_poll();
     void video_decoder_clear_all();
 
     // Soumet le DMA-BUF d'une fenêtre à l'encodeur (hook après le render +

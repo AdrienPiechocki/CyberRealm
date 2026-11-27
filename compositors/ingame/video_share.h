@@ -153,6 +153,15 @@ public:
 	void decoder_reset(const std::string &key);
 	void decoder_clear_all();
 
+	// Décodage asynchrone (thread worker C++ dédié) : decoder_submit enfile un
+	// paquet, decoder_poll renvoie les résultats { key, seq, ok, image? }.
+	// Toutes les frames sont décodées dans l'ordre (dépendances P-frames), mais
+	// la conversion YUV→RGBA n'est faite que pour la DERNIÈRE frame en file d'un
+	// flux : un récepteur lent saute des images affichées au lieu de prendre du
+	// retard (et le thread du jeu ne décode plus rien).
+	void decoder_submit(const std::string &key, const PackedByteArray &data, bool keyframe, int64_t seq);
+	Array decoder_poll();
+
 private:
 	// Backend encodeur (thread worker uniquement).
 	void worker_loop();
@@ -171,7 +180,7 @@ private:
 	// Décodeur (thread appelant, protégé par dec_mutex).
 	struct DecoderCtx;
 	void decoder_destroy(DecoderCtx *d);
-	Ref<Image> decode_to_image(DecoderCtx *d);
+	bool convert_frame(DecoderCtx *d, int &out_w, int &out_h, PackedByteArray &out_rgba);
 
 	// Mode actif (fixé au start, immuable pendant l'activité).
 	bool hw_mode = false;
@@ -219,6 +228,32 @@ private:
 		int sws_fmt = -1; // format source du dernier ctx sws (recréé s'il change)
 	};
 	std::unordered_map<std::string, DecoderCtx *> decoders;
+
+	// Décodage asynchrone : file de paquets → worker → résultats.
+	struct DecodeJob {
+		std::string key;
+		std::vector<uint8_t> data;
+		bool keyframe = false;
+		int64_t seq = -1;
+	};
+	struct DecodeResult {
+		std::string key;
+		int64_t seq = -1;
+		bool ok = false;
+		int w = 0;
+		int h = 0;
+		PackedByteArray rgba; // vide si conversion sautée (frame intermédiaire)
+	};
+	void decode_worker_loop();
+	void decode_purge_key(const std::string &key); // sous dq_mutex
+	bool decode_packet(DecoderCtx *d, const uint8_t *data, int size, bool keyframe, bool convert,
+			int &out_w, int &out_h, PackedByteArray &out_rgba);
+	std::mutex dq_mutex;
+	std::condition_variable dq_cv;
+	std::vector<DecodeJob> dq_jobs;
+	std::vector<DecodeResult> dq_results;
+	std::thread dq_thread;
+	bool dq_stop = false;
 };
 
 } // namespace godot

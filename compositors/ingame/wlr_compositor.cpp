@@ -200,6 +200,9 @@ void WlrCompositor::_bind_methods() {
     ClassDB::bind_method(D_METHOD("video_decoder_feed", "key", "packet", "keyframe"),
         &WlrCompositor::video_decoder_feed);
     ClassDB::bind_method(D_METHOD("video_decoder_reset", "key"), &WlrCompositor::video_decoder_reset);
+    ClassDB::bind_method(D_METHOD("video_decoder_submit", "key", "packet", "keyframe", "seq"),
+        &WlrCompositor::video_decoder_submit);
+    ClassDB::bind_method(D_METHOD("video_decoder_poll"), &WlrCompositor::video_decoder_poll);
     ClassDB::bind_method(D_METHOD("video_decoder_clear_all"), &WlrCompositor::video_decoder_clear_all);
     ClassDB::bind_method(D_METHOD("is_window_pointer_locked", "window_id"), &WlrCompositor::is_window_pointer_locked);
     ClassDB::bind_method(D_METHOD("is_window_xwayland", "window_id"), &WlrCompositor::is_window_xwayland);
@@ -2545,6 +2548,15 @@ void WlrCompositor::video_decoder_configure(const String &key, const String &cod
 Ref<Image> WlrCompositor::video_decoder_feed(const String &key, const PackedByteArray &packet, bool keyframe) {
     std::string k = key.utf8().get_data();
     return video_share.decoder_feed(k, packet, keyframe);
+}
+
+void WlrCompositor::video_decoder_submit(const String &key, const PackedByteArray &packet, bool keyframe, int64_t seq) {
+    std::string k = key.utf8().get_data();
+    video_share.decoder_submit(k, packet, keyframe, seq);
+}
+
+Array WlrCompositor::video_decoder_poll() {
+    return video_share.decoder_poll();
 }
 
 void WlrCompositor::video_decoder_reset(const String &key) {

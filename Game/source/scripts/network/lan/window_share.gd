@@ -917,6 +917,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 				lan.compositor.video_decoder_reset(lan.video_share._video_key(peer_id, wid))
 	lan.video_share._video_configs.erase(peer_id)
 	lan.video_share._video_applied.erase(peer_id)
+	lan.video_share._video_fed.erase(peer_id)
 	lan.video_share._video_chunks.erase(peer_id)
 	lan.video_share._video_nack_last.erase(peer_id)
 	lan.video_share._video_ack_pending.erase(peer_id)

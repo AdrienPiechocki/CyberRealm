@@ -81,6 +81,12 @@ VideoShare::VideoShare() {
 
 VideoShare::~VideoShare() {
 	stop();
+	{
+		std::lock_guard<std::mutex> q(dq_mutex);
+		dq_stop = true;
+	}
+	dq_cv.notify_all();
+	if (dq_thread.joinable()) dq_thread.join();
 	decoder_clear_all();
 }
 
@@ -943,6 +949,11 @@ void VideoShare::va_cleanup() {
 // ---------------------------------------------------------------------------
 
 void VideoShare::decoder_configure(const std::string &key, const String &codec, int width, int height) {
+	{
+		// Paquets/résultats de l'ancien flux : périmés (seq repartent de 0).
+		std::lock_guard<std::mutex> q(dq_mutex);
+		decode_purge_key(key);
+	}
 	std::lock_guard<std::mutex> g(dec_mutex);
 	auto it = decoders.find(key);
 	if (it != decoders.end()) {
@@ -979,39 +990,51 @@ void VideoShare::decoder_configure(const std::string &key, const String &codec, 
 	decoders[key] = d;
 }
 
-Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArray &data, bool keyframe) {
-	std::lock_guard<std::mutex> g(dec_mutex);
-	auto it = decoders.find(key);
-	if (it == decoders.end() || !it->second->avctx) return Ref<Image>();
-	DecoderCtx *d = it->second;
-	if (data.size() <= 0) return Ref<Image>();
-
+// Envoie un paquet au décodeur ; si une frame sort, la convertit en RGBA
+// (sauf convert=false : frame intermédiaire dont l'image ne sera pas affichée).
+// Renvoie true si une frame a été décodée. Appelé sous dec_mutex.
+bool VideoShare::decode_packet(DecoderCtx *d, const uint8_t *data, int size, bool keyframe, bool convert,
+		int &out_w, int &out_h, PackedByteArray &out_rgba) {
+	if (!d || !d->avctx || size <= 0) return false;
 	if (keyframe) {
 		// IDR : on resynchronise le décodeur (nouveau SPS/PPS/IDR en bande).
 		avcodec_flush_buffers(d->avctx);
 	}
-
 	av_packet_unref(d->pkt);
-	d->pkt->data = const_cast<uint8_t *>(data.ptr());
-	d->pkt->size = (int)data.size();
+	d->pkt->data = const_cast<uint8_t *>(data);
+	d->pkt->size = size;
 	int ret = avcodec_send_packet(d->avctx, d->pkt);
 	av_packet_unref(d->pkt);
 	if (ret < 0 && ret != AVERROR(EAGAIN)) {
-		return Ref<Image>();
+		return false;
 	}
-	int r = avcodec_receive_frame(d->avctx, d->frame);
-	if (r == 0) {
-		Ref<Image> img = decode_to_image(d);
-		av_frame_unref(d->frame);
-		return img;
+	if (avcodec_receive_frame(d->avctx, d->frame) != 0) {
+		return false;
 	}
-	return Ref<Image>();
+	bool ok = true;
+	if (convert) {
+		ok = convert_frame(d, out_w, out_h, out_rgba);
+	}
+	av_frame_unref(d->frame);
+	return ok;
 }
 
-Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
+Ref<Image> VideoShare::decoder_feed(const std::string &key, const PackedByteArray &data, bool keyframe) {
+	std::lock_guard<std::mutex> g(dec_mutex);
+	auto it = decoders.find(key);
+	if (it == decoders.end() || !it->second->avctx) return Ref<Image>();
+	int w = 0, h = 0;
+	PackedByteArray rgba;
+	if (!decode_packet(it->second, data.ptr(), (int)data.size(), keyframe, true, w, h, rgba)) {
+		return Ref<Image>();
+	}
+	return Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, rgba);
+}
+
+bool VideoShare::convert_frame(DecoderCtx *d, int &out_w, int &out_h, PackedByteArray &pba) {
 	int w = d->frame->width;
 	int h = d->frame->height;
-	if (w <= 0 || h <= 0) return Ref<Image>();
+	if (w <= 0 || h <= 0) return false;
 
 	AVPixelFormat src_fmt = (AVPixelFormat)d->frame->format;
 	if (!d->sws || d->width != w || d->height != h || d->sws_fmt != (int)src_fmt) {
@@ -1022,9 +1045,8 @@ Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
 		d->height = h;
 		d->sws_fmt = (int)src_fmt;
 	}
-	if (!d->sws) return Ref<Image>();
+	if (!d->sws) return false;
 
-	PackedByteArray pba;
 	// sws_scale (SIMD) écrit jusqu'à 32-64 octets APRÈS le dernier pixel de
 	// la dernière ligne quand la destination n'est pas alignée au vecteur
 	// (vérifié empiriquement : 1000x600 déborde de 32 octets, 1920x1080 non).
@@ -1042,10 +1064,110 @@ Ref<Image> VideoShare::decode_to_image(DecoderCtx *d) {
 	const int dls[4] = { w * 4, 0, 0, 0 };
 	sws_scale(d->sws, slines, sls, 0, h, dlines, dls);
 	pba.resize((int64_t)w * h * 4);
-	return Image::create_from_data(w, h, false, Image::FORMAT_RGBA8, pba);
+	out_w = w;
+	out_h = h;
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Décodage asynchrone
+// ---------------------------------------------------------------------------
+
+void VideoShare::decoder_submit(const std::string &key, const PackedByteArray &data, bool keyframe, int64_t seq) {
+	if (data.size() <= 0) return;
+	DecodeJob job;
+	job.key = key;
+	job.data.assign(data.ptr(), data.ptr() + data.size());
+	job.keyframe = keyframe;
+	job.seq = seq;
+	std::lock_guard<std::mutex> g(dq_mutex);
+	if (keyframe) {
+		// Keyframe : les paquets antérieurs de ce flux encore en file sont
+		// inutiles (le décodeur repart de l'IDR).
+		dq_jobs.erase(std::remove_if(dq_jobs.begin(), dq_jobs.end(),
+			[&](const DecodeJob &j) { return j.key == key; }), dq_jobs.end());
+	}
+	dq_jobs.push_back(std::move(job));
+	if (!dq_thread.joinable()) {
+		dq_stop = false;
+		dq_thread = std::thread(&VideoShare::decode_worker_loop, this);
+	}
+	dq_cv.notify_one();
+}
+
+Array VideoShare::decoder_poll() {
+	std::vector<DecodeResult> res;
+	{
+		std::lock_guard<std::mutex> g(dq_mutex);
+		res.swap(dq_results);
+	}
+	Array out;
+	for (auto &r : res) {
+		Dictionary d;
+		d["key"] = String::utf8(r.key.c_str());
+		d["seq"] = r.seq;
+		d["ok"] = r.ok;
+		if (r.ok && r.w > 0 && r.h > 0 && r.rgba.size() == (int64_t)r.w * r.h * 4) {
+			d["image"] = Image::create_from_data(r.w, r.h, false, Image::FORMAT_RGBA8, r.rgba);
+		}
+		out.push_back(d);
+	}
+	return out;
+}
+
+void VideoShare::decode_purge_key(const std::string &key) {
+	dq_jobs.erase(std::remove_if(dq_jobs.begin(), dq_jobs.end(),
+		[&](const DecodeJob &j) { return j.key == key; }), dq_jobs.end());
+	dq_results.erase(std::remove_if(dq_results.begin(), dq_results.end(),
+		[&](const DecodeResult &r) { return r.key == key; }), dq_results.end());
+}
+
+void VideoShare::decode_worker_loop() {
+	for (;;) {
+		DecodeJob job;
+		bool convert = true;
+		{
+			std::unique_lock<std::mutex> lk(dq_mutex);
+			dq_cv.wait(lk, [&] { return dq_stop || !dq_jobs.empty(); });
+			if (dq_stop) return;
+			job = std::move(dq_jobs.front());
+			dq_jobs.erase(dq_jobs.begin());
+			// Un paquet plus récent du même flux attend : cette frame doit être
+			// décodée (référence des suivantes) mais pas affichée → pas de
+			// conversion RGBA ni d'upload.
+			for (const auto &j : dq_jobs) {
+				if (j.key == job.key) { convert = false; break; }
+			}
+		}
+		DecodeResult r;
+		r.key = job.key;
+		r.seq = job.seq;
+		{
+			std::lock_guard<std::mutex> g(dec_mutex);
+			auto it = decoders.find(job.key);
+			if (it != decoders.end() && it->second->avctx) {
+				r.ok = decode_packet(it->second, job.data.data(), (int)job.data.size(),
+					job.keyframe, convert, r.w, r.h, r.rgba);
+			}
+		}
+		std::lock_guard<std::mutex> g(dq_mutex);
+		if (dq_stop) return;
+		// Un résultat non affiché remplace un résultat plus ancien du même flux
+		// pas encore relevé (le thread du jeu n'a besoin que de la dernière image).
+		if (r.ok && !r.rgba.is_empty()) {
+			for (auto &old : dq_results) {
+				if (old.key == r.key && old.ok) old.rgba = PackedByteArray();
+			}
+		}
+		dq_results.push_back(std::move(r));
+	}
 }
 
 void VideoShare::decoder_reset(const std::string &key) {
+	{
+		std::lock_guard<std::mutex> q(dq_mutex);
+		decode_purge_key(key);
+	}
 	std::lock_guard<std::mutex> g(dec_mutex);
 	auto it = decoders.find(key);
 	if (it == decoders.end()) return;
@@ -1055,6 +1177,11 @@ void VideoShare::decoder_reset(const std::string &key) {
 }
 
 void VideoShare::decoder_clear_all() {
+	{
+		std::lock_guard<std::mutex> q(dq_mutex);
+		dq_jobs.clear();
+		dq_results.clear();
+	}
 	std::lock_guard<std::mutex> g(dec_mutex);
 	for (auto &kv : decoders) {
 		decoder_destroy(kv.second);

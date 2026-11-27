@@ -51,10 +51,19 @@ var _video_acked := {}
 var _video_sent_msec := {}
 # peer -> ms : aller-retour frame -> ACK lissé (-1 tant qu'aucune mesure).
 var _video_rtt := {}
+# peer -> {wid -> true} : une P-frame a été sautée pour ce peer (flow control) ;
+# ses P-frames suivantes ne sont plus décodables → on n'envoie plus rien pour
+# cette fenêtre jusqu'à la prochaine keyframe (demandée à l'encodeur).
+var _video_need_key := {}
+# wid -> msec : dernière keyframe demandée à l'encodeur suite à un saut (throttle).
+var _video_key_req_last := {}
 # from -> {wid -> {codec, w, h}} : configs reçues (côté récepteur).
 var _video_configs := {}
-# from -> {wid -> seq} : dernière seq appliquée sur le quad distant.
+# from -> {wid -> seq} : dernière seq décodée (ACK ; anti-régression).
 var _video_applied := {}
+# from -> {wid -> seq} : dernière seq soumise au décodeur (détection de trou :
+# une P-frame dont la précédente manque ne doit pas être décodée → artefacts).
+var _video_fed := {}
 # from -> {wid -> seq} : ACK en attente d'envoi (batching par tick).
 var _video_ack_pending := {}
 # from -> {wid -> {seq, total, parts, t}} : assemblage de paquets chunkés.
@@ -134,6 +143,8 @@ func _stop_video_share() -> void:
 	_video_acked.clear()
 	_video_sent_msec.clear()
 	_video_rtt.clear()
+	_video_need_key.clear()
+	_video_key_req_last.clear()
 
 # Applique les réglages de partage vidéo (menu pause) : bitrate (bits/s),
 # codec ("auto" | "h264" | "av1") et fps. Si le partage est actif, il est
@@ -233,13 +244,26 @@ func _drain_video_packets() -> void:
 			var acked := int(_video_acked.get(pid, {}).get(wid, -1))
 			if seq <= acked:
 				continue
-			if not keyframe:
-				# Flow control : si ce peer a déjà VIDEO_MAX_AHEAD frames non
-				# appliquées en route, on saute les P-frames (la prochaine
-				# keyframe le resynchronisera) pour ne pas saturer ENet.
+			if not _video_need_key.has(pid):
+				_video_need_key[pid] = {}
+			var need_key: Dictionary = _video_need_key[pid]
+			if keyframe:
+				need_key.erase(wid)
+			else:
+				if need_key.has(wid):
+					# Chaîne cassée pour ce peer : ses P-frames ne sont plus
+					# décodables, inutile de charger le lien. Attente de la keyframe.
+					_request_encoder_keyframe(wid)
+					continue
+				# Flow control : si ce peer a déjà trop de frames non appliquées
+				# en route, on saute cette P-frame pour ne pas saturer ENet. Toute
+				# la suite jusqu'à la prochaine keyframe dépend d'elle : on cesse
+				# d'envoyer et on demande une keyframe (sinon le récepteur décode
+				# des P-frames sans leur référence → vidéo baveuse/pixellisée).
 				var last_sent: int = sent.get(wid, -1)
 				if acked >= 0 and last_sent - acked >= video_max_ahead(pid):
-					sent[wid] = seq
+					need_key[wid] = true
+					_request_encoder_keyframe(wid)
 					continue
 			if not _video_config_sent.get(pid, {}).has(wid):
 				# Config pas encore partie (peer qui vient de se connecter) :
@@ -260,6 +284,15 @@ func _drain_video_packets() -> void:
 				lan.compositor.video_share_pending(), _video_windows_sent.size(), str(_video_rtt)])
 		_video_diag_sent = 0
 		_video_diag_bytes = 0
+
+# Keyframe demandée à l'encodeur après un saut de P-frame (au plus 2×/s par
+# fenêtre : une keyframe est grosse, en rafale elle aggraverait la congestion).
+func _request_encoder_keyframe(wid: int) -> void:
+	var now := Time.get_ticks_msec()
+	if now - int(_video_key_req_last.get(wid, -999999)) < VIDEO_NACK_GAP_MSEC:
+		return
+	_video_key_req_last[wid] = now
+	lan.compositor.video_share_request_keyframe(wid)
 
 # Un nouveau peer (join en cours de partie) reçoit immédiatement la config et
 # une keyframe par fenêtre partagée pour se synchroniser sans attendre la
@@ -307,9 +340,11 @@ func _sync_video_frame(wid: int, seq: int, index: int, total: int, bytes: Packed
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
 	_receive_video_frame(wid, seq, index, total, bytes, false)
 
-# Keyframe : canal 4 fiable (comme le JPEG) → ne se met PAS en file derrière
-# le backlog du canal 2 → le récepteur se recalibre immédiatement.
-@rpc("any_peer", "call_remote", "reliable", 4)
+# Keyframe : MÊME canal (2) que les P-frames. Sur un canal séparé, une P-frame
+# k+1 (petite) pouvait arriver avant la keyframe k (grosse, chunkée) → trou de
+# séquence côté récepteur. L'ordre strict permet la détection de trou ; le
+# backlog est déjà borné par le flow control de l'émetteur.
+@rpc("any_peer", "call_remote", "reliable", 2)
 func _sync_video_keyframe(wid: int, seq: int, index: int, total: int, bytes: PackedByteArray) -> void:
 	if lan.window_share_restricted():
 		return      # vue des fenêtres coupée (session par code d'invitation non approuvée)
@@ -339,6 +374,9 @@ func _sync_video_config(wid: int, codec: String, width: int, height: int) -> voi
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = -1
+	if not _video_fed.has(from):
+		_video_fed[from] = {}
+	_video_fed[from][wid] = -1
 	if _video_chunks.has(from):
 		_video_chunks[from].erase(wid)
 	_request_video_keyframe(from, wid)
@@ -428,33 +466,83 @@ func _receive_video_frame(wid: int, seq: int, index: int, total: int, bytes: Pac
 		# Course config/frame (canaux différents) : on ne peut pas décoder.
 		_request_video_keyframe(from, wid)
 		return
-	# Décodage sur le thread PRINCIPAL (retour à la version stable) : un
-	# thread worker appelant video_decoder_feed (un Node, GDExtension) depuis
-	# une Thread Godot a fait crasher le récepteur pendant le partage vidéo.
-	# Le décodage d'une frame (~2-5 ms en 1080p) reste léger tant que
-	# l'émetteur n'atteint pas 60 ips ; on le re-déplacera sur un worker
-	# quand le flux sera sain (côté C++ de préférence).
-	var img: Image = lan.compositor.video_decoder_feed(_video_key(from, wid), data, keyframe)
-	if img == null or img.is_empty():
-		if not keyframe:
-			_request_video_keyframe(from, wid)
+	# Détection de trou : une P-frame n'est décodable que si la précédente l'a
+	# été (frame sautée par le flow control de l'émetteur, paquet jeté par sa
+	# file pleine). Sinon : jetée + keyframe demandée, au lieu d'afficher une
+	# image corrompue jusqu'à la keyframe suivante.
+	var fed := int(_video_fed.get(from, {}).get(wid, -1))
+	if not keyframe and (fed < 0 or seq != fed + 1):
+		if fed >= 0:
+			_video_fed[from][wid] = -1
+		_request_video_keyframe(from, wid)
+		return
+	if not _video_fed.has(from):
+		_video_fed[from] = {}
+	_video_fed[from][wid] = seq
+	var key := _video_key(from, wid)
+	if lan.compositor.has_method("video_decoder_submit"):
+		# Décodage sur le thread worker C++ : le thread du jeu ne décode plus
+		# (résultats relevés par _drain_video_decoded à chaque tick).
+		lan.compositor.video_decoder_submit(key, data, keyframe, seq)
+		return
+	# Repli (extension ancienne) : décodage synchrone sur le thread principal.
+	var img: Image = lan.compositor.video_decoder_feed(key, data, keyframe)
+	_on_video_decoded(from, wid, seq, img != null and not img.is_empty(), img)
+
+# Résultat de décodage (worker ou synchrone) : ACK + texture si une image est
+# fournie (le worker ne convertit que la dernière frame en file d'un flux).
+func _on_video_decoded(from: int, wid: int, seq: int, ok: bool, img: Image) -> void:
+	if not _video_configs.get(from, {}).has(wid):
+		return # flux réinitialisé entre-temps
+	if not ok:
+		# Décodeur désynchronisé : plus aucune P-frame jusqu'à une keyframe.
+		if _video_fed.has(from):
+			_video_fed[from][wid] = -1
+		_request_video_keyframe(from, wid)
+		return
+	if seq <= int(_video_applied.get(from, {}).get(wid, -1)):
 		return
 	if not _video_applied.has(from):
 		_video_applied[from] = {}
 	_video_applied[from][wid] = seq
-	var tex: Texture2D = lan.window_share._make_or_update_remote_texture(from, wid, img)
-	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
-	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
-	if not lan.window_share._pending_remote_textures.has(from):
-		lan.window_share._pending_remote_textures[from] = {}
-	lan.window_share._pending_remote_textures[from][wid] = tex
-	if lan.window_share._remote_window_quads.has(from) and lan.window_share._remote_window_quads[from].has(wid):
-		lan.window_share._set_remote_quad_texture(lan.window_share._remote_window_quads[from][wid], tex)
 	# ACK en lot (vidé par _flush_video_acks au prochain tick).
 	if not _video_ack_pending.has(from):
 		_video_ack_pending[from] = {}
 	_video_ack_pending[from][wid] = seq
+	if img == null or img.is_empty():
+		return
+	var ws = lan.window_share
+	var tex: Texture2D = ws._make_or_update_remote_texture(from, wid, img)
+	# Bufferiser la texture même si l'état `shared` n'est pas encore arrivé
+	# (course 1re frame vs état) : _apply_remote_windows la réappliquera.
+	if not ws._pending_remote_textures.has(from):
+		ws._pending_remote_textures[from] = {}
+	ws._pending_remote_textures[from][wid] = tex
+	if ws._remote_window_quads.has(from) and ws._remote_window_quads[from].has(wid):
+		ws._set_remote_quad_texture(ws._remote_window_quads[from][wid], tex)
 	_video_diag_applied += 1
+
+# Relève les frames décodées par le worker C++. Par flux, seule la dernière
+# image du lot est uploadée (les précédentes ne servent qu'à l'ACK).
+func _drain_video_decoded() -> void:
+	if lan.compositor == null or not lan.compositor.has_method("video_decoder_poll"):
+		return
+	var results: Array = lan.compositor.video_decoder_poll()
+	if results.is_empty():
+		return
+	var last_img := {} # key -> index du dernier résultat porteur d'image
+	for i in results.size():
+		if results[i].has("image"):
+			last_img[results[i]["key"]] = i
+	for i in results.size():
+		var r: Dictionary = results[i]
+		var parts := String(r.get("key", "")).split("|")
+		if parts.size() != 2:
+			continue
+		var img: Image = null
+		if int(last_img.get(r["key"], -1)) == i:
+			img = r.get("image")
+		_on_video_decoded(int(parts[0]), int(parts[1]), int(r.get("seq", -1)), bool(r.get("ok", false)), img)
 
 # Accumule les morceaux d'un paquet chunké ; renvoie le paquet complet une
 # fois tous les morceaux reçus (canal fiable → pas de perte, l'ordre intra-
@@ -502,6 +590,7 @@ func _flush_video_acks() -> void:
 # Côté récepteur : maintenance du flux vidéo, exécutée chaque tick (indépen-
 # damment du mode émetteur local). ACK en lot, purge des chunks, diagnostics.
 func _process_video_receiver() -> void:
+	_drain_video_decoded()
 	_flush_video_acks()
 	_purge_video_chunks()
 	if Time.get_ticks_msec() - _video_diag_last_applied >= 1000:
@@ -530,6 +619,8 @@ func _reset_video_stream(from: int, wid: int) -> void:
 		_video_configs[from].erase(wid)
 	if _video_applied.has(from):
 		_video_applied[from].erase(wid)
+	if _video_fed.has(from):
+		_video_fed[from].erase(wid)
 	if _video_chunks.has(from):
 		_video_chunks[from].erase(wid)
 	if _video_nack_last.has(from):
