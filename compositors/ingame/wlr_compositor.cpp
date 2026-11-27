@@ -4,6 +4,7 @@
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
+#include <godot_cpp/classes/rendering_device.hpp>
 #include <godot_cpp/classes/viewport.hpp>
 #include <godot_cpp/classes/os.hpp>
 
@@ -20,6 +21,8 @@
 #include <sys/file.h>
 #include <errno.h>
 #include <unistd.h>
+#include <vulkan/vulkan.h>
+#include <dlfcn.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/wait.h>
@@ -826,6 +829,34 @@ void WindowState::clear_sub_surface_trackers() {
     sub_surface_trackers.clear();
 }
 
+// Nœud de rendu DRM (/dev/dri/renderDN) du GPU Vulkan de Godot, via
+// VK_EXT_physical_device_drm. Chaîne vide si indisponible.
+static String godot_render_node() {
+    RenderingServer *rs = RenderingServer::get_singleton();
+    RenderingDevice *rd = rs ? rs->get_rendering_device() : nullptr;
+    if (!rd) return String();
+    VkInstance inst = reinterpret_cast<VkInstance>(
+        rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_VULKAN_INSTANCE, RID(), 0));
+    VkPhysicalDevice pd = reinterpret_cast<VkPhysicalDevice>(
+        rd->get_driver_resource(RenderingDevice::DRIVER_RESOURCE_VULKAN_PHYSICAL_DEVICE, RID(), 0));
+    if (!inst || !pd) return String();
+    void *lib = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_NOLOAD);
+    if (!lib) lib = dlopen("libvulkan.so.1", RTLD_NOW);
+    if (!lib) return String();
+    auto gipa = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlsym(lib, "vkGetInstanceProcAddr"));
+    auto props2 = gipa ? reinterpret_cast<PFN_vkGetPhysicalDeviceProperties2>(
+        gipa(inst, "vkGetPhysicalDeviceProperties2")) : nullptr;
+    if (!props2) return String();
+    VkPhysicalDeviceDrmPropertiesEXT drm = {};
+    drm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 p = {};
+    p.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    p.pNext = &drm;
+    props2(pd, &p);
+    if (!drm.hasRender) return String();
+    return vformat("/dev/dri/renderD%d", (int64_t)drm.renderMinor);
+}
+
 
 // --- XDG toplevel requests ------------------------------------------------
 // Le protocole xdg-shell exige que le compositeur réponde à chaque
@@ -918,6 +949,21 @@ void WlrCompositor::start_headless() {
     if (!backend) {
         UtilityFunctions::printerr("waylandgodot: failed to create headless backend");
         return;
+    }
+
+    // Rendu des fenêtres sur le MÊME GPU que Godot. Le backend headless n'a pas
+    // de fd DRM : wlr_renderer_autocreate prenait le premier nœud de rendu, donc
+    // l'iGPU sur une machine hybride même quand Godot tourne sur le dGPU (MUX en
+    // mode dGPU). Les clients rendaient alors sur l'iGPU, chaque capture était
+    // copiée par l'iGPU puis lue à travers le PCIe, et le thread principal
+    // attendait l'iGPU 7-9 ms par capture (wait_gpu) : chute de FPS pendant un
+    // partage. WLR_RENDER_DRM_DEVICE explicite reste prioritaire.
+    if (!getenv("WLR_RENDER_DRM_DEVICE")) {
+        String node = godot_render_node();
+        if (!node.is_empty() && access(node.utf8().get_data(), R_OK | W_OK) == 0) {
+            setenv("WLR_RENDER_DRM_DEVICE", node.utf8().get_data(), 1);
+            UtilityFunctions::print("waylandgodot: window renderer on Godot's GPU (", node, ")");
+        }
     }
 
     // Désormais, le pipeline Vulkan zero-copy importe les DMA-BUF

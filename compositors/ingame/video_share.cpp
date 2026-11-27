@@ -870,9 +870,17 @@ bool VideoShare::va_init() {
 	// Ouvre un render node DRM (pas de X11/Wayland ici : le jeu EST le
 	// compositeur). Le display doit être initialisé une fois ; le fd est
 	// gardé ouvert jusqu'à va_cleanup.
+	// Le GPU de Godot d'abord (WLR_RENDER_DRM_DEVICE, posé par le compositeur
+	// sur ce GPU) : les fenêtres y sont rendues, inutile de réveiller l'autre.
+	std::vector<std::string> nodes;
+	if (const char *pref = getenv("WLR_RENDER_DRM_DEVICE")) {
+		nodes.push_back(pref);
+	}
 	for (int minor = 128; minor <= 129; minor++) {
-		char path[64];
-		snprintf(path, sizeof(path), "/dev/dri/renderD%d", minor);
+		nodes.push_back("/dev/dri/renderD" + std::to_string(minor));
+	}
+	for (const std::string &node : nodes) {
+		const char *path = node.c_str();
 		int fd = open(path, O_RDWR | O_CLOEXEC);
 		if (fd < 0) continue;
 		VADisplay dpy = vaGetDisplayDRM(fd);
