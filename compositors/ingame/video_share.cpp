@@ -924,14 +924,25 @@ bool VideoShare::va_init() {
 	// Ouvre un render node DRM (pas de X11/Wayland ici : le jeu EST le
 	// compositeur). Le display doit être initialisé une fois ; le fd est
 	// gardé ouvert jusqu'à va_cleanup.
-	// Le GPU de Godot d'abord (WLR_RENDER_DRM_DEVICE, posé par le compositeur
-	// sur ce GPU) : les fenêtres y sont rendues, inutile de réveiller l'autre.
+	// Sur une machine à deux GPU, l'encodeur va sur le GPU où les fenêtres NE
+	// sont PAS rendues (WLR_RENDER_DRM_DEVICE = GPU de Godot). Les clients
+	// (Firefox…) décodent leurs vidéos en VAAPI sur ce GPU : encodage et
+	// décodage simultanés sur le même VCN (RX 7600M XT, ring vcn_unified_0
+	// partagé) font tomber le ring en timeout → reset → radeonsi abort dans le
+	// jeu → toute la session KMS tombe. L'image arrive déjà en RAM
+	// (glReadPixels / submit_pixels), changer de GPU ne coûte aucune copie.
+	// CYBERREALM_VAAPI_DEVICE force un nœud précis.
 	std::vector<std::string> nodes;
-	if (const char *pref = getenv("WLR_RENDER_DRM_DEVICE")) {
-		nodes.push_back(pref);
+	if (const char *forced = getenv("CYBERREALM_VAAPI_DEVICE")) {
+		nodes.push_back(forced);
 	}
+	const char *render_gpu = getenv("WLR_RENDER_DRM_DEVICE");
 	for (int minor = 128; minor <= 129; minor++) {
-		nodes.push_back("/dev/dri/renderD" + std::to_string(minor));
+		std::string node = "/dev/dri/renderD" + std::to_string(minor);
+		if (!render_gpu || node != render_gpu) nodes.push_back(node);
+	}
+	if (render_gpu) {
+		nodes.push_back(render_gpu); // GPU unique : repli sur celui de rendu
 	}
 	for (const std::string &node : nodes) {
 		const char *path = node.c_str();
