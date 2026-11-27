@@ -59,6 +59,8 @@ var _requested: Dictionary = {}   # "peer:wid" -> t
 var _pending_ptr: Dictionary = {} # "peer:wid" -> Vector2
 var _pending_rel: Dictionary = {} # "peer:wid" -> Vector2 (mouvement relatif pas encore envoyé)
 var _locked: Dictionary = {}      # "peer:wid" -> true : l'application a verrouillé le pointeur (jeu FPS)
+var _diag := {"ptr_tx": 0, "rel_tx": 0, "ptr_rx": 0, "rel_rx": 0, "drop": 0}
+var _diag_last := 0
 var _ptr_next_usec: Dictionary = {} # "peer:wid" -> heure du prochain envoi du pointeur (cadence POINTER_SEND_HZ)
 var _down: Dictionary = {}        # "peer:wid" -> {"k:..": [code, loc], "b:..": button} (relâchés en sortie)
 
@@ -161,6 +163,7 @@ func _flush_pointer(k: String) -> void:
 	_pending_ptr.erase(k)
 	var p := k.split(":")
 	_rc_pointer.rpc_id(int(p[0]), int(p[1]), uv.x, uv.y)
+	_diag["ptr_tx"] += 1
 
 func _flush_relative(k: String) -> void:
 	if not _pending_rel.has(k) or not _can_net():
@@ -171,6 +174,7 @@ func _flush_relative(k: String) -> void:
 		return
 	var p := k.split(":")
 	_rc_relative.rpc_id(int(p[0]), int(p[1]), d.x, d.y)
+	_diag["rel_tx"] += 1
 
 ## Oubli de l'état invité d'une fenêtre (fin du contrôle).
 func _forget_guest(k: String) -> void:
@@ -216,6 +220,7 @@ func _on_lock(from: int, wid: Variant, locked: Variant) -> void:
 	if not (wid is int) or not (locked is bool) or not is_controlling(from, wid):
 		return
 	var k := key_of(from, wid)
+	print("[rc] pointeur %s par l'application (fenêtre %d de %d)" % ["verrouillé" if locked else "libéré", wid, from])
 	if locked:
 		_locked[k] = true
 		_pending_ptr.erase(k)            # plus d'absolu vers un client verrouillé
@@ -365,7 +370,10 @@ func _allow(peer: int, kind: String) -> bool:
 		b = {"t": now, "ptr": 0, "inp": 0}
 	b[kind] = int(b[kind]) + 1
 	_budget[peer] = b
-	return int(b[kind]) <= (MAX_POINTER_PER_SEC if kind == "ptr" else MAX_INPUT_PER_SEC)
+	var ok := int(b[kind]) <= (MAX_POINTER_PER_SEC if kind == "ptr" else MAX_INPUT_PER_SEC)
+	if not ok:
+		_diag["drop"] += 1
+	return ok
 
 func _comp() -> Object:
 	return lan.compositor if lan != null else null
@@ -388,6 +396,7 @@ func _on_pointer(from: int, wid: Variant, u: Variant, v: Variant) -> void:
 	var ss: Vector2 = body.get_meta("surface_size", Vector2.ZERO)
 	var co: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
 	var p := uv * ss + co
+	_diag["ptr_rx"] += 1
 	comp.forward_pointer_motion(wid, p.x, p.y)
 	_update_marker(wid, from, uv)
 
@@ -405,6 +414,7 @@ func _on_relative(from: int, wid: Variant, dx: Variant, dy: Variant) -> void:
 	if not _window_locked(wid) or _body(wid) == null:
 		return                          # déverrouillé entre-temps : l'invité repasse à l'absolu
 	_take_seat(wid, from)
+	_diag["rel_rx"] += 1
 	var x := clampf(dx, -MAX_RELATIVE, MAX_RELATIVE)
 	var y := clampf(dy, -MAX_RELATIVE, MAX_RELATIVE)
 	_comp().forward_pointer_relative_motion(wid, x, y, x, y)
@@ -419,6 +429,7 @@ func _sync_locks() -> void:
 			var lk := key_of(wid, int(peer))
 			if bool(_lock_sent.get(lk, false)) != locked:
 				_lock_sent[lk] = locked
+				print("[rc] fenêtre %d : pointeur %s, annoncé à %d" % [wid, "verrouillé" if locked else "libéré", int(peer)])
 				_rc_lock.rpc_id(int(peer), wid, locked)
 
 @rpc("any_peer", "call_remote", "reliable", 1)
@@ -439,7 +450,20 @@ func _on_button(from: int, wid: Variant, button: Variant, pressed: Variant) -> v
 		held[id] = button
 	elif not held.erase(id):
 		return                          # relâchement orphelin
+	if pressed:
+		_focus_keyboard(wid)            # clic = focus, comme un clic local : Pointer Lock (Firefox), SDL l'exigent
 	_comp().forward_pointer_button(wid, button, pressed)
+
+## Le focus clavier du seat (et l'activation de la fenêtre) va à `wid`, sauf s'il y est déjà : un menu déroulant
+## de la fenêtre (popup) qui l'a garde son focus.
+func _focus_keyboard(wid: int) -> void:
+	_kbd_wid = wid
+	var comp := _comp()
+	if comp == null or not comp.has_method("set_window_keyboard_focus"):
+		return
+	if comp.has_method("get_keyboard_focus_window_id") and comp.get_keyboard_focus_window_id() == wid:
+		return
+	comp.set_window_keyboard_focus(wid)
 
 @rpc("any_peer", "call_remote", "reliable", 1)
 func _rc_axis(wid: Variant, dx: Variant, dy: Variant) -> void:
@@ -463,7 +487,6 @@ func _on_key(from: int, wid: Variant, code: Variant, location: Variant, pressed:
 	if not pressed and int(_seat.get(wid, OWNER)) != from:
 		return                          # touche déjà relâchée quand le siège a changé de main
 	_take_seat(wid, from)
-	_kbd_wid = wid
 	var mods: Dictionary = _mods.get(wid, {"ctrl": false, "alt": false})
 	if code == KEY_CTRL:
 		mods["ctrl"] = pressed
@@ -478,10 +501,9 @@ func _on_key(from: int, wid: Variant, code: Variant, location: Variant, pressed:
 		held[id] = [code, location]
 	elif not held.erase(id):
 		return
-	var comp := _comp()
-	if pressed and comp.has_method("set_window_keyboard_focus"):
-		comp.set_window_keyboard_focus(wid)    # un seul seat : la touche de l'invité va à la fenêtre contrôlée
-	comp.forward_keyboard_key(code, location, pressed)
+	if pressed:
+		_focus_keyboard(wid)            # un seul seat : la touche de l'invité va à la fenêtre contrôlée
+	_comp().forward_keyboard_key(code, location, pressed)
 
 static func is_vt_switch(code: int, mods: Dictionary) -> bool:
 	return VT_KEYS.has(code) and bool(mods.get("ctrl", false)) and bool(mods.get("alt", false))
@@ -578,6 +600,7 @@ func _process(_delta: float) -> void:
 			_flush_relative(k)
 	var now := _now()
 	_sync_locks()
+	_log_diag(now)
 	# Propriétaire : demande affichée sans réponse = refus (la suivante s'affiche).
 	if not _pending.is_empty() and now - int(_pending[0]["t"]) > REQUEST_TIMEOUT_MSEC:
 		answer(int(_pending[0]["wid"]), false)
@@ -601,6 +624,22 @@ func _process(_delta: float) -> void:
 			_down.erase(k)
 			var p := String(k).split(":")
 			control_changed.emit(int(p[0]), int(p[1]), false)
+
+## Une ligne / 2 s tant que du pointeur circule : envoyés (invité), appliqués et jetés par la borne (propriétaire).
+func _log_diag(now: int) -> void:
+	if now - _diag_last < 2000:
+		return
+	var secs := maxf(float(now - _diag_last) / 1000.0, 0.001)
+	_diag_last = now
+	var total := 0
+	for v in _diag.values():
+		total += int(v)
+	if total > 0:
+		print("[rc] diag: invité ptr=%.0f/s rel=%.0f/s verrouillé=%s | propriétaire ptr=%.0f/s rel=%.0f/s jetés=%d" % [
+			_diag["ptr_tx"] / secs, _diag["rel_tx"] / secs, str(_locked.keys()),
+			_diag["ptr_rx"] / secs, _diag["rel_rx"] / secs, _diag["drop"]])
+	for k in _diag:
+		_diag[k] = 0
 
 ## Fin de session : tout oublier.
 func reset() -> void:

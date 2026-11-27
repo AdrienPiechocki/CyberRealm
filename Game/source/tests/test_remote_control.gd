@@ -84,7 +84,7 @@ func test_request_answer_and_inputs():
 	rc._on_key(7, 5, KEY_A, 0, true)
 	rc._on_button(7, 5, 0x110, true)
 	rc._on_button(7, 5, 0x999, true)                 # bouton inconnu
-	r = Runner.assert_eq(comp.calls, [["focus", 5], ["key", KEY_A, 0, true], ["button", 5, 0x110, true]], "touches et clic")
+	r = Runner.assert_eq(comp.calls, [["focus", 5], ["key", KEY_A, 0, true], ["focus", 5], ["button", 5, 0x110, true]], "touches et clic (le clic donne le focus clavier)")
 	if r is String: return _done(r)
 	comp.calls.clear()
 	rc.revoke(5)

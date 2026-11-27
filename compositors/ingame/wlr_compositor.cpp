@@ -118,6 +118,8 @@ void WlrCompositor::_bind_methods() {
         &WlrCompositor::forward_keyboard_key);
     ClassDB::bind_method(D_METHOD("set_window_keyboard_focus", "window_id"),
         &WlrCompositor::set_window_keyboard_focus);
+    // Fenêtre qui a le focus clavier du seat (un popup compte pour sa fenêtre), -1 sinon.
+    ClassDB::bind_method(D_METHOD("get_keyboard_focus_window_id"), &WlrCompositor::keyboard_focus_window_id);
     ClassDB::bind_method(D_METHOD("set_focus_capture_priority_window", "window_id"),
         &WlrCompositor::set_focus_capture_priority_window);
     ClassDB::bind_method(D_METHOD("set_pin_capture_priority_window", "window_id", "active"),
