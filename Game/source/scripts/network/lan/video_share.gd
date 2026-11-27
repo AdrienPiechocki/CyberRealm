@@ -35,6 +35,9 @@ const VIDEO_MAX_AHEAD := 6 # flow control : ≤ 6 frames non appliquées en vol 
 const VIDEO_MAX_AHEAD_SEC := 0.5
 const VIDEO_SENT_LOG_MAX := 240 # horodatages d'envoi gardés par fenêtre et par peer (mesure de l'aller-retour)
 const VIDEO_NACK_GAP_MSEC := 500 # demande de keyframe (NACK) au plus 2×/s par fenêtre
+# Un pair dont les ACK n'avancent plus depuis ce délai (figé, parti) ne retient plus l'envoi : ses P-frames sont
+# sautées (keyframe demandée) pour ne pas bloquer les autres.
+const VIDEO_STALL_MSEC := 1500
 
 # ── Stream vidéo inter-frame (encodeur C++ VideoShare) ───────────────
 var _video_mode := false # encodeur vidéo actif (video_share_start réussi)
@@ -59,6 +62,13 @@ var _video_rtt := {}
 var _video_need_key := {}
 # wid -> msec : dernière keyframe demandée à l'encodeur suite à un saut (throttle).
 var _video_key_req_last := {}
+# Paquets encodés pas encore envoyés : un pair a trop de frames en vol, on attend ses ACK au lieu de sauter des
+# P-frames. Tant qu'elle n'est pas vide, l'encodeur n'est plus relevé : sa file se remplit et sa backpressure
+# suspend la capture (cadence réduite le temps du rattrapage, sans casser la chaîne de P-frames).
+var _video_backlog: Array = []
+# peer -> msec : dernier ACK qui a fait avancer une seq (détection d'un pair figé).
+var _video_ack_progress := {}
+var _video_diag_held := 0
 # from -> {wid -> {codec, w, h}} : configs reçues (côté récepteur).
 var _video_configs := {}
 # from -> {wid -> seq} : dernière seq décodée (ACK ; anti-régression).
@@ -161,6 +171,8 @@ func _stop_video_share() -> void:
 	_video_rtt.clear()
 	_video_need_key.clear()
 	_video_key_req_last.clear()
+	_video_backlog.clear()
+	_video_ack_progress.clear()
 
 # Applique les réglages de partage vidéo (menu pause) : bitrate (bits/s),
 # codec ("auto" | "h264" | "av1") et fps. Si le partage est actif, il est
@@ -243,8 +255,14 @@ func _drain_video_packets() -> void:
 	if not _video_mode or lan.compositor == null or not lan.compositor.has_method("video_share_poll"):
 		return
 	_check_video_new_peers()
-	var packets: Array = lan.compositor.video_share_poll()
-	for packet in packets:
+	if _video_backlog.is_empty():
+		_video_backlog = lan.compositor.video_share_poll()
+	while not _video_backlog.is_empty():
+		var packet: Dictionary = _video_backlog[0]
+		if _video_flow_blocked(int(packet.get("wid", -1))):
+			_video_diag_held += 1
+			break
+		_video_backlog.pop_front()
 		var wid := int(packet.get("wid", -1))
 		var seq := int(packet.get("seq", -1))
 		var keyframe := bool(packet.get("keyframe", false))
@@ -272,11 +290,10 @@ func _drain_video_packets() -> void:
 					# décodables, inutile de charger le lien. Attente de la keyframe.
 					_request_encoder_keyframe(wid)
 					continue
-				# Flow control : si ce peer a déjà trop de frames non appliquées
-				# en route, on saute cette P-frame pour ne pas saturer ENet. Toute
-				# la suite jusqu'à la prochaine keyframe dépend d'elle : on cesse
-				# d'envoyer et on demande une keyframe (sinon le récepteur décode
-				# des P-frames sans leur référence → vidéo baveuse/pixellisée).
+				# Pair figé (plus d'ACK, voir _video_flow_blocked) : on saute cette
+				# P-frame. Toute la suite jusqu'à la prochaine keyframe dépend
+				# d'elle : on cesse d'envoyer et on demande une keyframe (sinon le
+				# récepteur décode des P-frames sans référence → image corrompue).
 				var last_sent: int = sent.get(wid, -1)
 				if acked >= 0 and last_sent - acked >= video_max_ahead(pid):
 					need_key[wid] = true
@@ -296,10 +313,12 @@ func _drain_video_packets() -> void:
 	if now - _video_diag_last_log >= 1000:
 		_video_diag_last_log = now
 		if _video_diag_sent > 0:
-			print("[video] diag tx: %d pkt/s %.1f KB/s pending=%d windows=%d rtt=%s" % [
+			print("[video] diag tx: %d pkt/s %.1f KB/s pending=%d backlog=%d held_ticks=%d windows=%d rtt=%s" % [
 				_video_diag_sent, float(_video_diag_bytes) / 1024.0,
-				lan.compositor.video_share_pending(), _video_windows_sent.size(), str(_video_rtt)])
+				lan.compositor.video_share_pending(), _video_backlog.size(), _video_diag_held,
+				_video_windows_sent.size(), str(_video_rtt)])
 		_video_diag_sent = 0
+		_video_diag_held = 0
 		_video_diag_bytes = 0
 
 # Keyframe demandée à l'encodeur après un saut de P-frame (au plus 2×/s par
@@ -425,8 +444,24 @@ func _ack_video_seq(seqs: Dictionary) -> void:
 		var s := int(seqs[wid])
 		if s > int(cur.get(wid, -1)):
 			cur[wid] = s
+			_video_ack_progress[from] = Time.get_ticks_msec()
 			_note_video_acked(from, int(wid), s, Time.get_ticks_msec())
 	_video_acked[from] = cur
+
+## Un pair qui répond a trop de frames de `wid` en vol : l'envoi attend ses ACK (pas de P-frame sautée).
+func _video_flow_blocked(wid: int) -> bool:
+	var now := Time.get_ticks_msec()
+	for pid in _video_peers():
+		var acked := int(_video_acked.get(pid, {}).get(wid, -1))
+		if acked < 0:
+			continue
+		var last_sent := int(_video_last_sent.get(pid, {}).get(wid, -1))
+		if last_sent - acked < video_max_ahead(pid):
+			continue
+		if now - int(_video_ack_progress.get(pid, now)) > VIDEO_STALL_MSEC:
+			continue # pair figé : ne bloque pas les autres
+		return true
+	return false
 
 ## Frames autorisées en vol vers `pid` (voir VIDEO_MAX_AHEAD_SEC).
 func video_max_ahead(pid: int) -> int:
