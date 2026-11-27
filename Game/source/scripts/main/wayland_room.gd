@@ -1335,6 +1335,15 @@ func _process(delta: float) -> void:
 		if not inhibited and not focus.is_remote() and Input.is_action_just_pressed("kill_window", true):
 			compositor.close_window(focus.get_focus_window_id())
 			return
+		# Partage de la fenêtre focalisée (locale seulement : une fenêtre distante n'est pas la nôtre).
+		if not inhibited and not focus.is_remote() and Input.is_action_just_pressed("share_window", true):
+			var fid: int = focus.get_focus_window_id()
+			if fid != -1:
+				var on: bool = not win3d.is_window_shared(fid)
+				win3d.set_window_shared(fid, on)
+				# Le quad 3D (et son indicateur de partage) est masqué par le focus : confirmation dans le chat.
+				chat_box.add_system("Window shared" if on else "Window no longer shared")
+			return
 		if not inhibited and Input.is_action_just_pressed("pin_zoom", true) and not interact_mode_active:
 			pins.toggle_zoom()
 			return
