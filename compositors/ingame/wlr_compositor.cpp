@@ -15,6 +15,7 @@
 #include <ctime>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
 #include <thread>
 #include <cctype>
 #include <vector>
@@ -221,6 +222,8 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_output_size", "width", "height"), &WlrCompositor::set_output_size);
     ClassDB::bind_method(D_METHOD("present_viewport_frame", "rgba", "width", "height"), &WlrCompositor::present_viewport_frame);
+    ClassDB::bind_method(D_METHOD("set_capture_masks", "polygons"), &WlrCompositor::set_capture_masks);
+    ClassDB::bind_method(D_METHOD("set_window_capture_private", "window_id", "on"), &WlrCompositor::set_window_capture_private);
     ClassDB::bind_method(D_METHOD("has_active_capture"), &WlrCompositor::has_active_capture);
     ClassDB::bind_method(D_METHOD("get_layer_surface_info", "layer_id"), &WlrCompositor::get_layer_surface_info);
     ClassDB::bind_method(D_METHOD("get_keyboard_focus_layer_id"), &WlrCompositor::get_keyboard_focus_layer_id);
@@ -2823,6 +2826,64 @@ bool WlrCompositor::ensure_cursor_image_buffer() {
     return true;
 }
 
+void WlrCompositor::set_capture_masks(const Array &polygons) {
+    capture_masks.clear();
+    for (int64_t i = 0; i < polygons.size(); i++) {
+        PackedVector2Array poly = polygons[i];
+        if (poly.size() < 3) continue;
+        std::vector<Vector2> pts((size_t)poly.size());
+        for (int64_t j = 0; j < poly.size(); j++) {
+            pts[(size_t)j] = poly[j];
+        }
+        capture_masks.push_back(std::move(pts));
+    }
+}
+
+void WlrCompositor::set_window_capture_private(int window_id, bool on) {
+    WindowState *ws = find_window(window_id);
+    if (ws) {
+        ws->capture_private = on;
+    }
+}
+
+// Remplissage noir opaque des polygones (règle pair-impair, ligne par ligne,
+// échantillonnée au centre des pixels) : polygones quelconques, ceux de
+// Geometry2D.offset_polygon compris.
+void WlrCompositor::fill_capture_masks(uint8_t *data, size_t stride, int width, int height) {
+    std::vector<float> xs;
+    for (const std::vector<Vector2> &poly : capture_masks) {
+        float ymin = poly[0].y, ymax = poly[0].y;
+        for (const Vector2 &p : poly) {
+            ymin = std::min(ymin, (float)p.y);
+            ymax = std::max(ymax, (float)p.y);
+        }
+        int y0 = std::max(0, (int)std::floor(ymin));
+        int y1 = std::min(height - 1, (int)std::ceil(ymax));
+        const size_t n = poly.size();
+        for (int y = y0; y <= y1; y++) {
+            const float sy = (float)y + 0.5f;
+            xs.clear();
+            for (size_t i = 0; i < n; i++) {
+                const Vector2 &a = poly[i];
+                const Vector2 &b = poly[(i + 1) % n];
+                if ((a.y <= sy && b.y > sy) || (b.y <= sy && a.y > sy)) {
+                    xs.push_back(a.x + (sy - a.y) / (b.y - a.y) * (b.x - a.x));
+                }
+            }
+            std::sort(xs.begin(), xs.end());
+            uint8_t *row = data + (size_t)y * stride;
+            for (size_t k = 0; k + 1 < xs.size(); k += 2) {
+                int x0 = std::max(0, (int)std::ceil(xs[k] - 0.5f));
+                int x1 = std::min(width - 1, (int)std::floor(xs[k + 1] - 0.5f));
+                for (int x = x0; x <= x1; x++) {
+                    uint8_t *p = row + (size_t)x * 4;
+                    p[0] = 0; p[1] = 0; p[2] = 0; p[3] = 0xFF;
+                }
+            }
+        }
+    }
+}
+
 void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int width, int height) {
     if (!renderer || !allocator || !headless_output) return;
     if (width <= 0 || height <= 0) return;
@@ -2886,6 +2947,7 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
             drow[x * 4 + 3] = 0xFF;            // A
         }
     }
+    fill_capture_masks(dst, stride, width, height);
     wlr_buffer_end_data_ptr_access(present_buffer);
 
     // Dessiner le curseur xcursor dans le buffer présenté pour qu'il

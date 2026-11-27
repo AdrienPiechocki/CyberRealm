@@ -10,6 +10,7 @@ extends Node3D
 ## buffer présenté pour qu'il apparaisse dans la capture.
 
 var compositor: WlrCompositor
+var privacy: Node = null # capture_privacy.gd : zones des fenêtres privées, noircies dans la frame présentée
 
 var _present_idle_counter := 0 # frames consécutives sans capture active
 const PRESENT_IDLE_INTERVAL := 60 # filet de sécurité : 1 présentation/s au repos
@@ -88,17 +89,23 @@ func _present_viewport_frame_async() -> bool:
 		return false
 	if _readbacks_in_flight >= MAX_READBACKS_IN_FLIGHT:
 		return true # trop de lectures en vol : on saute cette frame
-	if rd.texture_get_data_async(tex, 0, _on_readback.bind(fmt.width, fmt.height)) != OK:
+	# Masques figés à la demande de relecture : ils correspondent à la caméra de cette frame.
+	var masks := _masks(Vector2(fmt.width, fmt.height))
+	if rd.texture_get_data_async(tex, 0, _on_readback.bind(fmt.width, fmt.height, masks)) != OK:
 		_async_readback_ok = false
 		return false
 	_readbacks_in_flight += 1
 	return true
 
-func _on_readback(data: PackedByteArray, w: int, h: int) -> void:
+func _on_readback(data: PackedByteArray, w: int, h: int, masks: Array) -> void:
 	_readbacks_in_flight = maxi(_readbacks_in_flight - 1, 0)
 	if compositor == null or data.size() < w * h * 4:
 		return
+	compositor.set_capture_masks(masks)
 	compositor.present_viewport_frame(data, w, h)
+
+func _masks(frame_size: Vector2) -> Array:
+	return privacy.mask_polygons(frame_size) if privacy != null else []
 
 func _present_viewport_frame_sync() -> void:
 	var vp := get_viewport()
@@ -107,4 +114,5 @@ func _present_viewport_frame_sync() -> void:
 		return
 	if img.get_format() != Image.FORMAT_RGBA8:
 		img.convert(Image.FORMAT_RGBA8)
+	compositor.set_capture_masks(_masks(Vector2(img.get_width(), img.get_height())))
 	compositor.present_viewport_frame(img.get_data(), img.get_width(), img.get_height())

@@ -109,6 +109,14 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   version keep playing directly. `PIPEWIRE_NODE` is not used: PipeWire applies
   it to every stream of the process, video included, which breaks screen
   sharing (OBS, Discord).
+- **Private windows** (`private_window`, Super+Ctrl+H on the aimed or focused
+  window) — the window stays normal for you but is an opaque black area in
+  screen sharing (OBS, Discord: the screen capture of the game's output), with
+  its decoration, popups, focus-mode overlay, pin and window-menu preview; a
+  direct capture of that window is black too. A 🔒 precedes its title. The
+  choice is remembered per app (`user://private_apps.json`): all its windows,
+  every session. The mask is the window's area on screen, so whatever passes in
+  front of it is blacked out as well. LAN window sharing (Super+S) is separate.
 - **Session restore** — the apps still open when you quit the game come back
   by themselves at the next launch, each window at its place (position,
   orientation, the size you gave it, hidden / pinned / `force_game` state).

@@ -165,7 +165,7 @@ func _sync_title_bar(id: int) -> void:
 		bar.add_theme_stylebox_override("panel", titlebar_style(atlas))
 	var lbl: Label = bar.get_node_or_null("Title")
 	if lbl != null:
-		lbl.text = String(fm.windows.window_titles.get(id, ""))
+		lbl.text = fm.windows.bar_title(id)
 		lbl.size = bar.size
 
 # z_index que porte l'overlay d'une fenêtre selon son rang dans la pile

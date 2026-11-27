@@ -285,6 +285,9 @@ struct WindowState {
     bool pointer_inside = false;
     double pointer_x = 0;
     double pointer_y = 0;
+    // Fenêtre privée (Super+Ctrl+H) : sa capture directe (source fenêtre de
+    // portal-wlr/OBS) est une image noire. Posé par set_window_capture_private.
+    bool capture_private = false;
 
     class WlrCompositor *owner = nullptr;
     bool decoration_server_side = false;
@@ -601,6 +604,11 @@ class WlrCompositor : public Node {
     wlr_buffer *present_buffer = nullptr;
     int present_width = 0;
     int present_height = 0;
+    // Zones noircies dans ce buffer (fenêtres privées), en pixels de la frame
+    // présentée : polygones posés par set_capture_masks avant chaque
+    // present_viewport_frame.
+    std::vector<std::vector<Vector2>> capture_masks;
+    void fill_capture_masks(uint8_t *data, size_t stride, int width, int height);
 
     // Cycle de vie des sources de capture fenêtre.
     void update_toplevel_source_constraints(WlrCompositorToplevelSource *source);
@@ -1390,6 +1398,11 @@ public:
     // "capture écran" de portal-wlr. Appelé par le script Godot avec l'image
     // du viewport (ce que le joueur voit).
     void present_viewport_frame(const PackedByteArray &rgba, int width, int height);
+    // Fenêtres privées : polygones (PackedVector2Array, pixels de la frame)
+    // remplis en noir dans la prochaine frame présentée ; et capture directe
+    // d'une fenêtre rendue noire.
+    void set_capture_masks(const Array &polygons);
+    void set_window_capture_private(int window_id, bool on);
 
     // Vrai si un client capture réellement l'output headless
     // (xdg-desktop-portal-wlr via ext_image_copy_capture — verrou posé pour

@@ -177,9 +177,10 @@ to the app, like a real desktop).",
 	_pages.append(_page(
 		"Window shortcuts",
 		"Each window can be focused fullscreen, pinned as a picture-in-picture, \
-shared with friends or closed.",
+shared with friends, hidden from screen sharing or closed.",
 		["Focus: " + _keys("focus_window"), "Pin: " + _keys("pin_window"), "Share: " + _keys("share_window"),
-			"Kill: " + _keys("kill_window"), "Hide: " + _keys("hide_window"), "Grab: " + _keys("grab")],
+			"Kill: " + _keys("kill_window"), "Hide: " + _keys("hide_window"), "Grab: " + _keys("grab"),
+			"Private: " + _keys("private_window")],
 		13))
 	_pages.append(_page(
 		"Window menu",

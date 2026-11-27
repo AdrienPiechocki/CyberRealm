@@ -38,6 +38,7 @@ var window_audio: Node # son des fenêtres (spatialisé / partagé), cf. scripts
 var voice_manager: Node # chat vocal, cf. scripts/main/voice_manager.gd
 var chat_box: Control # chat textuel et emotes (multijoueur), cf. scripts/ui/chat_box.gd
 var window_layouts: Node # disposition des fenêtres retrouvée, cf. scripts/main/window_layouts.gd
+var capture_privacy: Node # fenêtres noires dans le partage d'écran, cf. scripts/windows/capture_privacy.gd
 var toplevel_bridge: Node # barres de tâches + raccourcis capturés par une fenêtre, cf. scripts/main/toplevel_bridge.gd
 var global_shortcuts: Node # raccourcis globaux (portail GlobalShortcuts), cf. scripts/input/global_shortcuts.gd
 var lan: Node # multijoueur LAN (hôte/join, avatars)
@@ -560,6 +561,14 @@ func _ready() -> void:
 	window_layouts.enabled = Callable(pause_menu, "is_session_restore_enabled")
 	window_layouts.reopen = Callable(pause_menu, "is_session_restore_enabled")
 	compositor.window_unmapped.connect(window_layouts.on_window_unmapped)
+	# Fenêtres privées (Super+Ctrl+H) : noires dans le partage d'écran, mémorisées par app.
+	capture_privacy = Node.new()
+	capture_privacy.name = "CapturePrivacy"
+	capture_privacy.set_script(preload("res://scripts/windows/capture_privacy.gd"))
+	add_child(capture_privacy)
+	capture_privacy.setup(compositor, win3d, focus, pins, window_menu)
+	win3d.window_created.connect(capture_privacy.on_window_created)
+	presenter.privacy = capture_privacy
 	win3d.window_created.connect(window_layouts.on_window_created)
 	compositor.window_texture_updated.connect(window_layouts.on_window_texture_updated)
 
@@ -1344,6 +1353,13 @@ func _process(delta: float) -> void:
 				# Le quad 3D (et son indicateur de partage) est masqué par le focus : confirmation dans le chat.
 				chat_box.add_system("Window shared" if on else "Window no longer shared")
 			return
+		# Fenêtre privée (noire dans le partage d'écran) : la fenêtre focalisée, locale seulement.
+		if not inhibited and not focus.is_remote() and Input.is_action_just_pressed("private_window", true):
+			var pid: int = focus.get_focus_window_id()
+			if pid != -1:
+				var priv: bool = capture_privacy.toggle(pid)
+				chat_box.add_system("Window hidden from screen sharing" if priv else "Window visible in screen sharing")
+			return
 		if not inhibited and Input.is_action_just_pressed("pin_zoom", true) and not interact_mode_active:
 			pins.toggle_zoom()
 			return
@@ -1451,6 +1467,15 @@ func _process(delta: float) -> void:
 		var target := _raycast_window_target(_aim_pos())
 		if target.has("local"):
 			win3d.toggle_hide(target["local"])
+			return
+
+	# Super+Ctrl+H en visant une fenêtre LOCALE → privée (noire dans le partage d'écran OBS/Discord).
+	# Correspondance exacte (modifieurs compris) : Super+H (hide_window) ne la déclenche pas, et inversement.
+	if Input.is_action_just_pressed("private_window", true) and not interact_mode_active:
+		var target := _raycast_window_target(_aim_pos())
+		if target.has("local"):
+			var priv: bool = capture_privacy.toggle(target["local"])
+			chat_box.add_system("Window hidden from screen sharing" if priv else "Window visible in screen sharing")
 			return
 
 	# S en visant une fenêtre LOCALE → basculer le partage screenshare

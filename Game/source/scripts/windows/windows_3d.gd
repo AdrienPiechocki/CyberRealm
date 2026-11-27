@@ -201,6 +201,7 @@ var window_textures: Dictionary = {} # window_id (int) -> Texture2D
 var window_titles: Dictionary = {} # window_id (int) -> String
 var window_app_ids: Dictionary = {} # window_id (int) -> String (app_id Wayland / classe X11)
 var window_shared: Dictionary = {} # window_id (int) -> bool (visible par les autres joueurs)
+var window_private: Dictionary = {} # window_id (int) -> true : noircie dans le partage d'écran (capture_privacy.gd)
 var _texture_versions: Dictionary = {} # window_id (int) -> int (version du contenu, pour le LAN)
 var fullscreen_windows: Dictionary = {} # window_id (int) -> bool (plein écran)
 var window_server_side: Dictionary = {} # window_id (int) -> true si SSD, false si CSD
@@ -447,6 +448,29 @@ func set_window_shared(wid: int, shared: bool) -> void:
 func is_window_shared(wid: int) -> bool:
 	return window_shared.get(wid, false)
 
+# Fenêtre privée (capture_privacy.gd) : cadenas devant le titre de la barre du jeu.
+func set_window_private(wid: int, on: bool) -> void:
+	if on:
+		window_private[wid] = true
+	else:
+		window_private.erase(wid)
+	_refresh_bar_title(wid)
+	windows_state_changed.emit()
+
+func is_window_private(wid: int) -> bool:
+	return window_private.has(wid)
+
+func bar_title(wid: int) -> String:
+	var title: String = window_titles.get(wid, "")
+	return ("🔒 " + title) if window_private.has(wid) else title
+
+func _refresh_bar_title(wid: int) -> void:
+	if not quads.has(wid) or not is_instance_valid(quads[wid]):
+		return
+	var bar_label: Label3D = quads[wid].get_node_or_null("Titlebar/Label3D")
+	if bar_label != null:
+		bar_label.text = bar_title(wid)
+
 # Vrai si le joueur local déplace ou redimensionne une fenêtre : pendant
 # ce temps le LAN envoie l'état des fenêtres à haute fréquence.
 func is_window_interacting() -> bool:
@@ -687,11 +711,7 @@ func _sync_all_decorations() -> void:
 # met à jour l'étiquette de la barre de titre du jeu.
 func on_window_title_changed(id: int, title: String) -> void:
 	window_titles[id] = title
-	if not quads.has(id) or not is_instance_valid(quads[id]):
-		return
-	var bar_label: Label3D = quads[id].get_node_or_null("Titlebar/Label3D")
-	if bar_label != null:
-		bar_label.text = title
+	_refresh_bar_title(id)
 	windows_state_changed.emit()
 
 # Recalcule décor et barre de titre après un changement de taille du contenu.

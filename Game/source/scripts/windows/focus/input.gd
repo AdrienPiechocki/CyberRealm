@@ -749,7 +749,7 @@ func _shortcuts_inhibited() -> bool:
 func _is_compositor_shortcut(event: InputEventKey) -> bool:
 	if not event.pressed:
 		return false
-	for action in ["focus_window", "kill_window", "force_game", "request_control", "annotate", "share_window"]:
+	for action in ["focus_window", "kill_window", "force_game", "request_control", "annotate", "share_window", "private_window"]:
 		if InputMap.event_is_action(event, action, true):
 			return true
 	return false

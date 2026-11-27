@@ -647,6 +647,7 @@ func _erase_window_state(id: int) -> void:
 	w3d.window_app_ids.erase(id)
 	w3d.window_textures.erase(id)
 	w3d.window_shared.erase(id)
+	w3d.window_private.erase(id)
 	w3d.window_server_side.erase(id)
 	w3d._texture_versions.erase(id)
 	w3d._alpha_probes.erase(id)

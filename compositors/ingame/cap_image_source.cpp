@@ -290,6 +290,13 @@ void WlrCompositor::blit_toplevel_capture(WlrCompositorToplevelSource *source) {
     clear.box.height = source->capture_buffer->height;
     clear.color = {0.0f, 0.0f, 0.0f, 0.0f};
     clear.blend_mode = WLR_RENDER_BLEND_MODE_NONE;
+    // Fenêtre privée : noir opaque, ni contenu ni curseur.
+    if (ws->capture_private) {
+        clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
+        wlr_render_pass_add_rect(pass, &clear);
+        wlr_render_pass_submit(pass);
+        return;
+    }
     wlr_render_pass_add_rect(pass, &clear);
 
     wlr_texture *tex = wlr_texture_from_buffer(renderer, ws->capture_cache.offscreen);
