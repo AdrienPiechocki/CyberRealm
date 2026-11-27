@@ -208,7 +208,10 @@ void WlrCompositor::forward_pointer_motion_popup(int popup_id, double surface_x,
     PopupState *ps = find_popup(popup_id);
     if (!ps) return;
     const float sc = popup_scale(*ps);
-    notify_pointer_motion_on_surface(ps->popup->base->surface, surface_x / sc, surface_y / sc);
+    ps->last_pointer_x = surface_x / sc;
+    ps->last_pointer_y = surface_y / sc;
+    ps->has_pointer_pos = true;
+    notify_pointer_motion_on_surface(ps->popup->base->surface, ps->last_pointer_x, ps->last_pointer_y);
 }
 void WlrCompositor::release_stale_button(uint32_t button) {
     if (!seat) return;
@@ -330,14 +333,31 @@ void WlrCompositor::forward_pointer_axis(int window_id, double delta_x, double d
     }
     wlr_seat_pointer_notify_frame(seat);
 }
-// Rotation de molette vers un popup : officialise par l'axis la surface du
-// popup déjà focalisée par forward_pointer_motion_popup. Le seat route
-// l'axis vers sa surface focalisée (ou vers le grab popup actif, qui pour
-// xdg-popup est un grab de type pointer_axis à destination du popup).
+// Rotation de molette vers un popup. Le seat route l'axis vers sa surface
+// focalisée, sans regarder le popup visé : si le focus pointeur est resté sur
+// le toplevel (motion vers le popup dédupliquée côté GDScript, ou refusée par
+// le garde « bouton enfoncé » de notify_pointer_motion_on_surface), la molette
+// faisait défiler la PAGE sous un menu déroulant Firefox au lieu du menu.
+// On rétablit donc le focus sur le popup à sa dernière position connue, et on
+// n'envoie rien si c'est impossible plutôt que de scroller la mauvaise surface.
 void WlrCompositor::forward_pointer_axis_popup(int popup_id, double delta_x, double delta_y) {
     notify_activity();
     PopupState *ps = find_popup(popup_id);
-    if (!ps || !seat) return;
+    if (!ps || !seat || !ps->popup || !ps->popup->base) return;
+
+    wlr_surface *surface = ps->popup->base->surface;
+    if (seat->pointer_state.focused_surface != surface && ps->has_pointer_pos) {
+        notify_pointer_motion_on_surface(surface, ps->last_pointer_x, ps->last_pointer_y);
+    }
+    if (seat->pointer_state.focused_surface != surface) {
+        static const bool dbg = getenv("CYBERREALM_INPUT_DEBUG") && getenv("CYBERREALM_INPUT_DEBUG")[0] == '1';
+        if (dbg) {
+            fprintf(stderr, "waylandgodot: axis popup %d dropped: focus=%p buttons=%u has_pos=%d\n",
+                popup_id, (void *)seat->pointer_state.focused_surface,
+                (unsigned)seat->pointer_state.button_count, (int)ps->has_pointer_pos);
+        }
+        return;
+    }
 
     constexpr double V120_TO_DEGREES = 15.0 / 120.0;
     uint32_t time = get_time_msec();

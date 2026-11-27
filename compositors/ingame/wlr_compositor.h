@@ -361,6 +361,13 @@ struct PopupState {
     // capture (voir CaptureCache).
     CaptureCache capture_cache;
 
+    // Dernière position pointeur (coordonnées surface logiques) reçue par
+    // forward_pointer_motion_popup : sert à rétablir le focus pointeur sur le
+    // popup avant une rotation de molette (forward_pointer_axis_popup).
+    double last_pointer_x = 0.0;
+    double last_pointer_y = 0.0;
+    bool has_pointer_pos = false;
+
     class WlrCompositor *owner = nullptr;
 };
 

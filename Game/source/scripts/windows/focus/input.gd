@@ -47,6 +47,10 @@ func _motion_is_duplicate(window_id: int, surf: Vector2, epsilon := 0.001) -> bo
 	var dup := window_id == _last_sent_window_id and surf.distance_to(_last_sent_window_surf) < epsilon
 	_last_sent_window_id = window_id
 	_last_sent_window_surf = surf
+	# Symétrique de _popup_motion_is_duplicate : le focus pointeur a quitté le
+	# popup, revenir au même point du popup doit renvoyer un motion (enter),
+	# sinon la molette partirait vers la fenêtre sous le menu.
+	_last_sent_popup_id = -1
 	return dup
 
 # Idem pour les popups ; invalide aussi la trace fenêtre (changer de cible
