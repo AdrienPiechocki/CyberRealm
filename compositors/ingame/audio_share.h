@@ -105,7 +105,7 @@ public:
 	void forget_codec(const String &key);
 	void forget_encoder(int key);
 	// Sortie muette `name` (null sink) liée à la connexion PipeWire : les apps lancées par le jeu y sont dirigées
-	// (PULSE_SINK / PIPEWIRE_NODE) ; elle disparaît avec le jeu, même en cas de crash. Démarre la capture au besoin.
+	// (PULSE_SINK) ; elle disparaît avec le jeu, même en cas de crash. Démarre la capture au besoin.
 	bool set_spatial_sink(bool on, const String &name);
 
 	// Callbacks statiques PipeWire (publiques : référencées par les tables de

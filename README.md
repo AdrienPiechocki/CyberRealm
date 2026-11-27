@@ -96,15 +96,17 @@ Watch it in action: https://www.youtube.com/watch?v=6JxNVUvpcjI
   fading out with distance); in focus mode the focused window plays at full
   volume, a hidden window is quieter, a pinned one plays in 2D, and a program
   without a window (a `paplay` in a terminal) sounds from its parent's window.
-  How: apps launched by the game get `PULSE_SINK` and `PIPEWIRE_NODE` set to
-  `cyberrealm-spatial` (PulseAudio and native PipeWire apps such as mpv); the game
+  How: apps launched by the game get `PULSE_SINK` set to `cyberrealm-spatial`
+  (PulseAudio apps); the game
   creates that silent output only in Spatial mode (tied to its PipeWire
   connection, so it vanishes if the game crashes), apps switch to it by
   themselves and the game replays their sound. Only apps actually linked to it
   are replayed, so nothing is ever heard twice; desktop apps are never touched
   and nothing is stored by WirePlumber; recording streams keep the default
-  microphone. Limits: ALSA-only or JACK apps and apps started before this
-  version keep playing directly.
+  microphone. Limits: ALSA-only, JACK and native PipeWire apps (mpv with
+  `ao=pipewire`) keep playing directly — `PIPEWIRE_NODE` is not used because
+  PipeWire applies it to every stream of the process, video included, which
+  breaks screen sharing (OBS, Discord).
 - **Session restore** — the apps still open when you quit the game come back
   by themselves at the next launch, each window at its place (position,
   orientation, the size you gave it, hidden / pinned / `force_game` state).

@@ -46,10 +46,11 @@ if [ -n "$rt" ] && [ -e "$rt/cyberrealm-0" ]; then
     export QT_QPA_PLATFORMTHEME=kde
     # Son spatialisé des fenêtres : le jeu crée la sortie « cyberrealm-spatial » quand l'option est active (les
     # apps y vont alors et le jeu rejoue leur son depuis leur fenêtre) ; absente, elles gardent la sortie par défaut.
-    # PULSE_SINK : apps PulseAudio ; PIPEWIRE_NODE : apps PipeWire natives (mpv). Les flux d'enregistrement restent
-    # sur le micro par défaut (WirePlumber ne relie pas un enregistrement au monitor d'une sortie).
+    # PULSE_SINK : apps PulseAudio. Les flux d'enregistrement restent sur le micro par défaut (WirePlumber ne relie
+    # pas un enregistrement au monitor d'une sortie). Surtout PAS de PIPEWIRE_NODE : PipeWire l'applique comme
+    # target.object à TOUS les flux natifs du processus, vidéo comprise (portal-wlr, OBS, Discord) → le partage
+    # d'écran vise la sortie audio et WirePlumber retombe sur la webcam.
     export PULSE_SINK=cyberrealm-spatial
-    export PIPEWIRE_NODE=cyberrealm-spatial
 
     # Bus D-Bus session privé du jeu (adresse écrite par le jeu dans
     # $XDG_RUNTIME_DIR/cyberrealm-session-bus). Sans ça, les apps utilisent

@@ -1340,7 +1340,7 @@ public:
     void audio_forget(const String &key) { audio_share.forget_codec(key); }
     void audio_forget_encoder(int key) { audio_share.forget_encoder(key); }
     static constexpr const char *SPATIAL_SINK_NAME = "cyberrealm-spatial";
-    // Variables d'environnement ajoutées aux apps lancées par le jeu (launch_app) : PULSE_SINK / PIPEWIRE_NODE vers
+    // Variables d'environnement ajoutées aux apps lancées par le jeu (launch_app) : PULSE_SINK vers
     // la sortie muette de spatialisation. Absente (son normal), les apps retombent sur la sortie par défaut.
     std::vector<std::pair<std::string, std::string>> app_env;
     void set_app_env(const String &name, const String &value);
