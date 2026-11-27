@@ -11,6 +11,9 @@ signal window_audio_received(from_id: int, wid: int, frames: PackedVector2Array)
 const MAX_PACKET := 1500
 
 var lan = null                   # LanManager (non typé : doublure possible dans les tests)
+## (from, wid) -> msec : retard de lecture du son d'une fenêtre distante (fourni par window_audio.gd), pour que
+## le tampon de lecture vidéo (video_playout.gd) garde l'image calée sur le son.
+var playout_delay_provider: Callable = Callable()
 
 # Diagnostic (journal de déconnexion de session.gd).
 var _audio_active := false
@@ -45,6 +48,12 @@ func _sync_window_audio(wid: Variant, bytes: Variant) -> void:
 		return
 	_audio_received_count += 1
 	window_audio_received.emit(from, wid, frames)
+
+## Retard (msec) du son de la fenêtre `wid` de `from` en cours de lecture ici, 0 sans son.
+func remote_playout_msec(from: int, wid: int) -> float:
+	if not playout_delay_provider.is_valid():
+		return 0.0
+	return float(playout_delay_provider.call(from, wid))
 
 func _stop_audio_share() -> void:
 	_audio_active = false

@@ -921,6 +921,7 @@ func _clear_remote_windows(peer_id: int) -> void:
 	lan.video_share._video_chunks.erase(peer_id)
 	lan.video_share._video_nack_last.erase(peer_id)
 	lan.video_share._video_ack_pending.erase(peer_id)
+	lan.video_share.forget_video_peer(peer_id)
 	if lan.pins != null:
 		lan.pins.unpin_peer(peer_id)
 	if lan.focus != null:

@@ -50,6 +50,7 @@ func setup(p_compositor: Object, p_win3d: Node, p_focus: Node, p_pins: Node, p_l
 	lan = p_lan
 	settings = p_settings
 	lan.audio_share.window_audio_received.connect(_on_remote_audio)
+	lan.audio_share.playout_delay_provider = remote_playout_msec
 	_ensure_bus()
 
 func _exit_tree() -> void:
@@ -227,6 +228,9 @@ func _push(key: String, quad: Node3D, mode: String, db: float, frames: PackedVec
 		e = {"player": player, "playback": player.call("get_stream_playback"), "mode": mode, "skips": 0}
 		_players[key] = e
 		if key.begins_with("r:"):
+			var pbc := e["playback"] as AudioStreamGeneratorPlayback
+			if pbc != null:
+				e["capacity"] = pbc.get_frames_available() # tampon vide : sa contenance
 			_push_silence(e, REMOTE_PREBUFFER_SEC)
 			var pb0 := e["playback"] as AudioStreamGeneratorPlayback
 			if pb0 != null:
@@ -241,8 +245,22 @@ func _push(key: String, quad: Node3D, mode: String, db: float, frames: PackedVec
 			# Le générateur a manqué d'échantillons : reconstituer un coussin.
 			e["skips"] = skips
 			_push_silence(e, REMOTE_REFILL_SEC)
+	if key.begins_with("r:"):
+		e["t_push"] = Time.get_ticks_msec()
 	if pb.can_push_buffer(frames.size()):
 		pb.push_buffer(frames)
+
+## Retard (msec) entre l'arrivée du son de la fenêtre `wid` de `from` et sa sortie : échantillons en attente dans le
+## générateur + latence de la sortie audio. 0 si cette fenêtre ne joue pas de son en ce moment.
+func remote_playout_msec(from: int, wid: int) -> float:
+	var e: Dictionary = _players.get("r:%d:%d" % [from, wid], {})
+	if e.is_empty() or not e.has("capacity") or Time.get_ticks_msec() - int(e.get("t_push", 0)) > 250:
+		return 0.0
+	var pb := e["playback"] as AudioStreamGeneratorPlayback
+	if pb == null:
+		return 0.0
+	var queued := int(e["capacity"]) - pb.get_frames_available()
+	return maxf(0.0, float(queued) / 48.0 + AudioServer.get_output_latency() * 1000.0)
 
 func _push_silence(e: Dictionary, sec: float) -> void:
 	var pb := e["playback"] as AudioStreamGeneratorPlayback

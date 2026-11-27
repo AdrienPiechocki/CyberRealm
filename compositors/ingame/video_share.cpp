@@ -75,6 +75,11 @@ AVPixelFormat target_pix_fmt(bool hw) {
 
 } // namespace
 
+static int64_t steady_ms() {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 VideoShare::VideoShare() {
 	av_log_set_level(AV_LOG_WARNING);
 }
@@ -278,6 +283,7 @@ bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc
 		w->fourcc = fourcc;
 		w->content_w = content_w > 0 ? content_w : alloc_w;
 		w->content_h = content_h > 0 ? content_h : alloc_h;
+		w->capture_ms = steady_ms();
 		w->queued = true;
 		w->busy = true;
 	}
@@ -314,6 +320,7 @@ bool VideoShare::submit_pixels(int wid, std::vector<uint8_t> &&px, int content_w
 		w->fourcc = 0x34324241; // DRM_FORMAT_ABGR8888 = RGBA en mémoire
 		w->content_w = content_w;
 		w->content_h = content_h;
+		w->capture_ms = steady_ms();
 		w->queued = true;
 		w->busy = true;
 	}
@@ -351,6 +358,7 @@ Array VideoShare::poll_packets() {
 		d["wid"] = p->wid;
 		d["seq"] = (int64_t)p->seq;
 		d["keyframe"] = p->keyframe;
+		d["t"] = p->capture_ms;
 		d["data"] = p->data;
 		result.append(d);
 		delete p;
@@ -396,6 +404,7 @@ void VideoShare::worker_loop() {
 			int fd = -1;
 			uint32_t stride = 0, fourcc = 0;
 			int aw = 0, ah = 0, cw = 0, ch = 0;
+			int64_t cap_ms = 0;
 			bool have = false;
 			{
 				std::lock_guard<std::mutex> g(w->encode_mutex);
@@ -416,6 +425,7 @@ void VideoShare::worker_loop() {
 					ah = w->content_h;
 					cw = w->content_w;
 					ch = w->content_h;
+					cap_ms = w->capture_ms;
 					have = true;
 				}
 			}
@@ -423,7 +433,7 @@ void VideoShare::worker_loop() {
 			any = true;
 
 			auto enc_t0 = std::chrono::steady_clock::now();
-			encode_window(w, fd, stride, fourcc, aw, ah, cw, ch);
+			encode_window(w, fd, stride, fourcc, aw, ah, cw, ch, cap_ms);
 			auto enc_t1 = std::chrono::steady_clock::now();
 			// Diag : temps d'encodage d'une frame. > 16,7 ms = le worker ne
 			// suit pas la cadence 60 ips (encodeur lent / swscale / transfer
@@ -525,11 +535,12 @@ void VideoShare::reconcile_windows() {
 // Encodage
 // ---------------------------------------------------------------------------
 
-void VideoShare::push_packet(int wid, uint64_t seq, bool keyframe, const uint8_t *data, int size) {
+void VideoShare::push_packet(int wid, uint64_t seq, bool keyframe, int64_t capture_ms, const uint8_t *data, int size) {
 	auto *p = new VideoPacket();
 	p->wid = wid;
 	p->seq = seq;
 	p->keyframe = keyframe;
+	p->capture_ms = capture_ms;
 	p->data.resize(size);
 	if (size > 0 && data) {
 		memcpy(p->data.ptrw(), data, (size_t)size);
@@ -688,7 +699,7 @@ void VideoShare::destroy_encoder(VideoEncodeWindow *w) {
 }
 
 void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, uint32_t fourcc,
-		int alloc_w, int alloc_h, int content_w, int content_h) {
+		int alloc_w, int alloc_h, int content_w, int content_h, int64_t capture_ms) {
 	// NOTE: alloc_w/h ne sont plus utilisés ici : on encode uniquement le
 	// contenu (content_w/h), le stride réel du buffer source étant celui du
 	// compositor (stride). Les paramètres restent dans la signature pour
@@ -822,6 +833,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		}
 	}
 	frame->pts = w->frame_index++;
+	w->pts_capture_ms[frame->pts] = capture_ms;
 
 	// Envoi : VAAPI via surface NV12 du pool (upload GPU), logiciel direct.
 	AVFrame *input = frame;
@@ -856,12 +868,22 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 			while (w->packet && avcodec_receive_packet(ctx, (AVPacket *)w->packet) == 0) {
 				AVPacket *pkt = (AVPacket *)w->packet;
 				bool kf = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
+				int64_t pkt_ms = capture_ms;
+				auto pit = w->pts_capture_ms.find(pkt->pts);
+				if (pit != w->pts_capture_ms.end()) {
+					pkt_ms = pit->second;
+				}
+				// Purge : les pts déjà sortis (et les orphelins d'un échec d'upload).
+				for (auto it = w->pts_capture_ms.begin(); it != w->pts_capture_ms.end();) {
+					if (it->first <= pkt->pts || it->first < w->frame_index - 64) it = w->pts_capture_ms.erase(it);
+					else ++it;
+				}
 				uint64_t seq;
 				{
 					std::lock_guard<std::mutex> g(w->encode_mutex);
 					seq = w->seq++;
 				}
-				push_packet(w->wid, seq, kf, pkt->data, pkt->size);
+				push_packet(w->wid, seq, kf, pkt_ms, pkt->data, pkt->size);
 				av_packet_unref(pkt);
 			}
 		}
@@ -1205,12 +1227,15 @@ void VideoShare::decode_worker_loop() {
 			if (dq_stop) return;
 			job = std::move(dq_jobs.front());
 			dq_jobs.erase(dq_jobs.begin());
-			// Un paquet plus récent du même flux attend : cette frame doit être
-			// décodée (référence des suivantes) mais pas affichée → pas de
-			// conversion RGBA ni d'upload.
+			// Décodeur en retard (plusieurs paquets du même flux en attente) :
+			// cette frame est décodée (référence des suivantes) mais pas
+			// convertie en RGBA, pour rattraper. Sinon chaque image est rendue :
+			// le tampon de lecture du jeu les affiche à leur heure de capture.
+			int behind = 0;
 			for (const auto &j : dq_jobs) {
-				if (j.key == job.key) { convert = false; break; }
+				if (j.key == job.key) behind++;
 			}
+			convert = behind < DECODE_BACKLOG_SKIP;
 		}
 		DecodeResult r;
 		r.key = job.key;
@@ -1225,13 +1250,6 @@ void VideoShare::decode_worker_loop() {
 		}
 		std::lock_guard<std::mutex> g(dq_mutex);
 		if (dq_stop) return;
-		// Un résultat non affiché remplace un résultat plus ancien du même flux
-		// pas encore relevé (le thread du jeu n'a besoin que de la dernière image).
-		if (r.ok && !r.rgba.is_empty()) {
-			for (auto &old : dq_results) {
-				if (old.key == r.key && old.ok) old.rgba = PackedByteArray();
-			}
-		}
 		dq_results.push_back(std::move(r));
 	}
 }

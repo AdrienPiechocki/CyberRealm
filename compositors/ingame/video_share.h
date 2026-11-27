@@ -71,6 +71,7 @@ struct VideoEncodeWindow {
 	int content_w = 0;            // contenu réel (le buffer peut être arrondi)
 	int content_h = 0;
 	bool force_keyframe = false;  // demande d'IDR pour la prochaine frame
+	int64_t capture_ms = 0;       // heure de la soumission (steady_clock, msec) : cadence de lecture du récepteur
 	uint64_t seq = 0;             // numéro de frame émise (monotone par fenêtre)
 
 	// ------- possédé uniquement par le thread worker -------
@@ -86,6 +87,7 @@ struct VideoEncodeWindow {
 	void *va_frames_ctx = nullptr;       // AVBufferRef* pool VAAPI NV12 (taille = contenu)
 	void *packet = nullptr;              // AVPacket* (tampon d'encodage réutilisé)
 	int64_t frame_index = 0;
+	std::unordered_map<int64_t, int64_t> pts_capture_ms; // pts → heure de capture (paquets réordonnés par libx264)
 	std::vector<uint8_t> readbuf;        // copie CPU du DMA-BUF (memcpy serré)
 	std::vector<uint8_t> pixels_work;    // pixels de submit_pixels pris par le worker
 };
@@ -95,6 +97,7 @@ struct VideoPacket {
 	int wid = 0;
 	uint64_t seq = 0;
 	bool keyframe = false;
+	int64_t capture_ms = 0;       // heure de capture de l'image (horloge de l'émetteur)
 	PackedByteArray data;
 };
 
@@ -141,7 +144,7 @@ public:
 	// prenait ~300 ms par image 1080p. `px` est déplacé (pas de copie).
 	bool submit_pixels(int wid, std::vector<uint8_t> &&px, int content_w, int content_h);
 
-	// Vide la file de sortie. Chaque entrée : { wid, seq, keyframe, data }.
+	// Vide la file de sortie. Chaque entrée : { wid, seq, keyframe, t, data } (t = heure de capture, msec).
 	Array poll_packets();
 
 	// Demande une keyframe (IDR) pour une fenêtre (nouveau pair, latence, ...).
@@ -163,10 +166,10 @@ public:
 
 	// Décodage asynchrone (thread worker C++ dédié) : decoder_submit enfile un
 	// paquet, decoder_poll renvoie les résultats { key, seq, ok, image? }.
-	// Toutes les frames sont décodées dans l'ordre (dépendances P-frames), mais
-	// la conversion YUV→RGBA n'est faite que pour la DERNIÈRE frame en file d'un
-	// flux : un récepteur lent saute des images affichées au lieu de prendre du
-	// retard (et le thread du jeu ne décode plus rien).
+	// Toutes les frames sont décodées dans l'ordre (dépendances P-frames) et
+	// converties en RGBA (le tampon de lecture du jeu les affiche à leur heure) ;
+	// seul un décodeur en retard (DECODE_BACKLOG_SKIP paquets du flux en file)
+	// saute la conversion des frames intermédiaires pour rattraper.
 	void decoder_submit(const std::string &key, const PackedByteArray &data, bool keyframe, int64_t seq);
 	Array decoder_poll();
 
@@ -178,8 +181,8 @@ private:
 	void destroy_encoder(VideoEncodeWindow *w);
 	// Traite un job soumis (lit le buffer, convertit, encode, remplit la file).
 	void encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, uint32_t fourcc,
-			int alloc_w, int alloc_h, int content_w, int content_h);
-	void push_packet(int wid, uint64_t seq, bool keyframe, const uint8_t *data, int size);
+			int alloc_w, int alloc_h, int content_w, int content_h, int64_t capture_ms);
+	void push_packet(int wid, uint64_t seq, bool keyframe, int64_t capture_ms, const uint8_t *data, int size);
 
 	// VAAPI.
 	bool va_init();                      // ouvre le display DRM + hwdevice FFmpeg
@@ -253,6 +256,7 @@ private:
 		PackedByteArray rgba; // vide si conversion sautée (frame intermédiaire)
 	};
 	void decode_worker_loop();
+	static constexpr int DECODE_BACKLOG_SKIP = 3;
 	void decode_purge_key(const std::string &key); // sous dq_mutex
 	bool decode_packet(DecoderCtx *d, const uint8_t *data, int size, bool keyframe, bool convert,
 			int &out_w, int &out_h, PackedByteArray &out_rgba);
