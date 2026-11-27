@@ -20,7 +20,6 @@ var win3d: Node = null
 var focus: Node = null
 
 var active := false               # mode annotation
-var ephemeral_setting: Callable   # () -> bool : option « annotations éphémères »
 var _views: Dictionary = {}       # "owner:wid" -> {vp, root, quad, rect}
 var _target := ""                 # fenêtre en cours de dessin
 
@@ -239,8 +238,6 @@ func _drop_view(key: String) -> void:
 
 ## Suivi des vues : quad recréé (fenêtre distante re-synchronisée), entrée / sortie du mode focus.
 func _process(_delta: float) -> void:
-	if ephemeral_setting.is_valid():
-		annotations.ephemeral = bool(ephemeral_setting.call())
 	if active and (lan == null or not lan.is_session_active() or lan.window_share_restricted()):
 		toggle()                  # plus de session : fin du mode
 	for key in _views.keys():

@@ -2,14 +2,14 @@ extends Node
 ## Annotations sur une fenêtre partagée (lot K).
 ##
 ## Module de LanManager (nœud enfant « Annotations »). Tout joueur qui voit une fenêtre PARTAGÉE (propriétaire
-## compris) peut y dessiner. Un trait = {author, color, width, points: [(u, v)…], ephemeral, ended, ended_at} en
+## compris) peut y dessiner. Un trait = {author, color, width, points: [(u, v)…], ended, ended_at} en
 ## coordonnées normalisées de la fenêtre : un redimensionnement garde l'alignement approximatif ; un défilement du
 ## contenu ne déplace pas les traits (limite connue).
 ##
 ## Réseau (fiable, canal 1, relayé par l'hôte) : _stroke_begin, _stroke_points (toutes les FLUSH_SEC), _stroke_end,
-## _stroke_erase (ses propres traits), _annot_clear (propriétaire seulement), _annot_sync (traits persistants pour un
-## arrivant, envoyés par le propriétaire). Bornes : MAX_POINTS par trait, MAX_STROKES par fenêtre, MAX_MSG_PER_SEC
-## par pair. Traits éphémères (option, par défaut) : effacés EPHEMERAL_SEC après la fin du trait. Tout disparaît à
+## _stroke_erase (ses propres traits), _annot_clear (propriétaire seulement). Bornes : MAX_POINTS par trait,
+## MAX_STROKES par fenêtre, MAX_MSG_PER_SEC par pair. Tous les traits sont éphémères : effacés EPHEMERAL_SEC après
+## la fin du trait (rien à transmettre à un arrivant). Tout disparaît à
 ## l'arrêt du partage ou à la fermeture de la fenêtre. Interdit en session par code d'invitation non approuvée (window_share_restricted).
 ## Le rendu est fait par scripts/windows/annotations_view.gd (signal strokes_changed).
 
@@ -26,7 +26,6 @@ const MAX_WIDTH := 24.0
 
 var lan = null
 var win3d: Node = null                   # fenêtres locales (is_window_shared, quads)
-var ephemeral := true                    # option du joueur (ses propres traits)
 
 var _windows: Dictionary = {}            # "owner:wid" -> {"author:sid": stroke}
 var _budget: Dictionary = {}             # peer -> {t, n}
@@ -65,12 +64,12 @@ func begin_stroke(owner: int, wid: int, color: Color, width: float, uv: Vector2)
 	_next_sid += 1
 	var me := my_id()
 	var s := {"author": me, "color": color, "width": clampf(width, MIN_WIDTH, MAX_WIDTH),
-		"points": PackedVector2Array([uv]), "ephemeral": ephemeral, "ended": false, "ended_at": 0.0}
+		"points": PackedVector2Array([uv]), "ended": false, "ended_at": 0.0}
 	if not _store(owner, wid, "%d:%d" % [me, sid], s):
 		return
 	_drawing = {"owner": owner, "wid": wid, "sid": sid, "sent": 1}
 	if _net_ok():
-		_stroke_begin.rpc(owner, wid, sid, color, s["width"], ephemeral, uv)
+		_stroke_begin.rpc(owner, wid, sid, color, s["width"], uv)
 	strokes_changed.emit(owner, wid)
 
 func add_point(uv: Vector2) -> void:
@@ -181,19 +180,19 @@ func _accept(from: int, owner: Variant, wid: Variant) -> bool:
 	return int(b["n"]) <= MAX_MSG_PER_SEC
 
 @rpc("any_peer", "call_remote", "reliable", 1)
-func _stroke_begin(owner: Variant, wid: Variant, sid: Variant, color: Variant, width: Variant, eph: Variant, uv: Variant) -> void:
-	_on_begin(multiplayer.get_remote_sender_id(), owner, wid, sid, color, width, eph, uv)
+func _stroke_begin(owner: Variant, wid: Variant, sid: Variant, color: Variant, width: Variant, uv: Variant) -> void:
+	_on_begin(multiplayer.get_remote_sender_id(), owner, wid, sid, color, width, uv)
 
-func _on_begin(from: int, owner: Variant, wid: Variant, sid: Variant, color: Variant, width: Variant, eph: Variant, uv: Variant) -> void:
+func _on_begin(from: int, owner: Variant, wid: Variant, sid: Variant, color: Variant, width: Variant, uv: Variant) -> void:
 	if not _accept(from, owner, wid) or not (sid is int) or not (color is Color) or not (width is float) \
-			or not (eph is bool) or not (uv is Vector2):
+			or not (uv is Vector2):
 		return
 	if not is_annotatable(owner, wid):
 		return
 	var c: Color = color
 	c.a = 1.0
 	if _store(owner, wid, "%d:%d" % [from, sid], {"author": from, "color": c, "width": clampf(width, MIN_WIDTH, MAX_WIDTH),
-			"points": PackedVector2Array([(uv as Vector2).clamp(Vector2.ZERO, Vector2.ONE)]), "ephemeral": eph, "ended": false, "ended_at": 0.0}):
+			"points": PackedVector2Array([(uv as Vector2).clamp(Vector2.ZERO, Vector2.ONE)]), "ended": false, "ended_at": 0.0}):
 		strokes_changed.emit(owner, wid)
 
 @rpc("any_peer", "call_remote", "reliable", 1)
@@ -249,44 +248,7 @@ func _on_clear(from: int, owner: Variant, wid: Variant) -> void:
 	if _windows.erase(wkey(owner, wid)):
 		strokes_changed.emit(owner, wid)
 
-## Arrivant : le propriétaire lui envoie les traits PERSISTANTS (terminés, non éphémères) de ses fenêtres.
-func send_persistent_to(peer: int) -> void:
-	if not _net_ok():
-		return
-	var me := my_id()
-	for k in _windows:
-		var p := String(k).split(":")
-		if int(p[0]) != me:
-			continue
-		var out: Array = []
-		for sk in _windows[k]:
-			var s: Dictionary = _windows[k][sk]
-			if not bool(s["ephemeral"]) and bool(s["ended"]):
-				out.append([int(s["author"]), int(String(sk).split(":")[1]), s["color"], s["width"], s["points"]])
-		if not out.is_empty():
-			_annot_sync.rpc_id(peer, int(p[1]), out)
-
-@rpc("any_peer", "call_remote", "reliable", 1)
-func _annot_sync(wid: Variant, list: Variant) -> void:
-	_on_sync(multiplayer.get_remote_sender_id(), wid, list)
-
-func _on_sync(from: int, wid: Variant, list: Variant) -> void:
-	if not _accept(from, from, wid) or not (list is Array) or (list as Array).size() > MAX_STROKES:
-		return
-	for e in list:
-		if not (e is Array) or e.size() != 5 or not (e[0] is int) or not (e[1] is int) or not (e[2] is Color) \
-				or not (e[3] is float) or not (e[4] is PackedVector2Array) or (e[4] as PackedVector2Array).size() > MAX_POINTS:
-			continue
-		_store(from, wid, "%d:%d" % [e[0], e[1]], {"author": e[0], "color": e[2], "width": clampf(e[3], MIN_WIDTH, MAX_WIDTH),
-			"points": e[4], "ephemeral": false, "ended": true, "ended_at": _now()})
-	strokes_changed.emit(from, wid)
-
 # ── Boucle : envoi groupé, traits éphémères, fin de partage ────────────
-
-func _ready() -> void:
-	multiplayer.peer_connected.connect(func(peer: int):
-		# Laisse à l'arrivant le temps de charger le niveau et de recevoir l'état des fenêtres.
-		get_tree().create_timer(4.0).timeout.connect(func(): send_persistent_to(peer)))
 
 func _process(delta: float) -> void:
 	_flush_cd -= delta
@@ -308,7 +270,7 @@ func _process(delta: float) -> void:
 		var w: Dictionary = _windows[k]
 		for sk in w.keys():
 			var s: Dictionary = w[sk]
-			if bool(s["ephemeral"]) and bool(s["ended"]) and now - float(s["ended_at"]) > EPHEMERAL_SEC:
+			if bool(s["ended"]) and now - float(s["ended_at"]) > EPHEMERAL_SEC:
 				w.erase(sk)
 				changed = true
 		if w.is_empty():

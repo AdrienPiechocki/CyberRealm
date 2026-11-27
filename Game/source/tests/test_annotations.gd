@@ -49,7 +49,7 @@ func test_remote_rules():
 	var x := _make()
 	var a: Node = x[0]
 	x[1].shared["7:3"] = true
-	a._on_begin(9, 7, 3, 1, Color.BLUE, 4.0, false, Vector2(0.5, 0.5))
+	a._on_begin(9, 7, 3, 1, Color.BLUE, 4.0, Vector2(0.5, 0.5))
 	a._on_points(9, 7, 3, 1, PackedVector2Array([Vector2(0.6, 0.6)]))
 	a._on_end(9, 7, 3, 1)
 	var r: Variant = Runner.assert_eq(a.strokes(7, 3).size(), 1, "trait d'un autre joueur reçu")
@@ -62,7 +62,7 @@ func test_remote_rules():
 	r = Runner.assert_true(a.strokes(7, 3).is_empty(), "le propriétaire efface tout")
 	if r is String: _free(x); return r
 	for i in 50:
-		a._on_begin(9, 7, 3, 100 + i, Color.BLUE, 4.0, false, Vector2.ZERO)
+		a._on_begin(9, 7, 3, 100 + i, Color.BLUE, 4.0, Vector2.ZERO)
 	r = Runner.assert_true(a.strokes(7, 3).size() < 50, "au plus 40 messages par seconde et par pair")
 	_free(x)
 	return r
@@ -71,7 +71,6 @@ func test_ephemeral_and_unshare():
 	var x := _make()
 	var a: Node = x[0]
 	x[2].shared[5] = true
-	a.ephemeral = true
 	a.begin_stroke(1, 5, Color.RED, 4.0, Vector2(0.1, 0.1))
 	a.end_stroke()
 	var k: String = a.strokes(1, 5).keys()[0]
@@ -79,7 +78,6 @@ func test_ephemeral_and_unshare():
 	a._process(0.0)
 	var r: Variant = Runner.assert_true(a.strokes(1, 5).is_empty(), "trait éphémère effacé après 4 s")
 	if r is String: _free(x); return r
-	a.ephemeral = false
 	a.begin_stroke(1, 5, Color.RED, 4.0, Vector2(0.1, 0.1))
 	a.end_stroke()
 	x[2].shared.clear()

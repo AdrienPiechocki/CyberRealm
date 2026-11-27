@@ -873,7 +873,6 @@ func _ready() -> void:
 	annotations_view.set_script(preload("res://scripts/windows/annotations_view.gd"))
 	add_child(annotations_view)
 	annotations_view.setup(lan.annotations, lan, win3d, focus)
-	annotations_view.ephemeral_setting = Callable(pause_menu, "is_annotation_ephemeral")
 	# Chat vocal (scripts/main/voice_manager.gd, réseau : scripts/network/lan/voice.gd).
 	voice_manager = Node.new()
 	voice_manager.name = "VoiceManager"
