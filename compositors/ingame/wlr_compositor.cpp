@@ -654,6 +654,9 @@ static constexpr uint64_t FAST_INTERVALS_US[3] = {16'667, 16'667, 33'333};   // 
 // le stream doit rester fluide.
 static constexpr int MAX_WINDOW_CAPTURES_PER_FRAME = 2;
 
+// Avance tolérée sur l'échéance de recapture d'une fenêtre (gigue du tick du jeu), voir la boucle de capture.
+static constexpr uint64_t CAPTURE_DUE_SLACK_US = 4'000;
+
 // Timeout (en frames) sans update pour clôturer un geste pinch : Godot
 // n'émet pas d'événement de fin de magnify, donc le compositeur envoie
 // pinch_end si aucun update n'arrive pendant cette durée.
@@ -1673,8 +1676,13 @@ void WlrCompositor::_process(double delta) {
             bool shared = video_share.is_shared(ws.id) || is_capture_priority(ws.id);
             uint64_t interval = shared ? FAST_INTERVALS_US[capture_pressure]
                                        : SLOW_INTERVALS_US[capture_pressure];
+            // Échéance avec tolérance et phase conservée : exiger `now - dernière >= intervalle` au tick du jeu
+            // faisait sauter une capture sur deux quand le jeu tourne à 60 ips (tick à 16,5 ms < 16,667 ms par la
+            // gigue) → écarts 17/33 ms mélangés, ~40 images/s irrégulières dans la vidéo partagée. L'échéance avance
+            // d'un intervalle exact (cadence moyenne tenue même à 144/165 ips) et se recale après un retard.
+            const int64_t since = (int64_t)now_us - (int64_t)ws.last_capture_us;
             bool due = ws.dirty &&
-                (ws.last_capture_us == 0 || now_us - ws.last_capture_us >= interval);
+                (ws.last_capture_us == 0 || since + (int64_t)CAPTURE_DUE_SLACK_US >= (int64_t)interval);
             bool safety = !ws.dirty && (frame_counter % WINDOW_SAFETY_RECAPTURE_INTERVAL) == 0;
             if (due || safety) {
                 // Budget anti-stall (voir MAX_WINDOW_CAPTURES_PER_FRAME) :
@@ -1685,7 +1693,8 @@ void WlrCompositor::_process(double delta) {
                 if (!shared && window_captures_this_frame >= MAX_WINDOW_CAPTURES_PER_FRAME) {
                     continue;
                 }
-                ws.last_capture_us = now_us;
+                ws.last_capture_us = (ws.last_capture_us != 0 && since < 2 * (int64_t)interval)
+                    ? ws.last_capture_us + interval : now_us;
                 // Partage vidéo inter-frame : le DMA-BUF de la fenêtre est
                 // réutilisé à chaque capture (même mémoire GPU). Si l'encodeur
                 // (thread worker) est encore en train de le lire, on ne le
