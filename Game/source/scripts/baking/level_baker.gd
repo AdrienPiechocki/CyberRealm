@@ -628,6 +628,30 @@ static func _embed_material(r: Material, cache: Dictionary) -> Material:
 	cache[r] = dup
 	return dup
 
+# Textures importées en « Lossless » (défaut Godot quand detect_3d ne s'est pas
+# déclenché, ex. ~4000 textures du niveau Morrowind) : RGBA brut sans mipmaps
+# chez le client, soit 4 o/px en mémoire GPU. Sur un iGPU (mémoire partagée),
+# le niveau Morrowind occupait ~5 Go de RAM rien qu'en textures. Compression
+# S3TC (DXT1 opaque 0,5 o/px, DXT5 alpha 1 o/px) + mipmaps : ÷3 à ÷6.
+const GPU_COMPRESS_MIN_SIDE := 64 # en dessous : gain négligeable
+
+static func _gpu_compress(img: Image) -> void:
+	if img.is_compressed():
+		return
+	if img.get_width() < GPU_COMPRESS_MIN_SIDE or img.get_height() < GPU_COMPRESS_MIN_SIDE:
+		return
+	# Les blocs S3TC font 4×4 : dimensions non multiples de 4 refusées.
+	if img.get_width() % 4 != 0 or img.get_height() % 4 != 0:
+		return
+	var fmt := img.get_format()
+	if fmt != Image.FORMAT_RGBA8 and fmt != Image.FORMAT_RGB8:
+		return # HDR, L8, RG8… : laissés tels quels
+	if not img.has_mipmaps():
+		img.generate_mipmaps()
+	# DXT1 ou DXT5 choisi selon les canaux utilisés (alpha ou non).
+	if img.compress(Image.COMPRESS_S3TC, Image.COMPRESS_SOURCE_GENERIC) != OK:
+		push_warning("LevelBaker: S3TC compression failed (%dx%d)" % [img.get_width(), img.get_height()])
+
 # Convertit une Texture2D en ImageTexture embarquée.
 static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 	if cache.has(tex):
@@ -649,6 +673,7 @@ static func _convert_texture(tex: Texture2D, cache: Dictionary) -> Texture2D:
 			if w > max_texture_size or h > max_texture_size:
 				var ratio := minf(float(max_texture_size) / w, float(max_texture_size) / h)
 				img.resize(int(w * ratio), int(h * ratio), Image.INTERPOLATE_BILINEAR)
+		_gpu_compress(img)
 		var emb := ImageTexture.create_from_image(img)
 		emb.resource_path = ""
 		cache[tex] = emb
