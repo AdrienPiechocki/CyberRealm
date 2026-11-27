@@ -103,6 +103,9 @@ var _tutorial_first_run := false
 # Vrai tant que le niveau affiché est celui de l'hôte LAN (apply_host_level) :
 # à la déconnexion, le joueur doit retrouver SON niveau personnel.
 var _level_swapped := false
+# Niveau vidé par unload_level_for_swap() (contenu libéré avant le chargement
+# du niveau de l'hôte) : seuls le Player et les avatars distants y restent.
+var _level_stripped := false
 # Transform d'origine du Player dans le niveau personnel (capturé au boot,
 # avant toute session LAN) : sert de spawn au retour après déconnexion.
 var _local_spawn_transform := {}
@@ -170,7 +173,7 @@ func apply_host_level(scene: PackedScene, spawn_pos: Vector3 = Vector3.ZERO, spa
 # et SON spawn d'origine. No-op si aucun niveau hôte n'a été appliqué (hôte,
 # connexion échouée avant transfert…) — le joueur est déjà chez lui.
 func restore_local_level() -> bool:
-	if not _level_swapped:
+	if not _level_swapped and not _level_stripped:
 		return true
 	var scene: PackedScene = load(_level_path)
 	if scene == null:
@@ -183,6 +186,47 @@ func restore_local_level() -> bool:
 		_level_swapped = false
 		return true
 	return false
+
+## Libère le contenu du niveau courant AVANT le chargement du niveau de l'hôte.
+## Sans cela les deux niveaux coexistent en mémoire GPU pendant le chargement,
+## puis les blocs de l'allocateur (256 Mo) restent fragmentés une fois l'ancien
+## libéré : ~3 Go de mémoire GPU perdue mesurés avec Morrowind (sur un iGPU,
+## c'est de la RAM). Le Player (gelé) et le conteneur des avatars distants sont
+## conservés ; _swap_level() les reprend ensuite comme d'habitude. En cas
+## d'échec du chargement, restore_local_level() recharge le niveau personnel.
+func unload_level_for_swap() -> void:
+	var level := get_node_or_null("Level")
+	if level == null or _level_stripped:
+		return
+	var keep: Array[Node] = []
+	if player != null and is_instance_valid(player):
+		keep.append(player)
+	var pc = lan.get("_players_container") if lan != null else null
+	if pc is Node and is_instance_valid(pc):
+		keep.append(pc)
+	if _freecam != null and is_instance_valid(_freecam):
+		_close_freecam()
+	_strip_level_node(level, keep)
+	_level_stripped = true
+	if player != null:
+		# Plus de sol : sans gel, le joueur tomberait dans le vide pendant le chargement.
+		player.set_physics_process(false)
+	print("[level] local level unloaded before loading the host level")
+
+static func _strip_level_node(node: Node, keep: Array[Node]) -> void:
+	for c in node.get_children():
+		if keep.has(c):
+			continue
+		var holds_kept := false
+		for k in keep:
+			if c.is_ancestor_of(k):
+				holds_kept = true
+				break
+		if holds_kept:
+			_strip_level_node(c, keep)
+		else:
+			node.remove_child(c)
+			c.queue_free()
 
 # Changement d'environnement à la volée (menu pause → World). Refusé pendant
 # une session multijoueur : le niveau baké et envoyé aux autres joueurs est
@@ -323,6 +367,10 @@ func _swap_level(scene: PackedScene, spawn_pos: Vector3, spawn_rotation: Vector3
 	old_level.queue_free()
 	new_level.name = "Level"
 	add_child(new_level)
+	if _level_stripped:
+		_level_stripped = false
+		if player != null:
+			player.set_physics_process(true)
 	# Niveau appliqué : son 1er rendu compile les shaders. Les avatars distants
 	# restent invisibles jusqu'à ce que le niveau soit stable, puis sont
 	# préchauffés hors viewport principal (évite un TDR au 1er rendu d'un
@@ -749,6 +797,7 @@ func _ready() -> void:
 	lan.level_bake_provider = _bake_level_for_lan
 	lan.level_apply_requested.connect(apply_host_level)
 	lan.local_level_restore_requested.connect(restore_local_level)
+	lan.level_unload_requested.connect(unload_level_for_swap)
 	pause_menu.lan_color_changed.connect(lan.update_local_color)
 	pause_menu.lan_avatar_changed.connect(lan.set_selected_avatar)
 	pause_menu.level_change_requested.connect(change_level)

@@ -165,6 +165,7 @@ func level_already_applied(sha256: PackedByteArray) -> bool:
 
 ## Niveau remplacé (wayland_room._swap_level) : celui de l'hôte s'il vient d'être chargé, sinon un niveau local.
 func on_level_swapped() -> void:
+	_level_unloaded_for_load = false # un niveau complet est de nouveau en place
 	_applied_level_sha = _incoming_level_sha
 	_incoming_level_sha = PackedByteArray()
 
@@ -454,15 +455,39 @@ func _poll_level_decode() -> void:
 	elif not _pending_level_load.is_empty():
 		lan._lan_log("level decode ready but scene load already pending — result dropped")
 
+# Images d'attente entre le déchargement du niveau courant et le chargement
+# du niveau de l'hôte : queue_free agit en fin d'image, puis le RenderingDevice
+# ne libère la mémoire GPU qu'une fois les images en vol terminées (2-3).
+const LEVEL_UNLOAD_SETTLE_FRAMES := 5
+# Le niveau courant a été vidé pour ce chargement : en cas d'échec, il faut
+# recharger le niveau personnel (sinon le joueur reste dans le vide).
+var _level_unloaded_for_load := false
+
 func _queue_level_scene_load(path: String, pos: Vector3, rot: Vector3, scl: Vector3, kb: int) -> bool:
 	if not _pending_level_load.is_empty():
 		return false
 	if not FileAccess.file_exists(path):
 		push_warning("LAN: level scene file missing (%s)" % path)
 		return false
-	_pending_level_load = {"path": path, "pos": pos, "rot": rot, "scale": scl, "kb": kb}
-	ResourceLoader.load_threaded_request(path, "", false, ResourceLoader.CACHE_MODE_REPLACE)
+	# Libérer le niveau courant AVANT de charger celui de l'hôte (le chargement
+	# envoie ses ressources au GPU) : pas de pic à deux niveaux, pas de
+	# fragmentation de l'allocateur GPU. Sans niveau à libérer (aucun écouteur :
+	# serveur, tests), le chargement part immédiatement.
+	var unloading := lan.level_unload_requested.get_connections().size() > 0
+	_pending_level_load = {"path": path, "pos": pos, "rot": rot, "scale": scl, "kb": kb,
+		"start_frame": Engine.get_process_frames() + (LEVEL_UNLOAD_SETTLE_FRAMES if unloading else 0),
+		"requested": false}
+	if unloading:
+		_level_unloaded_for_load = true
+		lan.level_unload_requested.emit()
 	return true
+
+# Échec du chargement du niveau de l'hôte : le niveau courant a été vidé →
+# retour au niveau personnel.
+func _restore_after_failed_load() -> void:
+	if _level_unloaded_for_load:
+		_level_unloaded_for_load = false
+		lan.local_level_restore_requested.emit()
 
 func _poll_pending_scene_loads() -> void:
 	# Blob reçu par le canal TCP → décodage threadé (même tick, en tête).
@@ -470,7 +495,11 @@ func _poll_pending_scene_loads() -> void:
 	# Résultat du décodage/écriture du niveau (worker thread) : en tête pour
 	# que le chainement sur _queue_level_scene_load parte le plus tôt possible.
 	_poll_level_decode()
-	if not _pending_level_load.is_empty():
+	if not _pending_level_load.is_empty() and not bool(_pending_level_load.get("requested", true)):
+		if Engine.get_process_frames() >= int(_pending_level_load["start_frame"]):
+			_pending_level_load["requested"] = true
+			ResourceLoader.load_threaded_request(String(_pending_level_load["path"]), "", false, ResourceLoader.CACHE_MODE_REPLACE)
+	if not _pending_level_load.is_empty() and bool(_pending_level_load.get("requested", true)):
 		var spec: Dictionary = _pending_level_load
 		var status := ResourceLoader.load_threaded_get_status(String(spec["path"]))
 		if status == ResourceLoader.THREAD_LOAD_LOADED:
@@ -478,10 +507,12 @@ func _poll_pending_scene_loads() -> void:
 			_pending_level_load = {}
 			if scene == null:
 				push_warning("LAN: cannot load received level scene (%s)" % String(spec["path"]))
-				lan._set_status("Host level unreadable — kept local level")
+				lan._set_status("Host level unreadable — back to local level")
+				_restore_after_failed_load()
 				lan.session._finalize_join()
 				return
 			push_warning("LAN: level scene loaded OK")
+			_level_unloaded_for_load = false # apply_host_level remplace le niveau vidé
 			# Mémoriser le transform de spawn de la scène de l'hôte : les avatars
 			# distants sont spawnés selon LUI (pas le Player local de la scène
 			# d'origine), que le niveau soit déjà appliqué ou pas.
@@ -496,7 +527,8 @@ func _poll_pending_scene_loads() -> void:
 		elif status == ResourceLoader.THREAD_LOAD_FAILED or status == ResourceLoader.THREAD_LOAD_INVALID_RESOURCE:
 			push_warning("LAN: threaded load failed (%s, status %d)" % [String(spec["path"]), status])
 			_pending_level_load = {}
-			lan._set_status("Host level unreadable — kept local level")
+			lan._set_status("Host level unreadable — back to local level")
+			_restore_after_failed_load()
 			lan.session._finalize_join()
 	if lan.players._pending_avatar_loads.is_empty():
 		return

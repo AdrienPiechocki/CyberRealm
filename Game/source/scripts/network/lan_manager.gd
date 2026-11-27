@@ -12,6 +12,8 @@ signal level_apply_requested(scene: PackedScene, spawn: Vector3, spawn_rotation:
 # Déconnexion d'une session : le client doit retrouver SON niveau personnel
 # (wayland_room filtre : no-op si aucun niveau hôte n'avait été appliqué).
 signal local_level_restore_requested
+# Client : le niveau de l'hôte va être chargé → libérer d'abord le niveau courant.
+signal level_unload_requested
 # Début / fin de session (hôte ou client). status_changed ne suffit pas : à la
 # déconnexion, le dernier statut est émis AVANT que session_active repasse à
 # false (ou pas du tout quand on quitte soi-même).
