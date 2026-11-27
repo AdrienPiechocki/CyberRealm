@@ -21,6 +21,7 @@ var _jitter := 0.0              # max − min sur la fenêtre
 var _delay := -1.0              # retard appliqué (msec) au-delà du chemin le plus rapide
 var _last_tick := -1
 var _queue: Array = []          # [[capture msec, seq, Image], ...] trié par seq
+var controlled := false         # fenêtre contrôlée par ce joueur (posé par video_share.gd)
 var dropped := 0                # images jetées (file pleine ou dépassées) : diagnostic
 
 func reset() -> void:
@@ -54,6 +55,11 @@ func push(seq: int, t_capture: int, now: int, img: Image) -> void:
 ## Retard visé : gigue mesurée, ou `min_delay` (son de la fenêtre) s'il est plus grand.
 func target_delay(min_delay: float) -> float:
 	return clampf(maxf(_jitter + MARGIN_MSEC, min_delay), MIN_DELAY_MSEC, MAX_DELAY_MSEC)
+
+## Le retard rejoint la cible dès la prochaine image au lieu de baisser progressivement (prise de contrôle : la
+## réactivité prime, une seule image sautée).
+func snap_delay() -> void:
+	_delay = -1.0
 
 func current_delay() -> float:
 	return _delay

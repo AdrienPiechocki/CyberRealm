@@ -48,6 +48,19 @@ func test_audio_delay_extends_playout():
 	var late = po.pop_due(1131, 120.0)
 	return Runner.assert_true(early == null and late != null, "image calée sur le retard du son")
 
+## Prise de contrôle : le retard calé sur le son retombe d'un coup sur la gigue, pas à 30 ms/s.
+func test_snap_delay_drops_audio_wait():
+	var po := VideoPlayout.new()
+	po.push(0, 1000, 1010, _img())
+	po.pop_due(1200, 150.0)
+	var before := po.current_delay()
+	po.push(1, 1016, 1026, _img())
+	po.snap_delay()
+	var shown = po.pop_due(1240, 0.0)
+	var r: Variant = Runner.assert_true(before >= 150.0 and shown != null, "image due tout de suite après le passage")
+	if r is String: return r
+	return Runner.assert_true(po.current_delay() < 50.0, "retard ramené à la gigue")
+
 func test_queue_is_bounded():
 	var po := VideoPlayout.new()
 	for i in 30:

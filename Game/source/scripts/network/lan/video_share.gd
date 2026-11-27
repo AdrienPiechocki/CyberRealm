@@ -587,7 +587,7 @@ func _on_video_decoded(from: int, wid: int, seq: int, ok: bool, img: Image) -> v
 	(_video_playout[from][wid] as VideoPlayout).push(seq, t_cap, Time.get_ticks_msec(), img)
 
 # Affiche les images du tampon de lecture dont l'heure est venue (une par flux et par tick). Le retard suit la
-# gigue du flux, et au moins celui du son de la fenêtre pour garder l'image calée sur le son.
+# gigue du flux, et au moins celui du son de la fenêtre pour garder l'image calée sur le son (sauf sous contrôle).
 func _present_video_frames() -> void:
 	if _video_playout.is_empty():
 		return
@@ -595,8 +595,14 @@ func _present_video_frames() -> void:
 	for from in _video_playout:
 		for wid in _video_playout[from]:
 			var po: VideoPlayout = _video_playout[from][wid]
+			# Fenêtre que l'on contrôle : la latence de l'action à l'image prime sur le calage sur le son (≥ 100 ms
+			# de tampon audio) ; l'image ne suit que la gigue du flux.
+			var controlled: bool = lan.remote_control != null and lan.remote_control.is_controlling(from, wid)
+			if controlled != po.controlled:
+				po.controlled = controlled
+				po.snap_delay()
 			var audio_ms := 0.0
-			if lan.audio_share != null and lan.audio_share.has_method("remote_playout_msec"):
+			if not controlled and lan.audio_share != null and lan.audio_share.has_method("remote_playout_msec"):
 				audio_ms = lan.audio_share.remote_playout_msec(from, wid)
 			var img := po.pop_due(now, audio_ms)
 			if img != null:
