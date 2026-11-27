@@ -9,8 +9,8 @@ extends Node
 ##    sortie sont rejouées : une app qui joue encore directement n'est jamais entendue deux fois. Son d'une app sans
 ##    fenêtre : celui de la fenêtre de son ancêtre (un `paplay` lancé dans un terminal sort du terminal), sinon en 2D.
 ##    Fenêtre en mode focus : 2D à plein volume ; cachée : 2D atténuée ; épinglée (PiP) : 2D.
-## En multijoueur, le son des fenêtres partagées est envoyé fenêtre par fenêtre (scripts/network/lan/audio_share.gd)
-## et toujours joué chez les autres depuis le quad distant, quelle que soit l'option.
+## En multijoueur, le son des fenêtres partagées est envoyé fenêtre par fenêtre (scripts/network/lan/audio_share.gd).
+## Chez les autres, il suit leur propre option : depuis le quad distant en mode spatialisé, en 2D sinon.
 
 const BUS := "Windows"
 const BUFFER_SEC := 0.3
@@ -195,7 +195,7 @@ func _on_remote_audio(from_id: int, wid: int, frames: PackedVector2Array) -> voi
 	var key := "r:%d:%d" % [from_id, wid]
 	var in_remote_focus: bool = focus.is_active() and focus.is_remote() \
 			and int(focus.get_remote_peer()) == from_id and int(focus.get_remote_wid()) == wid
-	if quad != null and is_instance_valid(quad) and not in_remote_focus:
+	if _spatial and quad != null and is_instance_valid(quad) and not in_remote_focus:
 		_push(key, quad, "3d", 0.0, frames)
 	else:
 		_push(key, null, "2d", 0.0, frames)

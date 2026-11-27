@@ -95,6 +95,16 @@ var _video_diag_applied := 0
 # tourne sur le thread principal : un thread worker appelant video_decoder_feed
 # sur le compositor (Node GDExtension) a fait crasher le récepteur.
 
+## Joueurs à qui envoyer la vidéo : pas le serveur dédié (peer 1, sans compositeur), qui la jetterait après
+## l'avoir reçue (débit montant de l'émetteur et charge du relais doublés pour rien).
+func _video_peers() -> PackedInt32Array:
+	var out := PackedInt32Array()
+	for pid in multiplayer.get_peers():
+		if pid == 1 and lan.session_dedicated:
+			continue
+		out.append(pid)
+	return out
+
 func _video_key(from: int, wid: int) -> String:
 	return "%d|%d" % [from, wid]
 
@@ -214,7 +224,7 @@ func _announce_video_configs(force: bool) -> void:
 			continue
 		var cfg := [_video_codec, w, h]
 		var changed: bool = _video_config_last.get(wid, []) != cfg
-		for pid in multiplayer.get_peers():
+		for pid in _video_peers():
 			if pid == multiplayer.get_unique_id():
 				continue
 			var sent: Dictionary = _video_config_sent.get(pid, {})
@@ -242,7 +252,7 @@ func _drain_video_packets() -> void:
 		var data: PackedByteArray = packet.get("data", PackedByteArray())
 		if wid < 0 or seq < 0 or data.is_empty():
 			continue
-		for pid in multiplayer.get_peers():
+		for pid in _video_peers():
 			if pid == multiplayer.get_unique_id():
 				continue
 			if not _video_last_sent.has(pid):
@@ -305,7 +315,7 @@ func _request_encoder_keyframe(wid: int) -> void:
 # une keyframe par fenêtre partagée pour se synchroniser sans attendre la
 # keyframe périodique du gop.
 func _check_video_new_peers() -> void:
-	for pid in multiplayer.get_peers():
+	for pid in _video_peers():
 		if pid == multiplayer.get_unique_id():
 			continue
 		if _video_last_sent.has(pid):

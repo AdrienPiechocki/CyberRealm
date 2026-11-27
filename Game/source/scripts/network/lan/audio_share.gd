@@ -31,7 +31,8 @@ func send_window_audio(wid: int, packets: Array) -> void:
 	for pkt in packets:
 		_audio_send_count += 1
 		for peer in multiplayer.get_peers():
-			if peer != me:
+			# Pas le serveur dédié (peer 1) : sans compositeur, il jetterait le son.
+			if peer != me and not (peer == 1 and lan.session_dedicated):
 				_sync_window_audio.rpc_id(peer, wid, pkt)
 
 @rpc("any_peer", "call_remote", "unreliable", 3)

@@ -86,6 +86,7 @@ class FakePins extends Node:
 class FakeAudioShare extends Node:
 	signal window_audio_received(from_id: int, wid: int, frames: PackedVector2Array)
 	var sent: Array = []
+	var playout_delay_provider := Callable()
 	func send_window_audio(wid: int, packets: Array) -> void: sent.append([wid, packets.size()])
 
 class FakeWindowShare extends Node:
@@ -208,6 +209,7 @@ func test_normal_mode_only_shares_and_never_replays_locally():
 
 func test_remote_window_audio_plays_from_remote_quad():
 	var wa := _make()
+	_tick(wa)                                   # mode spatialisé pris en compte
 	var rq := Node3D.new()
 	add_child(rq)
 	wa.lan.window_share._remote_window_quads = {5: {9: rq}}
@@ -217,6 +219,20 @@ func test_remote_window_audio_plays_from_remote_quad():
 	if r is String: rq.free(); _cleanup(); return r
 	wa.lan.audio_share.window_audio_received.emit(6, 1, _frames())   # quad inconnu
 	r = Runner.assert_true(not wa._players["r:6:1"]["player"] is AudioStreamPlayer3D, "quad inconnu : 2D")
+	rq.free()
+	_cleanup()
+	return r
+
+func test_remote_window_audio_follows_local_normal_mode():
+	var wa := _make()
+	wa.settings.mode = "normal"
+	_tick(wa)
+	var rq := Node3D.new()
+	add_child(rq)
+	wa.lan.window_share._remote_window_quads = {5: {9: rq}}
+	wa.lan.audio_share.window_audio_received.emit(5, 9, _frames())
+	var p: Node = wa._players["r:5:9"]["player"]
+	var r: Variant = Runner.assert_true(not p is AudioStreamPlayer3D, "mode normal : son distant en 2D, pas depuis le quad")
 	rq.free()
 	_cleanup()
 	return r
