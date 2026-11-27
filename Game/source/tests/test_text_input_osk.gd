@@ -6,8 +6,8 @@ const Osk = preload("res://scripts/main/text_input_osk.gd")
 
 func test_should_open():
 	var r: Variant = Runner.assert_eq([Osk.should_open("pad", true, true), Osk.should_open("pad", false, true),
-		Osk.should_open("always", false, true), Osk.should_open("never", true, true), Osk.should_open("always", true, false)],
-		[true, false, true, false, false], "manette seulement / toujours / jamais / clavier non routé")
+		Osk.should_open("never", true, true), Osk.should_open("pad", true, false)],
+		[true, false, false, false], "manette seulement / jamais / clavier non routé")
 	return r
 
 class FakeKeyboard extends Node:

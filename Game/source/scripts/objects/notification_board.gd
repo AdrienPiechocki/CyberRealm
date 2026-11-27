@@ -28,29 +28,22 @@ func _on_bridge(br: Node) -> void:
 	br.notification_closed.connect(func(_b, _i): _refresh())
 	_refresh()
 
-static func row_text(n: Dictionary, privacy: String) -> String:
+static func row_text(n: Dictionary) -> String:
 	var t := Time.get_time_string_from_unix_time(int(n.get("time", 0)) + int(Time.get_time_zone_from_system().get("bias", 0)) * 60).substr(0, 5)
 	var app := String(n.get("app", "")) if String(n.get("app", "")) != "" else "?"
-	if privacy == "app":
-		return "%s  %s" % [t, app]
 	var summary := String(n.get("summary", ""))
 	return "%s  %s — %s" % [t, app, summary.substr(0, 60)]
-
-func _privacy() -> String:
-	var br := bridge()
-	return String(br.privacy.call()) if br != null and "privacy" in br and br.privacy.is_valid() else "full"
 
 func _refresh() -> void:
 	var br := bridge()
 	var list: Array = br.notifications() if br != null else []
-	var privacy := _privacy()
 	_header.text = "Notifications (%d)" % list.size() if br != null else "Notifications — bridge unavailable"
-	_shown = list.slice(0, ROWS) if privacy != "count" else []
+	_shown = list.slice(0, ROWS)
 	for i in ROWS:
 		var b: Node3D = _rows[i][0]
 		var l: Label3D = _rows[i][1]
 		b.visible = i < _shown.size()
-		l.text = row_text(_shown[i], privacy) if i < _shown.size() else ""
+		l.text = row_text(_shown[i]) if i < _shown.size() else ""
 
 func _on_row(player_id: int, i: int) -> void:
 	if not is_local_player(player_id) or i >= _shown.size():

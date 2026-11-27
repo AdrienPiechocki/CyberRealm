@@ -28,10 +28,10 @@ func test_notifications_capped_and_replaced():
 	b.free()
 	return r
 
-func test_privacy_and_time_format():
+func test_row_and_time_format():
 	var n := {"time": 0, "app": "Firefox", "summary": "Secret"}
-	var r: Variant = Runner.assert_true(Board.row_text(n, "full").contains("Secret") and not Board.row_text(n, "app").contains("Secret"),
-		"« application seulement » cache le résumé")
+	var r: Variant = Runner.assert_true(Board.row_text(n).contains("Firefox") and Board.row_text(n).contains("Secret"),
+		"application et résumé affichés")
 	if r is String: return r
 	return Runner.assert_eq([Media.fmt_time(0), Media.fmt_time(185000000)], ["0:00", "3:05"], "format du temps")
 

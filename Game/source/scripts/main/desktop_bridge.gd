@@ -31,8 +31,6 @@ var _players: Dictionary = {}          # id -> état
 var _last_active := ""                 # dernier lecteur passé en lecture
 var _notifications: Array = []         # plus récente en premier
 var running := false
-## () -> "full" | "app" | "count" : contenu des notifications affiché dans le monde (option General).
-var privacy: Callable
 
 func _ready() -> void:
 	add_to_group("desktop_bridge")

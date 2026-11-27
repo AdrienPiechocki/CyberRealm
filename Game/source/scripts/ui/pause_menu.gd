@@ -600,21 +600,10 @@ func get_window_audio_mode() -> String:
 	var m := String(_settings.get("window_audio", "normal"))
 	return m if m in ["normal", "spatial"] else "normal"
 
-# Contenu des notifications dans le monde (GENERAL, objets du bureau) : "full" (défaut), "app" ou "count".
-func get_notification_privacy() -> String:
-	var m := String(_settings.get("notification_privacy", "full"))
-	return m if m in ["full", "app", "count"] else "full"
-
-# Clavier virtuel sur un champ de texte (GENERAL, text_input_osk.gd) : "pad" (défaut), "always" ou "never".
+# Clavier virtuel sur un champ de texte (GENERAL, text_input_osk.gd) : "pad" (défaut) ou "never".
 func get_osk_on_text_input() -> String:
 	var m := String(_settings.get("osk_on_text_input", "pad"))
-	return m if m in ["pad", "always", "never"] else "pad"
-
-# Netteté selon la distance (GENERAL, window_sharpness.gd) : échelle maximale annoncée aux fenêtres vues de près.
-# 1.0 = désactivée. Défaut : 1.5.
-func get_window_sharpness_max() -> float:
-	var v := float(_settings.get("window_sharpness", 1.5))
-	return v if v in [1.0, 1.5, 2.0] else 1.5
+	return m if m in ["pad", "never"] else "pad"
 
 # Bulles de chat au-dessus des avatars (MULTIPLAYER). Défaut : oui.
 func is_chat_bubbles_enabled() -> bool:

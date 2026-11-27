@@ -3,7 +3,7 @@ extends Node
 ##
 ## Le compositeur émet text_input_changed(window_id, active, …) quand un champ de texte d'une fenêtre devient actif
 ## ou ne l'est plus. Selon l'option (General > Virtual keyboard on text fields) : « pad » (défaut : seulement si la
-## dernière entrée vient d'une manette), « always » ou « never ». Seulement quand le clavier va réellement à la
+## dernière entrée vient d'une manette) ou « never ». Seulement quand le clavier va réellement à la
 ## fenêtre (mode focus ou mode interaction). Le clavier ouvert ainsi se referme seul quand le champ est quitté, sans
 ## couper le mode interaction ; un clavier ouvert à la main n'est jamais refermé par ce script.
 
@@ -37,12 +37,7 @@ func _mode() -> String:
 static func should_open(mode: String, last_was_pad: bool, keyboard_routed: bool) -> bool:
 	if not keyboard_routed:
 		return false
-	match mode:
-		"always":
-			return true
-		"pad":
-			return last_was_pad
-	return false
+	return mode == "pad" and last_was_pad
 
 func on_text_input_changed(_window_id: int, active: bool, _hint: int, _purpose: int, _rect: Rect2i) -> void:
 	if keyboard == null:

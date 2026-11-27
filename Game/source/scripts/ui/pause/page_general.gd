@@ -159,57 +159,20 @@ func _show_general() -> void:
 		menu._save_settings()
 	)
 
-	# Notifications affichées par les objets du monde (lu par notification_board.gd via desktop_bridge.gd).
-	var np_row := HBoxContainer.new()
-	np_row.add_child(menu._make_row_label("Notifications in the world"))
-	var np_opt := OptionButton.new()
-	var np_modes := ["full", "app", "count"]
-	np_opt.add_item("Full content")
-	np_opt.add_item("App name only")
-	np_opt.add_item("Count only")
-	np_opt.tooltip_text = "What notification boards in the level show (other players may see your screen)."
-	np_opt.selected = np_modes.find(menu.get_notification_privacy())
-	np_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	np_row.add_child(np_opt)
-	menu.container.add_child(np_row)
-	np_opt.item_selected.connect(func(i: int):
-		menu._settings["notification_privacy"] = np_modes[i]
-		menu._save_settings()
-	)
-
 	# Clavier virtuel sur un champ de texte (lu par text_input_osk.gd).
 	var osk_row := HBoxContainer.new()
 	osk_row.add_child(menu._make_row_label("Virtual keyboard on text fields"))
 	var osk_opt := OptionButton.new()
-	var osk_modes := ["pad", "always", "never"]
+	var osk_modes := ["pad", "never"]
 	osk_opt.add_item("With a gamepad only")
-	osk_opt.add_item("Always")
 	osk_opt.add_item("Never")
 	osk_opt.tooltip_text = "Opens the virtual keyboard when a text field of a window gets focus, and closes it after."
-	osk_opt.selected = osk_modes.find(menu.get_osk_on_text_input())
+	osk_opt.selected = maxi(0, osk_modes.find(menu.get_osk_on_text_input()))
 	osk_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	osk_row.add_child(osk_opt)
 	menu.container.add_child(osk_row)
 	osk_opt.item_selected.connect(func(i: int):
 		menu._settings["osk_on_text_input"] = osk_modes[i]
-		menu._save_settings()
-	)
-
-	# Netteté selon la distance (lu par window_sharpness.gd) : les fenêtres vues de près rendent plus de pixels.
-	var sharp_row := HBoxContainer.new()
-	sharp_row.add_child(menu._make_row_label("Window sharpness"))
-	var sharp_opt := OptionButton.new()
-	var sharp_levels := [1.0, 1.5, 2.0]
-	sharp_opt.add_item("Off")
-	sharp_opt.add_item("Adaptive, up to ×1.5")
-	sharp_opt.add_item("Adaptive, up to ×2 (more GPU)")
-	sharp_opt.tooltip_text = "Windows seen up close render more pixels so text stays sharp (Wayland apps only)."
-	sharp_opt.selected = sharp_levels.find(menu.get_window_sharpness_max())
-	sharp_opt.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	sharp_row.add_child(sharp_opt)
-	menu.container.add_child(sharp_row)
-	sharp_opt.item_selected.connect(func(i: int):
-		menu._settings["window_sharpness"] = sharp_levels[i]
 		menu._save_settings()
 	)
 

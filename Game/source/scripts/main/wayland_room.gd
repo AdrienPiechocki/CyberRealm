@@ -33,7 +33,6 @@ var desktop_bridge: Node # MPRIS et notifications pour les objets du monde, cf. 
 var annotations_view: Node # annotations sur les fenêtres partagées, cf. scripts/windows/annotations_view.gd
 var control_request: CanvasLayer # demande de contrôle d'une fenêtre partagée, cf. scripts/ui/control_request.gd
 var text_input_osk: Node # clavier virtuel sur les champs de texte, cf. scripts/main/text_input_osk.gd
-var window_sharpness: Node # netteté selon la distance, cf. scripts/main/window_sharpness.gd
 var window_audio: Node # son des fenêtres (spatialisé / partagé), cf. scripts/main/window_audio.gd
 var voice_manager: Node # chat vocal, cf. scripts/main/voice_manager.gd
 var chat_box: Control # chat textuel et emotes (multijoueur), cf. scripts/ui/chat_box.gd
@@ -647,7 +646,6 @@ func _ready() -> void:
 	desktop_bridge.name = "DesktopBridge"
 	desktop_bridge.set_script(preload("res://scripts/main/desktop_bridge.gd"))
 	add_child(desktop_bridge)
-	desktop_bridge.privacy = Callable(pause_menu, "get_notification_privacy")
 	desktop_bridge.start(_host_session_bus)
 	# Les layer surfaces sont ancrées à l'écran : le compositeur doit
 	# connaître la taille du viewport pour le layout (arrange_layer_surfaces).
@@ -852,13 +850,6 @@ func _ready() -> void:
 	add_child(window_audio)
 	window_audio.setup(compositor, win3d, focus, pins, lan, pause_menu)
 	compositor.window_unmapped.connect(window_audio.on_window_unmapped)
-	# Netteté selon la distance (wp_fractional_scale_v1) : scripts/main/window_sharpness.gd.
-	window_sharpness = Node.new()
-	window_sharpness.name = "WindowSharpness"
-	window_sharpness.set_script(preload("res://scripts/main/window_sharpness.gd"))
-	add_child(window_sharpness)
-	window_sharpness.setup(compositor, win3d, focus, pins, pause_menu)
-	compositor.window_unmapped.connect(window_sharpness.on_window_unmapped)
 	# Champ de texte actif dans une fenêtre (text_input_v3) : clavier virtuel selon l'option.
 	text_input_osk = Node.new()
 	text_input_osk.name = "TextInputOSK"
