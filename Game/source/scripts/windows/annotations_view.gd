@@ -33,6 +33,8 @@ func setup(p_annotations: Node, p_lan, p_win3d: Node, p_focus: Node) -> void:
 
 func toggle() -> void:
 	active = not active
+	if focus != null:
+		focus.annotating = active
 	if not active:
 		annotations.end_stroke()
 

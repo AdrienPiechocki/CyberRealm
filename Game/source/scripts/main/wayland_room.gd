@@ -1351,6 +1351,7 @@ func _process(delta: float) -> void:
 			return
 		# Mode annotation : la souris dessine au lieu de cliquer dans la fenêtre.
 		if annotations_view.handle_focus(focus.mouse_pos):
+			focus.handle_annotation_pointer(delta)
 			return
 		focus.handle_focus_input(delta)
 		return

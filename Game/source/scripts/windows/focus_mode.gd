@@ -1023,6 +1023,19 @@ func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
 func handle_focus_input(delta: float) -> void:
 	input.handle_focus_input(delta)
 
+## Mode annotation actif (posé par annotations_view.gd) : pointeur du jeu au lieu de celui de la fenêtre.
+var annotating := false:
+	set(on):
+		if on == annotating:
+			return
+		annotating = on
+		if not on and remote_cursor_overlay != null:
+			remote._hide_remote_cursor()
+			remote._update_remote_cursor()     # focus distant : curseur du propriétaire (ou d'invité) de retour
+
+func handle_annotation_pointer(delta: float) -> void:
+	input.handle_annotation_pointer(delta)
+
 func handle_input_event(event: InputEvent) -> bool:
 	return input.handle_input_event(event)
 

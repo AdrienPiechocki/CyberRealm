@@ -236,6 +236,24 @@ func _hide_cursor_overlay() -> void:
 		fm.cursor_overlay.visible = false
 	cursor_overlay_serial = -1
 
+## Mode annotation (annotations_view.gd) : remplace handle_focus_input. Rien ne part à la fenêtre, mais le
+## pointeur doit rester vivant : stick gauche = curseur, et la flèche du jeu (overlay remote_cursor_overlay,
+## comme le pointeur d'invité) à la place du curseur de la fenêtre — qui ne suivrait plus, et n'existe pas
+## en focus distant (souris masquée).
+func handle_annotation_pointer(delta: float) -> void:
+	var v := Vector2(Input.get_joy_axis(0, JOY_AXIS_LEFT_X), Input.get_joy_axis(0, JOY_AXIS_LEFT_Y)).limit_length(1.0)
+	if v != Vector2.ZERO:
+		fm.mouse_pos += v * v.length() * fm.SPEED * delta
+		var vs := get_viewport().get_visible_rect().size
+		fm.mouse_pos = fm.mouse_pos.clamp(Vector2.ONE, vs - Vector2.ONE)
+		get_viewport().warp_mouse(fm.mouse_pos)
+	if fm._hw_cursor_key != 0:
+		Input.set_custom_mouse_cursor(null)
+		fm._hw_cursor_key = 0
+	_hide_cursor_overlay()
+	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	fm.remote._show_guest_cursor(fm.mouse_pos)
+
 # Routage souris/clavier du mode focus, appelé chaque frame par
 # wayland_room.gd tant que le mode est actif. L'input pointeur va à la
 # fenêtre SURVOLÉE de la pile — pas forcément la fenêtre active — tandis que

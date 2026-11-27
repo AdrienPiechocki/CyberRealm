@@ -97,7 +97,7 @@ func set_remote_cursor_state(peer_id: int, wid: int, state) -> void:
 func _update_remote_cursor() -> void:
 	if not fm.remote_focus or fm.remote_cursor_overlay == null:
 		return
-	if controlled():
+	if controlled() or fm.annotating:
 		_show_guest_cursor(fm.mouse_pos)      # sous contrôle : notre pointeur, pas celui du propriétaire
 		return
 	if fm.remote_cursor_state.is_empty():
