@@ -18,3 +18,4 @@ Game/build/
 # Artefacts de processus agentiques (planification/DDD) — hors repo
 .superpowers/
 docs/superpowers/
+/graphify-out/
