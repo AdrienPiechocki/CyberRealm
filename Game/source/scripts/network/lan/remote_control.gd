@@ -61,6 +61,8 @@ var _pending_rel: Dictionary = {} # "peer:wid" -> Vector2 (mouvement relatif pas
 var _locked: Dictionary = {}      # "peer:wid" -> true : l'application a verrouillé le pointeur (jeu FPS)
 var _diag := {"ptr_tx": 0, "rel_tx": 0, "ptr_rx": 0, "rel_rx": 0, "drop": 0}
 var _diag_last := 0
+var _rtt: Array = []              # invité : allers-retours des entrées mesurés depuis le dernier diagnostic (msec)
+var _ping_last := 0
 var _ptr_next_usec: Dictionary = {} # "peer:wid" -> heure du prochain envoi du pointeur (cadence POINTER_SEND_HZ)
 var _down: Dictionary = {}        # "peer:wid" -> {"k:..": [code, loc], "b:..": button} (relâchés en sortie)
 
@@ -211,6 +213,29 @@ func _on_revoke(from: int, wid: Variant) -> void:
 		_forget_guest(k)
 		_down.erase(k)
 		control_changed.emit(from, wid, false)
+
+# Aller-retour des entrées (invité → propriétaire → invité) sur le canal des touches et clics : mesure du trajet,
+# relais du serveur compris, journalisé dans le diagnostic [rc].
+const PING_MSEC := 1000
+
+func _send_pings(now: int) -> void:
+	if now - _ping_last < PING_MSEC or not _can_net():
+		return
+	_ping_last = now
+	for k in _controlling:
+		var p := String(k).split(":")
+		_rc_ping.rpc_id(int(p[0]), int(p[1]), now)
+
+@rpc("any_peer", "call_remote", "reliable", 1)
+func _rc_ping(wid: Variant, t: Variant) -> void:
+	var from := multiplayer.get_remote_sender_id()
+	if wid is int and t is int and has_control(wid, from):
+		_rc_pong.rpc_id(from, wid, t)
+
+@rpc("any_peer", "call_remote", "reliable", 1)
+func _rc_pong(wid: Variant, t: Variant) -> void:
+	if wid is int and t is int and is_controlling(multiplayer.get_remote_sender_id(), wid):
+		_rtt.append(_now() - int(t))
 
 @rpc("any_peer", "call_remote", "reliable", 1)
 func _rc_lock(wid: Variant, locked: Variant) -> void:
@@ -600,6 +625,7 @@ func _process(_delta: float) -> void:
 			_flush_relative(k)
 	var now := _now()
 	_sync_locks()
+	_send_pings(now)
 	_log_diag(now)
 	# Propriétaire : demande affichée sans réponse = refus (la suivante s'affiche).
 	if not _pending.is_empty() and now - int(_pending[0]["t"]) > REQUEST_TIMEOUT_MSEC:
@@ -631,13 +657,18 @@ func _log_diag(now: int) -> void:
 		return
 	var secs := maxf(float(now - _diag_last) / 1000.0, 0.001)
 	_diag_last = now
-	var total := 0
+	var total := _rtt.size()
 	for v in _diag.values():
 		total += int(v)
 	if total > 0:
-		print("[rc] diag: invité ptr=%.0f/s rel=%.0f/s verrouillé=%s | propriétaire ptr=%.0f/s rel=%.0f/s jetés=%d" % [
-			_diag["ptr_tx"] / secs, _diag["rel_tx"] / secs, str(_locked.keys()),
+		var rtt := "-"
+		if not _rtt.is_empty():
+			_rtt.sort()
+			rtt = "%d-%dms" % [_rtt[0], _rtt[-1]]
+		print("[rc] diag: invité ptr=%.0f/s rel=%.0f/s verrouillé=%s aller-retour entrées=%s | propriétaire ptr=%.0f/s rel=%.0f/s jetés=%d" % [
+			_diag["ptr_tx"] / secs, _diag["rel_tx"] / secs, str(_locked.keys()), rtt,
 			_diag["ptr_rx"] / secs, _diag["rel_rx"] / secs, _diag["drop"]])
+	_rtt.clear()
 	for k in _diag:
 		_diag[k] = 0
 
