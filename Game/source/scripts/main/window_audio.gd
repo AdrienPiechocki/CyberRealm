@@ -14,6 +14,11 @@ extends Node
 
 const BUS := "Windows"
 const BUFFER_SEC := 0.3
+# Tampon de gigue du son distant (paquets OPUS de 20 ms, non fiables, relayés par
+# le serveur) : sans coussin, le moindre retard réseau vidait le générateur → craquements.
+# Silence d'amorce au démarrage, et à nouveau après chaque sous-alimentation (skips).
+const REMOTE_PREBUFFER_SEC := 0.1
+const REMOTE_REFILL_SEC := 0.06
 const MAX_DISTANCE := 30.0
 const HIDDEN_DB := -6.0
 const ANCESTOR_DEPTH := 8
@@ -219,12 +224,36 @@ func _push(key: String, quad: Node3D, mode: String, db: float, frames: PackedVec
 		player.set("bus", BUS)
 		parent.add_child(player)
 		player.call("play")
-		e = {"player": player, "playback": player.call("get_stream_playback"), "mode": mode}
+		e = {"player": player, "playback": player.call("get_stream_playback"), "mode": mode, "skips": 0}
 		_players[key] = e
+		if key.begins_with("r:"):
+			_push_silence(e, REMOTE_PREBUFFER_SEC)
+			var pb0 := e["playback"] as AudioStreamGeneratorPlayback
+			if pb0 != null:
+				e["skips"] = pb0.get_skips()
 	e["player"].set("volume_db", db)
 	var pb := e["playback"] as AudioStreamGeneratorPlayback
-	if pb != null and pb.can_push_buffer(frames.size()):
+	if pb == null:
+		return
+	if key.begins_with("r:"):
+		var skips := pb.get_skips()
+		if skips != int(e.get("skips", 0)):
+			# Le générateur a manqué d'échantillons : reconstituer un coussin.
+			e["skips"] = skips
+			_push_silence(e, REMOTE_REFILL_SEC)
+	if pb.can_push_buffer(frames.size()):
 		pb.push_buffer(frames)
+
+func _push_silence(e: Dictionary, sec: float) -> void:
+	var pb := e["playback"] as AudioStreamGeneratorPlayback
+	if pb == null:
+		return
+	var n := mini(int(48000.0 * sec), pb.get_frames_available())
+	if n <= 0:
+		return
+	var silence := PackedVector2Array()
+	silence.resize(n)
+	pb.push_buffer(silence)
 
 func _free_player(key: String) -> void:
 	var e: Dictionary = _players.get(key, {})

@@ -635,7 +635,11 @@ static constexpr double CAPTURE_CRITICAL_FRAME_MS = 40.0;   // < ~25 fps
 // durablement plus lent reste ≥ 40 ms, donc palier 2.
 static constexpr double CAPTURE_PRESSURE_SAMPLE_CLAMP_MS = 60.0;
 static constexpr uint64_t SLOW_INTERVALS_US[3] = {33'333, 100'000, 200'000}; // 30/10/5 par s
-static constexpr uint64_t FAST_INTERVALS_US[3] = {16'667, 33'333, 50'000};   // 60/30/20 par s
+// Fenêtres partagées : 60/s conservé au palier 1. Les passer à 30/s faisait
+// osciller la cadence 60↔30 dès que le jeu passait sous ~40 ips (charge CPU,
+// pas GPU) : une vidéo 24/25 ips rééchantillonnée irrégulièrement doublait ou
+// sautait des images chez le récepteur. Seul le palier critique les ralentit.
+static constexpr uint64_t FAST_INTERVALS_US[3] = {16'667, 16'667, 33'333};   // 60/60/30 par s
 
 // Budget anti-stall : au plus N captures de fenêtres NON partagées par frame
 // passée dans _process. Chaque capture peut bloquer jusqu'à timeout ms dans
