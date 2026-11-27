@@ -286,12 +286,24 @@ static void wait_for_dmabuf_gpu_writes(int dma_fd, int timeout_ms) {
 // Utilisée par le partage LAN (localisée dans capture_surface_vulkan) ET à la
 // demande par get_window_cpu_image quand aucun consommateur n'a activé la
 // copie (ex. capture d'écran d'une fenêtre) — coût ~30-50 ms en 1080p.
-static void synchronous_cpu_readback(CaptureCache &cache, int w, int h) {
+//
+// Depuis que les fenêtres sont rendues sur le GPU de Godot (dGPU), ce buffer
+// est en VRAM : sa lecture via mmap coûte ~350 ms en 1080p (accès non cachés
+// à travers le PCIe) → gel à chaque ouverture/focus de fenêtre (sonde d'alpha).
+// On relit donc d'abord par glReadPixels (DMA, ~1 ms), le mmap reste le repli.
+void WlrCompositor::synchronous_cpu_readback(CaptureCache &cache, int w, int h) {
     if (cache.data == nullptr || cache.stride <= 0 || w <= 0 || h <= 0) return;
     if (cache.bytes.size() != (int64_t)w * h * 4) {
         cache.bytes.resize((int64_t)w * h * 4);
     }
     uint8_t *dst = cache.bytes.ptrw();
+    if (gl_readback_rgba(cache, w, h, dst)) {
+        if (cache.format == DRM_FORMAT_XBGR8888 || cache.format == DRM_FORMAT_XRGB8888) {
+            // Padding X indéfini → alpha forcé opaque (cf. chemin mmap).
+            for (size_t i = 3, n = (size_t)w * h * 4; i < n; i += 4) dst[i] = 255;
+        }
+        return;
+    }
     struct dma_buf_sync sync = {};
     sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
     ioctl(cache.dma_fd, DMA_BUF_IOCTL_SYNC, &sync);
@@ -1509,7 +1521,7 @@ const GlReadFns &gl_read_fns() {
 } // namespace
 
 static bool gl_read_buffer(wlr_renderer *renderer, wlr_buffer *buf, int w, int h,
-        std::vector<uint8_t> &out) {
+        uint8_t *out) {
     if (!renderer || !buf || !wlr_renderer_is_gles2(renderer)) return false;
     const GlReadFns &gl = gl_read_fns();
     if (!gl.ok) return false;
@@ -1524,11 +1536,10 @@ static bool gl_read_buffer(wlr_renderer *renderer, wlr_buffer *buf, int w, int h
     bool ok = false;
     GLuint fbo = wlr_gles2_renderer_get_buffer_fbo(renderer, buf);
     if (fbo != 0) {
-        out.resize((size_t)w * h * 4);
         gl.get_error();
         gl.bind_fb(GL_FRAMEBUFFER, fbo);
         gl.pixel_store(GL_PACK_ALIGNMENT, 4);
-        gl.read_pixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
+        gl.read_pixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out);
         ok = gl.get_error() == GL_NO_ERROR;
         gl.bind_fb(GL_FRAMEBUFFER, 0);
     }
@@ -1552,6 +1563,64 @@ static bool rows_match(const uint8_t *gl_row, const uint8_t *map_row, int w, boo
     return true;
 }
 
+// Relit le buffer de capture en RGBA serré (w*h*4 octets dans dst) par
+// glReadPixels, orientation vérifiée une fois par buffer offscreen contre le
+// DMA-BUF mappé. false → relecture GL indisponible : l'appelant lit le mmap.
+bool WlrCompositor::gl_readback_rgba(CaptureCache &cache, int w, int h, uint8_t *dst) {
+    if (cache.gl_readback_buffer != cache.offscreen) {
+        cache.gl_readback_buffer = cache.offscreen;
+        cache.gl_readback_mode = -1;
+    }
+    if (cache.gl_readback_mode == 2 || w <= 0 || h <= 0) return false;
+    auto t0 = std::chrono::steady_clock::now();
+    if (!gl_read_buffer(renderer, cache.offscreen, w, h, dst)) {
+        if (cache.gl_readback_mode == -1) {
+            cache.gl_readback_mode = 2;
+            UtilityFunctions::print("waylandgodot: GL readback unavailable — dmabuf path");
+        }
+        return false;
+    }
+    const size_t row = (size_t)w * 4;
+    if (cache.gl_readback_mode == -1) {
+        // Orientation vérifiée sur une seule ligne du DMA-BUF (7 Ko).
+        bool bgra = cache.format == DRM_FORMAT_ARGB8888 || cache.format == DRM_FORMAT_XRGB8888;
+        // Orientation directe vérifiée (wlroots 0.19, radeonsi) : la ligne 0
+        // relue est la ligne du haut. Inversée seulement si prouvé sans
+        // ambiguïté (fond uni : les deux correspondent → directe).
+        int mode = 0;
+        if (cache.data && cache.stride > 0) {
+            std::vector<uint8_t> first(row), last(row);
+            memcpy(first.data(), cache.data, row);
+            memcpy(last.data(), cache.data + (size_t)(h - 1) * cache.stride, row);
+            bool direct = rows_match(dst, first.data(), w, bgra)
+                && rows_match(dst + (h - 1) * row, last.data(), w, bgra);
+            bool flipped = rows_match(dst, last.data(), w, bgra)
+                && rows_match(dst + (h - 1) * row, first.data(), w, bgra);
+            mode = direct ? 0 : (flipped ? 1 : 2);
+        }
+        cache.gl_readback_mode = mode;
+        UtilityFunctions::print("waylandgodot: GL readback for wid=", cache.wid,
+            " mode=", mode == 0 ? "direct" : (mode == 1 ? "flipped" : "unusable (dmabuf fallback)"));
+        if (mode == 2) return false;
+    }
+    if (cache.gl_readback_mode == 1) {
+        std::vector<uint8_t> tmp(row);
+        for (int y = 0; y < h / 2; y++) {
+            uint8_t *a = dst + (size_t)y * row;
+            uint8_t *b = dst + (size_t)(h - 1 - y) * row;
+            memcpy(tmp.data(), a, row);
+            memcpy(a, b, row);
+            memcpy(b, tmp.data(), row);
+        }
+    }
+    double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    if (ms > 4.0) {
+        UtilityFunctions::print("waylandgodot: [diag] GL readback ", w, "x", h, " ", ms, " ms");
+    }
+    return true;
+}
+
 void WlrCompositor::submit_video_frame(CaptureCache &cache) {
     if (!video_share.is_active() || cache.wid < 0 || cache.dma_fd < 0 ||
         cache.stride == 0) {
@@ -1560,59 +1629,12 @@ void WlrCompositor::submit_video_frame(CaptureCache &cache) {
     if (!video_share.is_shared(cache.wid) || !video_share.window_ready(cache.wid)) {
         return; // l'encodeur refuserait la frame : inutile de relire le buffer
     }
-    if (cache.gl_readback_buffer != cache.offscreen) {
-        cache.gl_readback_buffer = cache.offscreen;
-        cache.gl_readback_mode = -1;
-    }
     const int w = cache.width, h = cache.height;
-    if (cache.gl_readback_mode != 2 && w > 0 && h > 0) {
-        std::vector<uint8_t> px;
-        auto t0 = std::chrono::steady_clock::now();
-        if (gl_read_buffer(renderer, cache.offscreen, w, h, px)) {
-            const size_t row = (size_t)w * 4;
-            if (cache.gl_readback_mode == -1) {
-                // Orientation vérifiée sur une seule ligne du DMA-BUF (7 Ko).
-                bool bgra = cache.format == DRM_FORMAT_ARGB8888 || cache.format == DRM_FORMAT_XRGB8888;
-                // Orientation directe vérifiée (wlroots 0.19, radeonsi) : la ligne 0
-                // relue est la ligne du haut. Inversée seulement si prouvé sans
-                // ambiguïté (fond uni : les deux correspondent → directe).
-                int mode = 0;
-                if (cache.data && cache.stride > 0) {
-                    std::vector<uint8_t> first(row), last(row);
-                    memcpy(first.data(), cache.data, row);
-                    memcpy(last.data(), cache.data + (size_t)(h - 1) * cache.stride, row);
-                    bool direct = rows_match(px.data(), first.data(), w, bgra)
-                        && rows_match(px.data() + (h - 1) * row, last.data(), w, bgra);
-                    bool flipped = rows_match(px.data(), last.data(), w, bgra)
-                        && rows_match(px.data() + (h - 1) * row, first.data(), w, bgra);
-                    mode = direct ? 0 : (flipped ? 1 : 2);
-                }
-                cache.gl_readback_mode = mode;
-                UtilityFunctions::print("waylandgodot: video_share: GL readback for wid=", cache.wid,
-                    " mode=", mode == 0 ? "direct" : (mode == 1 ? "flipped" : "unusable (dmabuf fallback)"));
-            }
-            if (cache.gl_readback_mode == 1) {
-                std::vector<uint8_t> tmp(row);
-                for (int y = 0; y < h / 2; y++) {
-                    uint8_t *a = px.data() + (size_t)y * row;
-                    uint8_t *b = px.data() + (size_t)(h - 1 - y) * row;
-                    memcpy(tmp.data(), a, row);
-                    memcpy(a, b, row);
-                    memcpy(b, tmp.data(), row);
-                }
-            }
-            if (cache.gl_readback_mode == 0 || cache.gl_readback_mode == 1) {
-                double ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - t0).count();
-                if (ms > 4.0) {
-                    UtilityFunctions::print("waylandgodot: [diag] GL readback ", w, "x", h, " ", ms, " ms");
-                }
-                video_share.submit_pixels(cache.wid, std::move(px), w, h);
-                return;
-            }
-        } else if (cache.gl_readback_mode == -1) {
-            cache.gl_readback_mode = 2;
-            UtilityFunctions::print("waylandgodot: video_share: GL readback unavailable — dmabuf path");
+    if (w > 0 && h > 0) {
+        std::vector<uint8_t> px((size_t)w * h * 4);
+        if (gl_readback_rgba(cache, w, h, px.data())) {
+            video_share.submit_pixels(cache.wid, std::move(px), w, h);
+            return;
         }
     }
     video_share.submit_dmabuf(cache.wid, dup(cache.dma_fd), cache.stride,

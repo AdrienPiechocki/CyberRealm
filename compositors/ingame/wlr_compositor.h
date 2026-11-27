@@ -1378,6 +1378,8 @@ public:
     // wait_for_dmabuf_gpu_writes). No-op si le partage vidéo est inactif ou
     // si la fenêtre n'est pas dans l'ensemble partagé.
     void submit_video_frame(CaptureCache &cache);
+    bool gl_readback_rgba(CaptureCache &cache, int w, int h, uint8_t *dst);
+    void synchronous_cpu_readback(CaptureCache &cache, int w, int h);
 
     // Taille de l'output virtuel (viewport Godot) pour le layout des layer
     // surfaces. À appeler par le script dès qu'il connaît sa taille réelle
