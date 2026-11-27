@@ -274,6 +274,7 @@ func handle_focus_input(delta: float) -> void:
 		fm.zone_select._handle_zone_selection()
 		return
 	if fm.remote_focus:
+		fm.remote.process_pointer()
 		return
 	var active_id := fm._active_id()
 	if active_id == -1 or not fm.focus_rects.has(active_id):

@@ -18,16 +18,23 @@ extends Node
 ## de VT) filtré. Bornes : MAX_POINTER_PER_SEC, MAX_INPUT_PER_SEC ; au-delà, ignoré. Interdit en session par code d'invitation non approuvée
 ## (window_share_restricted, comme le partage de fenêtres). Un seul seat : l'invité et le propriétaire partagent clavier et pointeur
 ## du compositeur (une touche de l'invité donne le focus clavier à la fenêtre contrôlée).
+##
+## Fenêtre de jeu FPS : quand l'application verrouille le pointeur (zwp_pointer_constraints_v1, ex. caméra d'un FPS),
+## le propriétaire le signale aux invités qui ont la main (fiable). L'invité capture alors sa souris et n'envoie plus
+## que du mouvement RELATIF (somme par frame, non fiable, canal 3) ; le propriétaire le transmet par
+## forward_pointer_relative_motion et jette tout mouvement absolu (le client le traduirait en saut de caméra).
 
 signal control_requested(peer: int, wid: int)              # propriétaire : afficher la demande
 signal control_changed(owner: int, wid: int, active: bool)       # invité : contrôle accordé / refusé / retiré
 signal guest_control_changed(guest: int, wid: int, active: bool) # propriétaire : un invité contrôle (plus) ma fenêtre
 
 const REQUEST_TIMEOUT_MSEC := 15000
-const MAX_POINTER_PER_SEC := 120
+const MAX_POINTER_PER_SEC := 250        # borne chez le propriétaire : l'invité en envoie ≤ POINTER_SEND_HZ + un par clic
+const POINTER_SEND_HZ := 150            # cadence d'envoi du pointeur par l'invité, quel que soit son plafond FPS
 const MAX_INPUT_PER_SEC := 120            # boutons, molette et touches (appui + relâchement : 60 touches/s)
 const BUTTONS := [0x110, 0x111, 0x112, 0x113, 0x114]      # BTN_LEFT, RIGHT, MIDDLE, SIDE, EXTRA
 const MAX_AXIS := 1200.0
+const MAX_RELATIVE := 4000.0             # px par envoi (somme d'une frame de souris)
 const VT_KEYS := [KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12]
 
 var lan = null                    # LanManager (non typé : doublure possible dans les tests)
@@ -44,11 +51,15 @@ var _mods: Dictionary = {}        # wid -> {ctrl, alt}
 var _markers: Dictionary = {}     # "wid:peer" -> [Node3D, Control|null] (pointeur de chaque invité)
 var _kbd_wid := -1                # fenêtre qui a reçu le focus clavier en dernier (touches du propriétaire)
 var _owner_moved_frame := -100    # dernière frame où la souris du propriétaire a réellement bougé
+var _lock_sent: Dictionary = {}   # "wid:peer" -> état de verrouillage du pointeur annoncé à cet invité
 
 # ── Invité ──
 var _controlling: Dictionary = {} # "peer:wid" -> true
 var _requested: Dictionary = {}   # "peer:wid" -> t
 var _pending_ptr: Dictionary = {} # "peer:wid" -> Vector2
+var _pending_rel: Dictionary = {} # "peer:wid" -> Vector2 (mouvement relatif pas encore envoyé)
+var _locked: Dictionary = {}      # "peer:wid" -> true : l'application a verrouillé le pointeur (jeu FPS)
+var _ptr_next_usec: Dictionary = {} # "peer:wid" -> heure du prochain envoi du pointeur (cadence POINTER_SEND_HZ)
 var _down: Dictionary = {}        # "peer:wid" -> {"k:..": [code, loc], "b:..": button} (relâchés en sortie)
 
 func _now() -> int:
@@ -84,10 +95,19 @@ func release_control(peer: int, wid: int) -> void:
 		return
 	release_inputs(peer, wid)
 	_controlling.erase(k)
-	_pending_ptr.erase(k)
+	_forget_guest(k)
 	if _can_net():
 		_rc_release.rpc_id(peer, wid)
 	control_changed.emit(peer, wid, false)
+
+## L'application de la fenêtre contrôlée a verrouillé le pointeur : n'envoyer que du relatif (send_relative).
+func is_locked(peer: int, wid: int) -> bool:
+	return _locked.has(key_of(peer, wid))
+
+func send_relative(peer: int, wid: int, d: Vector2) -> void:
+	if is_controlling(peer, wid) and is_locked(peer, wid):
+		var k := key_of(peer, wid)
+		_pending_rel[k] = (_pending_rel.get(k, Vector2.ZERO) as Vector2) + d
 
 func send_pointer(peer: int, wid: int, uv: Vector2) -> void:
 	if is_controlling(peer, wid):
@@ -97,12 +117,14 @@ func send_button(peer: int, wid: int, button: int, pressed: bool) -> void:
 	if not is_controlling(peer, wid) or not _can_net():
 		return
 	_flush_pointer(key_of(peer, wid))               # le clic part à la dernière position
+	_flush_relative(key_of(peer, wid))
 	_track(key_of(peer, wid), "b:%d" % button, button, pressed)
 	_rc_button.rpc_id(peer, wid, button, pressed)
 
 func send_axis(peer: int, wid: int, dx: float, dy: float) -> void:
 	if is_controlling(peer, wid) and _can_net():
 		_flush_pointer(key_of(peer, wid))
+		_flush_relative(key_of(peer, wid))
 		_rc_axis.rpc_id(peer, wid, dx, dy)
 
 func send_key(peer: int, wid: int, code: int, location: int, pressed: bool) -> void:
@@ -140,6 +162,23 @@ func _flush_pointer(k: String) -> void:
 	var p := k.split(":")
 	_rc_pointer.rpc_id(int(p[0]), int(p[1]), uv.x, uv.y)
 
+func _flush_relative(k: String) -> void:
+	if not _pending_rel.has(k) or not _can_net():
+		return
+	var d: Vector2 = _pending_rel[k]
+	_pending_rel.erase(k)
+	if d == Vector2.ZERO:
+		return
+	var p := k.split(":")
+	_rc_relative.rpc_id(int(p[0]), int(p[1]), d.x, d.y)
+
+## Oubli de l'état invité d'une fenêtre (fin du contrôle).
+func _forget_guest(k: String) -> void:
+	_pending_ptr.erase(k)
+	_pending_rel.erase(k)
+	_locked.erase(k)
+	_ptr_next_usec.erase(k)
+
 @rpc("any_peer", "call_remote", "reliable", 1)
 func _rc_answer(wid: Variant, granted: Variant) -> void:
 	_on_answer(multiplayer.get_remote_sender_id(), wid, granted)
@@ -165,9 +204,24 @@ func _on_revoke(from: int, wid: Variant) -> void:
 	var k := key_of(from, wid)
 	_requested.erase(k)
 	if _controlling.erase(k):
-		_pending_ptr.erase(k)
+		_forget_guest(k)
 		_down.erase(k)
 		control_changed.emit(from, wid, false)
+
+@rpc("any_peer", "call_remote", "reliable", 1)
+func _rc_lock(wid: Variant, locked: Variant) -> void:
+	_on_lock(multiplayer.get_remote_sender_id(), wid, locked)
+
+func _on_lock(from: int, wid: Variant, locked: Variant) -> void:
+	if not (wid is int) or not (locked is bool) or not is_controlling(from, wid):
+		return
+	var k := key_of(from, wid)
+	if locked:
+		_locked[k] = true
+		_pending_ptr.erase(k)            # plus d'absolu vers un client verrouillé
+	else:
+		_locked.erase(k)
+		_pending_rel.erase(k)
 
 # ════════════════════════════════════════════════════════════════════════
 # Propriétaire
@@ -288,6 +342,7 @@ func revoke_peer(wid: int, peer: int, notify := true) -> void:
 	if int(_seat.get(wid, OWNER)) == peer:
 		_take_seat(wid, OWNER)
 	(_grants[wid] as Dictionary).erase(peer)
+	_lock_sent.erase(key_of(wid, peer))
 	_remove_marker(wid, peer)
 	if (_grants[wid] as Dictionary).is_empty():
 		_grants.erase(wid)
@@ -327,12 +382,44 @@ func _on_pointer(from: int, wid: Variant, u: Variant, v: Variant) -> void:
 	var comp := _comp()
 	if body == null or comp == null:
 		return
+	if _window_locked(wid):
+		return                          # message parti avant que l'invité apprenne le verrouillage
 	_take_seat(wid, from)
 	var ss: Vector2 = body.get_meta("surface_size", Vector2.ZERO)
 	var co: Vector2 = body.get_meta("content_offset", Vector2.ZERO)
 	var p := uv * ss + co
 	comp.forward_pointer_motion(wid, p.x, p.y)
 	_update_marker(wid, from, uv)
+
+func _window_locked(wid: int) -> bool:
+	var comp := _comp()
+	return comp != null and comp.has_method("is_window_pointer_locked") and comp.is_window_pointer_locked(wid)
+
+@rpc("any_peer", "call_remote", "unreliable", 3)
+func _rc_relative(wid: Variant, dx: Variant, dy: Variant) -> void:
+	_on_relative(multiplayer.get_remote_sender_id(), wid, dx, dy)
+
+func _on_relative(from: int, wid: Variant, dx: Variant, dy: Variant) -> void:
+	if not (wid is int) or not (dx is float) or not (dy is float) or not has_control(wid, from) or not _allow(from, "ptr"):
+		return
+	if not _window_locked(wid) or _body(wid) == null:
+		return                          # déverrouillé entre-temps : l'invité repasse à l'absolu
+	_take_seat(wid, from)
+	var x := clampf(dx, -MAX_RELATIVE, MAX_RELATIVE)
+	var y := clampf(dy, -MAX_RELATIVE, MAX_RELATIVE)
+	_comp().forward_pointer_relative_motion(wid, x, y, x, y)
+
+## Propriétaire : annonce aux invités qui ont la main le verrouillage du pointeur de chaque fenêtre (jeu FPS).
+func _sync_locks() -> void:
+	if not is_inside_tree() or not multiplayer.has_multiplayer_peer():
+		return
+	for wid in _grants:
+		var locked := _window_locked(wid)
+		for peer in controllers_of(wid):
+			var lk := key_of(wid, int(peer))
+			if bool(_lock_sent.get(lk, false)) != locked:
+				_lock_sent[lk] = locked
+				_rc_lock.rpc_id(int(peer), wid, locked)
 
 @rpc("any_peer", "call_remote", "reliable", 1)
 func _rc_button(wid: Variant, button: Variant, pressed: Variant) -> void:
@@ -474,9 +561,23 @@ func _remove_marker(wid: int, peer := -1) -> void:
 # ── Boucle : envoi du pointeur, fins de contrôle, délais ───────────────
 
 func _process(_delta: float) -> void:
-	for k in _pending_ptr.keys():
-		_flush_pointer(k)
+	# Une position par frame, mais pas plus de POINTER_SEND_HZ : à 144-240 ips, un envoi par frame dépassait la borne
+	# du propriétaire, qui jetait la fin de chaque seconde (pointeur figé par à-coups).
+	# Cadence moyenne exacte (pas d'envoi une frame sur deux à 165 ips), sans rafale après une pause.
+	var usec := Time.get_ticks_usec()
+	var step := 1000000 / POINTER_SEND_HZ
+	var keys: Array = _pending_ptr.keys()
+	for k in _pending_rel.keys():
+		if not keys.has(k):
+			keys.append(k)
+	for k in keys:
+		var due := int(_ptr_next_usec.get(k, 0))
+		if usec >= due:
+			_ptr_next_usec[k] = maxi(due + step, usec - step)
+			_flush_pointer(k)
+			_flush_relative(k)
 	var now := _now()
+	_sync_locks()
 	# Propriétaire : demande affichée sans réponse = refus (la suivante s'affiche).
 	if not _pending.is_empty() and now - int(_pending[0]["t"]) > REQUEST_TIMEOUT_MSEC:
 		answer(int(_pending[0]["wid"]), false)
@@ -496,6 +597,7 @@ func _process(_delta: float) -> void:
 		var owner := int(String(k).split(":")[0])
 		if not peers.has(owner):
 			_controlling.erase(k)
+			_forget_guest(k)
 			_down.erase(k)
 			var p := String(k).split(":")
 			control_changed.emit(int(p[0]), int(p[1]), false)
@@ -509,5 +611,9 @@ func reset() -> void:
 	_controlling.clear()
 	_requested.clear()
 	_pending_ptr.clear()
+	_pending_rel.clear()
+	_locked.clear()
+	_lock_sent.clear()
+	_ptr_next_usec.clear()
 	_down.clear()
 	_budget.clear()

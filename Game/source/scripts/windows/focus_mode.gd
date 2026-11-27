@@ -542,7 +542,10 @@ func on_window_unmapped(id: int) -> void:
 # Rend la souris à la fenêtre focalisée après un overlay interactif (layer) qui l'avait libérée :
 # capturée si le client a verrouillé le pointeur (pointer constraints), visible sinon.
 func restore_pointer_after_layer() -> void:
-	if not focus_mode or remote_focus or _active_id() == -1:
+	if focus_mode and remote_focus:
+		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED if remote.locked() else Input.MOUSE_MODE_HIDDEN
+		return
+	if not focus_mode or _active_id() == -1:
 		return
 	if _state(_active_id()).get("mouse_captured", false):
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -943,6 +946,8 @@ var _joy_click_blocked: Dictionary = {}
 var _joy_click_release_frame: Dictionary = {}
 
 func in_game() -> bool:
+	if remote_focus:
+		return remote.in_game()
 	var st := _state(_active_id())
 	if st["is_game"]:
 		return true
@@ -966,6 +971,8 @@ func set_force_game(id: int, is_game: bool) -> void:
 	st["is_game"] = is_game
 
 func toggle_force_game() -> bool:
+	if remote_focus:
+		return remote.toggle_game()
 	var id := _active_id()
 	if id == -1:
 		return false

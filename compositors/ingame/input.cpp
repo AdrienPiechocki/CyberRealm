@@ -782,6 +782,19 @@ void WlrCompositor::set_audio_share_pids(Array pids) {
 void WlrCompositor::forward_pointer_relative_motion(int window_id, double dx, double dy, double dx_unaccel, double dy_unaccel) {
     notify_activity();
     if (!relative_pointer_manager || !seat) return;
+    // Le relatif part à la surface qui a le focus pointeur du seat. Contrôle à distance : ce focus a pu passer
+    // à une autre fenêtre (le viseur du propriétaire) ; le rendre à `window_id` par un enter, sans motion absolu
+    // (un client verrouillé le traduirait en mouvement de caméra).
+    WindowState *ws = find_window(window_id);
+    if (ws && ws->toplevel && ws->toplevel->base) {
+        wlr_surface *root = ws->toplevel->base->surface;
+        wlr_surface *focused = seat->pointer_state.focused_surface;
+        if (root && (!focused || wlr_surface_get_root_surface(focused) != root)) {
+            const double sx = ws->pointer_inside ? ws->pointer_x / ws->scale : 0.0;
+            const double sy = ws->pointer_inside ? ws->pointer_y / ws->scale : 0.0;
+            wlr_seat_pointer_notify_enter(seat, root, sx, sy);
+        }
+    }
     uint64_t time_usec = get_time_msec() * 1000;
     wlr_relative_pointer_manager_v1_send_relative_motion(
         relative_pointer_manager, seat, time_usec, dx, dy, dx_unaccel, dy_unaccel);

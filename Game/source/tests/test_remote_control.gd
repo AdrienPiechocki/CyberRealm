@@ -12,6 +12,9 @@ class FakeComp extends Node:
 	func forward_pointer_axis(w, dx, dy): calls.append(["axis", w, dx, dy])
 	func forward_keyboard_key(c, l, p): calls.append(["key", c, l, p])
 	func set_window_keyboard_focus(w): calls.append(["focus", w])
+	func forward_pointer_relative_motion(w, dx, dy, _ux, _uy): calls.append(["rel", w, dx, dy])
+	var locked: Dictionary = {}
+	func is_window_pointer_locked(w) -> bool: return locked.has(w)
 
 class FakeLan extends Node:
 	var compositor: Node = null
@@ -100,12 +103,12 @@ func test_vt_switch_filtered_and_rate_limited():
 	rc._on_key(7, 5, KEY_F2, 0, true)
 	var r: Variant = Runner.assert_eq(comp.calls, [], "Ctrl+Alt+F2 filtré")
 	if r is String: return _done(r)
-	for i in 200:
+	for i in RC.MAX_POINTER_PER_SEC + 80:
 		rc._on_pointer(7, 5, 0.1, 0.1)
 	var n := 0
 	for c in comp.calls:
 		if c[0] == "motion": n += 1
-	return _done(Runner.assert_eq(n, RC.MAX_POINTER_PER_SEC, "au plus 120 mouvements par seconde"))
+	return _done(Runner.assert_eq(n, RC.MAX_POINTER_PER_SEC, "au plus MAX_POINTER_PER_SEC mouvements par seconde"))
 
 func test_unshared_window_refused():
 	var rc := _make()
@@ -127,6 +130,45 @@ func test_guest_side_state():
 	rc._on_revoke(1, 5)
 	return _done(Runner.assert_true(not rc.is_controlling(1, 5) and changes.size() == 2, "contrôle retiré"))
 
+## Jeu FPS chez le propriétaire : pointeur verrouillé → relatif transmis, absolu jeté ; déverrouillé → l'inverse.
+func test_locked_window_takes_relative_only():
+	var rc := _make()
+	rc._on_request(7, 5)
+	rc.answer(5, true)
+	var comp: Node = rc.lan.compositor
+	comp.locked[5] = true
+	comp.calls.clear()
+	rc._on_pointer(7, 5, 0.5, 0.5)
+	rc._on_relative(7, 5, 12.0, -3.0)
+	rc._on_relative(7, 5, 99999.0, 0.0)
+	var r: Variant = Runner.assert_eq(comp.calls, [["rel", 5, 12.0, -3.0], ["rel", 5, RC.MAX_RELATIVE, 0.0]],
+		"verrouillé : relatif seulement, borné")
+	if r is String: return _done(r)
+	comp.locked.erase(5)
+	comp.calls.clear()
+	rc._on_relative(7, 5, 1.0, 1.0)
+	rc._on_relative(8, 5, 1.0, 1.0)                  # sans la main : ignoré de toute façon
+	rc._on_pointer(7, 5, 0.5, 0.5)
+	return _done(Runner.assert_eq(comp.calls, [["motion", 5, 410.0, 320.0]], "déverrouillé : absolu seulement"))
+
+## Invité : l'annonce de verrouillage n'est acceptée que du propriétaire, oubliée à la fin du contrôle.
+func test_guest_lock_state():
+	var rc := _make()
+	rc._on_lock(1, 5, true)
+	var r: Variant = Runner.assert_true(not rc.is_locked(1, 5), "sans contrôle : ignoré")
+	if r is String: return _done(r)
+	rc._requested[RC.key_of(1, 5)] = 0
+	rc._on_answer(1, 5, true)
+	rc._on_lock(2, 5, true)
+	rc._on_lock(1, 5, true)
+	r = Runner.assert_true(rc.is_locked(1, 5) and not rc.is_locked(2, 5), "verrouillage du propriétaire seulement")
+	if r is String: return _done(r)
+	rc.send_relative(1, 5, Vector2(3, 4))
+	rc.send_relative(1, 5, Vector2(1, 1))
+	r = Runner.assert_eq(rc._pending_rel.get(RC.key_of(1, 5)), Vector2(4, 5), "relatif cumulé jusqu'à l'envoi")
+	if r is String: return _done(r)
+	rc._on_revoke(1, 5)
+	return _done(Runner.assert_true(not rc.is_locked(1, 5) and rc._pending_rel.is_empty(), "oublié au retrait"))
 
 func test_last_action_takes_the_seat():
 	var rc := _make()

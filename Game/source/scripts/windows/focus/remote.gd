@@ -10,6 +10,10 @@ var fm: FocusMode = null
 const KmsCursor := preload("res://scripts/kms_cursor.gd")
 const CURSOR_SS := 4            # sur-échantillonnage du rendu de la flèche (bords lissés)
 
+# Fenêtre de jeu (force_game) en focus distant : -1 = auto (jeu tant que l'application verrouille le pointeur),
+# 0 / 1 = forcé par l'action force_game. Remis à -1 à chaque entrée en focus distant.
+var game_override := -1
+
 # Flèche de secours : la flèche de BASE du jeu (kms_cursor.gd), rendue une fois en image lissée (contour noir,
 # intérieur blanc, hotspot (0,0)). Affichée pour le pointeur de l'invité sous contrôle, et quand l'application du
 # propriétaire utilise le curseur système (aucun set_cursor custom) — le cas le plus courant.
@@ -54,6 +58,7 @@ func enter_remote_focus(peer_id: int, wid: int, texture: Texture2D) -> void:
 	fm.remote_focus = true
 	fm.remote_focus_peer = peer_id
 	fm.remote_focus_wid = wid
+	game_override = -1
 	var rect := TextureRect.new()
 	rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
 	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -96,6 +101,9 @@ func set_remote_cursor_state(peer_id: int, wid: int, state) -> void:
 # CENTERED que le TextureRect, image custom si dispo sinon flèche de secours.
 func _update_remote_cursor() -> void:
 	if not fm.remote_focus or fm.remote_cursor_overlay == null:
+		return
+	if locked() and not fm.annotating:
+		_hide_remote_cursor()                 # jeu FPS : souris capturée, l'application dessine son viseur
 		return
 	if controlled() or fm.annotating:
 		_show_guest_cursor(fm.mouse_pos)      # sous contrôle : notre pointeur, pas celui du propriétaire
@@ -150,6 +158,32 @@ func controlled() -> bool:
 	return fm.remote_focus and fm.remote_control != null \
 		and fm.remote_control.is_controlling(fm.remote_focus_peer, fm.remote_focus_wid)
 
+## Fenêtre contrôlée dont l'application a verrouillé le pointeur (jeu FPS) : souris capturée, relatif seulement.
+func locked() -> bool:
+	return controlled() and fm.remote_control.is_locked(fm.remote_focus_peer, fm.remote_focus_wid)
+
+## Équivalent distant de FocusMode.in_game() : radial et binds manette du mode focus coupés.
+func in_game() -> bool:
+	if not controlled():
+		return false
+	return game_override == 1 or (game_override == -1 and locked())
+
+func toggle_game() -> bool:
+	game_override = 0 if in_game() else 1
+	return in_game()
+
+## Chaque frame en focus distant : souris capturée tant que la fenêtre contrôlée verrouille le pointeur. Seuls les
+## états du focus (masquée / capturée) sont basculés : un menu ouvert (souris visible) n'est pas repris.
+func process_pointer() -> void:
+	if locked():
+		if Input.mouse_mode == Input.MOUSE_MODE_HIDDEN:
+			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+			_hide_remote_cursor()
+	elif Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+		get_viewport().warp_mouse(fm.mouse_pos)
+		_update_remote_cursor()
+
 ## Zone affichée de la texture distante (STRETCH_KEEP_ASPECT_CENTERED) : [offset, taille], vide si indisponible.
 func _displayed_area() -> Array:
 	if fm.remote_focus_rect == null or not is_instance_valid(fm.remote_focus_rect) or fm.remote_focus_rect.texture == null:
@@ -185,15 +219,20 @@ func handle_controlled_event(event: InputEvent) -> void:
 	var rc: Node = fm.remote_control
 	var peer := fm.remote_focus_peer
 	var wid := fm.remote_focus_wid
-	if event is InputEventMouseMotion:
+	# Jeu FPS (pointeur verrouillé) : relatif seulement, boutons et molette sans position.
+	var lock := locked()
+	if event is InputEventMouseMotion and lock:
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			rc.send_relative(peer, wid, (event as InputEventMouseMotion).relative)
+	elif event is InputEventMouseMotion:
 		var uv := screen_to_uv(event.position)
 		if uv.x >= 0.0:
 			rc.send_pointer(peer, wid, uv)
 		_show_guest_cursor(event.position)
 	elif event is InputEventMouseButton:
 		var mb := event as InputEventMouseButton
-		var uv := screen_to_uv(mb.position)
-		if uv.x >= 0.0:
+		var uv := Vector2.ZERO if lock else screen_to_uv(mb.position)
+		if uv.x >= 0.0 and not lock:
 			rc.send_pointer(peer, wid, uv)
 		match mb.button_index:
 			MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN:
