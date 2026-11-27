@@ -252,6 +252,17 @@ void WlrCompositor::on_toplevel_destroy(wl_listener *listener, void *data) {
     wl_list_remove(&ws->request_resize_listener.link);
     wl_list_remove(&ws->set_title_listener.link);
 
+    // L'objet décoration peut survivre au toplevel (client qui détruit la
+    // fenêtre avant sa décoration, ou fin de session) : ses listeners pointent
+    // dans ce WindowState, qui va être libéré. Sans ce retrait,
+    // on_toplevel_decoration_destroy écrit plus tard dans la mémoire libérée
+    // (use-after-free trouvé par ASan → corruption du tas, crashs malloc).
+    if (ws->decoration) {
+        wl_list_remove(&ws->decoration_request_mode_listener.link);
+        wl_list_remove(&ws->decoration_destroy_listener.link);
+        ws->decoration = nullptr;
+    }
+
     self->windows.erase(id);
     self->clear_window_cursor(id);
 }
