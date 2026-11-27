@@ -12,6 +12,7 @@
 
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <csignal>
@@ -214,6 +215,10 @@ void AudioShare::stop() {
 	node_targets.clear();
 	follow_default.clear();
 	released.clear();
+	node_is_app.clear();
+	meta_object.clear();
+	native_routed.clear();
+	user_moved.clear();
 	if (registry) {
 		pw_proxy_destroy((pw_proxy *)registry);
 		registry = nullptr;
@@ -391,6 +396,7 @@ void AudioShare::on_node_info(uint32_t id, const struct pw_node_info *info) {
 		// on_registry_global_remove ou stop().
 		apply_targets();
 		release_spatial_targets();
+		route_native_streams();
 	}
 }
 
@@ -412,6 +418,7 @@ void AudioShare::on_client_info(uint32_t id, const struct pw_client_info *info) 
 		UtilityFunctions::print("waylandgodot: audio: client ", id, " → pid ", pid);
 		// Re-résout les nodes appartenant à ce client et retente le ciblage.
 		apply_targets();
+		route_native_streams();
 	}
 	// Le bind client reste en vie (libéré par on_registry_global_remove ou
 	// stop()) : le libérer ici = use-after-free (voir on_node_info).
@@ -462,6 +469,10 @@ void AudioShare::on_registry_global_remove(uint32_t id) {
 	node_targets.erase(id);
 	follow_default.erase(id);
 	released.erase(id);
+	node_is_app.erase(id);
+	meta_object.erase(id);
+	native_routed.erase(id);
+	user_moved.erase(id);
 	if (metadata && id == metadata_id) {
 		pw_proxy_destroy((pw_proxy *)metadata);
 		metadata = nullptr;
@@ -895,7 +906,9 @@ bool AudioShare::set_spatial_sink(bool on, const String &name) {
 		spatial_sink_name = n.get_data();
 		released.clear();
 		release_spatial_targets();
+		route_native_streams();
 	} else if (!on && spatial_sink_proxy) {
+		unroute_native_streams();
 		pw_proxy_destroy((pw_proxy *)spatial_sink_proxy);
 		spatial_sink_proxy = nullptr;
 		UtilityFunctions::print("waylandgodot: audio: spatial sink removed");
@@ -914,7 +927,19 @@ void AudioShare::on_metadata_property(uint32_t subject, const char *key, const c
 	uint8_t bit = 0;
 	if (key == nullptr) {
 		follow_default.erase(subject); // toutes les clés du sujet effacées
+		meta_object.erase(subject);
 		return;
+	}
+	if (strcmp(key, "target.object") == 0) {
+		if (value) {
+			meta_object[subject] = value;
+		} else {
+			meta_object.erase(subject);
+		}
+		// Un flux que nous avions dirigé reçoit une autre cible : choix de l'utilisateur, on ne le reprend plus.
+		if (value && native_routed.count(subject) && value != spatial_sink_name) {
+			user_moved.insert(subject);
+		}
 	}
 	if (strcmp(key, "target.node") == 0) {
 		bit = 1;
@@ -966,6 +991,114 @@ void AudioShare::release_spatial_targets() {
 		UtilityFunctions::print("waylandgodot: audio: node ", kv.first, " (",
 			nm != node_names.end() ? nm->second.c_str() : "?", ") back to ", spatial_sink_name.c_str());
 	}
+}
+
+int AudioShare::resolve_node_pid(uint32_t id) const {
+	auto p = node_pids.find(id);
+	if (p != node_pids.end() && p->second > 0) {
+		return p->second;
+	}
+	// Client résolu après la dernière info du nœud.
+	auto c = node_clients.find(id);
+	if (c != node_clients.end()) {
+		auto cp = client_pids.find(c->second);
+		if (cp != client_pids.end()) {
+			return cp->second;
+		}
+	}
+	return -1;
+}
+
+// App lancée par le jeu : son environnement porte PULSE_SINK=<sortie> (launch_app, cyberrealm-launch). Le jeu
+// lui-même ne l'a pas (seuls ses enfants le reçoivent) ; pipewire-pulse non plus (ses flux ont déjà leur cible).
+bool AudioShare::is_game_app_pid(int pid) const {
+	if (pid <= 0 || pid == getpid() || spatial_sink_name.empty()) {
+		return false;
+	}
+	char path[64];
+	snprintf(path, sizeof(path), "/proc/%d/environ", pid);
+	FILE *f = fopen(path, "rb");
+	if (!f) {
+		return false;
+	}
+	std::string env;
+	char buf[4096];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
+		env.append(buf, n);
+	}
+	fclose(f);
+	const std::string want = "PULSE_SINK=" + spatial_sink_name;
+	size_t pos = 0;
+	while (pos < env.size()) {
+		size_t end = env.find('\0', pos);
+		if (end == std::string::npos) {
+			end = env.size();
+		}
+		if (env.compare(pos, end - pos, want) == 0) {
+			return true;
+		}
+		pos = end + 1;
+	}
+	return false;
+}
+
+// Thread de la boucle PW (callbacks) ou sous son lock (set_spatial_sink).
+void AudioShare::route_native_streams() {
+	if (!metadata || !spatial_sink_proxy || spatial_sink_name.empty()) {
+		return;
+	}
+	std::vector<uint32_t> todo;
+	for (const auto &kv : node_classes) {
+		const uint32_t id = kv.first;
+		if (kv.second != "Stream/Output/Audio" || native_routed.count(id) || user_moved.count(id)
+				|| node_targets.count(id)) {
+			continue; // déjà fait, choix de l'utilisateur, ou cible dans les props (PULSE_SINK, app explicite)
+		}
+		auto a = node_is_app.find(id);
+		if (a == node_is_app.end()) {
+			const int pid = resolve_node_pid(id);
+			if (pid <= 0) {
+				continue; // PID pas encore connu : réessayé à la prochaine info nœud/client
+			}
+			a = node_is_app.emplace(id, is_game_app_pid(pid)).first;
+		}
+		if (a->second) {
+			todo.push_back(id);
+		}
+	}
+	for (uint32_t id : todo) {
+		native_routed.insert(id);
+		// « Suivre la sortie par défaut » (-1) posé par WirePlumber quand la sortie a disparu : l'effacer.
+		auto fd = follow_default.find(id);
+		if (fd != follow_default.end() && (fd->second & 1)) {
+			pw_metadata_set_property((pw_metadata *)metadata, id, "target.node", nullptr, nullptr);
+		}
+		// Par nom (pas par object.serial) : WirePlumber relie au nœud de ce nom, et ne mémorise pas la cible
+		// (son hook de sauvegarde ne résout que les serials) → rien de « cyberrealm-spatial » dans son état.
+		pw_metadata_set_property((pw_metadata *)metadata, id, "target.object", "Spa:String",
+				spatial_sink_name.c_str());
+		auto nm = node_names.find(id);
+		UtilityFunctions::print("waylandgodot: audio: native node ", id, " (",
+			nm != node_names.end() ? nm->second.c_str() : "?", ") -> ", spatial_sink_name.c_str());
+	}
+}
+
+// Sous le lock de la boucle (set_spatial_sink), avant de détruire la sortie.
+void AudioShare::unroute_native_streams() {
+	if (metadata) {
+		for (uint32_t id : native_routed) {
+			if (user_moved.count(id)) {
+				continue;
+			}
+			auto m = meta_object.find(id);
+			if (m == meta_object.end() || m->second == spatial_sink_name) {
+				pw_metadata_set_property((pw_metadata *)metadata, id, "target.object", nullptr, nullptr);
+			}
+		}
+	}
+	// Recréée plus tard : on repose la cible des flux non déplacés par l'utilisateur.
+	native_routed.clear();
 }
 
 PackedInt32Array AudioShare::audio_pids() {

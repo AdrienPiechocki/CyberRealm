@@ -602,7 +602,8 @@ func _ready() -> void:
 	compositor.start_headless()
 	# Son spatialisé des fenêtres : les apps lancées par le jeu visent la sortie « cyberrealm-spatial », qui n'existe
 	# que si l'option est active (window_audio.gd) ; absente, elles gardent la sortie par défaut. PULSE_SINK pour les
-	# apps PulseAudio. Vérifié : un flux d'ENREGISTREMENT qui vise une sortie reste sur le micro par défaut
+	# apps PulseAudio ; les apps PipeWire natives (mpv) y sont dirigées par le jeu (AudioShare::route_native_streams,
+	# qui les reconnaît à ce PULSE_SINK dans leur environnement). Vérifié : un flux d'ENREGISTREMENT qui vise une sortie reste sur le micro par défaut
 	# (WirePlumber ne le relie pas au monitor de la sortie). Pas de PIPEWIRE_NODE : PipeWire en fait le target.object
 	# de TOUS les flux natifs du processus, vidéo comprise → partage d'écran (portal-wlr, OBS, Discord) cassé.
 	compositor.set_app_env("PULSE_SINK", "cyberrealm-spatial")

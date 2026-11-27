@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Capture audio des SEULES fenêtres partagées (émetteur) et streaming :
@@ -184,6 +185,21 @@ private:
 	std::unordered_map<uint32_t, int> released;             // node_id -> effacements depuis la création de la sortie
 	void release_spatial_targets();
 	void on_metadata_property(uint32_t subject, const char *key, const char *value);
+
+	// Apps PipeWire natives (mpv) : pas de PIPEWIRE_NODE (PipeWire en ferait le target.object de TOUS les flux du
+	// processus, vidéo comprise → partage d'écran cassé). Le jeu pose lui-même `target.object` = nom de la sortie
+	// dans la métadonnée « default » pour les seuls flux Stream/Output/Audio de ses apps (environnement portant
+	// PULSE_SINK=<sortie>, posé par launch_app et cyberrealm-launch) sans cible dans leurs props. Une fois par flux :
+	// si l'utilisateur le déplace ensuite (pavucontrol), on ne le reprend pas. Sortie retirée : on efface nos clés
+	// (retour à la sortie par défaut) ; recréée : on les repose.
+	std::unordered_map<uint32_t, bool> node_is_app;       // node_id -> processus lancé par le jeu
+	std::unordered_map<uint32_t, std::string> meta_object; // node_id -> target.object de la métadonnée
+	std::unordered_set<uint32_t> native_routed;           // flux natifs dirigés par nous vers la sortie
+	std::unordered_set<uint32_t> user_moved;              // flux dirigés puis déplacés ailleurs par l'utilisateur
+	int resolve_node_pid(uint32_t id) const;
+	bool is_game_app_pid(int pid) const;
+	void route_native_streams();
+	void unroute_native_streams();
 	struct KeyEncoder {
 		void *enc = nullptr;           // OpusEncoder*
 		std::vector<float> pending;    // stéréo entrelacé, < 20 ms
