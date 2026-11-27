@@ -207,7 +207,10 @@ static func _make_frame_piece(deco: Node3D, spec: Dictionary, wid: int) -> void:
 	var visual := MeshInstance3D.new()
 	visual.mesh = QuadMesh.new()
 	visual.material_override = _unshaded(PRIORITY_FRAME)
-	visual.position = Vector3(0.0, 0.0, 0.001)
+	# COPLANAIRE au contenu : le cadre ne le chevauche pas, aucun z-fighting à
+	# éviter. Un décalage de 1 mm vers l'avant donnait, vu de biais, une
+	# parallaxe d'environ un pixel entre le contenu et le cadre.
+	visual.position = Vector3.ZERO
 	visual.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	node.add_child(visual)
 	node.set_meta("decoration_edge", spec["edge"])
@@ -337,7 +340,9 @@ static func _sync_bar(quad: MeshInstance3D, s: float, mesh: QuadMesh, half: Vect
 		Vector2(Decorations.world(Decorations.metrics(), s)["border"], bar_h))
 	if top_band.x <= 0.0 or top_band.y <= 0.0:
 		(titlebar.mesh as QuadMesh).size = bar_size
-	titlebar.position = Vector3(0.0, half.y + bar_h * 0.5, 0.001)
+	# z = 0 : coplanaire au contenu (cf. `_make_frame_piece`) ; seuls les
+	# boutons et le titre, posés SUR la bande, gardent leur millimètre.
+	titlebar.position = Vector3(0.0, half.y + bar_h * 0.5, 0.0)
 	var bar_body := titlebar.get_node_or_null("BarBody") as StaticBody3D
 	if bar_body != null:
 		((bar_body.get_child(0) as CollisionShape3D).shape as BoxShape3D).size = \
@@ -412,13 +417,20 @@ static func set_frame_visible(quad: MeshInstance3D, on: bool) -> void:
 			if shape_node is CollisionShape3D:
 				shape_node.disabled = not on
 				
-## Région de l'atlas en UV normalisés (0..1 sur la texture de base).
+## Région de l'atlas en UV normalisés (0..1 sur la texture de base), rentrée
+## d'un demi-texel de chaque côté (quand la région le permet). Le filtrage
+## linéaire lit sinon, au bord de la région, la moitié du texel VOISIN : pour la
+## bande de titre, c'est le centre transparent du 9-patch, d'où un liseré
+## semi-transparent contre le contenu. `filter_clip` ne vaut qu'en 2D.
 static func atlas_uv_rect(atlas: Texture2D) -> Rect2:
 	var at := atlas as AtlasTexture
 	if at == null or at.atlas == null:
 		return Rect2(0.0, 0.0, 1.0, 1.0)
 	var tex_size := Vector2(at.atlas.get_size())
-	return Rect2(at.region.position / tex_size, at.region.size / tex_size)
+	var r := at.region
+	var inset := Vector2(0.5 if r.size.x > 1.0 else 0.0, 0.5 if r.size.y > 1.0 else 0.0)
+	r = Rect2(r.position + inset, r.size - inset * 2.0)
+	return Rect2(r.position / tex_size, r.size / tex_size)
 
 ## Texture réellement assignée au matériau d'une pièce tilée.
 static func tiled_albedo(atlas: Texture2D) -> Texture2D:

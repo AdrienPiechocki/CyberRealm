@@ -102,8 +102,12 @@ void fragment() {
     // de la texture (y compris la zone transparente/stale), déformant
 	// l'image.
 	vec2 ts = vec2(textureSize(window_texture, 0));
-	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
-		? UV * content_size / ts : UV;
+	vec2 cs = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0) ? content_size : ts;
+	// UV bornés au centre des texels de bord : en filtrage linéaire, le
+	// dernier demi-texel mélangeait sinon le bord du contenu avec la marge
+	// d'allocation (transparente) ou, par répétition, le bord opposé —
+	// un liseré d'un pixel entre le contenu et son cadre.
+	vec2 mapped_uv = ts.x > 0.0 ? clamp(UV * cs, vec2(0.5), cs - 0.5) / ts : UV;
 	vec4 tex = texture(window_texture, mapped_uv);
 	if (tex.a > 0.01) {
 		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
@@ -171,8 +175,12 @@ uniform bool opaque_mode = true;
 
 void fragment() {
 	vec2 ts = vec2(textureSize(window_texture, 0));
-	vec2 mapped_uv = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0)
-		? UV * content_size / ts : UV;
+	vec2 cs = (ts.x > 0.0 && ts.y > 0.0 && content_size.x > 0.0) ? content_size : ts;
+	// UV bornés au centre des texels de bord : en filtrage linéaire, le
+	// dernier demi-texel mélangeait sinon le bord du contenu avec la marge
+	// d'allocation (transparente) ou, par répétition, le bord opposé —
+	// un liseré d'un pixel entre le contenu et son cadre.
+	vec2 mapped_uv = ts.x > 0.0 ? clamp(UV * cs, vec2(0.5), cs - 0.5) / ts : UV;
 	vec4 tex = texture(window_texture, mapped_uv);
 	if (tex.a > 0.01) {
 		vec3 unmultiplied = tex.rgb / max(tex.a, 0.001);
