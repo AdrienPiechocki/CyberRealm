@@ -1866,11 +1866,23 @@ func _save_screenshot_img(img: Image, prefix: String) -> void:
 	# Readbacks GPU (viewport) peuvent arriver dans un format non PNG-friendly :
 	# on normalise en RGBA8 comme le fait present_manager avant l'upload.
 	img.convert(Image.FORMAT_RGBA8)
+	# Copie dans le presse-papier des fenêtres (image/png), même si
+	# l'enregistrement du fichier échoue ensuite.
+	var copied := false
+	if compositor and compositor.has_method("clipboard_set_image_png"):
+		var png := img.save_png_to_buffer()
+		if not png.is_empty():
+			compositor.clipboard_set_image_png(png)
+			copied = true
 	var folder: String = pause_menu.get_screenshot_folder()
 	if folder.is_empty():
+		if copied:
+			_flash_screenshot()
 		return
 	var err := DirAccess.make_dir_recursive_absolute(folder)
 	if err != OK and not DirAccess.dir_exists_absolute(folder):
+		if copied:
+			_flash_screenshot()
 		return
 	var t := Time.get_datetime_dict_from_system()
 	var path := "%s/%s-%04d%02d%02d-%02d%02d%02d.png" % [
@@ -1878,7 +1890,7 @@ func _save_screenshot_img(img: Image, prefix: String) -> void:
 		t.get("year", 0), t.get("month", 0), t.get("day", 0),
 		t.get("hour", 0), t.get("minute", 0), t.get("second", 0),
 	]
-	if img.save_png(path) != OK:
+	if img.save_png(path) != OK and not copied:
 		return
 	_flash_screenshot()
 

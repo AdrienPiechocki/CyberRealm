@@ -51,7 +51,7 @@ const char *const TEXT_MIMES[] = {
 struct GodotClipSource {
     wlr_data_source base;
     WlrCompositor *owner;
-    std::string text;
+    std::string text;   // texte, ou octets PNG pour une image
 };
 
 void godot_clip_send(wlr_data_source *base, const char *, int32_t fd) {
@@ -154,6 +154,30 @@ void WlrCompositor::clipboard_poll() {
     }
     clip_godot_source = &src->base;
     // set_selection détruit l'ancienne source (y compris une des nôtres).
+    wlr_seat_set_selection(seat, &src->base, wl_display_next_serial(display));
+}
+
+// Capture d'écran -> presse-papier : source « image/png » servie par nous.
+// Fonctionne quel que soit le DisplayServer (la sélection du seat est celle
+// des fenêtres du jeu) ; le presse-papier texte de Godot n'est pas touché,
+// donc clipboard_poll ne remplace pas l'image tant que Godot ne copie rien.
+void WlrCompositor::clipboard_set_image_png(const PackedByteArray &png) {
+    if (!seat || !display || png.is_empty()) return;
+    if (clip_read_source) {
+        wl_event_source_remove(clip_read_source);
+        clip_read_source = nullptr;
+    }
+    if (clip_read_fd >= 0) {
+        close(clip_read_fd);
+        clip_read_fd = -1;
+    }
+    GodotClipSource *src = new GodotClipSource();
+    wlr_data_source_init(&src->base, &godot_clip_impl);
+    src->owner = this;
+    src->text.assign((const char *)png.ptr(), (size_t)png.size());
+    char **slot = (char **)wl_array_add(&src->base.mime_types, sizeof(char *));
+    if (slot) *slot = strdup("image/png");
+    clip_godot_source = &src->base;
     wlr_seat_set_selection(seat, &src->base, wl_display_next_serial(display));
 }
 

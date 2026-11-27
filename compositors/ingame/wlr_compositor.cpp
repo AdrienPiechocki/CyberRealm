@@ -231,6 +231,7 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("get_window_list"), &WlrCompositor::get_window_list);
     ClassDB::bind_method(D_METHOD("close_window", "window_id"), &WlrCompositor::close_window);
+    ClassDB::bind_method(D_METHOD("clipboard_set_image_png", "png"), &WlrCompositor::clipboard_set_image_png);
     ClassDB::bind_method(D_METHOD("set_toplevel_minimized", "window_id", "minimized"), &WlrCompositor::set_toplevel_minimized);
     ClassDB::bind_method(D_METHOD("set_toplevel_fullscreen", "window_id", "fullscreen"), &WlrCompositor::set_toplevel_fullscreen);
     ClassDB::bind_method(D_METHOD("set_shortcuts_inhibit_window", "window_id"), &WlrCompositor::set_shortcuts_inhibit_window);

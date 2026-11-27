@@ -1144,6 +1144,9 @@ public:
 
     void _process(double delta) override;
 
+    // Met une image PNG dans le presse-papier des fenêtres (capture d'écran).
+    void clipboard_set_image_png(const PackedByteArray &png);
+
     void forward_pointer_motion(int window_id, double surface_x, double surface_y);
     void forward_pointer_motion_popup(int popup_id, double surface_x, double surface_y);
     void release_stale_button(uint32_t button);
