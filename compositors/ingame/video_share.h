@@ -65,6 +65,7 @@ struct VideoEncodeWindow {
 	bool queued = false;          // soumission acceptée, pas encore traitée
 	bool stop_encoding = false;   // arrêt demandé pour cette fenêtre
 	int fd = -1;                  // fd du DMA-BUF à encoder (dupliqué à la soumission)
+	std::vector<uint8_t> pixels;  // OU pixels RGBA déjà en RAM (submit_pixels) : fd = -1
 	uint32_t stride = 0;
 	uint32_t fourcc = 0;          // VA_FOURCC_* du buffer soumis
 	int content_w = 0;            // contenu réel (le buffer peut être arrondi)
@@ -86,6 +87,7 @@ struct VideoEncodeWindow {
 	void *packet = nullptr;              // AVPacket* (tampon d'encodage réutilisé)
 	int64_t frame_index = 0;
 	std::vector<uint8_t> readbuf;        // copie CPU du DMA-BUF (memcpy serré)
+	std::vector<uint8_t> pixels_work;    // pixels de submit_pixels pris par le worker
 };
 
 // Un paquet vidéo prêt à être envoyé (file de sortie, vidée par poll_packets()).
@@ -132,6 +134,12 @@ public:
 	// Renvoie false si la fenêtre est occupée (busy) ou en backpressure.
 	bool submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc,
 			int alloc_w, int alloc_h, int content_w, int content_h);
+
+	// Variante de submit_dmabuf avec des pixels RGBA (ABGR8888, serrés) déjà
+	// rapatriés en RAM par le compositeur (glReadPixels). Indispensable quand le
+	// buffer de capture est en VRAM d'un GPU dédié : sa lecture CPU via mmap
+	// prenait ~300 ms par image 1080p. `px` est déplacé (pas de copie).
+	bool submit_pixels(int wid, std::vector<uint8_t> &&px, int content_w, int content_h);
 
 	// Vide la file de sortie. Chaque entrée : { wid, seq, keyframe, data }.
 	Array poll_packets();

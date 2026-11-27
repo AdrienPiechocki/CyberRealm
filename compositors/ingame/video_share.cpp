@@ -285,6 +285,42 @@ bool VideoShare::submit_dmabuf(int wid, int fd, uint32_t stride, uint32_t fourcc
 	return true;
 }
 
+bool VideoShare::submit_pixels(int wid, std::vector<uint8_t> &&px, int content_w, int content_h) {
+	if (!active.load() || content_w <= 0 || content_h <= 0 ||
+			px.size() < (size_t)content_w * content_h * 4) {
+		return false;
+	}
+	std::lock_guard<std::mutex> g(windows_mutex);
+	VideoEncodeWindow *w = nullptr;
+	for (auto *x : windows) {
+		if (x->wid == wid) { w = x; break; }
+	}
+	if (!w) return false;
+	{
+		std::lock_guard<std::mutex> wg(w->encode_mutex);
+		if (w->busy || w->backpressured || w->stop_encoding) return false;
+		size_t q;
+		{
+			std::lock_guard<std::mutex> og(out_mutex);
+			q = out_queue.size();
+		}
+		if (q >= out_max) return false;
+		if (w->fd >= 0) {
+			close(w->fd);
+			w->fd = -1;
+		}
+		w->pixels = std::move(px);
+		w->stride = (uint32_t)content_w * 4;
+		w->fourcc = 0x34324241; // DRM_FORMAT_ABGR8888 = RGBA en mémoire
+		w->content_w = content_w;
+		w->content_h = content_h;
+		w->queued = true;
+		w->busy = true;
+	}
+	wake_cv.notify_all();
+	return true;
+}
+
 void VideoShare::request_keyframe(int wid) {
 	if (!active.load()) return;
 	// windows_mutex tenu pendant encode_mutex (cf. window_ready).
@@ -372,6 +408,8 @@ void VideoShare::worker_loop() {
 					// de lecture (double close).
 					fd = w->fd;
 					w->fd = -1;
+					w->pixels_work.clear();
+					if (fd < 0) w->pixels_work.swap(w->pixels);
 					stride = w->stride;
 					fourcc = w->fourcc;
 					aw = w->content_w;
@@ -672,6 +710,11 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		return;
 	}
 
+	// Pixels déjà rapatriés en RAM (submit_pixels) : ni mmap ni copie.
+	const bool from_pixels = fd < 0;
+	if (from_pixels && w->pixels_work.size() < (size_t)content_w * content_h * 4) {
+		return;
+	}
 	// Accès direct au DMA-BUF (même principe que le chemin CPU du compositeur,
 	// mais hors thread principal). Le buffer est garanti synchronisé par le
 	// compositeur avant la soumission (wait_for_dmabuf_gpu_writes) ; on
@@ -681,18 +724,34 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	off_t map_offset = plane_offset & ~(off_t)(page_size - 1);
 	size_t map_delta = (size_t)(plane_offset - map_offset);
 	size_t map_size = map_delta + (size_t)stride * (size_t)alloc_h;
-	void *map = mmap(nullptr, map_size, PROT_READ, MAP_SHARED, fd, map_offset);
-	if (map == MAP_FAILED) {
-		UtilityFunctions::printerr("waylandgodot: video_share: dmabuf mmap failed (wid=", w->wid, ")");
-		close(fd);
-		return;
-	}
-	const uint8_t *src = static_cast<const uint8_t *>(map) + map_delta;
-	auto t_mmap = clock::now();
+	void *map = nullptr;
+	const uint8_t *src = nullptr;
 	struct dma_buf_sync sync = {};
-	sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
-	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+	if (from_pixels) {
+		src = w->pixels_work.data();
+	} else {
+		map = mmap(nullptr, map_size, PROT_READ, MAP_SHARED, fd, map_offset);
+		if (map == MAP_FAILED) {
+			UtilityFunctions::printerr("waylandgodot: video_share: dmabuf mmap failed (wid=", w->wid, ")");
+			close(fd);
+			return;
+		}
+		src = static_cast<const uint8_t *>(map) + map_delta;
+	}
+	auto t_mmap = clock::now();
+	if (!from_pixels) {
+		sync.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ;
+		ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+	}
 	auto t_sync = clock::now();
+	// Libère le DMA-BUF (chemin mmap uniquement).
+	auto release_src = [&]() {
+		if (from_pixels) return;
+		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
+		ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
+		munmap(map, map_size);
+		close(fd);
+	};
 
 	AVPixelFormat src_fmt = drm_fourcc_to_avfmt(fourcc);
 	AVPixelFormat dst_fmt = target_pix_fmt(hw_mode);
@@ -708,10 +767,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	}
 	if (!w->sws) {
 		UtilityFunctions::printerr("waylandgodot: video_share: sws_getContext failed (wid=", w->wid, ")");
-		sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-		ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
-		munmap(map, map_size);
-		close(fd);
+		release_src();
 		return;
 	}
 
@@ -723,10 +779,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		frame->height = content_h;
 		if (av_frame_get_buffer(frame, 32) < 0) {
 			UtilityFunctions::printerr("waylandgodot: video_share: av_frame_get_buffer failed (wid=", w->wid, ")");
-			sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-			ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
-			munmap(map, map_size);
-			close(fd);
+			release_src();
 			return;
 		}
 	}
@@ -737,13 +790,17 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 	// en 1080p. Un memcpy simple atteint ~166 Mo/s (même chemin que la copie
 	// CPU du compositeur) : 2,4 Mo en ~14 ms → le swscale suivant lit de la
 	// mémoire CPU rapide. C'est le goulot qui plafonnait l'émetteur à ~25 ips.
-	if (w->readbuf.size() < (size_t)content_w * content_h * 4) {
+	if (!from_pixels && w->readbuf.size() < (size_t)content_w * content_h * 4) {
 		w->readbuf.resize((size_t)content_w * content_h * 4);
 	}
 	uint8_t *rd = w->readbuf.data();
-	for (int y = 0; y < content_h; y++) {
-		memcpy(rd + (size_t)y * content_w * 4, src + (size_t)y * stride,
-			(size_t)content_w * 4);
+	if (from_pixels) {
+		rd = w->pixels_work.data(); // déjà serré (stride = w*4), en RAM
+	} else {
+		for (int y = 0; y < content_h; y++) {
+			memcpy(rd + (size_t)y * content_w * 4, src + (size_t)y * stride,
+				(size_t)content_w * 4);
+		}
 	}
 
 	const uint8_t *src_slices[4] = { rd, nullptr, nullptr, nullptr };
@@ -752,10 +809,7 @@ void VideoShare::encode_window(VideoEncodeWindow *w, int fd, uint32_t stride, ui
 		frame->data, frame->linesize);
 	auto t_sws1 = clock::now();
 
-	sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-	ioctl(fd, DMA_BUF_IOCTL_SYNC, &sync);
-	munmap(map, map_size);
-	close(fd);
+	release_src();
 
 	// Keyframe à la demande (nouveau pair, latence, drop...).
 	{

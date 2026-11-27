@@ -27,6 +27,9 @@ extern "C" {
 #include <wlr/render/swapchain.h>
 #include <wlr/render/pass.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/render/gles2.h>
+#include <wlr/render/egl.h>
+#include <GLES2/gl2.h>
 #include <wlr/interfaces/wlr_ext_image_capture_source_v1.h>
 #include <wlr/util/log.h>
 #include <wlr/util/box.h>
@@ -1479,10 +1482,138 @@ bool WlrCompositor::capture_surface_zero_copy(wlr_surface *surface, Ref<Texture2
     out_h = (int)attribs.height;
     return true;
 }
+// Relecture GL (glReadPixels) d'un buffer offscreen rendu par wlroots, en RGBA
+// serré. Le GPU rapatrie l'image en RAM par DMA (~1-2 ms en 1080p) ; la lecture
+// CPU du même buffer via mmap, quand il est en VRAM d'un GPU dédié, prenait
+// ~300 ms (accès non cachés à travers le PCIe) → partage à 3 ips.
+namespace {
+struct GlReadFns {
+    bool ok = false;
+    PFNGLBINDFRAMEBUFFERPROC bind_fb = nullptr;
+    PFNGLREADPIXELSPROC read_pixels = nullptr;
+    PFNGLPIXELSTOREIPROC pixel_store = nullptr;
+    PFNGLGETERRORPROC get_error = nullptr;
+};
+const GlReadFns &gl_read_fns() {
+    static GlReadFns f = [] {
+        GlReadFns r;
+        r.bind_fb = (PFNGLBINDFRAMEBUFFERPROC)eglGetProcAddress("glBindFramebuffer");
+        r.read_pixels = (PFNGLREADPIXELSPROC)eglGetProcAddress("glReadPixels");
+        r.pixel_store = (PFNGLPIXELSTOREIPROC)eglGetProcAddress("glPixelStorei");
+        r.get_error = (PFNGLGETERRORPROC)eglGetProcAddress("glGetError");
+        r.ok = r.bind_fb && r.read_pixels && r.pixel_store && r.get_error;
+        return r;
+    }();
+    return f;
+}
+} // namespace
+
+static bool gl_read_buffer(wlr_renderer *renderer, wlr_buffer *buf, int w, int h,
+        std::vector<uint8_t> &out) {
+    if (!renderer || !buf || !wlr_renderer_is_gles2(renderer)) return false;
+    const GlReadFns &gl = gl_read_fns();
+    if (!gl.ok) return false;
+    wlr_egl *egl = wlr_gles2_renderer_get_egl(renderer);
+    EGLDisplay dpy = wlr_egl_get_display(egl);
+    EGLContext ctx = wlr_egl_get_context(egl);
+    EGLDisplay prev_dpy = eglGetCurrentDisplay();
+    EGLContext prev_ctx = eglGetCurrentContext();
+    EGLSurface prev_draw = eglGetCurrentSurface(EGL_DRAW);
+    EGLSurface prev_read = eglGetCurrentSurface(EGL_READ);
+    if (!eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx)) return false;
+    bool ok = false;
+    GLuint fbo = wlr_gles2_renderer_get_buffer_fbo(renderer, buf);
+    if (fbo != 0) {
+        out.resize((size_t)w * h * 4);
+        gl.get_error();
+        gl.bind_fb(GL_FRAMEBUFFER, fbo);
+        gl.pixel_store(GL_PACK_ALIGNMENT, 4);
+        gl.read_pixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, out.data());
+        ok = gl.get_error() == GL_NO_ERROR;
+        gl.bind_fb(GL_FRAMEBUFFER, 0);
+    }
+    if (prev_ctx != EGL_NO_CONTEXT) {
+        eglMakeCurrent(prev_dpy, prev_draw, prev_read, prev_ctx);
+    } else {
+        eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+    }
+    return ok;
+}
+
+// Compare une ligne RGBA relue (GL) à la ligne `row` du DMA-BUF mappé (format
+// du buffer : RGBA ou BGRA en mémoire), sur les 3 canaux de couleur.
+static bool rows_match(const uint8_t *gl_row, const uint8_t *map_row, int w, bool bgra) {
+    for (int x = 0; x < w; x++) {
+        const uint8_t *g = gl_row + (size_t)x * 4;
+        const uint8_t *m = map_row + (size_t)x * 4;
+        uint8_t r = bgra ? m[2] : m[0], b = bgra ? m[0] : m[2];
+        if (g[0] != r || g[1] != m[1] || g[2] != b) return false;
+    }
+    return true;
+}
+
 void WlrCompositor::submit_video_frame(CaptureCache &cache) {
     if (!video_share.is_active() || cache.wid < 0 || cache.dma_fd < 0 ||
         cache.stride == 0) {
         return;
+    }
+    if (!video_share.is_shared(cache.wid) || !video_share.window_ready(cache.wid)) {
+        return; // l'encodeur refuserait la frame : inutile de relire le buffer
+    }
+    if (cache.gl_readback_buffer != cache.offscreen) {
+        cache.gl_readback_buffer = cache.offscreen;
+        cache.gl_readback_mode = -1;
+    }
+    const int w = cache.width, h = cache.height;
+    if (cache.gl_readback_mode != 2 && w > 0 && h > 0) {
+        std::vector<uint8_t> px;
+        auto t0 = std::chrono::steady_clock::now();
+        if (gl_read_buffer(renderer, cache.offscreen, w, h, px)) {
+            const size_t row = (size_t)w * 4;
+            if (cache.gl_readback_mode == -1) {
+                // Orientation vérifiée sur une seule ligne du DMA-BUF (7 Ko).
+                bool bgra = cache.format == DRM_FORMAT_ARGB8888 || cache.format == DRM_FORMAT_XRGB8888;
+                // Orientation directe vérifiée (wlroots 0.19, radeonsi) : la ligne 0
+                // relue est la ligne du haut. Inversée seulement si prouvé sans
+                // ambiguïté (fond uni : les deux correspondent → directe).
+                int mode = 0;
+                if (cache.data && cache.stride > 0) {
+                    std::vector<uint8_t> first(row), last(row);
+                    memcpy(first.data(), cache.data, row);
+                    memcpy(last.data(), cache.data + (size_t)(h - 1) * cache.stride, row);
+                    bool direct = rows_match(px.data(), first.data(), w, bgra)
+                        && rows_match(px.data() + (h - 1) * row, last.data(), w, bgra);
+                    bool flipped = rows_match(px.data(), last.data(), w, bgra)
+                        && rows_match(px.data() + (h - 1) * row, first.data(), w, bgra);
+                    mode = direct ? 0 : (flipped ? 1 : 2);
+                }
+                cache.gl_readback_mode = mode;
+                UtilityFunctions::print("waylandgodot: video_share: GL readback for wid=", cache.wid,
+                    " mode=", mode == 0 ? "direct" : (mode == 1 ? "flipped" : "unusable (dmabuf fallback)"));
+            }
+            if (cache.gl_readback_mode == 1) {
+                std::vector<uint8_t> tmp(row);
+                for (int y = 0; y < h / 2; y++) {
+                    uint8_t *a = px.data() + (size_t)y * row;
+                    uint8_t *b = px.data() + (size_t)(h - 1 - y) * row;
+                    memcpy(tmp.data(), a, row);
+                    memcpy(a, b, row);
+                    memcpy(b, tmp.data(), row);
+                }
+            }
+            if (cache.gl_readback_mode == 0 || cache.gl_readback_mode == 1) {
+                double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+                if (ms > 4.0) {
+                    UtilityFunctions::print("waylandgodot: [diag] GL readback ", w, "x", h, " ", ms, " ms");
+                }
+                video_share.submit_pixels(cache.wid, std::move(px), w, h);
+                return;
+            }
+        } else if (cache.gl_readback_mode == -1) {
+            cache.gl_readback_mode = 2;
+            UtilityFunctions::print("waylandgodot: video_share: GL readback unavailable — dmabuf path");
+        }
     }
     video_share.submit_dmabuf(cache.wid, dup(cache.dma_fd), cache.stride,
         cache.format, cache.alloc_width, cache.alloc_height,

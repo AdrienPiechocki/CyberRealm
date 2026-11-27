@@ -113,6 +113,11 @@ struct CaptureCache {
     int wid = -1;
     // Échelle de rendu de la capture (wp_fractional_scale_v1) : offscreen = taille logique × scale.
     float scale = 1.0f;
+    // Relecture GL du buffer pour l'encodeur vidéo (submit_pixels) : orientation
+    // vérifiée une fois par buffer offscreen (-1 inconnue, 0 directe, 1 inversée,
+    // 2 inutilisable → repli sur le DMA-BUF).
+    int gl_readback_mode = -1;
+    wlr_buffer *gl_readback_buffer = nullptr;
 
     // --- Vulkan zero-copy DMA-BUF import ------------------------------
     // Ces champs sont utilisés lorsque le pipeline GPU Vulkan est actif.
