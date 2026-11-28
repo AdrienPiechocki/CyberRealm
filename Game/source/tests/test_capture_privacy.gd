@@ -133,3 +133,128 @@ func test_mask_keeps_previous_frame_and_margin():
 	p.queue_free()
 	win.queue_free()
 	return r
+
+# ── Fenêtres passées devant une fenêtre privée ─────────────────────────────
+
+# Rectangle vertical 2x2 centré en (x, 0, z), face à +Z (caméra en z = 10).
+func _rect3(x: float, z: float) -> Array:
+	return [Vector3(x - 1, -1, z), Vector3(x + 1, -1, z), Vector3(x + 1, 1, z), Vector3(x - 1, 1, z)]
+
+func test_window_in_front_hides_private_one():
+	var cam := Vector3(0, 0, 10)
+	var r: Variant = Runner.assert_true(Privacy.quad_in_front(_rect3(0.5, 1.0), _rect3(0, 0), cam),
+		"fenêtre plus proche de la caméra : devant")
+	if r is String: return r
+	r = Runner.assert_true(not Privacy.quad_in_front(_rect3(0.5, -1.0), _rect3(0, 0), cam),
+		"fenêtre derrière la privée : ne retire rien au masque")
+	if r is String: return r
+	# Caméra passée de l'autre côté : l'ordre s'inverse.
+	return Runner.assert_true(Privacy.quad_in_front(_rect3(0.5, -1.0), _rect3(0, 0), Vector3(0, 0, -10)),
+		"vu de derrière, la fenêtre du fond passe devant")
+
+func test_crossing_windows_keep_the_mask():
+	# Fenêtre perpendiculaire qui traverse la privée : ni devant ni derrière.
+	var cross := [Vector3(0, -1, -1), Vector3(0, -1, 1), Vector3(0, 1, 1), Vector3(0, 1, -1)]
+	return Runner.assert_true(not Privacy.quad_in_front(cross, _rect3(0, 0), Vector3(3, 0, 10)),
+		"deux fenêtres qui se traversent : le masque reste entier")
+
+func test_overlay_rules():
+	var q3 := {"poly": PackedVector2Array(), "corners": _rect3(0, 0)}
+	var r: Variant = Runner.assert_true(Privacy.occludes({"z": 0}, q3, Vector3.ZERO), "un overlay 2D cache toujours la scène 3D")
+	if r is String: return r
+	r = Runner.assert_true(not Privacy.occludes(q3, {"z": 0}, Vector3.ZERO), "un quad 3D ne cache jamais un overlay")
+	if r is String: return r
+	r = Runner.assert_true(Privacy.occludes({"z": 2002}, {"z": 2001}, Vector3.ZERO), "overlay au-dessus dans la pile du focus")
+	if r is String: return r
+	return Runner.assert_true(not Privacy.occludes({"z": 2001}, {"z": 2002}, Vector3.ZERO), "overlay en dessous : rien de retiré")
+
+func _area(polys: Array) -> float:
+	var a := 0.0
+	for p: PackedVector2Array in polys:
+		var s := 0.0
+		for i in p.size():
+			s += p[i].x * p[(i + 1) % p.size()].y - p[(i + 1) % p.size()].x * p[i].y
+		a += absf(s) * 0.5
+	return a
+
+func _sq(x0: float, y0: float, x1: float, y1: float) -> PackedVector2Array:
+	return PackedVector2Array([Vector2(x0, y0), Vector2(x1, y0), Vector2(x1, y1), Vector2(x0, y1)])
+
+func test_subtract_partial_overlap():
+	var out := Privacy.subtract_polygon([_sq(0, 0, 100, 100)], _sq(50, -10, 150, 110))
+	return Runner.assert_approx(_area(out), 5000.0, 1.0, "la moitié recouverte n'est plus masquée")
+
+func test_subtract_inner_window_never_makes_a_hole():
+	# Petite fenêtre opaque devant le milieu d'une grande fenêtre privée : le masque doit l'épargner
+	# sans contour de trou (le remplissage C++ remplirait le trou).
+	var out := Privacy.subtract_polygon([_sq(0, 0, 100, 100)], _sq(40, 40, 60, 60))
+	var r: Variant = Runner.assert_approx(_area(out), 10000.0 - 400.0, 1.0, "seule la fenêtre de devant est retirée")
+	if r is String: return r
+	var cw := Geometry2D.is_polygon_clockwise(out[0])
+	for p: PackedVector2Array in out:
+		if Geometry2D.is_polygon_clockwise(p) != cw:
+			return "contour de trou produit"
+		if Geometry2D.is_point_in_polygon(Vector2(50, 50), p):
+			return "le centre de la fenêtre de devant est encore masqué"
+	return true
+
+func test_subtract_full_cover_removes_mask():
+	var out := Privacy.subtract_polygon([_sq(10, 10, 20, 20)], _sq(0, 0, 100, 100))
+	return Runner.assert_eq(out.size(), 0, "entièrement cachée : plus rien à noircir")
+
+func test_real_scene_window_in_front_is_cut_from_mask():
+	# Vraie scène : windows_3d, caméra en z = 5 regardant -Z ; fenêtre privée 21 en z = 0, fenêtre opaque 22
+	# devant (z = 1) sur sa moitié droite. Le masque ne doit plus couvrir le centre de 22.
+	var Win3D: Script = load("res://scripts/windows/windows_3d.gd")
+	var win3d := Node3D.new()
+	win3d.set_script(Win3D)
+	var player := Node3D.new()
+	player.name = "Player"
+	var cam := Camera3D.new()
+	cam.name = "Camera3D"
+	player.add_child(cam)
+	# Viewport dimensionné : celui de la racine headless n'a pas de taille, la projection y est dégénérée.
+	var vp := SubViewport.new()
+	vp.size = Vector2i(640, 360)
+	add_child(vp)
+	vp.add_child(player)
+	vp.add_child(win3d)
+	cam.global_position = Vector3(0, 0, 5)
+	cam.current = true
+	win3d.setup(null, player)
+	win3d.on_window_mapped(21, "Private", "app")
+	win3d.on_window_mapped(22, "Front", "app")
+	(win3d.quads[21].mesh as QuadMesh).size = Vector2(2, 2)
+	(win3d.quads[22].mesh as QuadMesh).size = Vector2(1, 1)
+	win3d.quads[21].global_transform = Transform3D(Basis.IDENTITY, Vector3.ZERO)
+	win3d.quads[22].global_transform = Transform3D(Basis.IDENTITY, Vector3(0.5, 0, 1))
+	win3d._alpha_translucent[22] = false
+	win3d.set_window_private(21, true)
+	var p: Node = Privacy.new()
+	p.save_path = TEST_PATH
+	vp.add_child(p)
+	p.setup(null, win3d, null, null, null)
+	# Interpolation physique : la transform de rendu de la caméra ne suit qu'après une frame.
+	await get_tree().physics_frame
+	await get_tree().process_frame
+	var front_center := cam.unproject_position(Vector3(0.5, 0, 1))
+	var private_left := cam.unproject_position(Vector3(-0.8, 0, 0))
+	var polys: Array = p._current_polygons()
+	# `ps` en paramètre : une lambda GDScript capture `polys` par valeur, elle ne verrait pas sa réaffectation.
+	var covers := func(ps: Array, pt: Vector2) -> bool:
+		for poly: PackedVector2Array in ps:
+			if Geometry2D.is_point_in_polygon(pt, poly):
+				return true
+		return false
+	var r: Variant = Runner.assert_true(covers.call(polys, private_left), "la partie découverte de la fenêtre privée reste noire")
+	if r is String:
+		pass
+	else:
+		r = Runner.assert_true(not covers.call(polys, front_center), "la fenêtre passée devant n'est plus noircie")
+	if not (r is String):
+		# Fenêtre translucide devant : on voit la privée à travers, le masque reste entier.
+		win3d._alpha_translucent[22] = true
+		polys = p._current_polygons()
+		r = Runner.assert_true(covers.call(polys, front_center), "à travers une fenêtre translucide, le masque reste")
+	vp.free()
+	return r
