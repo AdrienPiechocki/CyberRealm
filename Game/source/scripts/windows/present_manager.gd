@@ -20,6 +20,10 @@ var _cursor_hidden := false # curseur composité masqué (mode caméra)
 
 func setup(compositor_ref: WlrCompositor) -> void:
 	compositor = compositor_ref
+	# Sous kms, kms_cursor.gd dessine déjà le curseur dans le viewport relu ici :
+	# le curseur xcursor du compositeur en ferait un second dans la capture.
+	if DisplayServer.get_name() == "kms":
+		compositor.set_output_cursor_enabled(false)
 
 func _process(_delta: float) -> void:
 	# Synchroniser le curseur Wayland (wlr_cursor) avec la position de la

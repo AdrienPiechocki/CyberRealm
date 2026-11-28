@@ -812,6 +812,9 @@ void WlrCompositor::set_cursor_position(double x, double y) {
 void WlrCompositor::set_cursor_visible(bool visible) {
     cursor_visible = visible;
 }
+void WlrCompositor::set_output_cursor_enabled(bool enabled) {
+    output_cursor_enabled = enabled;
+}
 void WlrCompositor::set_window_pointer(int window_id, double x, double y, bool inside) {
     if (window_id < 0 || !inside) {
         // Le pointeur ne survole aucune fenêtre : efface l'état de toutes

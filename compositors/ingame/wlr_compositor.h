@@ -560,6 +560,11 @@ class WlrCompositor : public Node {
     double cursor_x = 0;
     double cursor_y = 0;
     bool cursor_visible = true;
+    // false : la capture de l'output (écran du jeu) ne reçoit pas le curseur
+    // xcursor, ni incrusté ni en METADATA. Sous le DisplayServer kms, le jeu
+    // dessine déjà son curseur logiciel dans le viewport relu (kms_cursor.gd) :
+    // l'ajouter ici le doublerait. Les captures de fenêtres ne sont pas concernées.
+    bool output_cursor_enabled = true;
 
     // Curseur de l'output headless (wlr_output_cursor) : alimente la source
     // de curseur METADATA de la capture écran. wlroots la nourrit depuis
@@ -1230,6 +1235,7 @@ public:
     // (Input.mouse_mode = MOUSE_MODE_CAPTURED) : le curseur ne doit pas
     // apparaître dans la capture OBS pendant le focus caméra.
     void set_cursor_visible(bool visible);
+    void set_output_cursor_enabled(bool enabled);
 
     // Positionne le pointeur du jeu dans une fenêtre (coordonnées surface) et
     // indique si le pointeur survole actuellement cette fenêtre. window_id = -1

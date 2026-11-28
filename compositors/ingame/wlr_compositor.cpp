@@ -249,6 +249,7 @@ void WlrCompositor::_bind_methods() {
 
     ClassDB::bind_method(D_METHOD("set_cursor_position", "x", "y"), &WlrCompositor::set_cursor_position);
     ClassDB::bind_method(D_METHOD("set_cursor_visible", "visible"), &WlrCompositor::set_cursor_visible);
+    ClassDB::bind_method(D_METHOD("set_output_cursor_enabled", "enabled"), &WlrCompositor::set_output_cursor_enabled);
     ClassDB::bind_method(D_METHOD("set_window_pointer", "window_id", "x", "y", "inside"), &WlrCompositor::set_window_pointer);
 
 
@@ -2967,7 +2968,7 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
     // "capturer le curseur" — la session recréée sans PAINT_CURSORS copie
     // pourtant ce buffer tel quel (wlr_ext_image_copy_capture_frame_v1_
     // copy_buffer copie le buffer committé, curseur compris).
-    if (cursor_manager && cursor && cursor_visible &&
+    if (cursor_manager && cursor && cursor_visible && output_cursor_enabled &&
             headless_output && headless_output->software_cursor_locks > 0) {
         struct wlr_xcursor *xcursor = wlr_xcursor_manager_get_xcursor(
             cursor_manager, "default", 1.0f);
@@ -3039,7 +3040,8 @@ void WlrCompositor::present_viewport_frame(const PackedByteArray &rgba, int widt
             output_cursor = wlr_output_cursor_create(headless_output);
         }
         if (output_cursor) {
-            bool want_visible = cursor_visible && ensure_cursor_image_buffer();
+            bool want_visible = cursor_visible && output_cursor_enabled &&
+                ensure_cursor_image_buffer();
             if (want_visible) {
                 if (!output_cursor_buffer_set) {
                     wlr_output_cursor_set_buffer(output_cursor, cursor_image_buffer,
