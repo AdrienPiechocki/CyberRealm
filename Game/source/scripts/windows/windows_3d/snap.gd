@@ -152,6 +152,37 @@ func _hold_snap(held: Dictionary, raw_target: Vector3) -> Dictionary:
 	snap["position"] = _flush_position(our_area, their_area)
 	return snap
 
+# Rompt les liaisons des AUTRES fenêtres vers `wid` qui ne sont plus vraies.
+#
+# Une liaison n'est stockée que chez la fenêtre qui s'est collée (A -> B) : quand
+# on déplace B, rien ne touche l'entrée de A. Collage actif, B se recolle
+# généralement sur A et le défaut reste caché ; collage coupé, B s'éloigne
+# librement et A garde une liaison morte — ressaisie, A était alors aspirée par
+# _hold_snap vers le bord de B, là où B se trouve désormais.
+#
+# On ne garde donc une liaison entrante que si la fenêtre liée est encore bord à
+# bord avec `wid`, au jeu près.
+const STALE_LINK_TOLERANCE := 0.05
+func _drop_stale_links_to(wid: int) -> void:
+	var stale: Array = []
+	for other in w3d.snapped_to:
+		if int(other) == wid:
+			continue
+		var sn: Dictionary = w3d.snapped_to[other]
+		if int(sn.get("wid", -1)) != wid:
+			continue
+		var our_area = sn.get("our_area", null)
+		var their_area = sn.get("their_area", null)
+		var q: MeshInstance3D = w3d.quads.get(other, null)
+		if q == null or not is_instance_valid(q) \
+				or not is_instance_valid(our_area) or not is_instance_valid(their_area) \
+				or q.global_position.distance_to(_flush_position(our_area, their_area)) > STALE_LINK_TOLERANCE:
+			stale.append(other)
+	for other in stale:
+		w3d.snapped_to.erase(other)
+	if not stale.is_empty():
+		w3d.windows_state_changed.emit()
+
 func _pair_key(their_wid: int, their_side: String, our_side: String) -> String:
 	return "%d:%s:%s" % [their_wid, their_side, our_side]
 

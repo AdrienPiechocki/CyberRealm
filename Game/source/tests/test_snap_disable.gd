@@ -113,6 +113,45 @@ func test_established_snap_survives_disabling() -> Variant:
 		"un collage établi doit rester lâchable en tirant le pointeur au loin")
 	return _teardown(res)
 
+# Rejoue des frames de déplacement réelles (_update_move) sur la fenêtre saisie,
+# le rayon caméra visant `aim` depuis l'origine.
+func _drag(wid: int, aim: Vector3, frames := 30) -> void:
+	win3d.active_window_id = wid
+	win3d.is_moving = true
+	win3d.snap._sync_snap_monitoring(wid)
+	var origin := Vector3(0, 0, 10)
+	win3d.move_depth = origin.distance_to(aim)
+	for i in frames:
+		win3d.grab._update_move(origin, (aim - origin).normalized(), 0.1)
+		await get_tree().physics_frame
+	win3d.is_moving = false
+	win3d.active_window_id = -1
+
+func test_regrab_after_partner_moved_keeps_window_in_place() -> Variant:
+	## Collage coupé, A collée sur B : on déplace B, puis on ressaisit A sans
+	## bouger le pointeur. A ne doit pas être aspirée vers l'ancien raccord
+	## de B — la liaison est morte dès que B s'est éloignée.
+	var ctx: Variant = await _place_flush_pair()
+	if _fail(ctx):
+		return ctx
+	win3d.snap._set_snap(WID, win3d.snap._find_snap(Vector3.ZERO))
+	var res: Variant = Runner.assert_true(win3d.snapped_to.has(WID),
+		"le collage doit s'établir avant la coupure, sinon le test ne prouve rien")
+	if _fail(res):
+		return _teardown(res)
+	win3d.set_snapping_enabled(false)
+	await _drag(NEI, Vector3(FLUSH_X, 6.0, 0.0))
+	var a_before: Vector3 = win3d.quads[WID].global_position
+	await _drag(WID, a_before, 10)
+	var a_after: Vector3 = win3d.quads[WID].global_position
+	res = Runner.assert_true(a_after.distance_to(a_before) < 0.3,
+		"A ressaisie sur place ne doit pas sauter vers B déplacée (%s -> %s)" % [a_before, a_after])
+	if _fail(res):
+		return _teardown(res)
+	res = Runner.assert_true(not win3d.snapped_to.has(WID),
+		"la liaison de A vers B déplacée doit être rompue")
+	return _teardown(res)
+
 func test_snapping_setting_is_off_by_default() -> Variant:
 	## Le réglage par défaut vaut « collage actif » : un défaut inversé
 	## désactiverait le collage pour tout le monde, silencieusement, et

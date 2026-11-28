@@ -167,6 +167,9 @@ func _update_move(ray_origin: Vector3, ray_dir: Vector3, delta: float) -> void:
 		target_pos,
 		10.0 * delta
 	)
+	# Les fenêtres collées SUR celle-ci ne la suivent pas : leur liaison meurt
+	# dès qu'elle s'en écarte (sinon, ressaisies, elles sauteraient vers elle).
+	w3d.snap._drop_stale_links_to(w3d.active_window_id)
 
 	# Orientation : deux régimes, et c'est le COLLAGE qui les sépare.
 	#
